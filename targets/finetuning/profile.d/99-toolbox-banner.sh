@@ -142,7 +142,7 @@ cat <<'ASCII'
               ╟───┘ ██ ║  █   █ 🭩🬂🭗🭄🮂🭏 🭄🮀🭧🭢🬨🬂🭗🭂🮀🭍
               ║        ║  █  🭊🭠 🭞  🭕▂🭠 ▄ 🭨🭬🭦🭩🭛🭓🬭🬽
               ╚════════╝ `🮃🮃🮃🭘🭷🭷🭷🭷🭷🭷🭷🭷🭷🭣🬂🭘🭷🭷🭷🭷🭷🭷🭷🭷
-             LLM Finetuning Toolbox: Interactive Box
+                 LLM Finetuning: Interactive Box
 
 ASCII
 echo

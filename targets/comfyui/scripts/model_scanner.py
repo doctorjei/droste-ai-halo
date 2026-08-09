@@ -112,10 +112,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pickle
 import re
 import struct
 import sys
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -127,7 +129,7 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- constants
 
 REGISTRY_VERSION = 2
-HEURISTICS_VERSION = 3
+HEURISTICS_VERSION = 5
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -135,6 +137,11 @@ DEFAULT_TREE = "/opt/data/model-tree"
 DEFAULT_REGISTRY = "/opt/data/model-registry.yaml"
 
 WEIGHT_EXTS = {".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin"}
+
+# Pickle-format weights. Content-sniffed via read_pickle_signals, which NEVER executes
+# the payload (see _restricted_unpickle). `.bin` is included because HF-format torch
+# weights use it, and the CT2 `model.bin` case is matched earlier by layout.
+PICKLE_EXTS = {".pth", ".pt", ".ckpt", ".bin"}
 
 UNCLASSIFIED = "unclassified"
 
@@ -157,6 +164,7 @@ DETECTOR_CATEGORIES = {
     "ultralytics/segm",   # Impact-Pack UltralyticsDetectorProvider: segmentation
     "sams",               # Impact-Pack SAMLoader: Segment-Anything checkpoints
     "facedetection",      # ReActor / facerestore facexlib weights (face parsing)
+    "facerestore_models",  # ReActor / facerestore: CodeFormer, GFPGAN, RestoreFormer
     "controlnet_aux",     # ControlNet-aux annotator / pose-estimator weights
 }
 CATEGORIES |= DETECTOR_CATEGORIES
@@ -234,6 +242,11 @@ SHARDED_RE = re.compile(r"-\d{4,6}-of-\d{4,6}\.[A-Za-z0-9]+$")
 # checks have excluded genuine models, so a bare scale tag is a strong upscaler signal.
 UPSCALE_SCALE_RE = re.compile(
     r"(?:^|_)(?:2|4|8|16)x(?=$|_|[a-z])|(?:^|_)x(?:2|4|8|16)(?=$|_|[a-z])")
+
+# lllyasviel ControlNet-v1-1 filenames: control_v11p_sd15_softedge, control_v11f1e_sd15_tile,
+# control_v11p_sd15s2_lineart_anime, plus the older control_sd15_* / control_sd21_* naming.
+# None contain the substring "controlnet", so the plain keyword rule misses them all.
+CONTROLNET_NAME_RE = re.compile(r"^control_(?:v\d|sd\d|lora)")
 
 # generic basenames that must never be used as link names (provenance rule)
 GENERIC_STEM_RE = re.compile(
@@ -460,18 +473,36 @@ def classify_by_segments(src: SourceFile) -> str | None:
     return None
 
 
+def repo_of(display: str) -> str:
+    """`org/repo/sub/file.ext` -> `repo` (the hf-provenance display form)."""
+    parts = display.split("/")
+    return parts[1] if len(parts) >= 3 else parts[0]
+
+
 def classify_by_filename(name: str) -> str | None:
     norm = re.sub(r"[^a-z0-9]+", "_", Path(name).stem.lower()).strip("_")
     tokens = set(t for t in norm.split("_") if t)
     if "clip_vision" in norm:                       # before any bare-clip rule
         return "clip_vision"
+    # control-lora is a ControlNet distributed in LoRA form and loads from
+    # models/controlnet, so it must be tested BEFORE the lora rule -- which would
+    # otherwise swallow it on the bare "lora" token and file it where no
+    # ControlNet loader looks.
+    if "control_lora" in norm:
+        return "controlnet"
     if tokens & {"lora", "loras"} or "lightning_lora" in norm:
         return "loras"
     if "taesd" in tokens:
         return "vae_approx"
     if "vae" in tokens:
         return "vae"
-    if "controlnet" in norm or tokens & {"canny", "depth"}:
+    # ControlNet weights. Beyond the literal "controlnet", cover lllyasviel's
+    # ControlNet-v1-1 filenames (control_v11p_sd15_softedge, control_v11f1e_sd15_tile,
+    # control_v11p_sd15s2_lineart_anime, ...) and the T2I-Adapter/control-lora spellings
+    # -- none of which contain the substring "controlnet".
+    if ("controlnet" in norm or tokens & {"canny", "depth"}
+            or CONTROLNET_NAME_RE.search(norm)
+            or "t2iadapter" in norm or "t2i_adapter" in norm):
         return "controlnet"
     if (tokens & {"t5", "umt5", "byt5", "t5xxl"}
             or "clip_l" in norm or "clip_g" in norm
@@ -500,6 +531,20 @@ def classify_by_filename(name: str) -> str | None:
             or "body_pose" in norm or "hand_pose" in norm
             or ("pose" in tokens and tokens & {"body", "hand", "model"})):
         return "controlnet_aux"
+    # Depth / edge / segmentation ESTIMATORS (lllyasviel/Annotators et al) -> the same
+    # controlnet_aux tree. Named families only -- deliberately NOT a bare "depth" token,
+    # which belongs to the ControlNet rule above (control_v11f1p_sd15_depth is a
+    # ControlNet, not an annotator), and the ControlNet rule runs first regardless.
+    if tokens & {"midas", "dpt", "zoe", "leres", "hed", "pidinet", "mlsd",
+                 "uniformer", "oneformer", "normalbae"} or "depth_anything" in norm:
+        return "controlnet_aux"
+    # Face RESTORATION (CodeFormer / GFPGAN / RestoreFormer) -> models/facerestore_models,
+    # where ReActor and the facerestore nodes look. Distinct from facedetection above,
+    # which holds the parsing/detection weights.
+    # Substring, not token: these ship with the version welded to the name
+    # (GFPGANv1.4.pth normalizes to "gfpganv1_4", so "gfpgan" is never its own token).
+    if "codeformer" in norm or "gfpgan" in norm or "restoreformer" in norm:
+        return "facerestore_models"
     # ESRGAN-family upscalers, incl. arch-unknown 4x/2x/x4 .pth files
     if ("esrgan" in norm or tokens & {"upscale", "upscaler"}
             or UPSCALE_SCALE_RE.search(norm)):
@@ -557,6 +602,257 @@ def classify_safetensors_header(header: dict) -> str | None:
     return None
 
 
+def _restricted_unpickle(fileobj) -> tuple[set, set]:
+    """Recover a pickle's state-dict KEYS and the MODULE paths it references, without
+    executing any of its payload.
+
+    SECURITY: `.pt`/`.pth` are Python pickles, and a normal load executes arbitrary code
+    -- unacceptable for files pulled off the internet. Here `find_class` never imports or
+    resolves anything: it records the module path (a strong classification signal in its
+    own right -- ultralytics.nn.tasks.DetectionModel et al) and returns a single inert
+    stub. `persistent_load` (torch tensor storages) returns the same stub. Every REDUCE
+    therefore calls the stub, never attacker code. Ported from droste-civitai-adopt's
+    `_restricted_unpickle_keys`, which has been in service on real CivitAI downloads.
+    """
+    keys: set = set()
+    modules: set = set()
+
+    class _Inert:
+        def __call__(self, *a, **k):
+            return self                       # REDUCE / call -> inert
+        def __setitem__(self, key, value):
+            if isinstance(key, str):
+                keys.add(key)
+        def __setstate__(self, state):
+            if isinstance(state, dict):
+                keys.update(k for k in state if isinstance(k, str))
+        def append(self, *a):
+            pass
+        def extend(self, *a):
+            pass
+        def __getattr__(self, name):
+            return self                       # any attribute -> inert
+
+    inert = _Inert()
+
+    class _Restricted(pickle.Unpickler):
+        def find_class(self, module, name):
+            modules.add(f"{module}.{name}".lower())
+            return inert                      # NEVER import anything
+        def persistent_load(self, pid):
+            return inert
+
+    obj = _Restricted(fileobj).load()
+    # a plain dict / OrderedDict may come back concrete; harvest its keys (and one level
+    # of nesting, e.g. {"state_dict": {...}}).
+    stack, seen = [obj], 0
+    while stack and seen < 8:
+        cur = stack.pop()
+        seen += 1
+        if isinstance(cur, dict):
+            keys.update(k for k in cur if isinstance(k, str))
+            stack.extend(v for v in cur.values() if isinstance(v, dict))
+    return keys, modules
+
+
+def read_pickle_signals(path: Path) -> tuple[set, set]:
+    """(state-dict keys, referenced module paths) for a pickled checkpoint.
+
+    Modern torch files are zip archives holding a small `data.pkl`; legacy ones are a
+    bare pickle followed by the raw storages. Either way only the pickle STRUCTURE is
+    read -- never the tensor payload -- so cost is bounded regardless of file size.
+    """
+    with open(path, "rb") as f:
+        head = f.read(2)
+    if head == b"PK":                          # zip archive (modern torch.save)
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.endswith("data.pkl")]
+            if not names:
+                return set(), set()
+            with z.open(names[0]) as fh:
+                return _restricted_unpickle(fh)
+    with open(path, "rb") as f:                # legacy bare pickle
+        return _restricted_unpickle(f)
+
+
+# Module paths that identify a model by the code that produced it -- a far stronger
+# signal than any filename, and the only content signal for object-pickles (Ultralytics
+# serializes a whole model, not a state dict, so there are no tensor-name keys).
+PICKLE_MODULE_SIGNALS = (
+    ("ultralytics", "segmentationmodel", "ultralytics/segm"),
+    ("ultralytics", None, "ultralytics/bbox"),
+    ("segment_anything", None, "sams"),
+    ("gfpgan", None, "facerestore_models"),
+    ("basicsr.archs.rrdbnet_arch", None, "upscale_models"),
+)
+
+
+def classify_pickle(keys: set, modules: set) -> str | None:
+    """Classify a pickled checkpoint from its recovered signals."""
+    joined = " ".join(sorted(modules))
+    for needle, refine, cat in PICKLE_MODULE_SIGNALS:
+        if needle in joined:
+            if refine is None or refine in joined:
+                return cat
+            continue
+    # State dicts share their tensor-name vocabulary with the safetensors path, so reuse
+    # ONE classifier rather than maintaining a parallel set of prefix rules.
+    if keys:
+        return classify_safetensors_header({k: {} for k in keys})
+    return None
+
+
+# --------------------------------------------------- confidence model (Jei's scheme)
+#
+# Every applicable measure votes, each emitting (category, rating 0..1). Two tiers:
+#
+#   HIGH SIGNAL -- evidence EMBEDDED in the weight file (safetensors header, pickle
+#   opcodes, GGUF KV). Cannot be altered without rewriting the model itself.
+#
+#   LOW FIDELITY ("LoFi") -- evidence that lives OUTSIDE it: sidecar files (config.json,
+#   model_index.json, CT2 vocabulary siblings) and names (path segments, filename, repo).
+#   All independently editable, and routinely edited -- someone forcing a class name to
+#   make a loader accept a file produces a sidecar that points confidently at the WRONG
+#   answer, which is worse than no sidecar at all. Hence the hard 0.6 ceiling: LoFi is
+#   never permitted to express certainty.
+#
+# Score is computed PER CANDIDATE CATEGORY -- measures vote for different categories, so
+# one pooled sum would answer "how much evidence exists" rather than "which answer is
+# right". The denominator is ALL applicable parts, so disagreement visibly depresses the
+# winner's confidence.
+#
+# Weights are Jei's, from his judgement of trustworthiness. The arithmetic they produce:
+# all six LoFi measures agreeing tops out at 6*5*0.6 = 18, while any single embedded
+# measure at >=0.9 reaches 18-29.7 -- so confident embedded evidence always wins, and
+# names/sidecars decide only where embedded evidence is weak or absent.
+MEASURE_PARTS = {
+    "safetensors": 30,   # embedded
+    "pickle": 20,        # embedded
+    "gguf": 20,          # embedded
+    "ct2": 5,            # LoFi: sibling vocabulary files
+    "config": 5,         # LoFi: sidecar config.json
+    "component": 5,      # LoFi: diffusers component DIR NAME (never opens model_index)
+    "segments": 5,       # LoFi: path segments
+    "filename": 5,       # LoFi: filename keywords
+    "repo": 5,           # LoFi: repo name
+}
+LOFI_MEASURES = {"ct2", "config", "component", "segments", "filename", "repo"}
+LOFI_MAX_RATING = 0.6    # LoFi may never express certainty
+EMBEDDED_MAX_RATING = 0.99   # nor may anything else claim absolute certainty
+
+# Tensor-name prefixes that identify a model outright, vs the generic encoder+decoder
+# shape that merely suggests an autoencoder (plenty of models have both).
+DISTINCTIVE_PREFIXES = (
+    "model.diffusion_model.", "control_model.", "vision_model.", "diffusion_model.",
+    "double_blocks.", "joint_blocks.", "encoder.block.", "decoder.block.",
+    "first_stage_model.", "text_model.", "t5.", "enc.",
+)
+
+
+def rate_safetensors(header: dict) -> tuple[str, float] | None:
+    """Category + how much the evidence deserves to be believed."""
+    cat = classify_safetensors_header(header)
+    if not cat:
+        return None
+    keys = [k for k in header if k != "__metadata__"]
+    if any(k.startswith(DISTINCTIVE_PREFIXES) for k in keys) or any(
+            k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k or ".lora_B" in k
+            or ".lora_down" in k or ".lora_up" in k for k in keys):
+        return cat, EMBEDDED_MAX_RATING
+    meta = header.get("__metadata__") or {}
+    if str(meta.get("modelspec.architecture", "")):
+        return cat, 0.95            # author-declared, but inside the file
+    return cat, 0.6                 # generic encoder+decoder inference
+
+
+def rate_pickle(keys: set, modules: set) -> tuple[str, float] | None:
+    """Module paths name the producing code outright; keys inherit the prefix rules."""
+    joined = " ".join(sorted(modules))
+    for needle, refine, cat in PICKLE_MODULE_SIGNALS:
+        if needle in joined and (refine is None or refine in joined):
+            return cat, EMBEDDED_MAX_RATING
+    if keys:
+        rated = rate_safetensors({k: {} for k in keys})
+        if rated:
+            # keys are strong but one step below a module path naming the class
+            return rated[0], min(rated[1], 0.95)
+    return None
+
+
+def gather_votes(src: SourceFile) -> list[dict]:
+    """Run EVERY applicable measure and collect its judgement.
+
+    Deliberately independent of classify(): in this (annotate-only) step the ladder
+    remains the authority for the recorded category, and these votes only describe it.
+    Costs one extra content read per NEW file -- classification is cached by content
+    identity, so it is paid once per file, never on a steady-state re-scan. When the
+    score becomes authoritative this collapses into a single pass.
+    """
+    votes: list[dict] = []
+
+    def add(measure: str, verdict, rating: float):
+        if not verdict:
+            return
+        if measure in LOFI_MEASURES:
+            rating = min(rating, LOFI_MAX_RATING)
+        votes.append({"measure": measure, "category": verdict,
+                      "rating": round(rating, 3), "parts": MEASURE_PARTS[measure]})
+
+    if src.component:
+        add("component", DIFFUSERS_COMPONENT_MAP.get(src.component.lower()), 0.4)
+    add("segments", classify_by_segments(src), 0.5)
+    add("filename", classify_by_filename(src.link_name), 0.5)
+    if src.origin == "hf":
+        add("repo", classify_by_filename(repo_of(src.display)), 0.4)
+    if (Path(src.display).name.lower() == "model.bin"
+            and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS)):
+        add("ct2", "ctranslate2", 0.6)
+
+    ext = Path(src.link_name).suffix.lower()
+    if ext == ".safetensors":
+        try:
+            rated = rate_safetensors(read_safetensors_header(src.path))
+            if rated:
+                add("safetensors", rated[0], rated[1])
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    cfg = src.config_dir / "config.json"
+    if cfg.is_file():
+        try:
+            add("config", classify_config(read_config_json(cfg)), 0.6)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    if ext in PICKLE_EXTS:
+        try:
+            rated = rate_pickle(*read_pickle_signals(src.path))
+            if rated:
+                add("pickle", rated[0], rated[1])
+        except (OSError, ValueError, EOFError, pickle.UnpicklingError,
+                zipfile.BadZipFile, AttributeError, ImportError, IndexError):
+            pass
+    if ext == ".gguf":
+        try:
+            cat = classify_gguf(read_gguf_metadata(src.path))
+            if cat != UNCLASSIFIED:
+                add("gguf", cat, 0.95)
+        except (OSError, ValueError, struct.error):
+            pass
+    return votes
+
+
+def score_votes(votes: list[dict]) -> tuple[str | None, float, dict]:
+    """(winner, confidence, per-category scores). Denominator = ALL applicable parts."""
+    if not votes:
+        return None, 0.0, {}
+    total_parts = sum(v["parts"] for v in votes)
+    scores: dict[str, float] = {}
+    for v in votes:
+        scores[v["category"]] = scores.get(v["category"], 0.0) + v["parts"] * v["rating"]
+    scores = {c: round(s / total_parts, 3) for c, s in scores.items()}
+    winner = max(scores, key=lambda c: scores[c])
+    return winner, scores[winner], scores
+
+
 def classify_config(config: dict) -> str | None:
     archs = config.get("architectures") or []
     for a in archs:
@@ -600,6 +896,19 @@ def classify(src: SourceFile) -> str:
     if cat:
         return cat
 
+    # REPO-NAME signal (hf provenance only). Many weights are named for their position
+    # inside a repo rather than their family -- vivym/face-parsing-bisenet/79999_iter.pth,
+    # vladmandic/yolo-detailers/eyes-full-v1.pt -- so the repo carries the family name and
+    # the filename does not. Reuse the SAME rule set against the repo name: it runs after
+    # the segment and filename passes, so a specific signal always wins, and a repo whose
+    # name matches nothing (Wan_2.2_ComfyUI_Repackaged, FLUX.1-Fill-dev, *-GGUF) simply
+    # falls through as before. hf-only because a local file's display is a filesystem path,
+    # whose directory names are already handled by classify_by_segments.
+    if src.origin == "hf":
+        cat = classify_by_filename(repo_of(src.display))
+        if cat:
+            return cat
+
     # CTranslate2 layout: model.bin + signature vocabulary sibling (cheap stats)
     if (Path(src.display).name.lower() == "model.bin"
             and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS)):
@@ -621,6 +930,19 @@ def classify(src: SourceFile) -> str:
                 return cat
         except (OSError, ValueError, json.JSONDecodeError) as e:
             log(f"WARN  unreadable config.json next to {src.display}: {e}")
+
+    # Pickle content sniff LAST among the content signals: an HF-format repo is settled
+    # by its config.json above (one small read), so only weights with no sibling config
+    # -- the loose .pt/.pth checkpoints this pass exists for -- reach the unpickler.
+    if ext in PICKLE_EXTS:
+        try:
+            cat = classify_pickle(*read_pickle_signals(src.path))
+            if cat:
+                return cat
+        except (OSError, ValueError, EOFError, pickle.UnpicklingError,
+                zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:
+            # Never fatal: a pickle we cannot read is just an unclassified file.
+            log(f"WARN  unreadable pickle {src.display}: {e}")
 
     if ext == ".gguf":
         try:
@@ -769,17 +1091,38 @@ def cmd_sync(args) -> int:
 
     # classify only the DELTA; known identities skip straight to link-verify
     categories: dict[str, str] = {}
+    confidences: dict[str, dict] = {}     # identity -> {confidence, signals, disputed?}
     n_new = 0
     for src in files:
         prev = old.entries.get(src.identity) if reuse_cache else None
         if prev and prev.get("category"):
             categories[src.identity] = prev["category"]
+            carried = {k: prev[k] for k in ("confidence", "signals", "disputed")
+                       if k in prev}
+            if carried:
+                confidences[src.identity] = carried
         else:
             n_new += 1
             cat = classify(src)
             categories[src.identity] = cat
-            log(f"CLASSIFY  {src.display} -> {cat}"
-                f"{' [sharded]' if src.sharded else ''}")
+            # ANNOTATE ONLY: the ladder above stays the authority. The measures merely
+            # describe how well-supported its answer is, and record any disagreement.
+            votes = gather_votes(src)
+            winner, _, scores = score_votes(votes)
+            if votes:
+                info = {"confidence": scores.get(cat, 0.0),
+                        "signals": [f"{v['measure']}={v['category']}@{v['rating']}"
+                                    for v in votes]}
+                if winner and winner != cat:
+                    info["disputed"] = f"{winner}@{scores[winner]}"
+                confidences[src.identity] = info
+            info = confidences.get(src.identity, {})
+            note = " [sharded]" if src.sharded else ""
+            if "confidence" in info:
+                note += f" (confidence {info['confidence']})"
+            if "disputed" in info:
+                note += f" DISPUTED -> {info['disputed']}"
+            log(f"CLASSIFY  {src.display} -> {cat}{note}")
 
     desired = plan_links(files, categories)
 
@@ -810,9 +1153,19 @@ def cmd_sync(args) -> int:
         }
         if src.sharded:
             entry["sharded"] = True
+        entry.update(confidences.get(src.identity, {}))
         new.entries[src.identity] = entry
         if categories[src.identity] == UNCLASSIFIED and src.identity not in old.entries:
             log(f"UNCLASSIFIED  {src.display} (not linked; heuristics gap)")
+        # DISPUTED is the companion report to UNCLASSIFIED: the file WAS classified, but
+        # the measures do not agree on it. Two disagreeing EMBEDDED measures, or a strong
+        # embedded reading contradicted by the ladder's pick, is where misclassification
+        # hides -- UNCLASSIFIED can never surface those because they look settled.
+        disputed = confidences.get(src.identity, {}).get("disputed")
+        if disputed and src.identity not in old.entries:
+            log(f"DISPUTED  {src.display} -> kept {categories[src.identity]} "
+                f"@{confidences[src.identity].get('confidence')}, measures favour "
+                f"{disputed}")
 
     # repo-level diffusers units: re-detected each run (one stat), never linked
     for u in units:

@@ -23,11 +23,14 @@ import hashlib
 import io
 import json
 import os
+import pickle
 import shutil
 import struct
 import sys
 import unittest
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -465,15 +468,159 @@ class ScannerTest(unittest.TestCase):
     def test_incremental_classifies_only_delta(self):
         populate_standard(self.fx)
         self.fx.sync()
-        self.fx.add_hf_file("acme/new-vae", "shiny.safetensors",
+        # Repo name is deliberately NEUTRAL (no family keyword): the safetensors header
+        # must stay the deciding signal here, or the repo-name pass would classify it
+        # first and this test would stop measuring what it means to measure.
+        self.fx.add_hf_file("acme/shiny-things", "shiny.safetensors",
                             safetensors_bytes(["first_stage_model.decoder.w"]))
         real_read = ms.read_safetensors_header
         with mock.patch.object(ms, "read_safetensors_header",
                                side_effect=real_read) as h:
             rc, out = self.fx.sync()
         self.assertEqual(rc, 0)
-        self.assertEqual(h.call_count, 1)  # only the new file
+        # TWO reads for the ONE new file, and none for anything else: the ladder reads
+        # the header to classify, then gather_votes reads it again to score confidence.
+        # That is the deliberate cost of annotate-only mode, where the ladder stays the
+        # authority and the measures only describe its answer; when the score becomes
+        # authoritative the two passes collapse into one. The property under test --
+        # cached files are never re-inspected -- is unaffected.
+        self.assertEqual(h.call_count, 2)  # only the new file, ladder + confidence pass
         self.assertIn("vae/shiny.safetensors", tree_links(self.fx.tree))
+
+    # ------------------------------------------- s29 Raiju classification gaps
+    def test_pth_family_rules(self):
+        """.pt/.pth pickles are never content-sniffed, so the filename rules are the
+        only signal. These six were `unclassified` on Raiju (2026-08-08)."""
+        for name, want in {
+            "control_v11p_sd15_softedge.pth": "controlnet",
+            "control_v11p_sd15s2_lineart_anime.pth": "controlnet",
+            "control_sd15_canny.pth": "controlnet",
+            "control_lora_rank128_v11f1e_sd15_tile.safetensors": "controlnet",
+            "dpt_hybrid-midas-501f0c75.pt": "controlnet_aux",
+            "codeformer-v0.1.0.pth": "facerestore_models",
+            "GFPGANv1.4.pth": "facerestore_models",
+        }.items():
+            self.assertEqual(ms.classify_by_filename(name), want, name)
+
+    def test_repo_name_signal(self):
+        """The repo names the family when the filename cannot -- and stays silent for
+        repos that name no family, so neutral repos still fall through to the sniffers."""
+        self.assertEqual(ms.repo_of("vivym/face-parsing-bisenet/79999_iter.pth"),
+                         "face-parsing-bisenet")
+        for repo, want in {
+            "face-parsing-bisenet": "facedetection",   # file is a bare iteration count
+            "yolo-detailers": "ultralytics/bbox",      # file is eyes-full-v1.pt
+            "ControlNet-v1-1": "controlnet",
+        }.items():
+            self.assertEqual(ms.classify_by_filename(repo), want, repo)
+        for neutral in ("Wan_2.2_ComfyUI_Repackaged", "FLUX.1-Fill-dev",
+                        "Step-3.5-Flash-REAP-121B-A11B-i1-GGUF", "IP-Adapter",
+                        "shiny-things"):
+            self.assertIsNone(ms.classify_by_filename(neutral), neutral)
+
+    def test_repo_name_pass_is_hf_only_and_last(self):
+        """Repo-name is the weakest signal: filename wins over it, and local files
+        (whose display is a filesystem path) never consult it."""
+        self.assertEqual(ms.classify_by_filename("yolo11x-seg.pt"), "ultralytics/segm")
+
+    # ------------------------------------------------- s29 pickle content sniffing
+    @staticmethod
+    def _global_reduce(module, name):
+        """Hand-built pickle: GLOBAL <module>.<name>; EMPTY_TUPLE; REDUCE; STOP.
+        Hand-built because Python refuses to PICKLE a class it cannot import -- which
+        is precisely the situation these files put us in."""
+        return b'\x80\x04c' + f"{module}\n{name}\n".encode() + b')R.'
+
+    def test_pickle_state_dict_is_classified_by_tensor_keys(self):
+        """Both torch layouts: legacy bare pickle and modern zip-with-data.pkl."""
+        d = self.fx.root
+        legacy = d / "legacy.pth"
+        legacy.write_bytes(pickle.dumps({"first_stage_model.decoder.conv.weight": 1}))
+        self.assertEqual(ms.classify_pickle(*ms.read_pickle_signals(legacy)), "vae")
+
+        modern = d / "modern.pt"
+        with zipfile.ZipFile(modern, "w") as z:
+            z.writestr("archive/data.pkl",
+                       pickle.dumps({"lora_unet_down_blocks.lora_up": 1}))
+        self.assertEqual(ms.classify_pickle(*ms.read_pickle_signals(modern)), "loras")
+
+    def test_pickle_module_signals_and_no_import(self):
+        """Object-pickles (Ultralytics et al) carry no tensor keys, so the referenced
+        MODULE path is the signal -- and reading it must never import that module."""
+        d = self.fx.root
+        for mod, name, want in [
+            ("ultralytics.nn.tasks", "DetectionModel", "ultralytics/bbox"),
+            ("ultralytics.nn.tasks", "SegmentationModel", "ultralytics/segm"),
+            ("segment_anything.modeling.sam", "Sam", "sams"),
+            ("gfpgan.archs.gfpganv1_clean_arch", "GFPGANv1Clean", "facerestore_models"),
+        ]:
+            p = d / f"{name}.pt"
+            p.write_bytes(self._global_reduce(mod, name))
+            self.assertEqual(ms.classify_pickle(*ms.read_pickle_signals(p)), want, name)
+        # THE security property: none of the above may be imported.
+        for forbidden in ("ultralytics", "segment_anything", "gfpgan"):
+            self.assertNotIn(forbidden, sys.modules)
+
+    def test_unreadable_pickle_is_not_fatal(self):
+        """A file that is not a pickle raises -- classify() catches it and the file is
+        merely unclassified, never a scan failure."""
+        p = self.fx.root / "junk.pth"
+        p.write_bytes(b"not a pickle at all")
+        with self.assertRaises(Exception):
+            ms.read_pickle_signals(p)
+
+    # ------------------------------------------------- s29 confidence model (Jei's)
+    def test_lofi_cannot_outvote_embedded_evidence(self):
+        """The misclassification shape: every NAME says one thing, the file says another.
+        Names are correlated -- a mislabelled file usually has a matching bad path and
+        repo too -- so unanimity among them is worth about as much as one of them."""
+        self.fx.add_hf_file("acme/lora-collection", "loras/super-lora-v2.safetensors",
+                            safetensors_bytes(["first_stage_model.decoder.w"]))
+        self.fx.sync()
+        reg = self.fx.load_registry()
+        entry = next(e for e in reg["entries"].values()
+                     if e["display"].endswith("super-lora-v2.safetensors"))
+        # ANNOTATE-ONLY: the ladder's answer is still what gets recorded and linked...
+        self.assertEqual(entry["category"], "loras")
+        # ...but the measures disagree, loudly, and that is now on the record.
+        self.assertIn("disputed", entry)
+        self.assertTrue(entry["disputed"].startswith("vae@"))
+        self.assertLess(entry["confidence"], 0.3)
+        self.assertTrue(any(s.startswith("safetensors=vae@0.99") for s in entry["signals"]))
+
+    def test_score_is_per_category_not_pooled(self):
+        votes = [
+            {"measure": "safetensors", "category": "vae", "rating": 0.99, "parts": 30},
+            {"measure": "filename", "category": "loras", "rating": 0.5, "parts": 5},
+            {"measure": "repo", "category": "loras", "rating": 0.4, "parts": 5},
+        ]
+        winner, conf, scores = ms.score_votes(votes)
+        self.assertEqual(winner, "vae")
+        # denominator is ALL applicable parts (40), so disagreement depresses the winner
+        self.assertAlmostEqual(scores["vae"], round(30 * 0.99 / 40, 3))
+        self.assertAlmostEqual(scores["loras"], round((5 * 0.5 + 5 * 0.4) / 40, 3))
+        self.assertLess(conf, 0.99)
+
+    def test_lofi_rating_is_capped(self):
+        """No LoFi measure may express certainty, however emphatic the name."""
+        src = SimpleNamespace(
+            display="acme/vae-stuff/vae-model.safetensors",
+            link_name="vae-model.safetensors", origin="hf",
+            rel_dir_parts=("vae",), component=None,
+            path=Path("/nonexistent"), config_dir=Path("/nonexistent"), sharded=False)
+        for v in ms.gather_votes(src):
+            self.assertLessEqual(v["rating"], ms.LOFI_MAX_RATING, v["measure"])
+
+    def test_agreement_beats_a_lone_signal(self):
+        """Content plus names agreeing scores higher than content alone -- the whole
+        point of running every measure."""
+        agree = ms.score_votes([
+            {"measure": "safetensors", "category": "vae", "rating": 0.99, "parts": 30},
+            {"measure": "filename", "category": "vae", "rating": 0.5, "parts": 5}])[1]
+        alone = ms.score_votes([
+            {"measure": "safetensors", "category": "vae", "rating": 0.99, "parts": 30},
+            {"measure": "filename", "category": "loras", "rating": 0.5, "parts": 5}])[1]
+        self.assertGreater(agree, alone)
 
     # ------------------------------------------------------------- never-clobber
     def test_never_clobber_user_file(self):

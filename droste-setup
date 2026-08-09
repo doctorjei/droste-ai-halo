@@ -1001,6 +1001,13 @@ emit_compose() {  # box → writes droste-<box>-halo-server.compose.yaml
     printf '  %s:\n' "$box"
     printf '    image: %s%s%s\n' "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX"
     printf '    container_name: %s\n' "$(server_name "$box")"
+    # PID 1 must be an init, not the server. The entrypoint `exec`s python, and the
+    # kernel ignores default signal dispositions for PID 1 — so `podman stop`'s
+    # SIGTERM is a no-op, the 10s grace elapses, and the container is always SIGKILLed
+    # ("StopSignal SIGTERM failed to stop container ... resorting to SIGKILL",
+    # measured 10.55s on hardware 2026-08-08). An init forwards signals, so the server
+    # shuts down cleanly and stop returns promptly.
+    printf '    init: true\n'
     printf '    ports:\n'
     printf '      - "%s:%s"\n' "${CFG_PORT[$box]}" "${BOX_PORT[$box]}"
     printf '    devices:\n'
@@ -1134,6 +1141,10 @@ emit_ini() {  # box → writes droste-<box>-halo-box.ini (distrobox assemble rec
 plain_create_args() {  # box → prints podman/docker create args (one per line)
   local box=$1 pair label dest gid
   printf -- '--name\n%s\n' "$(server_name "$box")"
+  # Run an init as PID 1 — the entrypoint `exec`s python, and PID 1 ignores default
+  # signal dispositions, so without this `podman stop` always falls through to SIGKILL
+  # after the grace period (compose emitter sets `init: true` for the same reason).
+  printf -- '--init\n'
   printf -- '-p\n%s:%s\n' "${CFG_PORT[$box]}" "${BOX_PORT[$box]}"
   printf -- '--device\n/dev/kfd\n--device\n/dev/dri\n'
   [[ "${CFG_MODE[$box]:-}" == fuse ]] && printf -- '--device\n/dev/fuse\n'

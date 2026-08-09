@@ -154,6 +154,73 @@ PATH/PYTHONPATH, never seeded); `templates/` → `/opt/resources/templates/`;
 `build-spec` → `/opt/resources/build-spec`; `distrobox.ini` = repo-side example,
 not baked. comfyui's `scripts/tests/` is repo-only (never COPY'd).
 
+### Distrobox-lane writability: ownership, not group membership
+The baked venv and `custom_nodes` are root-owned in the image, but the box user
+must be able to add, remove and replace entries in them (pip installs, node
+clones). The image also creates a shared `droste` group and makes those trees
+group-writable — that part still stands, but **no route delivers the group to a
+distrobox session**, verified on hardware (rootless podman + crun, gfx1151):
+
+- the init hook's `usermod -aG droste` really does write `/etc/group`, but no
+  session re-reads it — `podman exec` sets uid/gid plus `keep-groups` and never
+  performs a supplementary-group lookup, and every `distrobox enter` is a
+  `podman exec`. Not an ordering race (a second enter is identical) and not a
+  numeric-vs-name issue (`--user jjb` behaves the same as `--user 1000`);
+- a create-time `--group-add droste` in `additional_flags` is accepted —
+  `podman inspect` reports `groupadd=[droste]` — but is swallowed by crun's
+  `keep-groups`: the gid never materializes, not even for the container's own
+  root process;
+- only `podman exec --user <user>:droste` delivers it, and `distrobox.ini` has
+  no key for exec-time flags;
+- rootless userns also blocks gaining it at runtime (`sg`/`newgrp` → EPERM).
+
+So `resolve::_own_dirs` chowns **directories only** to the box user right after
+each overlay mounts. Ownership is uid-based, which sidesteps group semantics,
+userns gid mapping and exec credentials in one move. It is cheap **because it
+never touches files**: a directory carries no payload, so overlay copy-up of a
+chowned dir is metadata-only — measured at 3719 dirs in 0.47s with no
+measurable growth in the upper, where a recursive walk over *files* copies every
+payload (2.7 GB in an earlier test). `! -uid` makes re-runs a no-op and also
+reclaims dirs a **server**-lane run left root-owned in the shared upper, so the
+two lanes stop contaminating each other. Never extend this to files.
+
+### Model classification: signals and confidence
+`model_scanner.py` classifies by a ladder, but the evidence it uses is not all
+worth the same, and the registry now records how well-supported each answer is.
+
+Evidence splits in two. **Embedded** signals live inside the weight file —
+safetensors header, GGUF KV block, pickle opcodes — and cannot be changed
+without rewriting the model. **Low-fidelity (LoFi)** signals live outside it:
+sidecar files (`config.json`, `model_index.json`, CT2 vocabulary siblings) and
+names (path segments, filename, repo name). Sidecars are independently
+editable and *are* edited — someone forcing a class name to make a loader
+accept a file produces a sidecar that points confidently at the wrong answer,
+which is worse than no sidecar at all. LoFi ratings are therefore capped at
+0.6: they may hint, never certify. The naming signals are also **not
+independent** of each other — a mislabelled file usually has a matching bad
+path and repo — so their unanimity is worth about as much as one of them.
+
+Each applicable measure votes with a rating; scores are computed **per
+candidate category** (`Σ(parts × rating) ÷ Σ applicable parts`), since measures
+vote for different answers and a pooled sum would only say how much evidence
+exists. Parts: safetensors 30, pickle 20, GGUF 20, each LoFi measure 5. All six
+LoFi agreeing reaches 18, while any single embedded measure at ≥0.9 reaches
+18–29.7 — confident embedded evidence always wins, and names decide only where
+embedded evidence is weak or absent.
+
+The ladder still picks the recorded category; the score only describes it and
+flags disagreement as **DISPUTED**, the companion report to UNCLASSIFIED.
+Misclassification hides precisely where UNCLASSIFIED cannot look, because those
+files appear settled.
+
+`.pt`/`.pth`/`.ckpt`/`.bin` are content-sniffed via `read_pickle_signals`, which
+**never executes the payload**: `find_class` imports nothing, returning an inert
+stub and recording the module path — itself the strongest signal for
+object-pickles like Ultralytics detectors, which carry no tensor keys at all.
+Only the pickle *structure* is read (the zip's `data.pkl`, or up to the legacy
+format's STOP opcode), so cost is bounded regardless of file size. State-dict
+keys reuse the safetensors classifier rather than growing parallel prefix rules.
+
 ### Per-port notes (bucket-B rework rationale)
 - **comfyui** — the wan/qwen "studio" pip stacks were DROPPED with the studios
   (studios-only deps; ComfyUI implements Wan/Qwen natively — watch the first

@@ -154,6 +154,16 @@ in the HF cache (+ `/opt/models`) and maintains a ComfyUI-friendly symlink tree
 (`/opt/data/model-tree`, surfaced at `/opt/ComfyUI/models`) — models any port
 pulls into the shared cache appear in ComfyUI's pickers automatically.
 
+The scanner reads the files themselves wherever it can — safetensors headers,
+GGUF metadata, and pickle structure for `.pt`/`.pth` (without ever executing
+them) — and falls back to names only when there is nothing embedded to read.
+Because that evidence is not equally trustworthy, each classification is
+recorded with a **confidence** score and the signals behind it; files whose
+signals disagree are reported as **DISPUTED**, so a wrong answer that looks
+settled is still visible. Names and sidecar files such as `config.json` are
+deliberately capped low — they are editable, and an edited one points
+confidently at the wrong answer.
+
 **distrobox lane:** the same images double as `$HOME`-native interactive
 toolboxes — `distrobox assemble create --file targets/<port>/distrobox.ini`.
 As of v0.2.0 the lanes are unified: the ini's init hook runs the **same

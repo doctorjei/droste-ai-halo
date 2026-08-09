@@ -227,6 +227,43 @@ resolve::_mkuserdir() {
     done
 }
 
+# _own_dirs — distrobox lane: make a freshly-mounted overlay writable by the box user
+# by chowning DIRECTORIES ONLY to it. WHY OWNERSHIP AND NOT A GROUP: the image bakes
+# /opt/venv (+ custom_nodes) group-writable under `droste`, but NO delivery of that
+# group to a distrobox session exists. The init hook's `usermod -aG` lands in
+# /etc/group, yet `podman exec` never does a supplementary-group lookup, so no session
+# ever sees it; a create-time `--group-add droste` is accepted (inspect shows it) but
+# swallowed by crun's `keep-groups`, so the gid never materializes — even for the
+# container's own root process. Only `podman exec --user u:g` works, and distrobox's
+# ini has no key for exec-time flags. Ownership is uid-based, so it sidesteps group
+# semantics, userns gid mapping and exec credentials entirely.
+# CHEAP BY CONSTRUCTION: directories carry no data payload, so overlay copy-up of a
+# chowned dir is metadata-only. Measured on gfx1151/ecryptfs + fuse-overlayfs: 3719
+# dirs, 0.47s, upper unchanged at 1.1M. NEVER extend this to files — a recursive walk
+# over files copies up every payload (that mistake cost 2.7 GB in testing), and it is
+# unnecessary: pip's add/remove/replace are all directory-entry operations.
+# `! -uid` keeps re-runs a no-op AND reclaims dirs a server-lane run (root) created in
+# the SHARED upper between distrobox starts. `chown <uid>` takes no trailing colon:
+# owner only, leaving the image's group and any setgid intent untouched.
+resolve::_own_dirs() {
+    local root=$1 uid
+    if [ "$DROSTE_LANE" != distrobox ] || [ -z "${DROSTE_USER:-}" ]; then
+        return 0
+    fi
+    if ! uid=$(id -u "$DROSTE_USER" 2>/dev/null) || [ -z "$uid" ]; then
+        resolve::warn "could not resolve uid for '$DROSTE_USER' — skipping ownership pass on $root"
+        return 0
+    fi
+    if [ -n "${DROSTE_RESOLVE_DRYRUN:-}" ]; then
+        resolve::info "[dryrun] own-dirs $root (directories only) -> uid $uid"
+        return 0
+    fi
+    if ! find "$root" -type d ! -uid "$uid" -exec chown "$uid" {} + 2>/dev/null; then
+        resolve::warn "could not take ownership of every directory under $root — in-box installs there may fail with EACCES."
+    fi
+    return 0
+}
+
 # ── Primitive: overlay (BOTH lanes since lane unification) ──────────────────
 # entry form: <upper>:<lower>  (upper = /opt/data side, lower = baked app dir)
 # Mounts a writable layer OVER the baked lower. Strategy = DROSTE_OVERLAY_MODE:
@@ -279,6 +316,7 @@ resolve::overlay() {
     if [ "$mode" = auto ] || [ "$mode" = kernel ]; then
         if resolve::_try_mount mount -t overlay overlay \
                -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
+            resolve::_own_dirs "$lower"
             return 0
         fi
         if resolve::_mount_err_is_eperm; then
@@ -308,6 +346,7 @@ resolve::overlay() {
             if resolve::_try_mount fuse-overlayfs \
                    -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
                 resolve::warn "using fuse-overlayfs for $lower (userspace overlay; slower I/O; kernel overlay unavailable on this $DROSTE_DATA_DIR filesystem)."
+                resolve::_own_dirs "$lower"
                 return 0
             fi
             if [ "$mode" = fuse ]; then

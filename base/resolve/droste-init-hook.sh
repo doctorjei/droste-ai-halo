@@ -39,16 +39,24 @@ if [ -n "${DROSTE_USER_HOME:-}" ]; then
     export HOME="$DROSTE_USER_HOME"
 fi
 
-# Group membership for the writable baked venv (fix: distrobox-lane pip installs).
-# The image makes /opt/venv (+ custom_nodes) group-writable under group `droste`;
-# the box user must belong to that group to write after overlay copy-up. Rootless
-# userns blocks runtime setgid(), so membership must be granted at LOGIN — this hook
-# runs as root before distrobox's login shell, so usermod here takes effect there.
-# Best-effort: never abort startup if the group is absent (older image) or usermod fails.
-if [ -n "${DROSTE_USER:-}" ] && getent group droste >/dev/null 2>&1; then
-    usermod -aG droste "$DROSTE_USER" 2>/dev/null \
-        || printf 'droste-init-hook: WARN: could not add %s to group droste\n' "$DROSTE_USER" >&2
-fi
+# NO GROUP GRANT HERE — it cannot work, and the `usermod -aG droste` that used to
+# live at this spot was dead code. Writability of the baked venv/custom_nodes is
+# handled by ownership instead, in resolve::_own_dirs (chowns DIRECTORIES ONLY to
+# the box user right after each overlay mounts).
+# Measured on hardware (gfx1151, rootless podman + crun, 2026-08-08), both delivery
+# routes fail:
+#   1. usermod here DOES write /etc/group (getent in-box shows the membership), but
+#      no session ever picks it up — `podman exec` sets uid/gid + keep-groups and
+#      never does a supplementary-group lookup. Every distrobox enter is a podman
+#      exec, so `id` never lists the group. Not an ordering race: a second enter is
+#      identical, and by-name (`--user jjb`) behaves the same as numeric.
+#   2. Create-time `--group-add droste` in the ini's additional_flags is accepted
+#      (podman inspect reports groupadd=[droste]) but is swallowed by crun's
+#      `keep-groups`: the gid never appears, not even for the container's own root
+#      process. Only `podman exec --user <user>:droste` delivers it, and distrobox
+#      exposes no exec-time flag in distrobox.ini.
+# Rootless userns additionally blocks gaining the group at runtime (`sg`/`newgrp`
+# fail with EPERM), so there is no in-shell recovery either.
 
 RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
 # shellcheck source=/dev/null

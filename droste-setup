@@ -63,9 +63,30 @@ declare -A BIND_TITLE=(
   [data]="Program Data" [input]="Input Files" [output]="Output Files" [workspace]="Workspace"
 )
 
-# Canonical container-side service port (SERVICE row of each build-spec).
+# Canonical container-side service port (SERVICE row of each build-spec). This
+# is the RIGHT half of ports: "HOST:CONTAINER" — never use it as a host default.
 declare -A BOX_PORT=(
   [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8000 [finetuning]=8888
+)
+
+# Default HOST-side port offered at the prompt (left half of "HOST:CONTAINER").
+# ds4 listens on 8000 inside the container, same as vllm, so its host default is
+# nudged to 8001 to keep both servers runnable side by side out of the box.
+declare -A BOX_HOST_PORT=(
+  [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8001 [finetuning]=8888
+)
+
+# Box-selection table columns: service name + one-line description.
+declare -A BOX_SERVICE=(
+  [comfyui]="ComfyUI" [llama]="llama.cpp" [vllm]="vLLM"
+  [ds4]="DwarfStar 4" [finetuning]="JupyterLab"
+)
+declare -A BOX_DESC=(
+  [comfyui]="image/video generation (web)"
+  [llama]="GGUF LLMs (turboquant fork)"
+  [vllm]="OpenAI-compatible LLM server"
+  [ds4]="DS4 server+cockpit; DS MoE quants"
+  [finetuning]="unsloth/HF finetuning"
 )
 
 # Extra CRITICAL binds beyond /opt/data + the shared HF cache (CRITICAL rows):
@@ -93,6 +114,9 @@ declare -A BOX_CONFIG=(
 )
 
 # One-line explanations for the prompted bind families (what lives there).
+# Reference only since the per-bind headers were dropped — kept as the record of
+# what each prompted bind actually holds.
+# shellcheck disable=SC2034
 declare -A BIND_DESC=(
   [data]="venv overlay upper, caches, seeded config"
   [input]="source files you feed ComfyUI"
@@ -173,6 +197,11 @@ esac
 
 if [[ $PLAIN -eq 1 ]]; then
   BOLD="" ULINE="" ITALIC="" RESET="" DIVCH="-"
+  # Foreground-only palette (see the rework spec). EVERY color rides on one of
+  # these variables so --plain / dumb terminals stay byte-for-byte colorless.
+  C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
+  C_BRK="" C_DEF="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD=""
+  C_TBRK="" C_TIDX="" C_ALLB="" C_ALL="" C_ALLT="" C_ARROW="" C_SUBJ="" C_NOTE=""
   G_ACTIVE="[+] ACTIVE" G_STOPPED="[-] STOPPED" G_NONE="[ ] none"
   W_ACTIVE=10 W_STOPPED=11 W_NONE=8
   GS_ACTIVE="[+]" GS_STOPPED="[-]" GS_NONE="[ ]" W_STATE=3   # glyph-only State cell
@@ -180,6 +209,23 @@ if [[ $PLAIN -eq 1 ]]; then
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
 else
   BOLD=$'\e[1m' ULINE=$'\e[4m' ITALIC=$'\e[3m' RESET=$'\e[0m' DIVCH="─"
+  C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
+  C_TITLE=$'\e[1;96m'   # installer title (top banner only)
+  C_BTITLE=$'\e[0;96m'  # per-box banner title
+  C_LABEL=$'\e[0;97m'   # section label inside the rule
+  C_LABEL2=$'\e[1;97m'  # section label, intro variant (Preflight, Resource Path)
+  C_SUB=$'\e[4;97m'     # underlined subtitle / table header
+  C_SUB2=$'\e[4;37m'    # underlined subtitle, intro variant (Resource Path)
+  C_TEXT=$'\e[0;37m'    # body + prompt text
+  C_BRK=$'\e[0;32m'     # [default] brackets
+  C_DEF=$'\e[0;92m'     # [default] value
+  C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m' C_OKT=$'\e[0;36m'    # preflight ok row
+  C_BADB=$'\e[0;31m' C_BAD=$'\e[0;91m'                    # preflight [!!] row
+  C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'                   # table [N]
+  C_ALLB=$'\e[0;32m' C_ALL=$'\e[0;92m' C_ALLT=$'\e[0;97m' # table [all] row
+  C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
+  C_SUBJ=$'\e[1;97m'    # sub-notice subject
+  C_NOTE=$'\e[3;97m'    # propagated-choice note
   G_ACTIVE=$'\U1F7E2 ACTIVE' G_STOPPED=$'\U1F6D1 STOPPED' G_NONE=$'⚫ none'
   W_ACTIVE=9 W_STOPPED=10 W_NONE=7        # emoji glyphs are double-width
   GS_ACTIVE=$'\U1F7E2' GS_STOPPED=$'\U1F6D1' GS_NONE=$'⚫' W_STATE=2  # glyph-only State cell
@@ -192,43 +238,91 @@ warn() { printf 'WARNING: %s\n' "$*" | fold -s -w 79; }
 die()  { printf 'droste-setup: %s\n' "$*" >&2; exit 1; }
 wrap() { printf '%s\n' "$*" | fold -s -w 79; }
 
-section() {   # ── Name ──────... divider, 79 cols
-  local name=$1 line fill i n
+section() {   # ── Name ──────... divider, 78 cols.  name [intro]
+  # "intro" = the opening sections (Preflight, Resource Path), which Jei drew
+  # with a bolder label than the rest.
+  local name=$1 style=${2:-} line fill i n lcol=$C_LABEL
+  [[ $style == intro ]] && lcol=$C_LABEL2
   n=$(( 79 - ${#name} - 6 ))
   fill=""
   # shellcheck disable=SC2324  # string append of the divider char, not math
   for (( i = 0; i < n; i = i + 1 )); do fill+=$DIVCH; done
-  printf '\n%s%s %s %s%s%s\n' "$BOLD" "$DIVCH$DIVCH" "$name" "$fill" "$DIVCH" "$RESET"
+  printf '\n%s%s %s%s%s %s%s%s\n' \
+    "$C_FRAME" "$DIVCH$DIVCH" "$lcol" "$name" "$C_FRAME" "$fill" "$DIVCH" "$RESET"
 }
 
-hdr() { printf '%s%s%s%s\n' "$BOLD" "$ULINE" "$1" "$RESET"; }
+# Color FIRST, then attributes: a "0;NN" / "1;NN" code resets the attribute
+# bits, so BOLD/ULINE/ITALIC must be emitted after it to survive.
+hdr() { printf '%s%s%s%s%s\n' "$C_LABEL" "$BOLD" "$ULINE" "$1" "$RESET"; }
+
+# One selectable menu option row: "  [x]rest<pad>tail". The option that is the
+# CURRENT DEFAULT wears the green [default] colors; every other option wears
+# the blue index colors. Padding is emitted only when there is a tail.
+opt_row() {   # letter rest tail column-width is-default
+  local ltr=$1 rest=$2 tail=$3 cw=$4 isdef=$5 brk idx pad=0
+  if [[ $isdef -eq 1 ]]; then brk=$C_BRK idx=$C_DEF; else brk=$C_TBRK idx=$C_TIDX; fi
+  if [[ -n $tail ]]; then
+    pad=$(( cw - ${#rest} - 3 )); [[ $pad -lt 1 ]] && pad=1
+  fi
+  printf '  %s[%s%s%s]%s%s%*s%s%s\n' \
+    "$brk" "$idx" "$ltr" "$brk" "$C_TEXT" "$rest" "$pad" "" "$tail" "$RESET"
+}
+
+# 1 when $1 is the default letter of an ask_choice letters string ($2 = that
+# string; its first character is the default, by ask_choice's own contract).
+isdef() { [[ $1 == "${2:0:1}" ]] && printf 1 || printf 0; }
+
+# A colored "[default]" bracket for prompt suffixes (green [ ], bright value).
+dflt() { printf '%s[%s%s%s]%s' "$C_BRK" "$C_DEF" "$1" "$C_BRK" "$C_TEXT"; }
+
+# Indented red `-> sub-notice (secondary information about the answer above),
+# set off from the next prompt by a blank line.
+subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
+
+# Preflight rows: cyan [ok] / red [!!]. Preflight never blocks, so a problem is
+# reported here rather than through warn().
+pf_ok()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
+pf_bad() { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
 
 # A titled box drawn with the light box-drawing glyphs (ASCII in --plain mode).
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
 banner() {   # text [bold]
-  local text=$1 bold=${2:-} n i fill top mid bot pre="" post=""
+  local text=$1 bold=${2:-} n i fill top mid bot tcol
   n=$(( ${#text} + 2 ))          # text plus one space of padding each side
   fill=""
   for (( i = 0; i < n; i = i + 1 )); do fill+=$BOXH; done
   top="$BOXTL$fill$BOXTR"
-  mid="$BOXV $text $BOXV"
   bot="$BOXBL$fill$BOXBR"
-  if [[ $bold == bold ]]; then pre=$BOLD post=$RESET; fi
+  # "bold" marks the per-box banners; the top installer banner is the title one.
+  if [[ $bold == bold ]]; then tcol=$C_BTITLE; else tcol=$C_TITLE; fi
+  mid="$BOXV $tcol$text$C_FRAME $BOXV"
   printf '\n'
   # Wrap each line separately so it renders even when RESET is empty (--plain).
-  printf '%s%s%s\n' "$pre" "$top" "$post"
-  printf '%s%s%s\n' "$pre" "$mid" "$post"
-  printf '%s%s%s\n' "$pre" "$bot" "$post"
+  printf '  %s%s%s\n' "$C_FRAME" "$top" "$RESET"
+  printf '  %s%s%s\n' "$C_FRAME" "$mid" "$RESET"
+  printf '  %s%s%s\n' "$C_FRAME" "$bot" "$RESET"
 }
 
-# Plain subtitle printed directly under a section divider (no styling).
-sub() { printf '%s\n' "$1"; }
+# Underlined subtitle printed under a section divider (blank line, then indent).
+# "intro" = the Resource Path subtitle, drawn a shade dimmer in the mockup.
+sub() {   # text [intro]
+  local scol=$C_SUB
+  [[ ${2:-} == intro ]] && scol=$C_SUB2
+  printf '\n  %s%s%s\n' "$scol" "$1" "$RESET"
+}
 
 # Pad a cell whose DISPLAY width may differ from its byte length (emoji).
 pad_cell() {   # text display-width column-width
   local text=$1 dw=$2 cw=$3 n
   n=$(( cw - dw )); [[ $n -lt 1 ]] && n=1
   printf '%s%*s' "$text" "$n" ""
+}
+
+# Same as pad_cell, but styles the WORDS only — the padding stays plain.
+pad_cell_u() {   # text display-width column-width
+  local text=$1 dw=$2 cw=$3 n
+  n=$(( cw - dw )); [[ $n -lt 1 ]] && n=1
+  printf '%s%s%s%*s' "$C_SUB" "$text" "$RESET" "$n" ""
 }
 
 home_disp() {  # compress $HOME → ~ for display
@@ -269,7 +363,8 @@ init_input() {
 
 ANS=""
 ask_raw() {  # $1 = prompt text (printed without newline)
-  printf '%s' "$1"
+  # ONE place owns the 2-space prompt indent — call sites pass bare text.
+  printf '  %s' "$1"
   if ! IFS= read -r ANS <&"$ASK_FD"; then
     printf '\n'
     die "prompt input exhausted"
@@ -280,7 +375,7 @@ ask_raw() {  # $1 = prompt text (printed without newline)
 ANS_YN=0
 ask_yn() {  # question default(Y|N)  → ANS_YN=1/0
   local q=$1 def=$2 hint
-  [[ $def == Y ]] && hint="[Y/n]" || hint="[y/N]"
+  [[ $def == Y ]] && hint=$(dflt "Y/n") || hint=$(dflt "y/N")
   while :; do
     ask_raw "$q $hint: "
     case "$ANS" in
@@ -293,7 +388,7 @@ ask_yn() {  # question default(Y|N)  → ANS_YN=1/0
 
 ask_yn_q() {  # question default(Y|N) → ANS_YN  (renders "... [y/N]?: ")
   local q=$1 def=$2 hint
-  [[ $def == Y ]] && hint="[Y/n]" || hint="[y/N]"
+  [[ $def == Y ]] && hint=$(dflt "Y/n") || hint=$(dflt "y/N")
   while :; do
     ask_raw "$q $hint?: "
     case "$ANS" in
@@ -307,6 +402,11 @@ ask_yn_q() {  # question default(Y|N) → ANS_YN  (renders "... [y/N]?: ")
 ANS_CH=""
 ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower)
   local q=$1 letters=$2 def=${2:0:1} c
+  # Color a trailing "[a/b/C]" hint exactly like every other [default] bracket
+  # (the hint is part of the caller's prompt text, so it is re-wrapped here).
+  if [[ $q =~ ^(.*)\[([^][]*)\]$ ]]; then
+    q="${BASH_REMATCH[1]}$(dflt "${BASH_REMATCH[2]}")"
+  fi
   while :; do
     ask_raw "$q: "
     [[ -z $ANS ]] && ANS=$def
@@ -321,7 +421,7 @@ ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower
 ANS_PATH=""
 ask_path_raw() {  # label default → ANS_PATH (absolute; NOT created)
   local label=$1 def=$2 typed
-  ask_raw "What path should be used for $label? [$(home_disp "$def")] "
+  ask_raw "What path should be used for $label? $(dflt "$(home_disp "$def")") "
   typed=$ANS
   [[ -z $ANS ]] && ANS=$def
   ANS_PATH=$(expand_path "$ANS")
@@ -351,7 +451,7 @@ ask_path() {  # label default → ANS_PATH (existing dir, or confirm-create, els
 # "[default]: " suffix. Same expand + interpretation-echo as ask_path_raw.
 ask_path_as_raw() {  # "prompt label" default → ANS_PATH (absolute; NOT created)
   local label=$1 def=$2 typed
-  ask_raw "$label [$(home_disp "$def")]: "
+  ask_raw "$label $(dflt "$(home_disp "$def")"): "
   typed=$ANS
   [[ -z $ANS ]] && ANS=$def
   ANS_PATH=$(expand_path "$ANS")
@@ -379,7 +479,7 @@ ANS_PORT=""
 ask_port() {  # box default → ANS_PORT
   local box=$1 def=$2 other
   while :; do
-    ask_raw "What host port should be used for ${BOX_NAME[$box]} [$def]? "
+    ask_raw "What host port should be used for ${BOX_NAME[$box]} $(dflt "$def")? "
     [[ -z $ANS ]] && ANS=$def
     if [[ ! $ANS =~ ^[0-9]+$ ]] || (( ANS < 1 || ANS > 65535 )); then
       say "  Please give a port number (1-65535)."
@@ -392,7 +492,7 @@ ask_port() {  # box default → ANS_PORT
       [[ "${CFG_PORT[$b]:-}" == "$ANS" ]] && other=$b
     done
     if [[ -n $other ]]; then
-      say "  Port $ANS is already assigned to $other — pick another."
+      subnote "Port $ANS is already assigned to $other — pick another."
       continue
     fi
     ANS_PORT=$ANS
@@ -426,21 +526,22 @@ GROUP_MODE="" GROUP_GIDS=""
 
 # ── Preflight (warn, never block) ────────────────────────────────────────────
 preflight() {
-  section "Preflight"
+  section "Preflight" intro
+  say ""
   if command -v podman >/dev/null 2>&1; then
     RUNTIME=podman
     [[ ${EUID:-$(id -u)} -ne 0 ]] && ROOTLESS=1
-    say "  [ok] podman found ($([[ $ROOTLESS -eq 1 ]] && echo rootless || echo rootful))"
+    pf_ok "podman found ($([[ $ROOTLESS -eq 1 ]] && echo rootless || echo rootful))"
   elif command -v docker >/dev/null 2>&1; then
     RUNTIME=docker
-    say "  [ok] docker found (podman not present)"
+    pf_ok "docker found (podman not present)"
   else
-    warn "neither podman nor docker found — definitions will still be written"
+    pf_bad "neither podman nor docker found — definitions will still be written"
   fi
   if [[ -e /dev/kfd && -e /dev/dri ]]; then
-    say "  [ok] GPU devices present: /dev/kfd /dev/dri"
+    pf_ok "GPU devices present: /dev/kfd /dev/dri"
   else
-    warn "GPU devices missing (/dev/kfd, /dev/dri) — fine on a non-GPU host"
+    pf_bad "GPU devices missing (/dev/kfd, /dev/dri) — fine on a non-GPU host"
   fi
   local g missing=""
   for g in render video; do
@@ -448,26 +549,26 @@ preflight() {
   done
   missing=${missing#,}
   if [[ -n $missing ]]; then
-    warn "not in group(s) $missing (fix: sudo usermod -aG $missing \$USER; re-login)"
+    pf_bad "not in group(s) $missing (fix: sudo usermod -aG $missing \$USER; re-login)"
   else
-    say "  [ok] user is in the render + video groups"
+    pf_ok "user is in the render + video groups"
   fi
   if [[ -e /dev/fuse ]]; then
-    say "  [ok] /dev/fuse present (fuse-overlayfs fallback available)"
+    pf_ok "/dev/fuse present (fuse-overlayfs fallback available)"
   else
-    warn "/dev/fuse missing — fuse-overlayfs fallback unavailable"
+    pf_bad "/dev/fuse missing — fuse-overlayfs fallback unavailable"
   fi
   if [[ -n $RUNTIME ]] && "$RUNTIME" compose version >/dev/null 2>&1; then
     COMPOSE_CMD="$RUNTIME compose"
-    say "  [ok] compose provider: $COMPOSE_CMD"
+    pf_ok "compose provider: $COMPOSE_CMD"
   elif command -v podman-compose >/dev/null 2>&1; then
     COMPOSE_CMD="podman-compose"
-    say "  [ok] compose provider: podman-compose"
+    pf_ok "compose provider: podman-compose"
   else
-    warn "no compose provider — compose files written anyway; plain $RUNTIME used"
+    pf_bad "no compose provider — compose files written anyway; plain $RUNTIME used"
   fi
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
-  [[ $HAVE_DISTROBOX -eq 0 ]] && warn "distrobox not found (needed for the distrobox lane)"
+  [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (needed for the distrobox lane)"
   # group_add strategy: rootless podman must use keep-groups (numeric GIDs get
   # remapped away by the userns); rootful/docker take real GIDs.
   # VERIFY-AT-USE: podman-compose is expected to pass group_add keep-groups
@@ -482,7 +583,7 @@ preflight() {
       [[ -n $gid ]] && GROUP_GIDS="$GROUP_GIDS $gid"
     done
     GROUP_GIDS=${GROUP_GIDS# }
-    [[ -z $GROUP_GIDS ]] && warn "render/video groups not found; edit group_add later"
+    [[ -z $GROUP_GIDS ]] && pf_bad "render/video groups not found; edit group_add later"
   fi
   return 0
 }
@@ -588,6 +689,7 @@ detect_existing() {
   done
   if [[ $any -eq 1 ]]; then
     section "Existing setup detected"
+    say ""
     for box in "${BOXES[@]}"; do
       items=""
       [[ -n "${EX_COMPOSE[$box]:-}" ]] && items="$items compose-file"
@@ -596,7 +698,8 @@ detect_existing() {
       [[ -n "${EX_DBX[$box]:-}" ]] && items="$items distrobox"
       [[ -n $items ]] && say "  $box:$items"
     done
-    say "Existing boxes are never clobbered — you will choose keep/recreate/modify."
+    printf '%sExisting boxes are never clobbered — you will choose keep/recreate/modify.%s\n' \
+      "$C_TEXT" "$RESET"
   fi
   return 0
 }
@@ -616,16 +719,23 @@ select_boxes() {
       want[$tok]=1
     done
   else
-    section "Select boxes"
+    section "Select Boxes"
+    say ""
+    # Columns land at 2 / 8 / 21 / 35 / 72 (see the display spec).
+    printf '  %s %-5s%-13s%-14s%-37s%-5s%s\n' \
+      "$C_SUB" "#" "Container" "Service" "Description" "Port" "$RESET"
     idx=1
     for box in "${BOXES[@]}"; do
-      printf '  %d) %-11s %s (port %s)\n' \
-        "$idx" "$box" "${BOX_PITCH[$box]}" "${BOX_PORT[$box]}"
+      printf '  %s[%s%d%s]%s   %-13s%-14s%-37s%s%s\n' \
+        "$C_TBRK" "$C_TIDX" "$idx" "$C_TBRK" "$C_TEXT" \
+        "$box" "${BOX_SERVICE[$box]}" "${BOX_DESC[$box]}" "${BOX_HOST_PORT[$box]}" "$RESET"
       idx=$((idx+1))
     done
-    say "  6) all of the above"
+    printf '  %s[%s%s%s]%s %s%s%s\n' \
+      "$C_ALLB" "$C_ALL" "all" "$C_ALLB" "$C_TEXT" "$C_ALLT" "all of these" "$RESET"
+    say ""
     while :; do
-      ask_raw "Which box(es)? (names or numbers, space-separated) [all]: "
+      ask_raw "Which box(es)? (names or numbers, space-separated) $(dflt all): "
       [[ -z $ANS ]] && ANS=all
       want=()
       local ok=1
@@ -652,17 +762,17 @@ select_boxes() {
 # KEEP      = boxes left untouched, but STILL offered the build ladder so a
 #             prior "write only" run can later pull/create/start them.
 resolve_actions() {
-  local box
+  local box letters="Krm"
   CONFIGURE=()
   KEEP=()
   for box in "${SELECTED[@]}"; do
     if box_exists "$box"; then
       say ""
-      say "droste-${box}-halo already exists."
-      say "  [K]eep as-is (do not rewrite definitions)"
-      say "  [r]ecreate (fresh defaults; old container replaced at create step)"
-      say "  [m]odify (re-ask questions, defaulting to the current values)"
-      ask_choice "[K/r/m]" "Krm"
+      printf '%sdroste-%s-halo already exists.%s\n' "$C_TEXT" "$box" "$RESET"
+      opt_row K "eep as-is (do not rewrite definitions)" "" 0 "$(isdef K "$letters")"
+      opt_row r "ecreate (fresh defaults; old container replaced at create step)" "" 0 "$(isdef r "$letters")"
+      opt_row m "odify (re-ask questions, defaulting to the current values)" "" 0 "$(isdef m "$letters")"
+      ask_choice "[K/r/m]" "$letters"
       case "$ANS_CH" in
         k) ACTION[$box]=keep; KEEP+=("$box") ;;
         r) ACTION[$box]=recreate; CONFIGURE+=("$box") ;;
@@ -681,7 +791,7 @@ resolve_actions() {
 hydrate_keep() {  # box
   local box=$1 pair label
   CFG_LANE[$box]=${EXD_LANE[$box]:-both}
-  CFG_PORT[$box]=${EXD_PORT[$box]:-${BOX_PORT[$box]}}
+  CFG_PORT[$box]=${EXD_PORT[$box]:-${BOX_HOST_PORT[$box]}}
   CFG_AS[$box]=${EXD_AS[$box]:-}
   CFG_MODE[$box]=${EXD_MODE[$box]:-}
   CFG_FS[$box]=${CFG_FS[$box]:-?}
@@ -700,8 +810,7 @@ hydrate_keep() {  # box
 # ── Shared questions ─────────────────────────────────────────────────────────
 shared_questions() {
   section "Shared Storage"
-  sub "Caches, models, & other data shared across containers"
-  printf '%s%s%s\n' "$ULINE" "Please provide the following paths." "$RESET"
+  sub "Please provide paths for caches, models, & other data shared across boxes."
   local def=$HOME/.cache/huggingface box
   for box in "${BOXES[@]}"; do    # seed default from an existing setup
     if [[ -n "${EXD_PATH["$box:hf"]:-}" ]]; then
@@ -723,7 +832,7 @@ shared_questions() {
   # Same y/N semantics as ask_yn (default N); inline only so the "?" renders
   # after the [y/N] bracket per the display spec.
   while :; do
-    ask_raw "Bind read-only local model collection at /opt/models (optional) [y/N]? "
+    ask_raw "Bind read-only local model collection at /opt/models (optional) $(dflt "y/N")? "
     case "$ANS" in
       ""|n|N) ANS_YN=0; break ;;
       y|Y) ANS_YN=1; break ;;
@@ -762,23 +871,25 @@ MIT_ALL=""        # ""=unset, else fuse|copy|ignore applied to all later paths
 MIT_ASKED=0
 
 fs_mitigation_menu() {  # box dir fstype → ANS_CH in {f,c,i,n}
-  local box=$1 dir=$2 fstype=$3
+  local box=$1 dir=$2 fstype=$3 letters="Fcni"
   : "$fstype"   # probed type kept in the signature (no longer shown inline)
   say ""
-  # Fixed two-line wording (not wrap, so the phrasing stays exact).
-  say "The filesystem for $(home_disp "$dir") is incompatible with the default tool"
-  say "droste uses, Linux's overlayfs. How should installation proceed?"
-  printf '%sNOTE: if ignored, filesystem must be changed before containers can load.%s\n' \
-    "$BOLD" "$RESET"
+  # Fixed three-line wording (not wrap, so the phrasing stays exact); only the
+  # first line grows with the path.
+  say "  The filesystem for $(home_disp "$dir") is incompatible with droste's"
+  say "  default tool, Linux's overlayfs. Note: if ignored, filesystem must be"
+  say "  changed before containers can load."
   say ""
-  printf '  %-26s  %s\n' "[F]use overlay fallback" \
-    "(userspace; app files ~30% slower; models OK)"
-  printf '  %-26s  %s\n' "[c]opies files as fallback" \
-    "(no overlay; more storage: ~${BOX_COPY_GB[$box]} GB for $box)"
-  printf '  %-26s  %s\n' "[n]ew path" "(most efficient)"
-  printf '  %-26s  %s\n' "[i]gnore" "(\"ostrich solution\"; box will fail on start)"
+  printf '  %s%s%s\n' "$C_SUB" \
+    "Review the following and select a mechanism to address the incompatibility." "$RESET"
+  opt_row F "use overlay fallback" \
+    "(userspace; app files ~30% slower; models OK)" 28 "$(isdef F "$letters")"
+  opt_row c "opies files as fallback" \
+    "(no overlay; more storage: ~${BOX_COPY_GB[$box]} GB for $box)" 28 "$(isdef c "$letters")"
+  opt_row n "ew path" "(most efficient)" 28 "$(isdef n "$letters")"
+  opt_row i "gnore" "(\"ostrich solution\"; box will fail on start)" 28 "$(isdef i "$letters")"
   say ""
-  ask_choice "Identify how to proceed [F/c/n/i]" "Fcni"
+  ask_choice "Identify how to proceed [F/c/n/i]" "$letters"
   return 0
 }
 
@@ -814,8 +925,8 @@ maybe_offer_pattern() {  # box label answered-path
   fi
   [[ -z $root || $root == / ]] && return 0
   example="$root/comfyui/input"
-  say "Apply this pattern to all shared resource bindings"
-  ask_yn "  (e.g. $(home_disp "$example"))?" Y
+  say "  Apply this pattern to all shared resource bindings"
+  ask_yn "(e.g. $(home_disp "$example"))?" Y
   [[ $ANS_YN -eq 1 ]] && PATTERN_ROOT=$root
   return 0
 }
@@ -823,17 +934,14 @@ maybe_offer_pattern() {  # box label answered-path
 # Ask (or pattern-fill) one bind path for a box; sets PATHS[box:label].
 ask_bind_path() {  # box label dest prose
   local box=$1 label=$2 dest=$3 prose=$4 def
-  : "$prose"   # prose kept for call-site compatibility; label is now derived
+  : "$prose" "$dest"   # kept for call-site compatibility; the prompt derives both
   def=$(path_default "$box" "$label")
   if [[ -n $PATTERN_ROOT && ${ACTION[$box]} != modify && $PATTERN_ASKED -eq 1 ]]; then
     PATHS["$box:$label"]=$def
     mkdir -p "$def" 2>/dev/null || warn "could not create $def"
     say "  $box $label: $(home_disp "$def") (pattern)"
   else
-    # Every bind (data included) gets an underlined descriptor header, then the
-    # path prompt uses the box + bind-title proper names.
-    printf '%s%s (%s -> %s: %s)%s\n' "$ULINE" "${BIND_TITLE[$label]}" "$label" \
-      "$dest" "${BIND_DESC[$label]:-bind}" "$RESET"
+    # No per-bind header: the prompt itself names the box + bind family.
     ask_path_as "Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}" "$def"
     PATHS["$box:$label"]=$ANS_PATH
     maybe_offer_pattern "$box" "$label" "$ANS_PATH"
@@ -857,7 +965,7 @@ choose_data_dir() {  # box
     # the resolver in-box), so distrobox-only boxes get the same menu.
     if [[ -n $MIT_ALL ]]; then
       CFG_MODE[$box]=$MIT_ALL
-      say "  $FSTYPE detected — applying your earlier choice ($MIT_ALL)."
+      subnote "${C_SUBJ}$FSTYPE detected${C_TEXT} — applying earlier choice ($MIT_ALL)."
       break
     fi
     # Modify with the same path: keep the recorded mitigation (re-prompts
@@ -865,8 +973,7 @@ choose_data_dir() {  # box
     if [[ ${ACTION[$box]} == modify && -n "${EXD_MODE[$box]:-}" \
           && $dir == "${EXD_PATH["$box:data"]:-}" ]]; then
       CFG_MODE[$box]=${EXD_MODE[$box]}
-      say "  $FSTYPE detected — keeping the existing choice" \
-          "(DROSTE_OVERLAY_MODE=${EXD_MODE[$box]})."
+      subnote "${C_SUBJ}$FSTYPE detected${C_TEXT} — keeping the existing choice (DROSTE_OVERLAY_MODE=${EXD_MODE[$box]})."
       break
     fi
     fs_mitigation_menu "$box" "$dir" "$FSTYPE"
@@ -892,7 +999,7 @@ AS_ALL=""        # propagated autostart (only meaningful with a server lane)
 LANE_ASKED=0
 
 configure_box() {  # box remaining-after-this (count)
-  local box=$1 remaining=$2 pair label dest lane_def
+  local box=$1 remaining=$2 pair label dest lane_def lane_letters lane_hint
   banner "${BOX_BANNER[$box]}" bold
 
   # Lane (Db/Sv/both) + AutoStart — propagatable after the first box.
@@ -900,14 +1007,10 @@ configure_box() {  # box remaining-after-this (count)
   if [[ -n $LANE_ALL && ${ACTION[$box]} != modify ]]; then
     CFG_LANE[$box]=$LANE_ALL
     CFG_AS[$box]=$AS_ALL
-    say "Lane: $LANE_ALL (applied to all boxes)"
+    printf '%s  Lane: %s (applied to all boxes)%s\n' "$C_NOTE" "$LANE_ALL" "$RESET"
   else
-    sub "Select the containers to install."
-    say ""
-    printf '%-18s %s\n' "[d]istrobox" '(interactive $HOME-native toolbox)'
-    printf '%-18s %s\n' "[s]erver container" "(podman/docker, runs the service)"
-    say "[B]oth"
-    say ""
+    # The default lane must be settled BEFORE the options are drawn, so the
+    # green option and the capitalised letter in the hint always agree.
     lane_def="b"   # default = BOTH lanes (server + distrobox)
     if [[ ${ACTION[$box]} == modify ]]; then
       case "${EXD_LANE[$box]:-both}" in
@@ -919,10 +1022,16 @@ configure_box() {  # box remaining-after-this (count)
     # Letters string first char = shown default (validation unchanged); only the
     # displayed [d/s/B] order + capitalization reflects the current default.
     case "$lane_def" in
-      S) ask_choice "Identify variants to install for ${BOX_NAME[$box]} [d/S/b]" "Sdb" ;;
-      d) ask_choice "Identify variants to install for ${BOX_NAME[$box]} [D/s/b]" "Dsb" ;;
-      b) ask_choice "Identify variants to install for ${BOX_NAME[$box]} [d/s/B]" "Bsd" ;;
+      S) lane_letters="Sdb"; lane_hint="[d/S/b]" ;;
+      d) lane_letters="Dsb"; lane_hint="[D/s/b]" ;;
+      *) lane_letters="Bsd"; lane_hint="[d/s/B]" ;;
     esac
+    sub "Select the containers to install."
+    opt_row d "istrobox" '(interactive $HOME-native toolbox)' 22 "$(isdef D "$lane_letters")"
+    opt_row s "erver container" "(podman/docker, runs the service)" 22 "$(isdef S "$lane_letters")"
+    opt_row B "oth" "" 0 "$(isdef B "$lane_letters")"
+    say ""
+    ask_choice "Identify variants to install for ${BOX_NAME[$box]} $lane_hint" "$lane_letters"
     case "$ANS_CH" in
       s) CFG_LANE[$box]=server ;;
       d) CFG_LANE[$box]=distrobox ;;
@@ -951,7 +1060,7 @@ configure_box() {  # box remaining-after-this (count)
   # Both lanes share this ONE /opt/data host path (only the container name
   # differs between lanes).
   section "Data Mapping"
-  sub "Program data, input, & output"
+  sub "Program data, input, output, etc."
   choose_data_dir "$box"
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*} dest=${pair#*:}
@@ -963,7 +1072,7 @@ configure_box() {  # box remaining-after-this (count)
 
   # Host port (server lane only).
   if [[ ${CFG_LANE[$box]} != distrobox ]]; then
-    local pdef=${BOX_PORT[$box]}
+    local pdef=${BOX_HOST_PORT[$box]}
     [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]] \
       && pdef=${EXD_PORT[$box]}
     ask_port "$box" "$pdef"
@@ -976,13 +1085,15 @@ configure_box() {  # box remaining-after-this (count)
 
 # ── Build ladder ─────────────────────────────────────────────────────────────
 ask_ladder() {
+  local letters="Awpc"
   section "Build & Activation"
   sub "Options for records & startup"
-  say "  [w] Write definition(s) only (compose & ini)"
-  say "  [p] Pull image(s) & write definition(s)"
-  say "  [c] Pull, write, & create box(es)"
-  say "  [A] All of the above, and start server(s)"
-  ask_choice "Select box preparation option [w/p/c/A]" "Awpc"
+  opt_row w "" "Write definition(s) only (compose & ini)" 4 "$(isdef w "$letters")"
+  opt_row p "" "Pull image(s) & write definition(s)" 4 "$(isdef p "$letters")"
+  opt_row c "" "Pull, write, & create box(es)" 4 "$(isdef c "$letters")"
+  opt_row A "" "All of the above, and start server(s)" 4 "$(isdef A "$letters")"
+  say ""
+  ask_choice "Select box preparation option [w/p/c/A]" "$letters"
   RUNG=$ANS_CH
   return 0
 }
@@ -1065,7 +1176,7 @@ emit_compose() {  # box → writes droste-<box>-halo-server.compose.yaml
     fi
     printf '    # security_opt: ["seccomp=unconfined"]  # uncomment if GPU fails\n'
   } > "$f"
-  printf '  %sWrote %s.%s\n' "$ITALIC" "$(home_disp "$f")" "$RESET"
+  printf '  %s%sWrote %s.%s\n' "$C_TEXT" "$ITALIC" "$(home_disp "$f")" "$RESET"
   return 0
 }
 
@@ -1133,7 +1244,7 @@ emit_ini() {  # box → writes droste-<box>-halo-box.ini (distrobox assemble rec
       fi
     fi
   } > "$f"
-  printf '  %sWrote %s.%s\n' "$ITALIC" "$(home_disp "$f")" "$RESET"
+  printf '  %s%sWrote %s.%s\n' "$C_TEXT" "$ITALIC" "$(home_disp "$f")" "$RESET"
   return 0
 }
 
@@ -1181,7 +1292,7 @@ create_server() {  # box
     "$RUNTIME" rm -f "$(server_name "$box")" >/dev/null 2>&1 \
       || warn "could not remove old container $(server_name "$box")"
   fi
-  printf '%s%s%s\n' "$ULINE" "Creating $(server_name "$box")..." "$RESET"
+  printf '%s%sCreating %s...%s\n' "$C_TEXT" "$ITALIC" "$(server_name "$box")" "$RESET"
   if [[ -n $COMPOSE_CMD ]]; then
     if [[ $RUNG == a ]]; then
       $COMPOSE_CMD -f "$f" up -d >/dev/null \
@@ -1221,15 +1332,22 @@ create_distrobox() {  # box
     distrobox rm -f "$(dbox_name "$box")" >/dev/null 2>&1 \
       || warn "could not remove old distrobox $(dbox_name "$box")"
   fi
-  printf '%s%s%s\n' "$ULINE" "Creating $(dbox_name "$box")..." "$RESET"
+  printf '%s%sCreating %s...%s\n' "$C_TEXT" "$ITALIC" "$(dbox_name "$box")" "$RESET"
+  # distrobox prints its own " - Creating <name>..." progress line, which just
+  # duplicates the line above — drop it while keeping "... [ OK ]" and
+  # "successfully created.". PIPESTATUS[0] preserves distrobox's real status
+  # (grep exits 1 when it filters everything, which must NOT look like failure).
+  local rc=0
   distrobox assemble create --file "$(ini_file "$box")" \
-    || warn "distrobox assemble failed for $box"
+    | grep -v '^ - Creating ' || rc=${PIPESTATUS[0]}
+  [[ $rc -eq 0 ]] || warn "distrobox assemble failed for $box"
   return 0
 }
 
 execute() {
   local box lane b ladder=()
   section "Executing"
+  say ""
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
   # start from their existing, un-rewritten definitions), in canonical order.
   for b in "${BOXES[@]}"; do
@@ -1246,7 +1364,8 @@ execute() {
   done
   if [[ $RUNG != w ]]; then
     for box in "${ladder[@]}"; do
-      say "  pulling ${IMAGE_PREFIX}${box}${IMAGE_SUFFIX} ..."
+      printf '  %spulling %s%s%s ...%s\n' "$C_TEXT" \
+        "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX" "$RESET"
       "${RUNTIME:-podman}" pull "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}" \
         || warn "pull failed for $box"
     done
@@ -1401,7 +1520,7 @@ write_notes() {
     printf 'On the GPU host, the repo'\''s `scaffolding/check-rocm.sh` validates\n'
     printf 'GPU access + per-box smoke across all images (see its --help).\n'
   } > "$f"
-  printf '  %sWrote %s.%s\n' "$ITALIC" "$(home_disp "$f")" "$RESET"
+  printf '  %s%s%sWrote %s.%s\n' "$C_TEXT" "$BOLD" "$ITALIC" "$(home_disp "$f")" "$RESET"
   return 0
 }
 
@@ -1452,10 +1571,14 @@ dashboard() {
   local box lane st stg stw g note data row port
   say ""
   hdr "Box Status"
-  say "Legend: State $GS_ACTIVE active / $GS_STOPPED stopped / $GS_NONE none — Box=distrobox, Server, AS=auto-start ($G_YES/$G_NO)"
-  printf '%s%s%s\n' "$ULINE" \
-    "$(pad_cell "Box" 3 11)$(pad_cell "State" 5 7)$(pad_cell "Box" 3 5)$(pad_cell "Server" 6 8)$(pad_cell "AS" 2 4)$(pad_cell "Port" 4 6)Important Notes" \
-    "$RESET"
+  printf '%sLegend: State %s active / %s stopped / %s none — Box=distrobox, Server, AS=auto-start (%s/%s)%s\n' \
+    "$C_TEXT" "$GS_ACTIVE" "$GS_STOPPED" "$GS_NONE" "$G_YES" "$G_NO" "$RESET"
+  say ""
+  # Underline the WORDS only — the column padding stays plain.
+  printf '%s%s%s%s%s%s%s%s%s\n' \
+    "$(pad_cell_u "Box" 3 11)" "$(pad_cell_u "State" 5 7)" "$(pad_cell_u "Box" 3 5)" \
+    "$(pad_cell_u "Server" 6 8)" "$(pad_cell_u "AS" 2 4)" "$(pad_cell_u "Port" 4 6)" \
+    "$C_SUB" "Important Notes" "$RESET"
   for box in "${SELECTED[@]}"; do
     lane=$(box_lanes_disp "$box")
     st=$(box_state "$box")
@@ -1477,17 +1600,27 @@ dashboard() {
     data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-}}"
     note=${BOX_NOTE[$box]//@DATA@/$(home_disp "${data:-~/droste/$box/data}")}
     [[ ${#note} -gt 42 ]] && note="${note:0:39}..."
-    printf '%s%s\n' "$row" "$note"
+    printf '%s%s%s%s\n' "$C_TEXT" "$row" "$note" "$RESET"
   done
   say ""
   hdr "Shortcuts"
-  say "  Enter box:          distrobox enter droste-<box>-halo-box"
-  say "  Start/stop server:  podman start|stop droste-<box>-halo-server"
-  printf '%s%s%s\n' "$ULINE" "  Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
-  say "    server:    podman compose -f droste-<box>-halo-server.compose.yaml up -d"
-  say "    distrobox: distrobox assemble create --file droste-<box>-halo-box.ini"
-  say "* ComfyUI models scanned at start; to add more run: hf download <shared cache>"
-  say "--> Definitions + full guide: $(home_disp "$EMIT_DIR") (compose.yaml, ini, NOTES.md)"
+  # Label italic bright-white, command bold bright-white (the copy-paste payload).
+  printf '  %s%-20s%s%s%s%s\n' "$C_NOTE" "Enter box:" "$RESET" \
+    "$C_SUBJ" "distrobox enter droste-<box>-halo-box" "$RESET"
+  printf '  %s%-20s%s%s%s%s\n' "$C_NOTE" "Start/stop server:" "$RESET" \
+    "$C_SUBJ" "podman start|stop droste-<box>-halo-server" "$RESET"
+  say ""
+  # Same shape as the Shortcuts block above: header flush left, rows indented 2.
+  printf '%s%s%s\n' "$C_SUB" "Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
+  printf '  %s%-15s%s%s%s%s\n' "$C_NOTE" "server:" "$RESET" \
+    "$C_SUBJ" "podman compose -f droste-<box>-halo-server.compose.yaml up -d" "$RESET"
+  printf '  %s%-15s%s%s%s%s\n' "$C_NOTE" "distrobox:" "$RESET" \
+    "$C_SUBJ" "distrobox assemble create --file droste-<box>-halo-box.ini" "$RESET"
+  say ""
+  printf '%s%s%s%s%s\n' "$C_LABEL" "$BOLD" "$ITALIC" \
+    "* ComfyUI models scanned at start; to add more run: hf download <shared cache>" "$RESET"
+  printf '%s-->%s Definitions + full guide: %s (compose.yaml, ini, NOTES.md)\n' \
+    "$C_ARROW" "$RESET" "$(home_disp "$EMIT_DIR")"
   return 0
 }
 
@@ -1497,8 +1630,8 @@ main() {
   banner "Droste Installer for Halo Architectures"
   preflight
 
-  section "Resource Path"
-  sub "Recreation (compose.yaml/distrobox ini), logs, & program data"
+  section "Resource Path" intro
+  sub "Re-creation (compose.yaml/distrobox ini), logs, & program data" intro
   # A typo here fans out into every emitted file — ask_path_as confirms before
   # creating (and re-asks if the user declines or the create fails).
   ask_path_as "Please Identify a path to use for droste resources" "$HOME/droste"
@@ -1524,22 +1657,17 @@ main() {
     for box in "${KEEP[@]}"; do hydrate_keep "$box"; done
     if [[ ${#CONFIGURE[@]} -eq 0 ]]; then
       say ""
-      say "All selected boxes kept as-is — definitions unchanged."
-      say "You can still pull images / create / start them below."
+      printf '%sAll selected boxes kept as-is — definitions unchanged.%s\n' "$C_TEXT" "$RESET"
+      printf '%sYou can still pull images / create / start them below.%s\n' "$C_TEXT" "$RESET"
     fi
     ask_ladder
     execute
     write_notes
-    # For any created distrobox lane, show the enter command (best-effort).
-    if [[ $RUNG == c || $RUNG == a ]]; then
-      for box in "${SELECTED[@]}"; do
-        [[ ${CFG_LANE[$box]:-} != server ]] || continue
-        printf 'To enter, run: %s%s%s\n' "$BOLD" "distrobox enter $(dbox_name "$box")" "$RESET"
-      done
-    fi
+    # (The per-box "To enter, run:" lines lived here; they duplicated the
+    # Shortcuts block in the dashboard below, so they were dropped.)
   else
     say ""
-    say "No boxes selected."
+    printf '%sNo boxes selected.%s\n' "$C_TEXT" "$RESET"
   fi
 
   dashboard

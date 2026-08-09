@@ -129,7 +129,9 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- constants
 
 REGISTRY_VERSION = 2
-HEURISTICS_VERSION = 5
+# 6: object-pickles became readable (see _restricted_unpickle) -- files that aborted mid
+#    load and fell through to UNCLASSIFIED now classify, so every registry must re-run.
+HEURISTICS_VERSION = 6
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -572,9 +574,12 @@ def classify_safetensors_header(header: dict) -> str | None:
             return "vae"
 
     keys = [k for k in header if k != "__metadata__"]
-    prefixes = set()
-    for k in keys:
-        prefixes.add(k.split(".", 1)[0] + ".")
+    # Only DOTTED keys have a prefix. Tensor names are always module-scoped, so this
+    # costs nothing there -- but object-pickles reach this classifier through
+    # classify_pickle with plain ATTRIBUTE names harvested from __setstate__, and a bare
+    # `encoder`/`decoder` attribute pair would otherwise synthesize "encoder."/"decoder."
+    # and be read as an autoencoder state dict.
+    prefixes = {k.split(".", 1)[0] + "." for k in keys if "." in k}
 
     def any_start(*pfx):
         return any(k.startswith(pfx) for k in keys)
@@ -609,17 +614,29 @@ def _restricted_unpickle(fileobj) -> tuple[set, set]:
     SECURITY: `.pt`/`.pth` are Python pickles, and a normal load executes arbitrary code
     -- unacceptable for files pulled off the internet. Here `find_class` never imports or
     resolves anything: it records the module path (a strong classification signal in its
-    own right -- ultralytics.nn.tasks.DetectionModel et al) and returns a single inert
-    stub. `persistent_load` (torch tensor storages) returns the same stub. Every REDUCE
-    therefore calls the stub, never attacker code. Ported from droste-civitai-adopt's
+    own right -- ultralytics.nn.tasks.DetectionModel et al) and returns an inert stub.
+    `persistent_load` (torch tensor storages) returns one too. Every REDUCE / NEWOBJ
+    therefore lands on the stub, never attacker code. Ported from droste-civitai-adopt's
     `_restricted_unpickle_keys`, which has been in service on real CivitAI downloads.
+
+    The stub is a dynamically-built TYPE, not an instance. `NEWOBJ`/`NEWOBJ_EX` -- what
+    protocol >= 2 emits for an ordinary object, and so what `torch.save` writes for a
+    serialized MODEL rather than a state dict -- require the class argument to be a real
+    type and abort the whole load otherwise. Returning an instance therefore made every
+    object-pickle (Ultralytics, segment_anything, gfpgan) unreadable before it could
+    yield a single module path -- exactly the files this pass exists for. Subclassing
+    per (module, name) satisfies the opcodes while still importing nothing.
     """
     keys: set = set()
     modules: set = set()
 
     class _Inert:
+        def __new__(cls, *a, **k):
+            return object.__new__(cls)        # NEWOBJ forwards ctor args here
+        def __init__(self, *a, **k):
+            pass                              # ... and REDUCE forwards them here
         def __call__(self, *a, **k):
-            return self                       # REDUCE / call -> inert
+            return self                       # call on an inert instance -> inert
         def __setitem__(self, key, value):
             if isinstance(key, str):
                 keys.add(key)
@@ -633,14 +650,18 @@ def _restricted_unpickle(fileobj) -> tuple[set, set]:
         def __getattr__(self, name):
             return self                       # any attribute -> inert
 
-    inert = _Inert()
+    stubs: dict = {}
 
     class _Restricted(pickle.Unpickler):
         def find_class(self, module, name):
             modules.add(f"{module}.{name}".lower())
-            return inert                      # NEVER import anything
+            stub = stubs.get((module, name))
+            if stub is None:                  # a TYPE, and still NEVER imported
+                stub = stubs[(module, name)] = type(name, (_Inert,),
+                                                    {"__module__": module})
+            return stub
         def persistent_load(self, pid):
-            return inert
+            return _Inert()
 
     obj = _Restricted(fileobj).load()
     # a plain dict / OrderedDict may come back concrete; harvest its keys (and one level

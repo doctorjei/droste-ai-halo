@@ -24,13 +24,14 @@ import io
 import json
 import os
 import pickle
+import pickletools
 import shutil
 import struct
 import sys
 import unittest
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -531,6 +532,40 @@ class ScannerTest(unittest.TestCase):
         is precisely the situation these files put us in."""
         return b'\x80\x04c' + f"{module}\n{name}\n".encode() + b')R.'
 
+    @staticmethod
+    def _object_pickle(module, name, zipped=True) -> bytes:
+        """A REAL object-pickle -- what `torch.save` writes when a whole MODEL was
+        serialized instead of a state dict, and the shape every Ultralytics `.pt` has.
+
+        Built by defining the class in a throwaway module so that `pickle` emits genuine
+        NEWOBJ opcodes, then deleting the module again so the fixture is as unimportable
+        as a real download. `_global_reduce` above cannot stand in for this: it only ever
+        produces GLOBAL/REDUCE, which is exactly why the s29 tests missed that NEWOBJ
+        rejects a non-type stub and aborted the whole load."""
+        created = []
+        parts = module.split(".")
+        for i in range(1, len(parts) + 1):
+            dotted = ".".join(parts[:i])
+            if dotted not in sys.modules:
+                sys.modules[dotted] = ModuleType(dotted)
+                created.append(dotted)
+        try:
+            cls = type(name, (), {"__module__": module})
+            setattr(sys.modules[module], name, cls)
+            obj = cls.__new__(cls)
+            obj.__dict__.update(yaml={"nc": 80}, names={0: "person"}, stride=[8, 16, 32])
+            raw = pickle.dumps({"model": obj, "epoch": 3}, protocol=2)
+        finally:
+            for dotted in reversed(created):
+                del sys.modules[dotted]
+        if not zipped:
+            return raw
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:      # torch.save's modern layout
+            z.writestr("archive/data.pkl", raw)
+            z.writestr("archive/data/0", b"\x00" * 8)
+        return buf.getvalue()
+
     def test_pickle_state_dict_is_classified_by_tensor_keys(self):
         """Both torch layouts: legacy bare pickle and modern zip-with-data.pkl."""
         d = self.fx.root
@@ -560,6 +595,64 @@ class ScannerTest(unittest.TestCase):
         # THE security property: none of the above may be imported.
         for forbidden in ("ultralytics", "segment_anything", "gfpgan"):
             self.assertNotIn(forbidden, sys.modules)
+
+    def test_object_pickle_is_readable_and_votes(self):
+        """REGRESSION (s31): object-pickles must survive NEWOBJ.
+
+        `find_class` used to hand back an inert INSTANCE, but NEWOBJ/NEWOBJ_EX require a
+        type -- so every real Ultralytics/SAM/GFPGAN `.pt` aborted with `NEWOBJ class
+        argument must be a type` and the 20-part embedded pickle measure never voted on
+        the very files it was written for. They scored 0.25-0.5 off names alone."""
+        d = self.fx.root
+        for mod, name, want in [
+            ("ultralytics.nn.tasks", "DetectionModel", "ultralytics/bbox"),
+            ("ultralytics.nn.tasks", "SegmentationModel", "ultralytics/segm"),
+            ("segment_anything.modeling.sam", "Sam", "sams"),
+            ("gfpgan.archs.gfpganv1_clean_arch", "GFPGANv1Clean", "facerestore_models"),
+        ]:
+            for zipped in (True, False):        # modern zip and legacy bare pickle
+                blob = self._object_pickle(mod, name, zipped=zipped)
+                # guard the fixture: without NEWOBJ this test proves nothing.
+                if zipped:
+                    inner = zipfile.ZipFile(io.BytesIO(blob)).read("archive/data.pkl")
+                else:
+                    inner = blob
+                self.assertIn("NEWOBJ",
+                              {op.name for op, _, _ in pickletools.genops(inner)})
+                p = d / f"{name}-{'zip' if zipped else 'bare'}.pt"
+                p.write_bytes(blob)
+                signals = ms.read_pickle_signals(p)
+                self.assertEqual(ms.classify_pickle(*signals), want, p.name)
+                # and it must now cast an EMBEDDED vote, not merely classify
+                self.assertEqual(ms.rate_pickle(*signals),
+                                 (want, ms.EMBEDDED_MAX_RATING), p.name)
+        for forbidden in ("ultralytics", "segment_anything", "gfpgan"):
+            self.assertNotIn(forbidden, sys.modules)
+
+    def test_bare_attribute_names_are_not_read_as_a_state_dict(self):
+        """Object-pickles feed ATTRIBUTE names into the tensor-key classifier. A model
+        object with `self.encoder`/`self.decoder` must not be mistaken for a VAE -- only
+        dotted keys carry a prefix. Dotted tensor names still do."""
+        self.assertIsNone(ms.classify_safetensors_header(
+            {"encoder": {}, "decoder": {}, "config": {}}))
+        self.assertEqual(ms.classify_safetensors_header(
+            {"encoder.conv_in.weight": {}, "decoder.conv_out.weight": {}}), "vae")
+
+    def test_object_pickle_executes_nothing(self):
+        """The stub is now a real type, so it is instantiated rather than merely called.
+        It must still be inert -- construction, attribute access and state application
+        may not reach the payload."""
+        marker = self.fx.root / "PWNED"
+
+        class _Evil:
+            def __reduce__(self):
+                import os as _os
+                return (_os.system, (f"touch {marker}",))
+
+        p = self.fx.root / "evil.pt"
+        p.write_bytes(pickle.dumps({"model": _Evil()}, protocol=2))
+        ms.read_pickle_signals(p)
+        self.assertFalse(marker.exists(), "restricted unpickler executed code")
 
     def test_unreadable_pickle_is_not_fatal(self):
         """A file that is not a pickle raises -- classify() catches it and the file is

@@ -220,13 +220,15 @@ populate the shared model stores the containers mount.
 
 One self-contained bash script with zero repo-checkout dependencies (safe as
 `curl <url> | bash`). It guides lane choice (server container and/or
-distrobox), every bind in the mount contract, and host ports; it **probes each
-data dir's filesystem** and, on an overlay-hostile one (ecryptfs/NFS/…, see
+distrobox), every bind in the mount contract, and host ports — ds4 and vllm both
+listen on 8000 inside their containers, so ds4's host port defaults to **8001**
+and the two run side by side out of the box. It **probes each data dir's
+filesystem** and, on an overlay-hostile one (ecryptfs/NFS/…, see
 Troubleshooting), offers another location, the fuse-overlayfs fallback, or
 copy-mode. It then emits per-box **recreation records** into `~/droste/` —
-`droste-halo-<box>.compose.yaml` (server lane; when no compose provider is
+`droste-<box>-halo-server.compose.yaml` (server lane; when no compose provider is
 installed, creation falls back to plain `podman create` with identical flags),
-`droste-halo-<box>.ini` (distrobox lane), and a `NOTES.md` guide with your real
+`droste-<box>-halo-box.ini` (distrobox lane), and a `NOTES.md` guide with your real
 paths baked in — and can pull images, create boxes, and start servers.
 **Safe to re-run:** existing compose/ini files, containers, and distroboxes are
 detected and listed; per box you choose keep / recreate / modify — nothing is

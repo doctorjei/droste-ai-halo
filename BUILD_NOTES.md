@@ -727,20 +727,28 @@ installs — hipcc/amdclang++, HIP headers, rocblas/hipblas/hipblaslt and the
 device bitcode all come from the build base's pip SDK (all inherited as ENV).
 
 - llama.cpp source pin: the fork carries the turboquant quant kernels; upstream
-  ships no BRANCH arg (fork default branch). `LLAMA_REF` pins the clone to a
-  fixed commit. It is EMPTY by default because the fork floats HEAD upstream (no
-  fixed sha published); the toolbox repo that vendors these assets was itself at
-  submodule commit `6318f02422ebcc40829d222107352934a6cc2fae` — that is the
-  provenance of the patches/helper, NOT a llama.cpp sha. FLAG: pin `LLAMA_REF` to
-  a real fork sha on-host.
+  ships no BRANCH arg (fork default branch). `LLAMA_REF` pins the source to a
+  fixed commit, defaulting to `337f08e82a861194fd5fc93121205c7c6bc81ddf`. The
+  toolbox repo that vendors these assets was itself at submodule commit
+  `6318f02422ebcc40829d222107352934a6cc2fae` — that is the provenance of the
+  patches/helper, NOT a llama.cpp sha.
+- The pinned commit is **fetched by sha, not cloned** — and the reason is worth
+  keeping, because it will recur with any pinned fork whose owner rebases.
+  `git clone --single-branch` retrieves only the fork's default branch, so when
+  upstream force-pushed that branch (2026-08-08) the pinned `LLAMA_REF` stopped
+  being reachable and the build died with `fatal: unable to read tree`. The
+  commit object is still served by sha, so `git init` + `git fetch --depth 1
+  origin <sha>` + `git checkout FETCH_HEAD` restores the build **without moving
+  the pin**, and is immune to any future branch rewrite. With no `LLAMA_REF` the
+  same path fetches `HEAD`.
 - `hip-rocm7rc.patch` was DROPPED as non-upstream (no upstream Dockerfile applies
   it; the turboquant build succeeds on ROCm 7.x / HIP 7 without it). Re-add it
   (and its COPY) only if an on-host HIP7 build failure shows it's needed.
 - The consumed asset (`llama-grammar.patch`) lives alongside the Containerfile
   (copied from the upstream toolbox submodule so the build context is
   self-contained). It patches relative to the repo root (`-p1`).
-- Clone the fork with submodules, optionally pin to `LLAMA_REF`, then
-  re-materialize submodules.
+- The shallow fetch brings no submodules, so materialize them after the
+  checkout (`git submodule update --init --recursive`).
 - Apply the turboquant grammar patch: `llama-grammar.patch` raises
   `MAX_REPETITION_THRESHOLD` for complex tool schemas. This is the ONLY patch
   upstream's turboquant Dockerfile applies.

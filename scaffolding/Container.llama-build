@@ -25,13 +25,22 @@ ARG LLAMA_REF=337f08e82a861194fd5fc93121205c7c6bc81ddf
 # Re-add if needed
 COPY llama-grammar.patch /tmp/
 
-# Clone fork with its submodules, then re-materialize submodules.
+# Fetch the pinned commit by sha, then materialize submodules.
+# NOT a clone: `git clone --single-branch` retrieves only the fork's default
+# branch, so when upstream rewrote that branch (2026-08-08) the pinned LLAMA_REF
+# stopped being reachable and the build died with "unable to read tree".
+# GitHub still serves the object by sha, so fetching it directly keeps the pin
+# exact and is immune to any future branch rewrite.
 WORKDIR /opt/llama.cpp
-RUN git clone --single-branch --recursive "${LLAMA_REPO}" . \
+RUN git init -q . \
+    && git remote add origin "${LLAMA_REPO}" \
     && if [ -n "${LLAMA_REF}" ]; then \
-         git checkout --recurse-submodules "${LLAMA_REF}"; \
+         git fetch --depth 1 origin "${LLAMA_REF}"; \
+       else \
+         git fetch --depth 1 origin HEAD; \
        fi \
-    && git submodule update --recursive
+    && git checkout -q FETCH_HEAD \
+    && git submodule update --init --recursive
 
 # Apply the turboquant grammar patch.
 RUN patch -p1 < /tmp/llama-grammar.patch

@@ -45,7 +45,28 @@ RUN git init -q . \
 # Apply the turboquant grammar patch.
 RUN patch -p1 < /tmp/llama-grammar.patch
 
+# Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
+# COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is
+# what tools/ui's pins want (vite 7 needs ^20.19 || >=22.12).
+RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
+      nodejs npm \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
 # HIP build
+#
+# LLAMA_USE_PREBUILT_UI=OFF is load-bearing, not tidying. scripts/ui-assets.cmake
+# provisions the Web UI from the first of three sources that works: a pre-built
+# tools/ui/dist, an npm build, then a download from the ggml-org llama-ui HF bucket.
+# With no npm in the image the first two were unavailable, so it silently took the
+# third -- and because the version-tagged bucket path 404s, its fallback fetched
+# `latest`. That ships a UI built from a DIFFERENT llama.cpp revision than LLAMA_REF,
+# which llama-ui-embed (compiled from the pinned source) then rejects:
+# "missing required asset(s): loading.html". Green on 2026-07-17 and red on 08-09
+# with identical sources, because `latest` moved and we did not.
+#
+# So: install npm above to build the UI from the pinned tree, and turn the bucket
+# off so an unpinned `latest` can never be substituted again. If the UI build ever
+# breaks, this now fails loudly instead of shipping a mismatched UI.
 RUN cmake -S . -B build \
        -DGGML_HIP=ON \
        -DAMDGPU_TARGETS=${GFX_TARGET} \
@@ -53,6 +74,8 @@ RUN cmake -S . -B build \
        -DGGML_RPC=ON \
        -DLLAMA_HIP_UMA=ON \
        -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
+       -DLLAMA_BUILD_UI=ON \
+       -DLLAMA_USE_PREBUILT_UI=OFF \
        -DROCM_PATH=/opt/rocm \
        -DHIP_PATH=/opt/rocm \
        -DHIP_PLATFORM=amd \

@@ -599,17 +599,27 @@ def parse_safetensors_header(prefix, path):
 def _restricted_unpickle_keys(fileobj):
     """Recover the string keys of a pickled state dict WITHOUT executing
     any of its payload. Security: find_class never imports or resolves a
-    real class -- it returns a single inert stand-in; persistent_load
-    (torch tensor storages) also returns the stand-in. Every REDUCE /
-    instantiation therefore calls the inert stub, not attacker code. The
-    stub only records dict keys assigned to it (SETITEM/SETITEMS) so a
-    state dict's tensor-name keys survive. Plain-dict pickles come back as
-    a real dict and we read their keys directly."""
+    real class -- it returns an inert stand-in; persistent_load (torch
+    tensor storages) also returns one. Every REDUCE / NEWOBJ therefore
+    lands on the inert stub, not attacker code. The stub only records dict
+    keys assigned to it (SETITEM/SETITEMS) so a state dict's tensor-name
+    keys survive. Plain-dict pickles come back as a real dict and we read
+    their keys directly.
+
+    The stand-in is a dynamically-built TYPE, not an instance: NEWOBJ /
+    NEWOBJ_EX (what protocol >= 2 emits for an ordinary object, i.e. what
+    torch.save writes when a whole MODEL was serialized rather than a state
+    dict) require a real type and abort the load otherwise. Subclassing per
+    (module, name) satisfies the opcodes while importing nothing."""
     recorded = set()
 
     class _Inert:
+        def __new__(cls, *a, **k):
+            return object.__new__(cls)        # NEWOBJ forwards ctor args here
+        def __init__(self, *a, **k):
+            pass                              # ... and REDUCE forwards them here
         def __call__(self, *a, **k):
-            return self                       # REDUCE / call -> inert
+            return self                       # call on an inert instance -> inert
         def __setitem__(self, key, value):
             if isinstance(key, str):
                 recorded.add(key)
@@ -623,13 +633,17 @@ def _restricted_unpickle_keys(fileobj):
         def __getattr__(self, name):
             return self                       # any attribute -> inert
 
-    inert = _Inert()
+    stubs = {}
 
     class _Restricted(pickle.Unpickler):
         def find_class(self, module, name):
-            return inert                      # NEVER import anything
+            stub = stubs.get((module, name))
+            if stub is None:                  # a TYPE, and still NEVER imported
+                stub = stubs[(module, name)] = type(name, (_Inert,),
+                                                    {"__module__": module})
+            return stub
         def persistent_load(self, pid):
-            return inert
+            return _Inert()
 
     obj = _Restricted(fileobj).load()
     keys = set(recorded)

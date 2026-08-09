@@ -66,6 +66,35 @@ def safetensors_bytes(tensors, metadata=None) -> bytes:
     return len(hj).to_bytes(8, "little") + hj
 
 
+def pickle_objectdict(module, name, zipped=False) -> bytes:
+    """A REAL object-pickle -- what torch.save writes when a whole MODEL was serialized
+    instead of a state dict. Defined in a throwaway module so pickle emits genuine NEWOBJ
+    opcodes, then unregistered so the fixture is as unimportable as a real download."""
+    created = []
+    parts = module.split(".")
+    for i in range(1, len(parts) + 1):
+        dotted = ".".join(parts[:i])
+        if dotted not in sys.modules:
+            sys.modules[dotted] = types.ModuleType(dotted)
+            created.append(dotted)
+    try:
+        cls = type(name, (), {"__module__": module})
+        setattr(sys.modules[module], name, cls)
+        obj = cls.__new__(cls)
+        obj.__dict__.update(names={0: "person"}, stride=[8, 16, 32])
+        raw = pickle.dumps({"model": obj, "epoch": 3}, protocol=2)
+    finally:
+        for dotted in reversed(created):
+            del sys.modules[dotted]
+    if not zipped:
+        return raw
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("archive/data.pkl", raw)
+        z.writestr("archive/data/0", b"\x00" * 8)
+    return buf.getvalue()
+
+
 def pickle_statedict(keys, ordered=False, zipped=False) -> bytes:
     d = OrderedDict() if ordered else {}
     for k in keys:
@@ -1135,6 +1164,22 @@ class CivitaiAdoptTest(unittest.TestCase):
         self.assertEqual(sorted(mod.sniff_pickle_keys(raw)), sorted(keys))
         zp = self.fx.add_download("z.pt", pickle_statedict(keys, zipped=True))
         self.assertEqual(sorted(mod.sniff_pickle_keys(zp)), sorted(keys))
+
+    def test_restricted_unpickler_survives_newobj(self):
+        """REGRESSION (s31): find_class used to return an inert INSTANCE, but NEWOBJ
+        requires a type -- so any pickle holding a serialized OBJECT (as opposed to a
+        state dict) aborted, and sniff_pickle_keys silently fell back to None."""
+        blob = pickle_objectdict("ultralytics.nn.tasks", "DetectionModel")
+        recovered = mod._restricted_unpickle_keys(io.BytesIO(blob))
+        self.assertIn("model", recovered)
+        self.assertIn("names", recovered)      # attributes arrive via __setstate__
+        for zipped in (False, True):
+            p = self.fx.add_download(f"obj{int(zipped)}.pt",
+                                     pickle_objectdict("segment_anything.modeling.sam",
+                                                       "Sam", zipped=zipped))
+            self.assertIsNotNone(mod.sniff_pickle_keys(p))
+        for forbidden in ("ultralytics", "segment_anything"):
+            self.assertNotIn(forbidden, sys.modules)
 
     def test_malicious_pickle_executes_nothing(self):
         marker = self.fx.root / "PWNED"

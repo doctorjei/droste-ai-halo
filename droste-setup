@@ -257,10 +257,22 @@ hdr() { printf '%s%s%s%s%s\n' "$C_LABEL" "$BOLD" "$ULINE" "$1" "$RESET"; }
 
 # One selectable menu option row: "  [x]rest<pad>tail". The option that is the
 # CURRENT DEFAULT wears the green [default] colors; every other option wears
-# the blue index colors. Padding is emitted only when there is a tail.
+# the blue index colors.
+#
+# The letter's CASE is set here, not by the caller: capital when it is the
+# current default, lowercase otherwise -- the [Y/n] convention, and the same
+# rule ask_choice's own "[d/s/B]" hint follows. Callers used to hard-code it,
+# which pinned each group's INITIAL default (K, F, B, A) capital forever, so a
+# moved default left the rows contradicting the hint one line below them. Case
+# is display-only: ask_choice lowercases both sides before validating.
+# Padding is emitted only when there is a tail.
 opt_row() {   # letter rest tail column-width is-default
   local ltr=$1 rest=$2 tail=$3 cw=$4 isdef=$5 brk idx pad=0
-  if [[ $isdef -eq 1 ]]; then brk=$C_BRK idx=$C_DEF; else brk=$C_TBRK idx=$C_TIDX; fi
+  if [[ $isdef -eq 1 ]]; then
+    brk=$C_BRK idx=$C_DEF ltr=${ltr^^}
+  else
+    brk=$C_TBRK idx=$C_TIDX ltr=${ltr,,}
+  fi
   if [[ -n $tail ]]; then
     pad=$(( cw - ${#rest} - 3 )); [[ $pad -lt 1 ]] && pad=1
   fi

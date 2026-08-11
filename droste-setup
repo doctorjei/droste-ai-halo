@@ -1357,7 +1357,7 @@ create_distrobox() {  # box
 }
 
 execute() {
-  local box lane b ladder=()
+  local box lane b ladder=() rc=0
   section "Executing"
   say ""
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
@@ -1378,8 +1378,18 @@ execute() {
     for box in "${ladder[@]}"; do
       printf '  %spulling %s%s%s ...%s\n' "$C_TEXT" \
         "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX" "$RESET"
-      "${RUNTIME:-podman}" pull "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}" \
-        || warn "pull failed for $box"
+      # A cached layer prints one "Copying blob <id> skipped: already exists"
+      # line EACH, and these images run to ~40 layers, so a re-pull that
+      # transfers nothing still scrolls pages of it. Drop only the no-op lines
+      # (podman's wording and docker's "Already exists"); real transfer progress
+      # is left alone, which matters on multi-GB ROCm layers. Progress goes to
+      # stderr, hence 2>&1. PIPESTATUS[0] keeps the runtime's real status --
+      # grep exits 1 when it filters everything, which must not look like a
+      # failed pull.
+      rc=0
+      "${RUNTIME:-podman}" pull "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}" 2>&1 \
+        | grep -Ev 'skipped: already exists|: Already exists' || rc=${PIPESTATUS[0]}
+      [[ $rc -eq 0 ]] || warn "pull failed for $box"
     done
   fi
   if [[ $RUNG == c || $RUNG == a ]]; then

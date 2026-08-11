@@ -1345,13 +1345,19 @@ create_distrobox() {  # box
       || warn "could not remove old distrobox $(dbox_name "$box")"
   fi
   printf '%s%sCreating %s...%s\n' "$C_TEXT" "$ITALIC" "$(dbox_name "$box")" "$RESET"
-  # distrobox prints its own " - Creating <name>..." progress line, which just
-  # duplicates the line above — drop it while keeping "... [ OK ]" and
-  # "successfully created.". PIPESTATUS[0] preserves distrobox's real status
+  # Drop distrobox's own duplicated chatter, keeping "... [ OK ]" and
+  # "successfully created.":
+  #   " - Creating <name>..."  duplicates the line printed just above;
+  #   "To enter, run: / distrobox enter <name>"  is repeated once PER BOX, and the
+  #     dashboard's Shortcuts block already carries the enter command.
+  # Anchored loosely (optional indent) because the exact spacing is upstream's to
+  # change. The blank line between the two is deliberately LEFT, so consecutive
+  # boxes stay visually separated. PIPESTATUS[0] preserves distrobox's real status
   # (grep exits 1 when it filters everything, which must NOT look like failure).
   local rc=0
   distrobox assemble create --file "$(ini_file "$box")" \
-    | grep -v '^ - Creating ' || rc=${PIPESTATUS[0]}
+    | grep -vE '^ - Creating |^[[:space:]]*To enter, run:[[:space:]]*$|^[[:space:]]*distrobox enter ' \
+    || rc=${PIPESTATUS[0]}
   [[ $rc -eq 0 ]] || warn "distrobox assemble failed for $box"
   return 0
 }

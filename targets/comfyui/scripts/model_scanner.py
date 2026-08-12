@@ -11,8 +11,8 @@ cheap link-verify.
 
 The registry is a classified INVENTORY of the model sources; the ComfyUI link tree is
 just one consumer of it. EVERYTHING identifiable gets a real classification -- including
-things ComfyUI cannot load (HF-format LLM repos -> `llm`, plain-LLM GGUFs -> `gguf-llm`,
-CTranslate2 models -> `ctranslate2`, split-GGUF parts, sharded components) -- those are
+things ComfyUI cannot load (LLM repos and GGUFs -> `llm`, speech-recognition models in
+any container -> `asr`, split-GGUF parts, sharded components) -- those are
 recorded with links:[] and never linked. `unclassified` is reserved STRICTLY for
 genuinely unknown files, so the UNCLASSIFIED report is a true heuristics-gap list.
 
@@ -54,8 +54,10 @@ Schema (version 2):
       "hf:<sha256>":                       # weight-file entry
         origin: hf                         # or "local"
         category: vae                      # ComfyUI category, an inventory category
-                                           #   (llm, gguf-llm, ctranslate2, gguf-split,
+                                           #   (llm, asr, gguf-split,
                                            #    diffusers), or "unclassified"
+        format: safetensors                # CONTAINER format: gguf | ggml | ctranslate2
+                                           #   | safetensors | pickle | diffusers
         sharded: true                      # OPTIONAL; multi-part file: classified but
                                            #   never linked (absent = single-file)
         source: /abs/path/to/blobs/<sha>   # resolved source at last sync (informational)
@@ -65,6 +67,7 @@ Schema (version 2):
       "diffusers:org/repo@<rev>":          # repo-level diffusers unit
         origin: hf
         category: diffusers
+        format: diffusers
         source: /abs/path/to/snapshots/<rev>
         display: org/repo@<rev8>
         links: []                          # NEVER dir-linked (DiffusersLoader is niche)
@@ -95,13 +98,13 @@ no signal -> "unclassified", which is recorded but NEVER linked):
      segments that merely QUALIFY one (nai_hypernetworks -> hypernetworks)
   2. filename keywords (lora, vae, controlnet, t5/clip_l/clip_g, esrgan/4x-upscalers,
      yolo detectors -> ultralytics/{bbox,segm}, sam -> sams, face-parsing, pose, ...)
-  3. CTranslate2 layout: `model.bin` + a sibling vocabulary file -> ctranslate2
+  3. CTranslate2 layout: a `.bin` + a sibling vocabulary file -> asr
   4. safetensors header (8-byte length + JSON header ONLY -- tensors never read):
      tensor-name prefixes + `__metadata__` modelspec.architecture
   5. sibling config.json (HF-format repos): `architectures` -> category;
      LLM architectures (…ForCausalLM etc.) -> `llm` (vllm's models; inventory-only)
   6. GGUF metadata (`general.architecture`): diffusion archs -> diffusion_models,
-     clip/t5 -> text_encoders, LLM archs -> `gguf-llm` (llama/ds4's models;
+     clip/t5 -> text_encoders, LLM archs -> `llm` (llama/ds4's models;
      inventory-only); a split part whose architecture is unreadable -> `gguf-split`
 
 The linking core (ensure_link/prune, ownership checks) is classification-agnostic so a
@@ -134,7 +137,9 @@ REGISTRY_VERSION = 2
 #    ZoeD, the Annotators repo) now classify, so every registry must re-run.
 # 8: STEP 2 -- the weighted SCORE decides the category, not the heuristic ladder, and LoFi
 #    (name/path/sidecar) evidence is trusted less. Precedence changed for every file.
-HEURISTICS_VERSION = 8
+# 9: inventory categories named by ROLE, not container: ctranslate2 + ggml-asr -> asr,
+#    gguf-llm -> llm; entries gain a `format` field. New content rules besides.
+HEURISTICS_VERSION = 9
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -151,11 +156,15 @@ PICKLE_EXTS = {".pth", ".pt", ".ckpt", ".bin"}
 UNCLASSIFIED = "unclassified"
 
 # ComfyUI category dirs (folder_paths.py) == the LINKABLE categories.
+# `diffusers` is deliberately ABSENT (2026-08-12, s32): repo units are inventory-only
+# (INVENTORY_CATEGORIES), and dropping it here also drops its SEGMENT_MAP entry -- so a
+# stray file under a `diffusers/` directory no longer classifies (and links!) off the
+# folder name while a byte-identical file elsewhere goes unclassified.
 CATEGORIES = {
     "checkpoints", "diffusion_models", "text_encoders", "vae", "loras",
     "controlnet", "clip_vision", "upscale_models", "latent_upscale_models",
     "embeddings", "style_models", "photomaker", "gligen", "hypernetworks",
-    "vae_approx", "audio_encoders", "model_patches", "diffusers",
+    "vae_approx", "audio_encoders", "model_patches",
     "background_removal", "detection", "frame_interpolation",
     "geometry_estimation", "optical_flow",
 }
@@ -171,12 +180,18 @@ DETECTOR_CATEGORIES = {
     "facedetection",      # ReActor / facerestore facexlib weights (face parsing)
     "facerestore_models",  # ReActor / facerestore: CodeFormer, GFPGAN, RestoreFormer
     "controlnet_aux",     # ControlNet-aux annotator / pose-estimator weights
+    "animatediff_models",  # AnimateDiff-Evolved motion modules (temporal transformers)
 }
 CATEGORIES |= DETECTOR_CATEGORIES
 
 # Inventory-only categories: real classifications that ComfyUI cannot load.
 # Recorded with links:[] so later features are a linking rule, never a re-scan.
-INVENTORY_CATEGORIES = {"llm", "gguf-llm", "ctranslate2", "gguf-split", "diffusers"}
+# Inventory-only categories: real classifications that ComfyUI cannot load. Named by
+# ROLE, exactly like every loadable category -- the container a model ships in is
+# recorded separately in `format`. (Until 2026-08-12 these were named after their
+# containers, which split one model across two categories: whisper in CTranslate2 and
+# whisper in ggml had nothing in common, and `llm` vs `gguf-llm` were one thing twice.)
+INVENTORY_CATEGORIES = {"llm", "asr", "gguf-split", "diffusers"}
 
 # path-segment -> category (step 1). Includes aliases and common singular forms.
 SEGMENT_MAP = {c: c for c in CATEGORIES}
@@ -234,6 +249,10 @@ GGUF_LLM_ARCHS = {
     "exaone", "baichuan", "orion", "plamo", "smollm3",
 }
 
+# Recognised architectures, in one set: read_gguf_metadata stops early on a hit, and keeps
+# reading on a miss so the structural fallback has hyperparameters to work with.
+_GGUF_KNOWN_ARCHS = GGUF_DIFFUSION_ARCHS | GGUF_TEXT_ARCHS | GGUF_LLM_ARCHS
+
 # config.json architectures -> category (step 5)
 CONFIG_TEXT_ARCHS = {
     "CLIPModel", "CLIPTextModel", "CLIPTextModelWithProjection",
@@ -245,7 +264,9 @@ CONFIG_VISION_ARCHS = {"CLIPVisionModel", "CLIPVisionModelWithProjection",
 CONFIG_LLM_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration",
                        "LMHeadModel", "ForSeq2SeqLM")
 
-# CTranslate2 model dirs: model.bin + one of these signature vocabulary files (step 3)
+# CTranslate2 model dirs: a .bin beside one of these signature vocabulary files (step 3).
+# The SIBLING is the evidence -- the weights file is an opaque CT2 blob that is not a
+# pickle and carries no readable structure of its own.
 CT2_SIBLINGS = ("vocabulary.txt", "vocabulary.json",
                 "shared_vocabulary.txt", "shared_vocabulary.json")
 
@@ -478,11 +499,25 @@ def read_gguf_metadata(path: Path, max_kv: int = 256) -> dict:
         for _ in range(min(kv_count, max_kv)):
             key = read_str()
             vtype, = struct.unpack("<I", f.read(4))
+            # The tokenizer entries hold the whole vocabulary as arrays. Parsing those
+            # purely to advance the cursor costs more than every other key combined, and
+            # nothing after them is needed -- so note that a tokenizer exists (evidence
+            # in itself: a language model has one, an image model does not) and stop.
+            if key.startswith("tokenizer."):
+                meta["__tokenizer__"] = True
+                break
             val = read_value(vtype, store=True)
             if val is not None:
                 meta[key] = val
-            if "general.architecture" in meta:
-                break  # all we need; stop early
+            # Stop as soon as the architecture is one we RECOGNISE -- nothing later can
+            # change the answer. For an UNKNOWN architecture keep reading: the structural
+            # fallback in classify_gguf needs the hyperparameters that follow, and those
+            # sit before the tokenizer in every GGUF writer's ordering. (Breaking here
+            # unconditionally is what made `step35` and `minimax-m2` unclassifiable --
+            # the evidence was in the file, we just stopped one key too early.)
+            arch = str(meta.get("general.architecture", "")).lower()
+            if arch and arch in _GGUF_KNOWN_ARCHS:
+                break
     return meta
 
 
@@ -638,11 +673,36 @@ def classify_safetensors_header(header: dict) -> str | None:
         return "loras"
     if any_start("model.diffusion_model."):        # full checkpoint bundle
         return "checkpoints"
+    # AnimateDiff motion modules ride inside a UNet-shaped state dict (down_blocks./
+    # mid_block./up_blocks.), so they must be tested BEFORE any generic block rule --
+    # the giveaway is the temporal stack hanging off each block.
+    if any(".motion_modules." in k or ".temporal_transformer." in k for k in keys):
+        return "animatediff_models"
     if any_start("control_model."):
+        return "controlnet"
+    # diffusers-format ControlNet: the zero-conv trunk that makes it a ControlNet rather
+    # than the UNet it is otherwise shaped like.
+    if any_start("controlnet_cond_embedding.", "controlnet_down_blocks.",
+                 "controlnet_mid_block."):
         return "controlnet"
     if any_start("vision_model."):
         return "clip_vision"
+    # LTX-2 projection layer: bridges text embeddings into the AV transformer. Loads from
+    # ComfyUI/models/text_encoders despite not being an encoder itself.
+    if any_start("text_embedding_projection."):
+        return "text_encoders"
     if any_start("diffusion_model.", "double_blocks.", "joint_blocks."):
+        return "diffusion_models"
+    # BARE DENOISERS. A *checkpoint* is defined by carrying several components at once
+    # (unet + first_stage_model + conditioner); a file holding only the denoiser is a
+    # diffusion model however big it is. These are the modern DiT layouts: Qwen-Image
+    # (transformer_blocks. + img_in/txt_in), Wan (patch_embedding. + time_embedding.),
+    # and the `net.`-rooted stacks with adaLN modulation.
+    if any_start("transformer_blocks.") and any_start("img_in.", "txt_in."):
+        return "diffusion_models"
+    if any_start("patch_embedding.") and any_start("time_embedding."):
+        return "diffusion_models"
+    if any(k.startswith("net.blocks.") and "adaln_modulation" in k for k in keys):
         return "diffusion_models"
     if any_start("encoder.block.", "decoder.block."):   # T5-style, before generic vae
         return "text_encoders"
@@ -724,6 +784,18 @@ def _restricted_unpickle(fileobj) -> tuple[set, set]:
     return keys, modules
 
 
+def _is_ct2_layout(src: SourceFile) -> bool:
+    """A .bin sitting beside a CTranslate2 signature vocabulary file.
+
+    Deliberately NOT keyed on the filename being exactly `model.bin`. That was the
+    original test and it missed real files -- a faster-whisper export renamed to
+    `faster_whisper_large_v2.bin` sat next to its own `vocabulary.txt` and still fell
+    through to unclassified. The sibling was always the evidence; the filename never was.
+    """
+    return (Path(src.display).suffix.lower() == ".bin"
+            and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS))
+
+
 def read_pickle_signals(path: Path) -> tuple[set, set]:
     """(state-dict keys, referenced module paths) for a pickled checkpoint.
 
@@ -737,7 +809,14 @@ def read_pickle_signals(path: Path) -> tuple[set, set]:
         with zipfile.ZipFile(path) as z:
             names = [n for n in z.namelist() if n.endswith("data.pkl")]
             if not names:
-                return set(), set()
+                # RAISE, do not return empty. Silently yielding no signals made an
+                # unreadable archive indistinguishable from one that genuinely holds
+                # nothing recognisable -- both surfaced as "no measure could form a
+                # judgement", which hid the failure. Callers already treat a raise as
+                # warn-and-continue, so this is loud without being fatal.
+                raise ValueError(
+                    "zip archive with no data.pkl member; contains: "
+                    + ", ".join(z.namelist()[:8]))
             with z.open(names[0]) as fh:
                 return _restricted_unpickle(fh)
     with open(path, "rb") as f:                # legacy bare pickle
@@ -790,10 +869,10 @@ def classify_pickle(keys: set, modules: set) -> str | None:
 # right". The denominator is ALL applicable parts, so disagreement visibly depresses the
 # winner's confidence.
 #
-# Weights are Jei's, from his judgement of trustworthiness. The arithmetic they produce:
-# all six LoFi measures agreeing tops out at 6*5*0.6 = 18, while any single embedded
-# measure at >=0.9 reaches 18-29.7 -- so confident embedded evidence always wins, and
-# names/sidecars decide only where embedded evidence is weak or absent.
+# Weights are Jei's, from his judgement of trustworthiness. The arithmetic they produce
+# (since Step 2 lowered LOFI_MAX_RATING to 0.3): all six LoFi measures agreeing tops out
+# at 6*5*0.3 = 9, while any single embedded measure reaches 18-29.7 even at the generic
+# 0.6 rating -- so content always wins, and names decide only where content is absent.
 MEASURE_PARTS = {
     "safetensors": 30,   # embedded
     "pickle": 20,        # embedded
@@ -823,6 +902,11 @@ DISTINCTIVE_PREFIXES = (
     "model.diffusion_model.", "control_model.", "vision_model.", "diffusion_model.",
     "double_blocks.", "joint_blocks.", "encoder.block.", "decoder.block.",
     "first_stage_model.", "text_model.", "t5.", "enc.",
+    # diffusers-format ControlNet zero-conv trunk; LTX-2 projection layer; the bare-DiT
+    # roots (Qwen-Image / Wan / adaLN `net.` stacks). Each names its model outright, so
+    # they belong at the top rating rather than the generic 0.6 inference.
+    "controlnet_cond_embedding.", "controlnet_down_blocks.", "controlnet_mid_block.",
+    "text_embedding_projection.", "transformer_blocks.", "patch_embedding.",
 )
 
 
@@ -885,9 +969,8 @@ def gather_votes(src: SourceFile) -> list[dict]:
     add("filename", classify_by_filename(src.link_name), 0.5)
     if src.origin == "hf":
         add("repo", classify_by_filename(repo_of(src.display)), 0.4)
-    if (Path(src.display).name.lower() == "model.bin"
-            and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS)):
-        add("ct2", "ctranslate2", 0.6)
+    if _is_ct2_layout(src):
+        add("ct2", "asr", 0.6)
 
     ext = Path(src.link_name).suffix.lower()
     if ext == ".safetensors":
@@ -918,6 +1001,8 @@ def gather_votes(src: SourceFile) -> list[dict]:
                 add("gguf", cat, 0.95)
         except (OSError, ValueError, struct.error):
             pass
+    if read_ggml_magic(src.path):
+        add("gguf", "asr", 0.95)   # container magic, embedded evidence
     return votes
 
 
@@ -955,8 +1040,56 @@ def classify_gguf(meta: dict) -> str:
     if arch in GGUF_TEXT_ARCHS:
         return "text_encoders"
     if arch in GGUF_LLM_ARCHS:
-        return "gguf-llm"  # llama/ds4's models, inventory-only
+        return "llm"  # llama/ds4's models, inventory-only
+    # STRUCTURAL fallback for an architecture we have never heard of. Enumerating model
+    # families is a losing race -- `step35` and `minimax-m2` both landed as unclassified
+    # simply because they are new -- but a language model is recognisable from its own
+    # metadata: it ships a tokenizer AND a transformer block count. Image/video GGUFs
+    # carry neither, so this cannot swallow them.
+    if arch and (meta.get("__tokenizer__")
+                 or any(k.endswith(".block_count") for k in meta)):
+        return "llm"
     return UNCLASSIFIED  # unknown architecture: a true heuristics gap
+
+
+# whisper.cpp / ggml files are NOT GGUF and NOT pickles -- the pickle reader was merely
+# the last thing to be tried, which is why they surfaced as "unreadable pickle" warnings.
+# The container announces itself in its first four bytes.
+GGML_MAGICS = (b"ggml", b"lmgg", b"ggmf", b"ggjt")
+
+
+def read_ggml_magic(path: Path) -> bytes | None:
+    """First four bytes when the file is a ggml container, else None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return None
+    return head if head in GGML_MAGICS else None
+
+
+def detect_format(src: SourceFile) -> str | None:
+    """CONTAINER format, recorded in the registry beside the role `category` so role
+    and container stop fighting for one string (heuristics 9).
+
+    Derived from extension + magic + sibling evidence, reusing the detectors the
+    classifier already has (read_ggml_magic, _is_ct2_layout) rather than re-detecting.
+    Order matters for the pickle extensions: a ggml container and a CTranslate2 blob
+    both ship as `.bin`, and neither is a pickle. Repo-level diffusers units are not
+    SourceFiles and record `format: diffusers` directly in cmd_sync.
+    """
+    ext = Path(src.link_name).suffix.lower()
+    if ext == ".gguf":
+        return "gguf"
+    if ext == ".safetensors":
+        return "safetensors"
+    if read_ggml_magic(src.path):
+        return "ggml"
+    if _is_ct2_layout(src):
+        return "ctranslate2"
+    if ext in PICKLE_EXTS:
+        return "pickle"
+    return None  # unreachable for WEIGHT_EXTS sources; safe for anything else
 
 
 def classify(src: SourceFile) -> str:
@@ -990,10 +1123,9 @@ def classify(src: SourceFile) -> str:
         if cat:
             return cat
 
-    # CTranslate2 layout: model.bin + signature vocabulary sibling (cheap stats)
-    if (Path(src.display).name.lower() == "model.bin"
-            and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS)):
-        return "ctranslate2"
+    # CTranslate2 layout: a .bin beside a signature vocabulary sibling (cheap stats)
+    if _is_ct2_layout(src):
+        return "asr"
 
     if ext == ".safetensors":
         try:
@@ -1011,6 +1143,11 @@ def classify(src: SourceFile) -> str:
                 return cat
         except (OSError, ValueError, json.JSONDecodeError) as e:
             log(f"WARN  unreadable config.json next to {src.display}: {e}")
+
+    # ggml container (whisper.cpp et al). Checked before the pickle attempt because a
+    # ggml file is not a pickle and would otherwise WARN its way to unclassified.
+    if read_ggml_magic(src.path):
+        return "asr"
 
     # Pickle content sniff LAST among the content signals: an HF-format repo is settled
     # by its config.json above (one small read), so only weights with no sibling config
@@ -1132,7 +1269,12 @@ def prune_link(tree: Path, rel: str, dry: bool) -> str:
 # ------------------------------------------------------------------------------- sync
 
 def linkable(src: SourceFile, category: str) -> bool:
-    return category in CATEGORIES and not src.sharded
+    # The INVENTORY_CATEGORIES guard is belt-and-braces: none of them are in CATEGORIES
+    # today, but an inventory category must stay unlinkable even if one is ever
+    # (re-)added to the linkable set by mistake.
+    return (category in CATEGORIES
+            and category not in INVENTORY_CATEGORIES
+            and not src.sharded)
 
 
 def plan_links(sources: list[SourceFile], categories: dict[str, str]) -> dict[str, SourceFile]:
@@ -1172,12 +1314,16 @@ def cmd_sync(args) -> int:
 
     # classify only the DELTA; known identities skip straight to link-verify
     categories: dict[str, str] = {}
+    formats: dict[str, str | None] = {}   # identity -> container format
     confidences: dict[str, dict] = {}     # identity -> {confidence, signals, disputed?}
     n_new = 0
     for src in files:
         prev = old.entries.get(src.identity) if reuse_cache else None
         if prev and prev.get("category"):
             categories[src.identity] = prev["category"]
+            # carried forward like the category; the detect_format fallback is for an
+            # entry written before the field existed (cheap: ext-only or a 4-byte read)
+            formats[src.identity] = prev.get("format") or detect_format(src)
             carried = {k: prev[k] for k in ("confidence", "signals", "disputed")
                        if k in prev}
             if carried:
@@ -1204,6 +1350,7 @@ def cmd_sync(args) -> int:
             winner, _, scores = score_votes(votes)
             cat = winner or ladder
             categories[src.identity] = cat
+            formats[src.identity] = detect_format(src)
             if votes:
                 info = {"confidence": scores.get(cat, 0.0),
                         "signals": [f"{v['measure']}={v['category']}@{v['rating']}"
@@ -1247,6 +1394,7 @@ def cmd_sync(args) -> int:
         entry = {
             "origin": src.origin,
             "category": categories[src.identity],
+            "format": formats[src.identity],
             "source": str(src.path),
             "display": src.display,
             "links": entry_links[src.identity],
@@ -1276,6 +1424,7 @@ def cmd_sync(args) -> int:
         new.entries[u.identity] = {
             "origin": "hf",
             "category": "diffusers",
+            "format": "diffusers",
             "source": u.source,
             "display": u.display,
             "links": [],
@@ -1338,9 +1487,14 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     ext = Path(src.link_name).suffix.lower()
 
-    def cap(items, n=12):
+    def cap(items, n=12, width=160):
+        # Cap BOTH the count and each item's length. A single __metadata__ value can be a
+        # full licence text or a per-layer quantisation map running to tens of kilobytes,
+        # which buries the signal it was printed to reveal.
         items = sorted(items)
-        return ", ".join(items[:n]) + (f"  (+{len(items) - n} more)" if len(items) > n else "")
+        shown = [i if len(i) <= width else i[:width] + f"… (+{len(i) - width} chars)"
+                 for i in items[:n]]
+        return ", ".join(shown) + (f"  (+{len(items) - n} more)" if len(items) > n else "")
 
     try:
         rows.append(("size", f"{src.path.stat().st_size / 1e6:,.1f} MB"))
@@ -1364,7 +1518,11 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
         except (OSError, ValueError, json.JSONDecodeError) as e:
             rows.append(("safetensors", f"UNREADABLE: {e}"))
 
-    if ext in PICKLE_EXTS:
+    magic = read_ggml_magic(src.path)
+    if magic:
+        rows.append(("ggml container", magic.decode("ascii", "replace")))
+
+    if ext in PICKLE_EXTS and not magic:
         try:
             keys, modules = read_pickle_signals(src.path)
             rows.append(("pickle modules", cap(modules) or "(none)"))
@@ -1374,6 +1532,16 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
         except (OSError, ValueError, EOFError, pickle.UnpicklingError,
                 zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:
             rows.append(("pickle", f"UNREADABLE: {e}"))
+            # When the pickle cannot be read, what the container actually holds is the
+            # next question -- so answer it here rather than in another round trip.
+            try:
+                with open(src.path, "rb") as f:
+                    rows.append(("file magic", repr(f.read(4))))
+                if zipfile.is_zipfile(src.path):
+                    with zipfile.ZipFile(src.path) as z:
+                        rows.append(("zip members", cap(z.namelist(), 15, 80)))
+            except (OSError, zipfile.BadZipFile):
+                pass
 
     if ext == ".gguf":
         try:

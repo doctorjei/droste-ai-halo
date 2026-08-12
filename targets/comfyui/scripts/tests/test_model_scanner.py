@@ -10,7 +10,7 @@
 Exercised: fresh sync, incremental no-op (asserting NO header/metadata reads on the
 second run via monkeypatched readers), user-file never-clobber, prune on blob removal,
 --no-prune ownership carry-forward, dry-run, status, name collisions, and the v2
-behaviors: classify-everything inventory (llm / gguf-llm / ctranslate2 / gguf-split),
+behaviors: classify-everything inventory (llm / asr / gguf-split),
 repo-level diffusers units with member lists, sharded classified-not-linked, the
 generic-filename provenance rule, and UNCLASSIFIED restricted to true unknowns --
 including a reproduction of the Raiju field-test scenario.
@@ -188,7 +188,7 @@ EXPECTED_UNCLASSIFIED_DISPLAYS = {"acme/enigma/mystery.safetensors"}
 # v2: identifiable-but-not-comfyui files get real inventory categories, links:[]
 EXPECTED_INVENTORY = {
     "meta/tiny-llm/pytorch_model.bin": "llm",
-    "bartowski/assistant/assistant-8b-q4.gguf": "gguf-llm",
+    "bartowski/assistant/assistant-8b-q4.gguf": "llm",
 }
 
 
@@ -264,7 +264,7 @@ class ScannerTest(unittest.TestCase):
         uncls = {d for d, c in cats.items() if c == "unclassified"}
         self.assertEqual(uncls, EXPECTED_UNCLASSIFIED_DISPLAYS)
         for e in reg["entries"].values():  # inventory + unclassified: never linked
-            if e["category"] in ("unclassified", "llm", "gguf-llm"):
+            if e["category"] == "unclassified" or e["category"] in ms.INVENTORY_CATEGORIES:
                 self.assertEqual(e["links"], [])
         owned = {l for e in reg["entries"].values() for l in e["links"]}
         self.assertEqual(owned, EXPECTED_LINKS)
@@ -301,8 +301,8 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(unit["links"], [])
         self.assertEqual(sorted(unit["members"]),
                          sorted([ids["vae"], ids["text_encoder"]]))
-        # ctranslate2 model: real classification, inventory-only
-        self.assertEqual(ent[ids["whisper"]]["category"], "ctranslate2")
+        # CTranslate2-container whisper: role-named `asr`, inventory-only
+        self.assertEqual(ent[ids["whisper"]]["category"], "asr")
         self.assertEqual(ent[ids["whisper"]]["links"], [])
         # nothing is unclassified in this cache
         self.assertNotIn("UNCLASSIFIED", out)
@@ -405,7 +405,7 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(tree_links(self.fx.tree), set())
         reg = self.fx.load_registry()
         e1 = reg["entries"]["hf:" + b1.name]
-        self.assertEqual(e1["category"], "gguf-llm")
+        self.assertEqual(e1["category"], "llm")
         self.assertTrue(e1.get("sharded"))
         e2 = reg["entries"]["hf:" + b2.name]
         self.assertEqual(e2["category"], "gguf-split")
@@ -936,6 +936,108 @@ class ScannerTest(unittest.TestCase):
             self.fx.sync()
         self.assertEqual(g.call_count, 0)
 
+    # ------------------------------------------- heuristics 9: the `format` field
+    def test_detect_format_unit(self):
+        """One helper derives the CONTAINER format from extension + magic + sibling
+        evidence, so role (`category`) and container stop fighting for one string."""
+        def src(link_name, path=Path("/nonexistent"),
+                config_dir=Path("/nonexistent"), display=None):
+            return SimpleNamespace(link_name=link_name, path=path,
+                                   config_dir=config_dir,
+                                   display=display or link_name)
+
+        self.assertEqual(ms.detect_format(src("a.gguf")), "gguf")
+        self.assertEqual(ms.detect_format(src("a.safetensors")), "safetensors")
+        # bare pickle extensions: no magic, no CT2 sibling
+        p = self.fx.root / "w.pth"
+        p.write_bytes(b"\x80\x02junk")
+        self.assertEqual(ms.detect_format(src("w.pth", path=p)), "pickle")
+        # ggml magic outranks the pickle extension (.bin is not a pickle here)
+        g = self.fx.root / "whisper-tiny.bin"
+        g.write_bytes(b"ggml" + b"\x00" * 16)
+        self.assertEqual(ms.detect_format(src("whisper-tiny.bin", path=g)), "ggml")
+        # CTranslate2: a .bin beside a signature vocabulary sibling
+        d = self.fx.root / "ct2"
+        d.mkdir()
+        m = d / "model.bin"
+        m.write_bytes(b"ct2-binary-not-a-torch-file")
+        (d / "vocabulary.txt").write_text("<|token|>\n")
+        self.assertEqual(
+            ms.detect_format(src("model.bin", path=m, config_dir=d,
+                                 display="whisper/model.bin")),
+            "ctranslate2")
+        # a .bin with neither magic nor sibling is an HF-format torch pickle
+        b = self.fx.root / "pytorch_model.bin"
+        b.write_bytes(b"\x80\x02junk")
+        self.assertEqual(ms.detect_format(src("pytorch_model.bin", path=b)), "pickle")
+
+    def test_format_recorded_in_registry(self):
+        """Every entry gains `format` beside `category`; repo units get `diffusers`."""
+        ids = populate_raiju(self.fx)   # safetensors components + CT2 whisper + unit
+        self.fx.add_hf_file("bartowski/assistant", "assistant-8b-q4.gguf",
+                            gguf_bytes("llama"))
+        self.fx.add_local_file("misc/esrgan-4x.pth", b"\x00" * 64)
+        self.fx.add_local_file("whisper-tiny.bin", b"ggml" + b"\x00" * 32)
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        reg = self.fx.load_registry()
+        fmts = {e["display"]: e.get("format") for e in reg["entries"].values()}
+        self.assertEqual(fmts["bartowski/assistant/assistant-8b-q4.gguf"], "gguf")
+        self.assertEqual(fmts["black-forest-labs/FLUX.1-Fill-dev/"
+                              "vae/diffusion_pytorch_model.safetensors"],
+                         "safetensors")
+        self.assertEqual(fmts["misc/esrgan-4x.pth"], "pickle")
+        self.assertEqual(fmts["whisper-tiny.bin"], "ggml")
+        self.assertEqual(fmts["Systran/faster-whisper-large-v2/model.bin"],
+                         "ctranslate2")
+        # role stays separate: both whisper containers are `asr` by category
+        cats = {e["display"]: e["category"] for e in reg["entries"].values()}
+        self.assertEqual(cats["Systran/faster-whisper-large-v2/model.bin"], "asr")
+        self.assertEqual(cats["whisper-tiny.bin"], "asr")
+        # the repo unit records format: diffusers beside category: diffusers, no links
+        unit = reg["entries"][ids["unit"]]
+        self.assertEqual(unit["category"], "diffusers")
+        self.assertEqual(unit["format"], "diffusers")
+        self.assertEqual(unit["links"], [])
+        # additive + universal: every entry has the field
+        self.assertTrue(all("format" in e for e in reg["entries"].values()))
+        # cached identities carry the format forward on a steady-state run
+        self.fx.sync()
+        reg2 = self.fx.load_registry()
+        self.assertEqual(
+            {e["display"]: e.get("format") for e in reg2["entries"].values()}, fmts)
+
+    # --------------------- s32: `diffusers` is inventory-only, never a folder rule
+    def test_diffusers_segment_no_longer_classifies_or_links(self):
+        """The bug (s32): a file under a `diffusers/` directory was classified
+        `diffusers`@0.3 off the folder name alone and LINKED, while a byte-identical
+        file elsewhere went unclassified. The folder name must carry no signal:
+        unclassified, NOT silently inventoried, NOT linked."""
+        self.fx.add_local_file("diffusers/mystery.safetensors",
+                               safetensors_bytes(["foo.bar"]))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), set())
+        reg = self.fx.load_registry()
+        self.assertEqual(len(reg["entries"]), 1)
+        entry = next(iter(reg["entries"].values()))
+        self.assertEqual(entry["category"], "unclassified")
+        self.assertEqual(entry["links"], [])
+        self.assertIn("UNCLASSIFIED", out)
+        # and the segment classifier itself is silent on the name
+        self.assertIsNone(ms.classify_by_segments(
+            SimpleNamespace(rel_dir_parts=("diffusers",))))
+
+    def test_linkable_rejects_inventory_even_if_readded_to_categories(self):
+        """Belt-and-braces guard in linkable(): an inventory category stays
+        unlinkable even if someone re-adds it to the CATEGORIES set by mistake."""
+        src = SimpleNamespace(sharded=False)
+        self.assertTrue(ms.linkable(src, "vae"))
+        for cat in ms.INVENTORY_CATEGORIES:
+            self.assertFalse(ms.linkable(src, cat), cat)
+        with mock.patch.object(ms, "CATEGORIES", ms.CATEGORIES | {"diffusers"}):
+            self.assertFalse(ms.linkable(src, "diffusers"))
+
     # -------------------------------------------------------------------- dry-run
     def test_dry_run_changes_nothing(self):
         populate_standard(self.fx)
@@ -968,7 +1070,7 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("GONE", out)
         self.assertIn("NEW  acme/new-lora/fresh-lora.safetensors", out)
         self.assertIn("BROKEN", out)          # owned link whose blob vanished
-        # UNCLASSIFIED lists only the true unknown, not the llm/gguf-llm inventory
+        # UNCLASSIFIED lists only the true unknown, not the llm inventory
         self.assertIn("UNCLASSIFIED  acme/enigma/mystery.safetensors", out)
         self.assertNotIn("UNCLASSIFIED  meta/tiny-llm", out)
         self.assertNotIn("UNCLASSIFIED  bartowski/assistant", out)
@@ -1070,9 +1172,9 @@ class ScannerTest(unittest.TestCase):
                          "diffusion_models")
         self.assertEqual(ms.classify_gguf({"general.architecture": "t5"}),
                          "text_encoders")
-        # v2: plain-LLM GGUFs are gguf-llm, not unclassified
+        # heuristics 9: plain-LLM GGUFs are `llm` by role, not unclassified
         self.assertEqual(ms.classify_gguf({"general.architecture": "qwen2"}),
-                         "gguf-llm")
+                         "llm")
         self.assertEqual(ms.classify_gguf({"general.architecture": "brandnew"}),
                          "unclassified")
 

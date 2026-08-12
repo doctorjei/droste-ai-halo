@@ -54,10 +54,11 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     `ImportError: tokenizers... is required ... but found tokenizers==0.23.1`, i.e. the server
 #     could not start at all. Build success is NOT import success, and nothing in CI imports vllm,
 #     so this shipped green. The explicit install re-pins tokenizers into transformers' range.
-#     `pip check` is the durable half: it fails the BUILD on ANY inconsistent dependency set, so
-#     the next such drift cannot reach an image. If `pip check` ever fails HERE, do not delete it
-#     — read what it names and pin that too (this hardcoded bound is expected to need updating
-#     whenever transformers moves its range; pip check is precisely what makes that loud).
+#     The allowlisted `pip check` gate (next RUN) is the durable half: it fails the BUILD on any
+#     NEW inconsistent dependency set, so the next such drift cannot reach an image. If the gate
+#     ever fails, do not delete it — read what it names and pin that too (this hardcoded bound is
+#     expected to need updating whenever transformers moves its range; the gate is precisely what
+#     makes that loud).
 #     NB torch is fine by PEP 440: a local version (`2.9.1+rocm...`) satisfies `==2.9.1`.
 #  6. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
@@ -68,9 +69,77 @@ RUN export PIP_USE_DEPRECATED=legacy-resolver \
     && pip install /tmp/wheels/vllm*.whl \
     && pip install ray \
     && pip install 'tokenizers>=0.22.0,<=0.23.0' \
-    && pip check \
     && rm -rf /tmp/wheels /root/.cache/pip \
     && rm -rf /opt/fp8/bench /opt/fp8/docs /opt/fp8/README.md /opt/fp8/serve_*.sh /opt/fp8/.gitignore
+
+# Dependency-consistency gate — the durable half of step 5 above. `pip check` audits the WHOLE
+# environment and exits nonzero on ANY conflict, but this env carries six KNOWN pre-existing
+# conflicts, one of them unsatisfiable by construction (no PyPI torchvision declares
+# compatibility with a ROCm-nightly torch), so a bare `pip check` is a permanent build break
+# (CI run 31644372153). Instead: print the FULL raw output first (so debugging never needs a
+# rebuild), filter out ONLY the six known conflict lines, and fail iff anything else survives —
+# a NEW conflict of the tokenizers kind still kills the build. Each allowlist pattern anchors
+# the offending package, the requirement subject, and the DIRECTION of the bound, never the
+# installed versions (those drift every rebuild); a new conflict between the same two packages
+# in the other direction is NOT silently eaten. NB: quoted heredoc delimiter is load-bearing —
+# it stops BuildKit expanding the $vars below; the body runs verbatim under the image's default
+# /bin/sh (dash), so the script is strictly POSIX (no arrays, no pipefail).
+RUN <<'PIP_CHECK_GATE'
+set -eu
+rc=0
+PIP_DISABLE_PIP_VERSION_CHECK=1 pip check >/tmp/pip-check-raw.txt 2>&1 || rc=$?
+echo "=== pip check: full raw output (exit ${rc}) ==="
+cat /tmp/pip-check-raw.txt
+echo "=== pip check: end of raw output ==="
+
+# Known-conflict allowlist. pip check line shapes covered (both wordings pip has used):
+#   "<pkg> <ver> has requirement <req>, but you have <pkg> <ver>."
+#   "<pkg> <ver> requires <req>, but you have <pkg> <ver>."
+# ("<req>, which is not installed." lines are deliberately NOT allowlisted: none of the six
+# is a missing package, and a formerly-present package going missing must fail the build.)
+#
+# torchvision pins torch==<exact stable>; we ship the pinned ROCm-nightly torch and no PyPI
+# torchvision ever declares compatibility with a +rocm local version — unsatisfiable by
+# construction, the reason this gate cannot be a bare `pip check`.
+ALLOW_TORCHVISION_TORCH='^torchvision [0-9][^ ]* (has requirement|requires) torch==.*, but you have torch '
+# vllm pins grpcio==<exact>; the wheel set resolves a newer grpcio — pre-existing skew.
+ALLOW_VLLM_GRPCIO='^vllm [0-9][^ ]* (has requirement|requires) grpcio==.*, but you have grpcio '
+# grpcio-reflection pins grpcio==<exact>; same newer-grpcio skew as above.
+ALLOW_GRPCIO_REFLECTION_GRPCIO='^grpcio-reflection [0-9][^ ]* (has requirement|requires) grpcio==.*, but you have grpcio '
+# grpcio-tools caps protobuf<7; we have protobuf 7.x. Pattern requires the '<' upper bound.
+ALLOW_GRPCIO_TOOLS_PROTOBUF='^grpcio-tools [0-9][^ ]* (has requirement|requires) protobuf[^ ]*<.*, but you have protobuf '
+# numba caps numpy<2.3; we have numpy 2.5.x. Pattern requires the '<' upper bound.
+ALLOW_NUMBA_NUMPY='^numba [0-9][^ ]* (has requirement|requires) numpy[^ ]*<.*, but you have numpy '
+# vllm caps setuptools<80; we have setuptools 80.x. Pattern requires the '<' upper bound.
+ALLOW_VLLM_SETUPTOOLS='^vllm [0-9][^ ]* (has requirement|requires) setuptools[^ ]*<.*, but you have setuptools '
+
+# grep -v keeps only UNfiltered (i.e. new) lines; it exits 1 when everything was filtered,
+# which is the GOOD case — hence the || true.
+grep -v -E \
+    -e '^[[:space:]]*$' \
+    -e '^No broken requirements found' \
+    -e "$ALLOW_TORCHVISION_TORCH" \
+    -e "$ALLOW_VLLM_GRPCIO" \
+    -e "$ALLOW_GRPCIO_REFLECTION_GRPCIO" \
+    -e "$ALLOW_GRPCIO_TOOLS_PROTOBUF" \
+    -e "$ALLOW_NUMBA_NUMPY" \
+    -e "$ALLOW_VLLM_SETUPTOOLS" \
+    /tmp/pip-check-raw.txt >/tmp/pip-check-new.txt || true
+
+if [ -s /tmp/pip-check-new.txt ]; then
+    echo "=== pip check gate: NEW conflicts (not on the known-conflict allowlist) ==="
+    cat /tmp/pip-check-new.txt
+    echo "FAIL: pin the named package (see step 5 above) or, ONLY if the conflict is"
+    echo "pre-existing and unsatisfiable by construction, allowlist it with a rationale."
+    exit 1
+fi
+if [ "${rc}" -ne 0 ] && ! [ -s /tmp/pip-check-raw.txt ]; then
+    echo "FAIL: pip check exited ${rc} with no output - failing closed."
+    exit 1
+fi
+echo "pip check gate: OK (only known allowlisted conflicts present)."
+rm -f /tmp/pip-check-raw.txt /tmp/pip-check-new.txt
+PIP_CHECK_GATE
 
 # Runtime shell env + banner
 COPY profile.d/01-rocm-env-for-triton.sh /etc/profile.d/01-rocm-env-for-triton.sh

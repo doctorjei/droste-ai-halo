@@ -524,6 +524,75 @@ class ScannerTest(unittest.TestCase):
         (whose display is a filesystem path) never consult it."""
         self.assertEqual(ms.classify_by_filename("yolo11x-seg.pt"), "ultralytics/segm")
 
+    # ------------------------------------- s31 naming-rule gaps (real 190-file scan)
+    def test_depth_anything_is_an_annotator_not_a_controlnet(self):
+        """Three real files that scanned as `controlnet`. The family name is only ever
+        visible as a SUBSTRING (`depth_anything` is never one token), and the ControlNet
+        rule claimed the bare `depth` token before the annotator rule was ever reached."""
+        for name in ("depth_anything_vitl14.pth",
+                     "metric_video_depth_anything_vitl.pth",
+                     "depth_anything_v2_vitl_fp16.safetensors"):
+            self.assertEqual(ms.classify_by_filename(name), "controlnet_aux", name)
+        # ...while the ControlNets that share the token, or are named after the annotator
+        # they consume, must keep it -- that is why only unmistakable families are hoisted.
+        for name in ("control_v11f1p_sd15_depth.pth", "control_sd15_depth.pth",
+                     "control_sd15_hed.pth", "control_v11p_sd15_mlsd.pth",
+                     "flux1-canny-dev.safetensors"):
+            self.assertEqual(ms.classify_by_filename(name), "controlnet", name)
+        # and an explicit ControlNet spelling outranks the family name outright
+        self.assertEqual(ms.classify_by_filename("depth_anything_controlnet.safetensors"),
+                         "controlnet")
+
+    def test_annotators_repo_names_the_family(self):
+        """Four real files from lllyasviel/Annotators that scanned as unclassified: three
+        carry no signal whatsoever, and `ZoeD` normalizes to `zoed` so the `zoe` token rule
+        missed it. The repo name answers for all four at once."""
+        self.assertEqual(ms.classify_by_filename("ZoeD_M12_N.pt"), "controlnet_aux")
+        for signal_free in ("erika.pth", "netG.pth", "sk_model.pth"):
+            self.assertIsNone(ms.classify_by_filename(signal_free), signal_free)
+        self.assertEqual(ms.repo_of("lllyasviel/Annotators/erika.pth"), "Annotators")
+        self.assertEqual(ms.classify_by_filename("Annotators"), "controlnet_aux")
+        # end to end: the repo-name pass is what rescues the signal-free three
+        names = ("ZoeD_M12_N.pt", "erika.pth", "netG.pth", "sk_model.pth")
+        for name in names:
+            self.fx.add_hf_file("lllyasviel/Annotators", name,
+                                b"\x00" * 32 + name.encode())
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {f"controlnet_aux/{n}" for n in names})
+        self.assertNotIn("UNCLASSIFIED", out)
+
+    def test_qualified_path_segment_matches_by_suffix(self):
+        """nai_hypernetworks/nai_*.pt scanned as unclassified: the segment match was EXACT,
+        so a dir that merely QUALIFIES the category name missed it."""
+        def seg(*parts):
+            return SimpleNamespace(rel_dir_parts=parts)
+
+        self.assertEqual(ms.classify_by_segments(seg("nai_hypernetworks")),
+                         "hypernetworks")
+        self.assertEqual(ms.classify_by_segments(seg("sdxl-loras")), "loras")
+        # THE BOUNDARY, pinned: a separator is required (else `unclip` reads as `clip`),
+        # the match is a SUFFIX only (a dir parked as `hypernetworks_disabled` stays out),
+        # and a control_lora dir keeps the precedence the filename rules give it.
+        self.assertIsNone(ms.classify_by_segments(seg("unclip")))
+        self.assertIsNone(ms.classify_by_segments(seg("my_models")))
+        self.assertIsNone(ms.classify_by_segments(seg("hypernetworks_disabled")))
+        self.assertEqual(ms.classify_by_segments(seg("control_lora")), "controlnet")
+        # an EXACT match anywhere in the path still outranks a qualified one
+        self.assertEqual(ms.classify_by_segments(seg("nai_hypernetworks", "loras")),
+                         "loras")
+        # end to end through the local models dir
+        names = ("nai_aini.pt", "nai_sxd.pt", "nai_anime_v1.pt", "nai_anime_v2.pt")
+        for name in names:
+            self.fx.add_local_file(f"nai_hypernetworks/{name}",
+                                   b"\x00" * 32 + name.encode())
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {f"hypernetworks/{n}" for n in names})
+        self.assertNotIn("UNCLASSIFIED", out)
+
     # ------------------------------------------------- s29 pickle content sniffing
     @staticmethod
     def _global_reduce(module, name):

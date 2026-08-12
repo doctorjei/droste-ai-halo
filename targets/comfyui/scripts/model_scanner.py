@@ -91,7 +91,8 @@ no signal -> "unclassified", which is recorded but NEVER linked):
      their component subdir's role (vae -> vae, text_encoder* -> text_encoders,
      transformer/unet/prior -> diffusion_models, image_encoder -> clip_vision, ...)
   1. path segments (snapshot-relative dirs, e.g. Comfy-Org `split_files/<category>/`,
-     or category-named subdirs under the local models dir)
+     or category-named subdirs under the local models dir); exact names first, then
+     segments that merely QUALIFY one (nai_hypernetworks -> hypernetworks)
   2. filename keywords (lora, vae, controlnet, t5/clip_l/clip_g, esrgan/4x-upscalers,
      yolo detectors -> ultralytics/{bbox,segm}, sam -> sams, face-parsing, pose, ...)
   3. CTranslate2 layout: `model.bin` + a sibling vocabulary file -> ctranslate2
@@ -129,9 +130,9 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- constants
 
 REGISTRY_VERSION = 2
-# 6: object-pickles became readable (see _restricted_unpickle) -- files that aborted mid
-#    load and fell through to UNCLASSIFIED now classify, so every registry must re-run.
-HEURISTICS_VERSION = 6
+# 7: qualified path segments (nai_hypernetworks) and annotator family names (depth_anything,
+#    ZoeD, the Annotators repo) now classify, so every registry must re-run.
+HEURISTICS_VERSION = 7
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -192,6 +193,17 @@ SEGMENT_MAP.update({
     "hypernetwork": "hypernetworks",
 })
 
+# A path segment often QUALIFIES a category name rather than being one: nai_hypernetworks,
+# sdxl-loras, flux_controlnet -- all of which the exact lookup above misses entirely.
+# Matched against the SEPARATOR-NORMALIZED segment, at the end only, and only across a
+# separator: those two bounds are what keep it honest. Without the boundary `unclip` reads
+# as `clip` and `myvae` as `vae`; without the suffix anchor `hypernetworks_disabled` -- a
+# dir deliberately parked out of the way -- would be swept back in. A leading qualifier is
+# the shape people write; nobody names a directory OF hypernetworks `hypernetworks_nai`.
+SEGMENT_SUFFIX_RE = re.compile(
+    r"_(" + "|".join(sorted((k for k in SEGMENT_MAP if "/" not in k),
+                            key=len, reverse=True)) + r")$")
+
 # diffusers component subdir -> role (step 0; only inside a model_index.json repo)
 DIFFUSERS_COMPONENT_MAP = {
     "vae": "vae", "vae_decoder": "vae", "vae_encoder": "vae",
@@ -249,6 +261,18 @@ UPSCALE_SCALE_RE = re.compile(
 # control_v11p_sd15s2_lineart_anime, plus the older control_sd15_* / control_sd21_* naming.
 # None contain the substring "controlnet", so the plain keyword rule misses them all.
 CONTROLNET_NAME_RE = re.compile(r"^control_(?:v\d|sd\d|lora)")
+
+# ControlNet-AUX annotator families the token rules cannot see, matched on the normalized
+# stem (so `_` is the only boundary character) ahead of the WEAK ControlNet signals:
+#   * depth_anything -- carries a bare `depth` token, which the ControlNet rule claims
+#     first (control_v11f1p_sd15_depth genuinely IS a ControlNet), so the family name has
+#     to be tested before that rule ever runs. Also covers metric_video_depth_anything_*.
+#   * zoed -- ZoeDepth ships as ZoeD_M12_N.pt, which normalizes to `zoed`, never `zoe`.
+#   * annotator(s) -- lllyasviel/Annotators, reached through the REPO-NAME pass: erika.pth,
+#     netG.pth and sk_model.pth carry no signal of their own, and the repo is the only
+#     thing that says what they are.
+# All distinctive multi-character names, so no control_* ControlNet filename contains one.
+ANNOTATOR_NAME_RE = re.compile(r"(?:^|_)(?:depth_anything|zoed|annotators?)(?:$|_)")
 
 # generic basenames that must never be used as link names (provenance rule)
 GENERIC_STEM_RE = re.compile(
@@ -472,6 +496,18 @@ def classify_by_segments(src: SourceFile) -> str | None:
         cat = SEGMENT_MAP.get(seg)
         if cat:
             return cat
+    # Qualified segments (nai_hypernetworks) only AFTER every segment has failed the exact
+    # test, so an exact match anywhere in the path still outranks a qualified one -- a
+    # file under nai_hypernetworks/loras/ is a lora, not a hypernetwork.
+    for seg in src.rel_dir_parts:
+        seg = re.sub(r"[^a-z0-9]+", "_", seg)   # sdxl-loras and sdxl_loras are one dir name
+        # Same precedence the filename rules use: a control_lora / control_v11 segment
+        # names a ControlNet, and must not be read as a lora by the suffix match below.
+        if CONTROLNET_NAME_RE.search(seg):
+            return "controlnet"
+        m = SEGMENT_SUFFIX_RE.search(seg)
+        if m:
+            return SEGMENT_MAP[m.group(1)]
     return None
 
 
@@ -498,12 +534,19 @@ def classify_by_filename(name: str) -> str | None:
         return "vae_approx"
     if "vae" in tokens:
         return "vae"
-    # ControlNet weights. Beyond the literal "controlnet", cover lllyasviel's
-    # ControlNet-v1-1 filenames (control_v11p_sd15_softedge, control_v11f1e_sd15_tile,
-    # control_v11p_sd15s2_lineart_anime, ...) and the T2I-Adapter/control-lora spellings
+    # The literal word "controlnet" settles the question outright, so it is tested on its
+    # own and outranks everything below -- a depth_anything CONTROLNET is a ControlNet.
+    if "controlnet" in norm:
+        return "controlnet"
+    # Annotator FAMILY names, ahead of the weak ControlNet signals below: a bare `depth`
+    # token is a much softer claim than a named estimator family (see ANNOTATOR_NAME_RE).
+    if ANNOTATOR_NAME_RE.search(norm):
+        return "controlnet_aux"
+    # The weaker ControlNet spellings: lllyasviel's ControlNet-v1-1 filenames
+    # (control_v11p_sd15_softedge, control_v11f1e_sd15_tile, control_v11p_sd15s2_
+    # lineart_anime, ...), the bare task token, and the T2I-Adapter/control-lora forms
     # -- none of which contain the substring "controlnet".
-    if ("controlnet" in norm or tokens & {"canny", "depth"}
-            or CONTROLNET_NAME_RE.search(norm)
+    if (tokens & {"canny", "depth"} or CONTROLNET_NAME_RE.search(norm)
             or "t2iadapter" in norm or "t2i_adapter" in norm):
         return "controlnet"
     if (tokens & {"t5", "umt5", "byt5", "t5xxl"}
@@ -536,9 +579,12 @@ def classify_by_filename(name: str) -> str | None:
     # Depth / edge / segmentation ESTIMATORS (lllyasviel/Annotators et al) -> the same
     # controlnet_aux tree. Named families only -- deliberately NOT a bare "depth" token,
     # which belongs to the ControlNet rule above (control_v11f1p_sd15_depth is a
-    # ControlNet, not an annotator), and the ControlNet rule runs first regardless.
+    # ControlNet, not an annotator). These stay BELOW that rule on purpose: control_sd15_hed
+    # and control_v11p_sd15_mlsd are ControlNets named after the annotator they consume,
+    # so the ControlNet spelling must get first refusal. Families that cannot collide
+    # that way live in ANNOTATOR_NAME_RE and are tested earlier.
     if tokens & {"midas", "dpt", "zoe", "leres", "hed", "pidinet", "mlsd",
-                 "uniformer", "oneformer", "normalbae"} or "depth_anything" in norm:
+                 "uniformer", "oneformer", "normalbae"}:
         return "controlnet_aux"
     # Face RESTORATION (CodeFormer / GFPGAN / RestoreFormer) -> models/facerestore_models,
     # where ReActor and the facerestore nodes look. Distinct from facedetection above,

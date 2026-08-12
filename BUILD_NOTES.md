@@ -1000,6 +1000,20 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   torch requirement is already satisfied and pip does NOT pull a PyPI/CUDA torch
   over it. FLAG: if current vLLM main pins an exact torch that 2.9.1 doesn't
   satisfy, pip will try to replace it — reconcile on-host.
+- Legacy resolver + `pip check`: the vLLM wheel is installed under
+  `PIP_USE_DEPRECATED=legacy-resolver` (the new resolvelib backtracker dies with
+  RecursionError over the `torch==2.9.1` vs `2.9.1+rocm…` pin). The legacy
+  resolver takes the first satisfying candidate and never backtracks, so an
+  upper bound owned by an EARLIER-resolved package is dropped silently. That
+  shipped a broken image once: transformers requires
+  `tokenizers>=0.22.0,<=0.23.0`, the build took PyPI's newer 0.23.1, pip
+  reported success, and `vllm` then failed at IMPORT — the server could not
+  start at all (found on hardware 2026-08-12, the first time the vLLM lane was
+  ever run). CI never caught it because **build success is not import success**
+  and no job imports vllm. Hence the explicit `tokenizers` range install plus a
+  `pip check` that fails the BUILD on any inconsistent set. FLAG: when
+  transformers moves its range, `pip check` goes red here — update the pin, do
+  not remove the check.
 - Runtime libs: `libnuma` (vLLM numa lookup on `import vllm`) + `libgomp1` —
   torch links `libgomp.so.1` (OpenMP), which the lean runtime base does NOT
   carry, so `import torch` (and thus `import vllm`) fails without it. Verified on

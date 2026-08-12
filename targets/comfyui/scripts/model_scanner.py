@@ -132,7 +132,9 @@ except ImportError:  # pragma: no cover
 REGISTRY_VERSION = 2
 # 7: qualified path segments (nai_hypernetworks) and annotator family names (depth_anything,
 #    ZoeD, the Annotators repo) now classify, so every registry must re-run.
-HEURISTICS_VERSION = 7
+# 8: STEP 2 -- the weighted SCORE decides the category, not the heuristic ladder, and LoFi
+#    (name/path/sidecar) evidence is trusted less. Precedence changed for every file.
+HEURISTICS_VERSION = 8
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -804,7 +806,15 @@ MEASURE_PARTS = {
     "repo": 5,           # LoFi: repo name
 }
 LOFI_MEASURES = {"ct2", "config", "component", "segments", "filename", "repo"}
-LOFI_MAX_RATING = 0.6    # LoFi may never express certainty
+# LoFi may never express certainty. Lowered 0.6 -> 0.3 at Step 2 (owner decision, 2026-08-12):
+# "directory and file names are simply nothing more than a guess with a slight bias toward
+# truth" and "keeping the information is good; trusting it? less so." So the LoFi measures all
+# still VOTE and are all still recorded in `signals` -- only what they may CLAIM drops. Parts
+# (how much we listen to a KIND of evidence) are untouched; the rating (how sure this instance
+# is) is where a "slight bias toward truth" belongs. Effect: six LoFi measures in unanimous
+# agreement now total 30x0.3 = 9.0 against a single GENERIC content read at 30x0.6 = 18.0 --
+# content wins 2:1 where it used to tie. One constant; retune here if a re-scan argues for it.
+LOFI_MAX_RATING = 0.3
 EMBEDDED_MAX_RATING = 0.99   # nor may anything else claim absolute certainty
 
 # Tensor-name prefixes that identify a model outright, vs the generic encoder+decoder
@@ -849,11 +859,15 @@ def rate_pickle(keys: set, modules: set) -> tuple[str, float] | None:
 def gather_votes(src: SourceFile) -> list[dict]:
     """Run EVERY applicable measure and collect its judgement.
 
-    Deliberately independent of classify(): in this (annotate-only) step the ladder
-    remains the authority for the recorded category, and these votes only describe it.
+    Since Step 2 these votes DECIDE the category (see sync()); the ladder is only a
+    fallback and the source of the naming-vs-content comparison. Deliberately independent
+    of classify(): the ladder short-circuits at the first hit, this runs everything, which
+    is the whole point -- disagreement is only visible if every measure is asked.
+
     Costs one extra content read per NEW file -- classification is cached by content
-    identity, so it is paid once per file, never on a steady-state re-scan. When the
-    score becomes authoritative this collapses into a single pass.
+    identity, so it is paid once per file, never on a steady-state re-scan (there is a test
+    asserting that). Collapsing the two passes into one is now possible but deliberately
+    deferred: measured cost is 0.48 s for 184 files, and correctness comes first.
     """
     votes: list[dict] = []
 
@@ -1170,18 +1184,37 @@ def cmd_sync(args) -> int:
                 confidences[src.identity] = carried
         else:
             n_new += 1
-            cat = classify(src)
-            categories[src.identity] = cat
-            # ANNOTATE ONLY: the ladder above stays the authority. The measures merely
-            # describe how well-supported its answer is, and record any disagreement.
+            # STEP 2 -- THE SCORE DECIDES. Every applicable measure votes and the weighted
+            # winner is what gets recorded; the heuristic ladder is retained for exactly two
+            # jobs: a fallback when NO measure votes, and the naming-vs-content comparison
+            # that populates `disputed`.
+            #
+            # Rationale (owner, 2026-08-12): "we really should be looking at the data; humans
+            # can already look at filenames and directories easily." The ladder consulted
+            # names FIRST and short-circuited, so a name could veto the file's own contents --
+            # e.g. a full SD checkpoint named `..._Real+VAE.safetensors` was recorded `vae`
+            # while its tensors carried conditioner./first_stage_model./model.diffusion_model.
+            #
+            # Safe by construction: rate_safetensors/rate_pickle delegate to the SAME
+            # classify_* logic the ladder uses and return None only where those do, and every
+            # ladder signal has a vote counterpart -- so promoting the score cannot LOSE a
+            # classification, only reorder precedence. `or ladder` is belt-and-braces.
+            ladder = classify(src)
             votes = gather_votes(src)
             winner, _, scores = score_votes(votes)
+            cat = winner or ladder
+            categories[src.identity] = cat
             if votes:
                 info = {"confidence": scores.get(cat, 0.0),
                         "signals": [f"{v['measure']}={v['category']}@{v['rating']}"
                                     for v in votes]}
-                if winner and winner != cat:
-                    info["disputed"] = f"{winner}@{scores[winner]}"
+                # Content decides, but it must never SILENCE. An embedded signal can be
+                # confident AND wrong (a multimodal LLM's vision tower reads as clip_vision
+                # at 0.99 -- the rule cannot tell "HAS a vision encoder" from "IS one"), and
+                # in exactly those cases the NAME holds the corrective information. Recording
+                # the disagreement is what keeps that class of error findable.
+                if ladder != cat and ladder != UNCLASSIFIED:
+                    info["disputed"] = f"ladder={ladder}"
                 confidences[src.identity] = info
             info = confidences.get(src.identity, {})
             note = " [sharded]" if src.sharded else ""
@@ -1224,15 +1257,17 @@ def cmd_sync(args) -> int:
         new.entries[src.identity] = entry
         if categories[src.identity] == UNCLASSIFIED and src.identity not in old.entries:
             log(f"UNCLASSIFIED  {src.display} (not linked; heuristics gap)")
-        # DISPUTED is the companion report to UNCLASSIFIED: the file WAS classified, but
-        # the measures do not agree on it. Two disagreeing EMBEDDED measures, or a strong
-        # embedded reading contradicted by the ladder's pick, is where misclassification
-        # hides -- UNCLASSIFIED can never surface those because they look settled.
+        # DISPUTED is the companion report to UNCLASSIFIED: the file WAS classified, but the
+        # naming ladder wanted something else. Since Step 2 the score is authoritative, so a
+        # dispute no longer means "we may have recorded the wrong thing" -- it means the names
+        # and the data disagree, and the names lost. That is still the single most useful
+        # report we have: it is where a confident-but-wrong EMBEDDED reading shows up, which
+        # UNCLASSIFIED can never surface because such a file looks settled.
         disputed = confidences.get(src.identity, {}).get("disputed")
         if disputed and src.identity not in old.entries:
-            log(f"DISPUTED  {src.display} -> kept {categories[src.identity]} "
-                f"@{confidences[src.identity].get('confidence')}, measures favour "
-                f"{disputed}")
+            log(f"DISPUTED  {src.display} -> chose {categories[src.identity]} "
+                f"@{confidences[src.identity].get('confidence')} from the data; "
+                f"naming said {disputed.split('=', 1)[1]}")
 
     # repo-level diffusers units: re-detected each run (one stat), never linked
     for u in units:
@@ -1291,6 +1326,136 @@ def cmd_sync(args) -> int:
 
 
 # ------------------------------------------------------------------------------ status
+
+def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
+    """Every RAW observation the classifier had available, as (label, value) rows.
+
+    Deliberately separate from gather_votes(): votes are the classifier's CONCLUSIONS,
+    this is the material they were drawn from. When a file cannot be identified
+    automatically, the material is what a human needs in order to decide -- and it is
+    already read during a scan, so surfacing it costs nothing extra.
+    """
+    rows: list[tuple[str, str]] = []
+    ext = Path(src.link_name).suffix.lower()
+
+    def cap(items, n=12):
+        items = sorted(items)
+        return ", ".join(items[:n]) + (f"  (+{len(items) - n} more)" if len(items) > n else "")
+
+    try:
+        rows.append(("size", f"{src.path.stat().st_size / 1e6:,.1f} MB"))
+    except OSError:
+        pass
+    rows.append(("origin", src.origin))
+    if src.component:
+        rows.append(("diffusers component dir", src.component))
+
+    if ext == ".safetensors":
+        try:
+            header = read_safetensors_header(src.path)
+            keys = [k for k in header if k != "__metadata__"]
+            rows.append(("tensor count", str(len(keys))))
+            # The top-level prefix set is what every prefix rule actually matches on.
+            rows.append(("key prefixes", cap({k.split(".")[0] for k in keys})))
+            rows.append(("sample keys", cap(keys[:6], 6)))
+            meta = header.get("__metadata__") or {}
+            if meta:
+                rows.append(("__metadata__", cap([f"{k}={v}" for k, v in meta.items()], 8)))
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            rows.append(("safetensors", f"UNREADABLE: {e}"))
+
+    if ext in PICKLE_EXTS:
+        try:
+            keys, modules = read_pickle_signals(src.path)
+            rows.append(("pickle modules", cap(modules) or "(none)"))
+            rows.append(("pickle key prefixes",
+                         cap({k.split(".")[0] for k in keys}) or "(none)"))
+            rows.append(("pickle sample keys", cap(sorted(keys)[:6], 6) or "(none)"))
+        except (OSError, ValueError, EOFError, pickle.UnpicklingError,
+                zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:
+            rows.append(("pickle", f"UNREADABLE: {e}"))
+
+    if ext == ".gguf":
+        try:
+            meta = read_gguf_metadata(src.path)
+            arch = meta.get("general.architecture", "(absent)")
+            rows.append(("gguf architecture", str(arch)))
+            known = ("known" if arch in (GGUF_DIFFUSION_ARCHS | GGUF_TEXT_ARCHS
+                                         | GGUF_LLM_ARCHS) else "UNKNOWN to the scanner")
+            rows.append(("gguf arch status", known))
+            interesting = {k: v for k, v in meta.items()
+                           if k.startswith("general.") or ".block_count" in k
+                           or ".context_length" in k or k.startswith("tokenizer.ggml.model")}
+            rows.append(("gguf metadata",
+                         cap([f"{k}={v}" for k, v in interesting.items()], 10)))
+        except (OSError, ValueError, struct.error) as e:
+            rows.append(("gguf", f"UNREADABLE: {e}"))
+
+    cfg = src.config_dir / "config.json"
+    if cfg.is_file():
+        try:
+            conf = read_config_json(cfg)
+            rows.append(("config.json architectures",
+                         cap(conf.get("architectures") or []) or "(none listed)"))
+            rows.append(("config.json model_type", str(conf.get("model_type", "(absent)"))))
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            rows.append(("config.json", f"UNREADABLE: {e}"))
+
+    siblings = [v for v in CT2_SIBLINGS if (src.config_dir / v).is_file()]
+    if siblings:
+        rows.append(("CTranslate2 siblings", cap(siblings)))
+    return rows
+
+
+def cmd_inspect(args) -> int:
+    """Show the evidence behind a classification -- or behind the lack of one.
+
+    Exists because automatic identification has a floor: some weights carry no signal
+    that names them. Rather than guess, print everything that WAS observed so a human
+    can decide, then encode that decision as a rule.
+    """
+    files, _units = collect_sources(args.cache_dir, args.models_dir)
+    pats = [p.lower() for p in (args.pattern or [])]
+
+    selected = []
+    for src in files:
+        cat = classify(src)
+        votes = gather_votes(src)
+        winner, _, scores = score_votes(votes)
+        final = winner or cat
+        if args.unclassified and final != UNCLASSIFIED:
+            continue
+        if pats and not any(p in src.display.lower() for p in pats):
+            continue
+        selected.append((src, cat, final, votes, scores))
+
+    if not selected:
+        log("no files matched")
+        return 0
+
+    for src, ladder, final, votes, scores in selected:
+        log("")
+        log(f"=== {src.display}")
+        log(f"    category   {final}"
+            + ("" if final == ladder else f"   (naming ladder said: {ladder})"))
+        log(f"    link name  {src.link_name}")
+        if votes:
+            log("    votes:")
+            for v in sorted(votes, key=lambda v: -v["parts"] * v["rating"]):
+                tier = "LoFi " if v["measure"] in LOFI_MEASURES else "embed"
+                log(f"      [{tier}] {v['measure']:<12} -> {v['category']:<22}"
+                    f" rating {v['rating']:<5} x {v['parts']:>2} parts")
+            log("    scores:    " + ", ".join(f"{c}={s}" for c, s in
+                                              sorted(scores.items(), key=lambda kv: -kv[1])))
+        else:
+            log("    votes:     (none -- no measure could form a judgement)")
+        log("    evidence:")
+        for label, value in _inspect_evidence(src):
+            log(f"      {label:<26} {value}")
+    log("")
+    log(f"model-scanner: inspected {len(selected)} file(s)")
+    return 0
+
 
 def cmd_status(args) -> int:
     tree: Path = args.tree
@@ -1389,6 +1554,16 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", parents=[common],
                         help="report registry vs tree vs sources (read-only)")
     st.set_defaults(fn=cmd_status)
+
+    ins = sub.add_parser("inspect", parents=[common],
+                         help="show the evidence behind a file's classification "
+                              "(read-only); use --unclassified to review the gaps")
+    ins.add_argument("pattern", nargs="*",
+                     help="substring(s) matched against the display path; "
+                          "omit to select everything")
+    ins.add_argument("-u", "--unclassified", action="store_true",
+                     help="only files that end up unclassified")
+    ins.set_defaults(fn=cmd_inspect)
     return p
 
 

@@ -127,6 +127,12 @@ class Fixture:
             rc = ms.main(["status", *self.args()])
         return rc, buf.getvalue()
 
+    def inspect(self, *extra: str) -> tuple[int, str]:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ms.main(["inspect", *self.args(*extra)])
+        return rc, buf.getvalue()
+
     def load_registry(self) -> dict:
         return yaml.safe_load(self.registry.read_text())
 
@@ -735,20 +741,82 @@ class ScannerTest(unittest.TestCase):
     def test_lofi_cannot_outvote_embedded_evidence(self):
         """The misclassification shape: every NAME says one thing, the file says another.
         Names are correlated -- a mislabelled file usually has a matching bad path and
-        repo too -- so unanimity among them is worth about as much as one of them."""
+        repo too -- so unanimity among them is worth about as much as one of them.
+
+        STEP 2: the DATA now wins. This is the synthetic twin of the real field case
+        `..._Niji-Muted-Color-Real+VAE.safetensors`, whose name said vae while its tensors
+        said checkpoint. Before Step 2 the ladder's naming answer was recorded and the
+        disagreement was merely annotated; now the score decides and the naming answer is
+        what gets reported as disputed."""
         self.fx.add_hf_file("acme/lora-collection", "loras/super-lora-v2.safetensors",
                             safetensors_bytes(["first_stage_model.decoder.w"]))
         self.fx.sync()
         reg = self.fx.load_registry()
         entry = next(e for e in reg["entries"].values()
                      if e["display"].endswith("super-lora-v2.safetensors"))
-        # ANNOTATE-ONLY: the ladder's answer is still what gets recorded and linked...
-        self.assertEqual(entry["category"], "loras")
-        # ...but the measures disagree, loudly, and that is now on the record.
-        self.assertIn("disputed", entry)
-        self.assertTrue(entry["disputed"].startswith("vae@"))
-        self.assertLess(entry["confidence"], 0.3)
+        # The file's own contents decide, against a unanimous path+filename+repo.
+        self.assertEqual(entry["category"], "vae")
+        # The naming disagreement stays ON THE RECORD -- content decides, it does not
+        # silence. This report is the only way a confident-but-wrong embedded reading
+        # (a multimodal LLM's vision tower reading as clip_vision) stays findable.
+        self.assertEqual(entry["disputed"], "ladder=loras")
+        # 30x0.99 / (30 + 5 + 5 + 5) == 0.66: content carries the score outright.
+        self.assertGreater(entry["confidence"], 0.6)
         self.assertTrue(any(s.startswith("safetensors=vae@0.99") for s in entry["signals"]))
+        # ...and every LoFi measure is still RECORDED, just not trusted ("keeping the
+        # information is good; trusting it? less so"), each capped at LOFI_MAX_RATING.
+        lofi = [s for s in entry["signals"] if s.startswith(("segments=", "filename=",
+                                                            "repo="))]
+        self.assertEqual(len(lofi), 3)
+        self.assertTrue(all(s.endswith(f"@{ms.LOFI_MAX_RATING}") for s in lofi), lofi)
+
+    def test_lofi_unanimity_loses_to_one_generic_content_read(self):
+        """The arithmetic behind LOFI_MAX_RATING. All six LoFi measures agreeing is the
+        worst realistic case for the naming tier; it must still lose to a single GENERIC
+        (0.6) content read -- the weakest thing an embedded measure can say. At the old
+        0.6 cap this was an exact tie (30x0.6 == 30x0.6); the field data made the choice."""
+        votes = [{"measure": m, "category": "loras", "rating": ms.LOFI_MAX_RATING,
+                  "parts": ms.MEASURE_PARTS[m]} for m in sorted(ms.LOFI_MEASURES)]
+        votes.append({"measure": "safetensors", "category": "vae", "rating": 0.6,
+                      "parts": ms.MEASURE_PARTS["safetensors"]})
+        winner, conf, scores = ms.score_votes(votes)
+        self.assertEqual(winner, "vae")
+        self.assertGreater(scores["vae"], scores["loras"] * 1.9)
+
+    def test_inspect_shows_evidence_including_for_unidentifiable_files(self):
+        """Automatic identification has a floor. When the scanner cannot name a file,
+        `inspect` must still print the material it observed, so a human can decide and
+        the decision can then be encoded as a rule."""
+        self.fx.add_local_file("Stable-diffusion/merge_Real+VAE.safetensors",
+                               safetensors_bytes([
+                                   "model.diffusion_model.input_blocks.0.0.weight",
+                                   "first_stage_model.decoder.conv_in.weight"]))
+        self.fx.add_local_file("Stable-diffusion/mystery.safetensors",
+                               safetensors_bytes(["foo.bar.weight"]))
+        rc, out = self.fx.inspect()
+        self.assertEqual(rc, 0)
+        # The classified file shows the winning measure AND what naming wanted instead.
+        self.assertIn("naming ladder said: vae", out)
+        self.assertRegex(out, r"safetensors\s+-> checkpoints")
+        # Raw material is printed, not just the conclusion.
+        self.assertIn("first_stage_model", out)
+        # The unidentifiable file is the point: no votes, but evidence regardless.
+        self.assertIn("(none -- no measure could form a judgement)", out)
+        self.assertIn("foo", out)
+        # Filtering narrows to the gaps.
+        rc, only = self.fx.inspect("-u")
+        self.assertEqual(rc, 0)
+        self.assertIn("mystery.safetensors", only)
+        self.assertNotIn("merge_Real+VAE", only)
+
+    def test_inspect_is_read_only(self):
+        """It is a diagnostic: it must never create a registry or touch the tree."""
+        self.fx.add_local_file("loras/x.safetensors", safetensors_bytes(["lora_unet_a"]))
+        rc, _ = self.fx.inspect()
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.fx.registry.exists(), "inspect wrote a registry")
+        self.assertFalse(any(self.fx.tree.rglob("*")) if self.fx.tree.is_dir() else False,
+                         "inspect touched the link tree")
 
     def test_score_is_per_category_not_pooled(self):
         votes = [

@@ -196,19 +196,22 @@ case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
 esac
 
 if [[ $PLAIN -eq 1 ]]; then
-  BOLD="" ULINE="" ITALIC="" RESET="" DIVCH="-"
+  ITALIC="" RESET="" DIVCH="-"
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --plain / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
   C_BRK="" C_DEF="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD=""
   C_TBRK="" C_TIDX="" C_ALLB="" C_ALL="" C_ALLT="" C_ARROW="" C_SUBJ="" C_NOTE=""
-  G_ACTIVE="[+] ACTIVE" G_STOPPED="[-] STOPPED" G_NONE="[ ] none"
-  W_ACTIVE=10 W_STOPPED=11 W_NONE=8
-  GS_ACTIVE="[+]" GS_STOPPED="[-]" GS_NONE="[ ]" W_STATE=3   # glyph-only State cell
-  G_YES="Y" G_NO="n" W_GLYPH=1
+  C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
+  C_EXE="" C_CMD="" C_TGT="" C_PH=""
+  # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
+  # The ASCII glyph already carries its own brackets, so the Legend adds none
+  # (GB_L/GB_R empty); LEG_PAD is the trailing pad of Jei's approved Key row.
+  GS_YES="[+]" GS_NO="[-]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R="" LEG_PAD=""
+  BULLET="-" ARROW_G=" ---> "
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
 else
-  BOLD=$'\e[1m' ULINE=$'\e[4m' ITALIC=$'\e[3m' RESET=$'\e[0m' DIVCH="─"
+  ITALIC=$'\e[3m' RESET=$'\e[0m' DIVCH="─"
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
   C_TITLE=$'\e[1;96m'   # installer title (top banner only)
   C_BTITLE=$'\e[0;96m'  # per-box banner title
@@ -226,10 +229,23 @@ else
   C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
   C_SUBJ=$'\e[1;97m'    # sub-notice subject
   C_NOTE=$'\e[3;97m'    # propagated-choice note
-  G_ACTIVE=$'\U1F7E2 ACTIVE' G_STOPPED=$'\U1F6D1 STOPPED' G_NONE=$'⚫ none'
-  W_ACTIVE=9 W_STOPPED=10 W_NONE=7        # emoji glyphs are double-width
-  GS_ACTIVE=$'\U1F7E2' GS_STOPPED=$'\U1F6D1' GS_NONE=$'⚫' W_STATE=2  # glyph-only State cell
-  G_YES=$'✅' G_NO=$'\U1F6AB' W_GLYPH=2
+  C_HDR=$'\e[1;4;97m'   # dashboard section titles + column headers
+  C_SVC=$'\e[3;37m'     # dashboard service name, and inline asides
+  C_PORT=$'\e[1;93m'    # dashboard host port
+  C_STAR=$'\e[1;3;97m'  # the *ComfyUI footnote
+  C_EXE=$'\e[0;33m'     # a command's executable   (podman, distrobox)
+  C_CMD=$'\e[0;95m'     # its verb                 (enter, compose, assemble create)
+  C_TGT=$'\e[0;92m'     # its target               (paths, container names)
+  C_PH=$'\e[0;94m'      # the <box> placeholder inside a target
+  # The emoji glyphs bring their own color, so the state cell resets to bare.
+  C_GLYPH=$RESET
+  # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
+  # ⚫ covers NA *and* unknown, so there is no separate "unknown" glyph. The
+  # Legend wraps the emoji in its own brackets (GB_L/GB_R); LEG_PAD is the
+  # trailing pad of Jei's approved Key row.
+  GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
+  LEG_PAD="  "
+  BULLET="·" ARROW_G=" 🭹🭹🭹⮞ "
   BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
 fi
 
@@ -251,9 +267,9 @@ section() {   # ── Name ──────... divider, 78 cols.  name [intro
     "$C_FRAME" "$DIVCH$DIVCH" "$lcol" "$name" "$C_FRAME" "$fill" "$DIVCH" "$RESET"
 }
 
-# Color FIRST, then attributes: a "0;NN" / "1;NN" code resets the attribute
-# bits, so BOLD/ULINE/ITALIC must be emitted after it to survive.
-hdr() { printf '%s%s%s%s%s\n' "$C_LABEL" "$BOLD" "$ULINE" "$1" "$RESET"; }
+# One combined SGR ("1;4;97") rather than color-then-attributes: three separate
+# codes render identically but cost three sequences instead of one.
+hdr() { printf '%s%s%s\n' "$C_HDR" "$1" "$RESET"; }
 
 # One selectable menu option row: "  [x]rest<pad>tail". The option that is the
 # CURRENT DEFAULT wears the green [default] colors; every other option wears
@@ -331,10 +347,31 @@ pad_cell() {   # text display-width column-width
 }
 
 # Same as pad_cell, but styles the WORDS only — the padding stays plain.
+# UNDERLINE is the one attribute in this palette that renders on blanks (a bold
+# space is a space; a colored space is a space), which is why this variant, and
+# only this variant, spends a RESET before the padding.
 pad_cell_u() {   # text display-width column-width
   local text=$1 dw=$2 cw=$3 n
   n=$(( cw - dw )); [[ $n -lt 1 ]] && n=1
-  printf '%s%s%s%*s' "$C_SUB" "$text" "$RESET" "$n" ""
+  printf '%s%s%s%*s' "$C_HDR" "$text" "$RESET" "$n" ""
+}
+
+# Responsive output width, one column under the terminal so nothing ever touches
+# the right edge. 59 is the floor (a phone) — narrower than that we accept
+# wrapping rather than eliding, because the command lines below the table are
+# copy-paste payload and a truncated command is worse than a wrapped one.
+#
+# `tput cols` FIRST, not COLUMNS: bash only maintains COLUMNS in an interactive
+# shell with checkwinsize, so in the documented `curl … | bash` path it is always
+# unset and a COLUMNS-only reading would silently pin the width to the fallback
+# forever. COLUMNS still wins when explicitly exported, which is how the tests
+# drive this.
+term_width() {
+  local w=${COLUMNS:-}
+  [[ -z $w ]] && w=$(tput cols 2>/dev/null || echo 80)
+  case "$w" in ''|*[!0-9]*) w=80 ;; esac
+  w=$(( w - 1 )); [[ $w -lt 59 ]] && w=59
+  printf '%s' "$w"
 }
 
 home_disp() {  # compress $HOME → ~ for display
@@ -342,6 +379,118 @@ home_disp() {  # compress $HOME → ~ for display
   if [[ $p == "$HOME" ]]; then printf '~'
   elif [[ $p == "$HOME"/* ]]; then printf '~%s' "${p#"$HOME"}"
   else printf '%s' "$p"; fi
+}
+
+# ── Path fitting ─────────────────────────────────────────────────────────────
+# Shrink a path to a cell budget, surrendering detail in this order (the LAST
+# item surrendered is the most protected):
+#   4. inner directories — revealed a character at a time from BOTH ends
+#   3. the rest of the leaf filename
+#   2. ~, the level below it, and the leaf's PARENT directory
+#   1. the leaf's first 8 characters — held while anything else remains
+# Tier 2 outranks tier 3, so a squeezed path keeps its SHAPE (where the file
+# lives) even at the cost of a blunter filename. It is CONDITIONAL: a path that
+# already fits is left alone. Abbreviation is three literal dots, never "…",
+# because the ellipsis character is tofu on some of the terminals this runs on.
+# Widths are character counts: these are filesystem paths, all narrow.
+FP_LEAF_MIN=8
+_FP_HEAD="" _FP_D1="" _FP_PARENT="" _FP_LEAF="" _FP_INNER="" _FP_BUDGET=0
+
+# Truncate to n characters and append "..." — stripping any separator left
+# stranded against it first, since "vllm_config." + "..." reads as four dots.
+_fp_cut() {   # text n
+  local s=${1:0:$2}
+  while [[ -n $s && $s == *[-._\ ] ]]; do s=${s%?}; done
+  printf '%s...' "$s"
+}
+
+# One candidate rendering. leaf_k/inner_n of -1 mean "whole", inner_n of 0 means
+# "replaced by ...", and keep_d1/keep_parent are the two tier-2 components.
+_fp_render() {   # leaf_k inner_n keep_d1 keep_parent
+  local lk=$1 inn=$2 kd1=$3 kp=$4 ls mid="" l r parts=()
+  if [[ $lk -lt 0 ]]; then ls=$_FP_LEAF; else ls=$(_fp_cut "$_FP_LEAF" "$lk"); fi
+  if [[ -n $_FP_INNER ]]; then
+    if [[ $inn -lt 0 ]]; then mid=$_FP_INNER
+    elif [[ $inn -eq 0 ]]; then mid="..."
+    else
+      l=$(( (inn + 1) / 2 )); r=$(( inn - l ))
+      mid="${_FP_INNER:0:l}..."
+      [[ $r -gt 0 ]] && mid+="${_FP_INNER: -r}"
+    fi
+  fi
+  parts=("$_FP_HEAD")
+  [[ $kd1 -eq 1 ]] && parts+=("$_FP_D1")
+  if [[ -n $mid ]]; then parts+=("$mid")
+  elif [[ $kd1 -eq 0 ]]; then parts+=("...")   # never let the head abut the parent
+  fi
+  [[ $kp -eq 1 ]] && parts+=("$_FP_PARENT")
+  parts+=("$ls")
+  local IFS=/
+  printf '%s' "${parts[*]}"
+}
+
+# The richest rendering that fits for one tier-2 configuration: buy back the
+# leaf first (tier 3), then the inner directories (tier 4). Returns 1 when even
+# the bluntest rendering of this configuration is too wide.
+_fp_best() {   # keep_d1 keep_parent
+  local kd1=$1 kp=$2 lk cand out k n
+  cand=$(_fp_render "$FP_LEAF_MIN" 0 "$kd1" "$kp")
+  [[ ${#cand} -le $_FP_BUDGET ]] || return 1
+  lk=$FP_LEAF_MIN
+  cand=$(_fp_render -1 0 "$kd1" "$kp")
+  if [[ ${#cand} -le $_FP_BUDGET ]]; then
+    lk=-1
+  else
+    for (( k = ${#_FP_LEAF} - 1; k >= FP_LEAF_MIN; k = k - 1 )); do
+      cand=$(_fp_render "$k" 0 "$kd1" "$kp")
+      if [[ ${#cand} -le $_FP_BUDGET ]]; then lk=$k; break; fi
+    done
+  fi
+  # Re-maximise the inner directories against the leaf we just settled on: an
+  # earlier draft kept the first fit and wasted up to five cells.
+  out=$(_fp_render "$lk" 0 "$kd1" "$kp")
+  cand=$(_fp_render "$lk" -1 "$kd1" "$kp")
+  if [[ ${#cand} -le $_FP_BUDGET ]]; then
+    out=$cand
+  else
+    for (( n = ${#_FP_INNER}; n >= 1; n = n - 1 )); do
+      cand=$(_fp_render "$lk" "$n" "$kd1" "$kp")
+      if [[ ${#cand} -le $_FP_BUDGET ]]; then out=$cand; break; fi
+    done
+  fi
+  printf '%s' "$out"
+}
+
+fit_path() {   # path budget → path shrunk to fit
+  local p=$1 comps=() n m i cand
+  # Tier-2 configurations, richest first: keep ~/<level>/…/<parent>, then drop
+  # the level below ~, then drop the leaf's parent too.
+  local kd1s=(1 0 0) kps=(1 1 0)
+  _FP_BUDGET=$2
+  if [[ ${#p} -le $_FP_BUDGET ]]; then printf '%s' "$p"; return 0; fi
+  IFS=/ read -r -a comps <<<"$p"
+  n=${#comps[@]}
+  m=$(( _FP_BUDGET - 3 )); [[ $m -lt 1 ]] && m=1
+  if [[ $n -lt 4 ]]; then _fp_cut "$p" "$m"; return 0; fi
+  _FP_HEAD=${comps[0]} _FP_D1=${comps[1]}
+  _FP_PARENT=${comps[n - 2]} _FP_LEAF=${comps[n - 1]}
+  _FP_INNER=$(IFS=/; printf '%s' "${comps[*]:2:n - 4}")
+  for (( i = 0; i < 3; i = i + 1 )); do
+    if cand=$(_fp_best "${kd1s[i]}" "${kps[i]}"); then
+      printf '%s' "$cand"; return 0
+    fi
+  done
+  _fp_cut "$_FP_LEAF" "$m"
+}
+
+# Shrink the PAYLOAD of a "label: payload" note (the label is the part that says
+# what to do, so it is never touched). Notes with no label shrink whole.
+fit_note() {   # note budget → note
+  local note=$1 budget=$2 label=""
+  [[ -z $note ]] && { printf ''; return 0; }
+  if [[ $note == *": "* ]]; then label="${note%%: *}: "; note=${note#"$label"}; fi
+  printf '%s' "$label"
+  fit_path "$note" "$(( budget - ${#label} ))"
 }
 
 expand_path() {  # ~ expansion + absolutize + normalize (realpath -m style)
@@ -1548,7 +1697,9 @@ write_notes() {
     printf 'On the GPU host, the repo'\''s `scaffolding/check-rocm.sh` validates\n'
     printf 'GPU access + per-box smoke across all images (see its --help).\n'
   } > "$f"
-  printf '  %s%s%sWrote %s.%s\n' "$C_TEXT" "$BOLD" "$ITALIC" "$(home_disp "$f")" "$RESET"
+  # Two blank lines: this closes the run's chattiest phase (the pull/create/start
+  # output) and opens the final report, which reads as its own page.
+  printf '\n\n%sWrote %s.%s\n' "$C_TEXT" "$(home_disp "$f")" "$RESET"
   return 0
 }
 
@@ -1574,11 +1725,18 @@ box_as() {
   fi
 }
 
-box_state() {  # box → ACTIVE|STOPPED|none
-  local box=$1 state=""
+box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
+  local box=$1 state="" asked=0
   if [[ -n $RUNTIME ]]; then
-    state=$("$RUNTIME" ps -a --filter "name=^$(server_name "$box")\$" \
-            --format '{{.State}}' 2>/dev/null | head -n1) || state=""
+    # Distinguish "asked, nothing there" from "could not ask": with no runtime, or
+    # a query that errored, `none` would claim the box does not exist when the
+    # truth is we have no way to tell. Only a successful query earns `none`.
+    if state=$("$RUNTIME" ps -a --filter "name=^$(server_name "$box")\$" \
+               --format '{{.State}}' 2>/dev/null | head -n1); then
+      asked=1
+    else
+      state=""
+    fi
   fi
   if [[ -z $state ]]; then
     if [[ -n "${SESSION_STATE[$box]:-}" ]]; then
@@ -1587,68 +1745,104 @@ box_state() {  # box → ACTIVE|STOPPED|none
       [[ ${EX_CTR[$box]} == running ]] && printf 'ACTIVE' || printf 'STOPPED'
     elif [[ -n "${EX_DBX[$box]:-}" ]]; then
       printf 'STOPPED'
-    else
+    elif [[ $asked -eq 1 ]]; then
       printf 'none'
+    else
+      printf 'UNKNOWN'
     fi
   else
     [[ $state == running ]] && printf 'ACTIVE' || printf 'STOPPED'
   fi
 }
 
+# The table geometry, verified against Jei's hand-tuned mockup:
+#
+#   Service      On   Srv  Box  Auto  Port  Important Notes
+#   col 0        <--- four glyphs, pitch 5 --->  32    38
+#
+# The four glyph cells are RIGHT-aligned to end at column 29, which is why the
+# 2-cell emoji starts one column right of the 3-cell ASCII glyph. Only the Notes
+# column is responsive; everything left of it is fixed so the columns line up
+# between runs. The header labels sit at 16/21/26 with `On` pulled left onto the
+# first glyph column — Jei's spacing, kept as drawn.
 dashboard() {
-  local box lane st stg stw g note data row port
+  local box lane st stg g note data row port budget oncol gap tokl tokr ind gp
+  budget=$(( $(term_width) - 38 ))
+  oncol=$(( 14 - W_STATE ))     # first glyph column: 12 emoji, 11 ASCII
+  gap=$(( 3 - W_STATE ))        # lead from the Service cell into that column
+  tokl=$GB_L$C_GLYPH tokr=$C_TEXT$GB_R
+  ind=$(( 12 - 5 - W_STATE - ${#GB_L} - ${#GB_R} ))   # "Value" → glyph, right-aligned
+  gp=$(( 4 - W_STATE - ${#GB_L} - ${#GB_R} ))         # ASCII glyph is a cell narrower
   say ""
-  hdr "Box Status"
-  printf '%sLegend: State %s active / %s stopped / %s none — Box=distrobox, Server, AS=auto-start (%s/%s)%s\n' \
-    "$C_TEXT" "$GS_ACTIVE" "$GS_STOPPED" "$GS_NONE" "$G_YES" "$G_NO" "$RESET"
+  hdr "Legend"
+  printf '%sKey     [%s%s%s] Running?   [%s%s%s] Server   [%s%s%s] Distrobox     [%s%s%s] Auto-Start%s%s\n' \
+    "$C_TEXT" "$C_SUBJ" "On" "$C_TEXT" "$C_SUBJ" "Srv" "$C_TEXT" \
+    "$C_SUBJ" "Box" "$C_TEXT" "$C_SUBJ" "Auto" "$C_TEXT" "$LEG_PAD" "$RESET"
+  printf '%sValue%*s%s%s%s yes%*s%s%s%s%*s no%*s%s%s%s%*s NA / unknown %s\n' \
+    "$C_TEXT" "$ind" "" "$tokl" "$GS_YES" "$tokr" \
+    9 "" "$tokl" "$GS_NO" "$tokr" "$gp" "" \
+    8 "" "$tokl" "$GS_NA" "$tokr" "$gp" "" "$RESET"
   say ""
   # Underline the WORDS only — the column padding stays plain.
   printf '%s%s%s%s%s%s%s%s%s\n' \
-    "$(pad_cell_u "Box" 3 11)" "$(pad_cell_u "State" 5 7)" "$(pad_cell_u "Box" 3 5)" \
-    "$(pad_cell_u "Server" 6 8)" "$(pad_cell_u "AS" 2 4)" "$(pad_cell_u "Port" 4 6)" \
-    "$C_SUB" "Important Notes" "$RESET"
+    "$(pad_cell_u "Service" 7 "$oncol")" "$(pad_cell_u "On" 2 $(( 16 - oncol )))" \
+    "$(pad_cell_u "Srv" 3 5)" "$(pad_cell_u "Box" 3 5)" \
+    "$(pad_cell_u "Auto" 4 6)" "$(pad_cell_u "Port" 4 6)" \
+    "$C_HDR" "Important Notes" "$RESET"
   for box in "${SELECTED[@]}"; do
     lane=$(box_lanes_disp "$box")
     st=$(box_state "$box")
     case "$st" in
-      ACTIVE)  stg=$GS_ACTIVE ;;
-      STOPPED) stg=$GS_STOPPED ;;
-      *)       stg=$GS_NONE ;;
+      ACTIVE)  stg=$GS_YES ;;
+      STOPPED) stg=$GS_NO ;;
+      # `none` and UNKNOWN both render ⚫: "not there" and "could not ask" look
+      # the same to the reader, and box_state keeps the distinction internally.
+      *)       stg=$GS_NA ;;
     esac
-    row=$(pad_cell "$box" ${#box} 11)
-    row+=$(pad_cell "$stg" "$W_STATE" 7)
-    [[ $lane == distrobox || $lane == both ]] && g=$G_YES || g=$G_NO
-    row+=$(pad_cell "$g" "$W_GLYPH" 5)
-    [[ $lane == server || $lane == both ]] && g=$G_YES || g=$G_NO
-    row+=$(pad_cell "$g" "$W_GLYPH" 8)
-    [[ -n "$(box_as "$box")" ]] && g=$G_YES || g=$G_NO
-    row+=$(pad_cell "$g" "$W_GLYPH" 4)
+    row=$C_SVC$(pad_cell "$box" ${#box} 11)$C_GLYPH
+    row+=$(printf '%*s' "$gap" "")
+    row+=$(pad_cell "$stg" "$W_STATE" 5)
+    [[ $lane == server || $lane == both ]] && g=$GS_YES || g=$GS_NO
+    row+=$(pad_cell "$g" "$W_STATE" 5)
+    [[ $lane == distrobox || $lane == both ]] && g=$GS_YES || g=$GS_NO
+    row+=$(pad_cell "$g" "$W_STATE" 5)
+    [[ -n "$(box_as "$box")" ]] && g=$GS_YES || g=$GS_NO
+    row+=$(pad_cell "$g" "$W_STATE" $(( W_STATE + 3 )))
     port=$(box_port_disp "$box")
-    row+=$(pad_cell "$port" ${#port} 6)
+    row+=$C_PORT$(pad_cell "$port" ${#port} 6)
     data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-}}"
     note=${BOX_NOTE[$box]//@DATA@/$(home_disp "${data:-~/droste/$box/data}")}
-    [[ ${#note} -gt 42 ]] && note="${note:0:39}..."
-    printf '%s%s%s%s\n' "$C_TEXT" "$row" "$note" "$RESET"
+    [[ -n $note ]] && row+=$C_TEXT$(fit_note "$note" "$budget")
+    printf '%s%s\n' "$row" "$RESET"
   done
   say ""
   hdr "Shortcuts"
-  # Label italic bright-white, command bold bright-white (the copy-paste payload).
-  printf '  %s%-20s%s%s%s%s\n' "$C_NOTE" "Enter box:" "$RESET" \
-    "$C_SUBJ" "distrobox enter droste-<box>-halo-box" "$RESET"
-  printf '  %s%-20s%s%s%s%s\n' "$C_NOTE" "Start/stop server:" "$RESET" \
-    "$C_SUBJ" "podman start|stop droste-<box>-halo-server" "$RESET"
+  # Label in body text; the command is decorated executable / verb / target, with
+  # the <box> you substitute picked out in blue.
+  printf '%s%s%-20s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "Enter box:" \
+    "$C_EXE" "distrobox " "$C_CMD" "enter " \
+    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo-box" "$RESET"
+  printf '%s%s%-20s%s%s%s%s%s%s%s%s%s%s%s  (%s%s%s%s%s)\n' "$C_TEXT" "$BULLET" \
+    "Start/stop server:" "$C_EXE" "podman " "$C_CMD" "start " \
+    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo-server" "$RESET" \
+    "$C_SUBJ" "stop " "$C_SVC" "to stop" "$RESET"
   say ""
-  # Same shape as the Shortcuts block above: header flush left, rows indented 2.
+  # Same shape as the Shortcuts block above.
   printf '%s%s%s\n' "$C_SUB" "Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
-  printf '  %s%-15s%s%s%s%s\n' "$C_NOTE" "server:" "$RESET" \
-    "$C_SUBJ" "podman compose -f droste-<box>-halo-server.compose.yaml up -d" "$RESET"
-  printf '  %s%-15s%s%s%s%s\n' "$C_NOTE" "distrobox:" "$RESET" \
-    "$C_SUBJ" "distrobox assemble create --file droste-<box>-halo-box.ini" "$RESET"
+  printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "server:" \
+    "$C_EXE" "podman " "$C_CMD" "compose " \
+    "$C_TGT" "-f droste-" "$C_PH" "<box>" "$C_TGT" \
+    "-halo-server.compose.yaml up -d" "$RESET"
+  printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "distrobox:" \
+    "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
+    "$C_TGT" "--file droste-" "$C_PH" "<box>" "$C_TGT" "-halo-box.ini" "$RESET"
   say ""
-  printf '%s%s%s%s%s\n' "$C_LABEL" "$BOLD" "$ITALIC" \
-    "* ComfyUI models scanned at start; to add more run: hf download <shared cache>" "$RESET"
-  printf '%s-->%s Definitions + full guide: %s (compose.yaml, ini, NOTES.md)\n' \
-    "$C_ARROW" "$RESET" "$(home_disp "$EMIT_DIR")"
+  printf '%s%s%s\n' "$C_STAR" \
+    "*ComfyUI models scanned at start; to add more run: hf download <shared cache>" "$RESET"
+  printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
+    "Definitions + full guide: $(home_disp "$EMIT_DIR") (compose.yaml, ini, NOTES.md)" \
+    "$RESET"
+  say ""
   return 0
 }
 

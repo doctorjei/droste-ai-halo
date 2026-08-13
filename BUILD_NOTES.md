@@ -1011,9 +1011,17 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   start at all (found on hardware 2026-08-12, the first time the vLLM lane was
   ever run). CI never caught it because **build success is not import success**
   and no job imports vllm. Hence the explicit `tokenizers` range install plus a
-  `pip check` that fails the BUILD on any inconsistent set. FLAG: when
-  transformers moves its range, `pip check` goes red here — update the pin, do
-  not remove the check.
+  `pip check` gate that fails the BUILD on any NEW inconsistent set. The gate is
+  ALLOWLIST-BASED, not bare: this env carries six known pre-existing conflicts,
+  one unsatisfiable by construction (no PyPI torchvision declares compatibility
+  with a ROCm-nightly torch), so a bare `pip check` is a permanent break. The
+  gate prints the full raw output, filters exactly the six known lines (matched
+  on package pair + bound direction, never installed versions), and fails on
+  anything that survives. It has caught real drift already: the amd-aiter
+  nightly grew a runtime `pybind11` dependency overnight (2026-08-13) — fixed by
+  installing it, since satisfiable conflicts get pinned/installed and ONLY
+  unsatisfiable-by-construction ones get allowlisted with a rationale. FLAG:
+  when the gate goes red, read what it names; do not remove the check.
 - Runtime libs: `libnuma` (vLLM numa lookup on `import vllm`) + `libgomp1` —
   torch links `libgomp.so.1` (OpenMP), which the lean runtime base does NOT
   carry, so `import torch` (and thus `import vllm`) fails without it. Verified on

@@ -104,8 +104,11 @@ echo "=== pip check: end of raw output ==="
 ALLOW_TORCHVISION_TORCH='^torchvision [0-9][^ ]* (has requirement|requires) torch==.*, but you have torch '
 # vllm pins grpcio==<exact>; the wheel set resolves a newer grpcio — pre-existing skew.
 ALLOW_VLLM_GRPCIO='^vllm [0-9][^ ]* (has requirement|requires) grpcio==.*, but you have grpcio '
-# grpcio-reflection pins grpcio==<exact>; same newer-grpcio skew as above.
-ALLOW_GRPCIO_REFLECTION_GRPCIO='^grpcio-reflection [0-9][^ ]* (has requirement|requires) grpcio==.*, but you have grpcio '
+# vllm pins grpcio-reflection==<exact>; same newer-than-pinned skew as grpcio above.
+# (The s32 notes miscast this line as grpcio-reflection pinning grpcio; the CI raw
+# output shows vllm as the offender, and grpcio-reflection 1.83 is content with
+# grpcio 1.83 — corrected from run 31653533467.)
+ALLOW_VLLM_GRPCIO_REFLECTION='^vllm [0-9][^ ]* (has requirement|requires) grpcio-reflection==.*, but you have grpcio-reflection '
 # grpcio-tools caps protobuf<7; we have protobuf 7.x. Pattern requires the '<' upper bound.
 ALLOW_GRPCIO_TOOLS_PROTOBUF='^grpcio-tools [0-9][^ ]* (has requirement|requires) protobuf[^ ]*<.*, but you have protobuf '
 # numba caps numpy<2.3; we have numpy 2.5.x. Pattern requires the '<' upper bound.
@@ -120,7 +123,7 @@ grep -v -E \
     -e '^No broken requirements found' \
     -e "$ALLOW_TORCHVISION_TORCH" \
     -e "$ALLOW_VLLM_GRPCIO" \
-    -e "$ALLOW_GRPCIO_REFLECTION_GRPCIO" \
+    -e "$ALLOW_VLLM_GRPCIO_REFLECTION" \
     -e "$ALLOW_GRPCIO_TOOLS_PROTOBUF" \
     -e "$ALLOW_NUMBA_NUMPY" \
     -e "$ALLOW_VLLM_SETUPTOOLS" \

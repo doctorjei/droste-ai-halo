@@ -114,6 +114,59 @@ def motion_module_keys() -> list:
             "up_blocks.2.motion_modules.1.temporal_transformer.proj_out.weight"]
 
 
+# A REAL latent autoencoder's insides, in both spellings that actually ship. Used
+# wherever a fixture has to BE a VAE rather than merely be SHAPED like one: since
+# heuristics 11 an encoder/decoder pair alone abstains (ParseNet has one too), so a
+# fixture carrying only `encoder.conv_in`/`decoder.conv_out` is no longer a VAE fixture --
+# it is the counterexample. Verbatim-shaped from the ldm and diffusers key vocabularies.
+def ldm_vae_keys() -> list:
+    return ["encoder.conv_in.weight",
+            "encoder.down.0.block.0.conv1.weight",
+            "decoder.conv_out.weight",
+            "decoder.up.3.block.0.conv1.weight",
+            "quant_conv.weight", "post_quant_conv.weight"]
+
+
+def diffusers_vae_keys() -> list:
+    return ["encoder.conv_in.weight",
+            "encoder.down_blocks.0.resnets.0.conv1.weight",
+            "decoder.conv_out.weight",
+            "decoder.up_blocks.0.resnets.0.conv1.weight",
+            "quant_conv.weight", "post_quant_conv.weight"]
+
+
+# ...and the counterexample itself: ParseNet (parsing_parsenet.pth, 85.3 MB), a face-
+# PARSING/segmentation net. Prefixes verbatim from Jei's field dump -- `body, decoder,
+# encoder, out_img_conv, out_mask_conv`, sample key `body.0.conv1.conv2d`.
+def parsenet_keys() -> list:
+    return ["body.0.conv1.conv2d.weight", "body.1.conv2.conv2d.weight",
+            "encoder.0.weight", "encoder.2.weight",
+            "decoder.0.weight", "decoder.2.weight",
+            "out_img_conv.weight", "out_mask_conv.weight"]
+
+
+# RetinaFace (facexlib) detection_Resnet50_Final.pth, DataParallel-wrapped exactly as it
+# ships: torch welds `module.` onto every key, so the file inspects as prefixes
+# `_metadata, module` and nothing else. The `_metadata` OrderedDict is included because
+# it is where the phantom EMPTY prefix comes from -- its root module is keyed on "".
+def retinaface_state_dict() -> dict:
+    d = {f"module.{k}": storage_ref() for k in (
+        "body.conv1.weight", "fpn.output1.0.weight", "ssh1.conv3X3.0.weight",
+        "ClassHead.0.conv1x1.weight", "BboxHead.0.conv1x1.weight",
+        "LandmarkHead.0.conv1x1.weight")}
+    d["_metadata"] = {"": {}, "module": {}, "module.body": {}}
+    return d
+
+
+# facenet.pth (153.7 MB): a Convolutional Pose Machine landmark model, whatever its
+# filename claims. Prefixes `Mconv1_stage2 ... Mconv7_stage6` (+44 more in the field).
+def cpm_state_dict() -> dict:
+    d = {f"Mconv{i}_stage{s}.{p}": storage_ref()
+         for s in (2, 6) for i in (1, 7) for p in ("weight", "bias")}
+    d["conv1_1.weight"] = storage_ref()
+    return d
+
+
 def gguf_bytes(architecture=None, extra_kv=None) -> bytes:
     """Minimal valid GGUF: magic, v3, 0 tensors, metadata kv (string type only)."""
     def s(x: str) -> bytes:
@@ -257,9 +310,11 @@ def populate_raiju(fx: Fixture) -> dict:
     """Reproduce the Raiju field-test cache: a diffusers-format FLUX.1-Fill-dev repo
     (generic component filenames) + a CTranslate2 faster-whisper model.bin."""
     flux = "black-forest-labs/FLUX.1-Fill-dev"
+    # A real AutoencoderKL, anatomy included (heuristics 11): the fixture used to carry a
+    # bare encoder./decoder. pair, which no longer identifies a VAE by content -- so the
+    # raiju assertions would have silently started passing on NAMING alone.
     vae_blob = fx.add_hf_file(flux, "vae/diffusion_pytorch_model.safetensors",
-                              safetensors_bytes(["decoder.conv_in.weight",
-                                                 "encoder.conv_in.weight"]))
+                              safetensors_bytes(diffusers_vae_keys()))
     te_blob = fx.add_hf_file(flux, "text_encoder/model.safetensors",
                              safetensors_bytes(["text_model.encoder.layers.0.q.weight"]))
     fx.add_hf_aux(flux, "model_index.json",
@@ -771,8 +826,11 @@ class ScannerTest(unittest.TestCase):
         dotted keys carry a prefix. Dotted tensor names still do."""
         self.assertIsNone(ms.classify_safetensors_header(
             {"encoder": {}, "decoder": {}, "config": {}}))
+        # (heuristics 11: the dotted half of this pair now needs real autoencoder
+        # anatomy too, so the fixture carries it -- the property under test is still
+        # DOTTED vs BARE, not what the dotted names happen to say.)
         self.assertEqual(ms.classify_safetensors_header(
-            {"encoder.conv_in.weight": {}, "decoder.conv_out.weight": {}}), "vae")
+            {k: {} for k in ldm_vae_keys()}), "vae")
 
     def test_object_pickle_executes_nothing(self):
         """The stub is now a real type, so it is instantiated rather than merely called.
@@ -810,8 +868,7 @@ class ScannerTest(unittest.TestCase):
         d = self.fx.root
         # guard the fixture: object #1 really is the preamble, not the payload
         blob = torch_legacy_bytes({"state_dict": {
-            "encoder.conv_in.weight": storage_ref(),
-            "decoder.conv_out.weight": storage_ref()}})
+            k: storage_ref() for k in ldm_vae_keys()}})
         self.assertEqual(pickle.loads(blob), TORCH_LEGACY_MAGIC)
         self.assertFalse(blob.startswith(b"PK"))
 
@@ -1061,6 +1118,161 @@ class ScannerTest(unittest.TestCase):
         entry = next(iter(self.fx.load_registry()["entries"].values()))
         self.assertEqual(entry["category"], "text_encoders")
         self.assertTrue(any(s == "safetensors=text_encoders@0.99"
+                            for s in entry["signals"]), entry["signals"])
+
+    # ------------- heuristics 11: an encoder+decoder pair is a SHAPE, not an identity
+    def test_vae_vote_requires_real_autoencoder_anatomy(self):
+        """A fresh field FALSE POSITIVE: parsing_parsenet.pth (ParseNet, a face-PARSING
+        /segmentation net, 85.3 MB) has key prefixes `body, decoder, encoder,
+        out_img_conv, out_mask_conv` and won vae@0.6 x 20 parts against its own correct
+        filename (facedetection, LoFi-capped at 0.3 x 5). Plenty of models have an encoder
+        and a decoder; only an autoencoder has an autoencoder's INSIDES."""
+        parsenet = {k: {} for k in parsenet_keys()}
+        self.assertIsNone(ms.classify_safetensors_header(parsenet))
+        # ABSTAIN means no vote at all -- not a vote for some other category.
+        self.assertIsNone(ms.rate_safetensors(parsenet))
+        # ...and both real VAE spellings still pass, at the generic content rating.
+        for shape in (ldm_vae_keys(), diffusers_vae_keys()):
+            hdr = {k: {} for k in shape}
+            self.assertEqual(ms.classify_safetensors_header(hdr), "vae", shape[1])
+            self.assertEqual(ms.rate_safetensors(hdr), ("vae", 0.6), shape[1])
+        # each anatomy marker is sufficient ON ITS OWN, in either spelling
+        for anatomy in ("encoder.down.0.block.0.conv1.weight",
+                        "decoder.up.3.block.0.conv1.weight",
+                        "encoder.down_blocks.0.resnets.0.conv1.weight",
+                        "decoder.up_blocks.0.resnets.0.conv1.weight",
+                        "quant_conv.weight", "post_quant_conv.weight"):
+            self.assertEqual(ms.classify_safetensors_header(
+                {"encoder.conv_in.weight": {}, "decoder.conv_out.weight": {},
+                 anatomy: {}}), "vae", anatomy)
+        # the explicit ldm bundle prefix never needed the pair and is untouched
+        self.assertEqual(ms.classify_safetensors_header(
+            {"first_stage_model.decoder.conv_in.weight": {}}), "vae")
+
+    def test_parsenet_shape_classifies_by_naming_not_content(self):
+        """End to end, as the file ships: a legacy torch pickle carrying ParseNet's keys
+        under the facexlib name. Content abstains, so naming -- which is right here --
+        decides, and NO pickle vote is on the record."""
+        self.fx.add_hf_file("xinntao/facexlib", "parsing_parsenet.pth",
+                            torch_legacy_bytes({k: storage_ref()
+                                                for k in parsenet_keys()}))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {"facedetection/parsing_parsenet.pth"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "facedetection")
+        self.assertFalse([s for s in entry["signals"] if s.startswith("pickle=")],
+                         entry["signals"])
+
+    def test_autoencoderkl_inside_a_lightning_checkpoint_is_a_vae(self):
+        """The other side of the same rule (AlexSmileface_mixG.v1.pt): a pytorch-lightning
+        bundle whose junk keys sit beside a real AutoencoderKL. The anatomy is there, the
+        name says nothing at all, so content must carry it -- tightening the vae rule may
+        not cost a genuine VAE its classification."""
+        self.fx.add_local_file("AlexSmileface_mixG.v1.pt", torch_legacy_bytes({
+            "epoch": 0, "global_step": 1, "pytorch-lightning_version": "1.4.2",
+            "state_dict": {k: storage_ref() for k in diffusers_vae_keys()}}))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), {"vae/AlexSmileface_mixG.v1.pt"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "vae")
+        self.assertTrue(any(s.startswith("pickle=vae@") for s in entry["signals"]),
+                        entry["signals"])
+
+    # --------------- heuristics 11: the DataParallel `module.` wrapper is PACKAGING
+    def test_dataparallel_module_prefix_is_stripped_before_every_rule(self):
+        """torch.nn.DataParallel welds `module.` onto every key, and a checkpoint saved
+        off one keeps it forever (detection_Resnet50_Final.pth: prefixes `_metadata,
+        module`). It says nothing about what the model IS, and it blinds every prefix rule
+        at once -- so it is normalized away ONCE, in the shared classifier."""
+        self.assertEqual(
+            ms.strip_dataparallel(["module.body.conv1.weight", "_metadata", "module"]),
+            ["body.conv1.weight", "_metadata", "module"])
+        # REGRESSION GUARD: wrapped keys must classify AND rate identically to unwrapped.
+        for shape, want in (
+            (["model.diffusion_model.input_blocks.0.0.weight",
+              "first_stage_model.decoder.conv_in.weight"], "checkpoints"),
+            (ldm_vae_keys(), "vae"),
+            (["lora_unet_down_blocks.lora_down.weight"], "loras"),
+            (["control_model.zero_convs.0.weight"], "controlnet"),
+        ):
+            plain = {k: {} for k in shape}
+            wrapped = {"module." + k: {} for k in shape}
+            self.assertEqual(ms.classify_safetensors_header(wrapped), want, shape[0])
+            self.assertEqual(ms.classify_safetensors_header(plain),
+                             ms.classify_safetensors_header(wrapped), shape[0])
+            self.assertEqual(ms.rate_safetensors(plain),
+                             ms.rate_safetensors(wrapped), shape[0])
+
+    # ------------------- heuristics 11: RetinaFace / facexlib heads -> facedetection
+    def test_retinaface_heads_are_facedetection(self):
+        """detection_Resnet50_Final.pth inspects as prefixes `_metadata, module` with
+        sample keys like `module.BboxHead.0.conv1x1...`. Once the DataParallel wrapper is
+        off, the three heads together ARE the RetinaFace signature."""
+        for head in ms.RETINAFACE_HEAD_PREFIXES:
+            self.assertEqual(ms.classify_safetensors_header(
+                {"body.conv1.weight": {}, head + "0.conv1x1.weight": {}}),
+                "facedetection", head)
+        wrapped = {"module." + k: {} for k in (
+            "body.conv1.weight", "fpn.output1.0.weight",
+            "ClassHead.0.conv1x1.weight", "BboxHead.0.conv1x1.weight",
+            "LandmarkHead.0.conv1x1.weight")}
+        self.assertEqual(ms.classify_safetensors_header(wrapped), "facedetection")
+        self.assertEqual(ms.rate_safetensors(wrapped),
+                         ("facedetection", ms.EMBEDDED_MAX_RATING))
+        # end to end through the pickle path, which is the one that matters: .pth files
+        self.fx.add_hf_file("xinntao/facexlib", "detection_Resnet50_Final.pth",
+                            torch_legacy_bytes(retinaface_state_dict()))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {"facedetection/detection_Resnet50_Final.pth"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "facedetection")
+        self.assertTrue(any(s.startswith("pickle=facedetection@")
+                            for s in entry["signals"]), entry["signals"])
+        # COSMETIC: the `_metadata` root entry is keyed on "", which rendered as a
+        # phantom leading item (", _metadata, module"). Gone from the DISPLAY -- while
+        # the RAW keys, wrapper and all, are still exactly what is printed.
+        rc, ins = self.fx.inspect("detection_Resnet50")
+        self.assertEqual(rc, 0)
+        self.assertRegex(ins, r"pickle key prefixes\s+_metadata, module")
+        self.assertNotRegex(ins, r"pickle key prefixes\s+,")
+        self.assertIn("module.BboxHead.0.conv1x1.weight", ins)
+
+    # ------------------- heuristics 11: CPM / OpenPose stage convs -> controlnet_aux
+    def test_cpm_stage_convs_are_controlnet_aux(self):
+        """`facenet.pth` (153.7 MB) is a Convolutional Pose Machine LANDMARK model, not a
+        face-recognition net: prefixes `Mconv1_stage2 ... Mconv7_stage6`, keys like
+        `Mconv1_stage2.bias`. Its name is actively misleading, so only content can place
+        it -- and the openpose annotators already routed here by NAME (body_pose_model /
+        hand_pose_model) are the same family, spelled `model1_1.0.weight`."""
+        # the placement is ONE constant, so confirming or flipping it is one line
+        self.assertEqual(ms.POSE_STAGE_CATEGORY, "controlnet_aux")
+        for key in ("Mconv1_stage2.bias", "Mconv7_stage6.weight",
+                    "model1_1.0.weight", "model6_2.12.bias"):
+            hdr = {key: {}, "conv1_1.weight": {}}
+            self.assertEqual(ms.classify_safetensors_header(hdr),
+                             ms.POSE_STAGE_CATEGORY, key)
+            self.assertEqual(ms.rate_safetensors(hdr),
+                             (ms.POSE_STAGE_CATEGORY, ms.EMBEDDED_MAX_RATING), key)
+        # anchored at the key root and requiring the stage digits, so an ordinary
+        # `model.`/`model0.` prefix or a mid-key occurrence cannot be swept in
+        for miss in ("model0.0.weight", "model.diffusion_model.input_blocks.0.0.weight",
+                     "backbone.model1_1.0.weight", "Mconv_stage.weight"):
+            self.assertIsNone(ms.POSE_STAGE_KEY_RE.match(miss), miss)
+        self.assertEqual(ms.classify_safetensors_header(
+            {"model.diffusion_model.x": {}, "first_stage_model.y": {}}), "checkpoints")
+        # end to end, under the misleading name
+        self.fx.add_local_file("facenet.pth", torch_legacy_bytes(cpm_state_dict()))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), {"controlnet_aux/facenet.pth"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "controlnet_aux")
+        self.assertTrue(any(s.startswith("pickle=controlnet_aux@")
                             for s in entry["signals"]), entry["signals"])
 
     # ------------------------------------------------- s29 confidence model (Jei's)
@@ -1436,7 +1648,11 @@ class ScannerTest(unittest.TestCase):
             (["control_model.x"], None, "controlnet"),
             (["vision_model.x"], None, "clip_vision"),
             (["first_stage_model.decoder.x"], None, "vae"),
-            (["decoder.conv_in.weight", "encoder.conv_in.weight"], None, "vae"),
+            # heuristics 11: an encoder/decoder pair must carry real autoencoder
+            # anatomy; the bare pair this case used to assert on is now ParseNet's
+            # shape, and is pinned as a NON-vae in its own test.
+            (ldm_vae_keys(), None, "vae"),
+            (diffusers_vae_keys(), None, "vae"),
             (["encoder.block.0.layer.0.q.weight", "shared.weight"], None,
              "text_encoders"),  # T5-style must NOT hit the generic vae rule
             (["text_model.encoder.x"], None, "text_encoders"),

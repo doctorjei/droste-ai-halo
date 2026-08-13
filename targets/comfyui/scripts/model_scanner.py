@@ -147,7 +147,18 @@ REGISTRY_VERSION = 2
 #    / controlnet_x_embedder.) outrank the bare-DiT rule; and legacy (pre-1.6, non-zip)
 #    torch files are finally readable, so files that yielded nothing now classify.
 #    Every registry must re-run.
-HEURISTICS_VERSION = 10
+# 11: content-rule changes, all from Jei's key dumps of the files heuristics 10 finally
+#    made readable. (a) a vae vote now requires real autoencoder ANATOMY -- "has an
+#    encoder and a decoder" is not "is a VAE", and ParseNet (a face-segmentation net)
+#    was outvoting its own correct filename on that alone; (b) the DataParallel
+#    `module.` wrapper is stripped ONCE in the shared key classifier, so every rule
+#    sees the same names whether or not a checkpoint was saved off a DataParallel
+#    model; (c) RetinaFace/facexlib heads (BboxHead/ClassHead/LandmarkHead) ->
+#    facedetection; (d) CPM/OpenPose stage convs (Mconv<n>_stage<n>, model<n>_<n>) ->
+#    controlnet_aux, so `facenet.pth` -- a pose model, not a face-recognition net --
+#    classifies by content instead of by its misleading name.
+#    Every registry must re-run.
+HEURISTICS_VERSION = 11
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -325,6 +336,67 @@ ANIMATEDIFF_KEY_RE = re.compile(
 # `.lora_down`, which is why the generic lora rule never sees these files.
 MOTION_LORA_MARKERS = ("to_q_lora", "to_k_lora", "to_v_lora", "to_out_lora",
                        "_lora.down.", "_lora.up.")
+
+# torch.nn.DataParallel wraps EVERY key of the model it holds in `module.`, and a
+# checkpoint saved straight off a DataParallel model carries that wrapper forever --
+# detection_Resnet50_Final.pth inspects as prefixes `_metadata, module` with keys like
+# `module.BboxHead.0.conv1x1.weight`. It is pure PACKAGING: it says nothing about what
+# the model is, and every prefix rule is blind while it is there. So it is stripped
+# ONCE, in the shared key classifier, ahead of all rules -- doing it per-rule would
+# oblige every future rule to remember to. Only the CLASSIFIER sees the stripped names;
+# `inspect` still prints the raw keys, because what is on disk is what a human reading
+# the evidence is trying to match against.
+DATAPARALLEL_PREFIX = "module."
+
+
+def strip_dataparallel(keys) -> list:
+    """Drop a leading `module.` from every key (torch DataParallel packaging)."""
+    n = len(DATAPARALLEL_PREFIX)
+    return [k[n:] if k.startswith(DATAPARALLEL_PREFIX) else k for k in keys]
+
+
+# REAL autoencoder anatomy, in both spellings: ldm (`encoder.down.` / `decoder.up.`) and
+# diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`), plus the quantisation convs
+# that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
+#
+# Required because "has an encoder and a decoder" is not "is a VAE". parsing_parsenet.pth
+# -- ParseNet, a face-PARSING/segmentation net, 85.3 MB -- has prefixes
+# `body, decoder, encoder, out_img_conv, out_mask_conv` and won vae@0.6 x 20 parts against
+# its own correct filename (facedetection, LoFi-capped at 0.3 x 5). Plenty of models are
+# shaped like an autoencoder; only an autoencoder has an autoencoder's insides. Without
+# anatomy the vae rule simply does not fire -- it abstains rather than guessing some other
+# category -- and the naming measures decide.
+VAE_ANATOMY_PREFIXES = ("encoder.down.", "decoder.up.",
+                        "encoder.down_blocks.", "decoder.up_blocks.")
+
+
+def _has_vae_anatomy(keys) -> bool:
+    """True when an encoder/decoder pair is backed by real autoencoder internals.
+
+    `quant_conv.` is a substring test on purpose: it covers `post_quant_conv.` in the
+    same breath, and both sit at the state-dict root in ldm and diffusers alike.
+    """
+    return any(k.startswith(VAE_ANATOMY_PREFIXES) or "quant_conv." in k for k in keys)
+
+
+# RetinaFace / facexlib detection heads. These three head names together ARE the
+# RetinaFace signature (detection_Resnet50_Final.pth, detection_mobilenet0.25_Final.pth);
+# nothing else in a model collection names a tensor `BboxHead`. Only visible once the
+# DataParallel wrapper above is stripped -- which is exactly how these files ship.
+RETINAFACE_HEAD_PREFIXES = ("BboxHead.", "ClassHead.", "LandmarkHead.")
+
+# Convolutional Pose Machine / OpenPose stage convolutions. `facenet.pth` (153.7 MB) is,
+# despite its name, a CPM LANDMARK model: prefixes `Mconv1_stage2 ... Mconv7_stage6`, keys
+# like `Mconv1_stage2.bias`. The openpose annotators already routed here BY NAME
+# (body_pose_model.pth / hand_pose_model.pth) are the same architecture family and spell
+# their stages `model1_1.0.weight`, so one rule covers both -- and now covers them by
+# CONTENT, which is what a renamed or oddly-named copy needs. Anchored at the start of the
+# key and requiring the stage digits, so an ordinary `model.`/`model0.` prefix cannot match.
+POSE_STAGE_KEY_RE = re.compile(r"^(?:Mconv\d+_stage\d+|model\d+_\d+)\.")
+# WHERE they land. The openpose estimators already live in controlnet_aux, so a CPM
+# landmark net joins them. This placement is one constant on purpose: it awaits Jei's
+# confirmation, and changing it is a one-line change here, nowhere else.
+POSE_STAGE_CATEGORY = "controlnet_aux"
 
 # generic basenames that must never be used as link names (provenance rule)
 GENERIC_STEM_RE = re.compile(
@@ -685,7 +757,10 @@ def classify_safetensors_header(header: dict) -> str | None:
         if arch.endswith("vae") or "/vae" in arch:
             return "vae"
 
-    keys = [k for k in header if k != "__metadata__"]
+    # ONE normalization pass, ahead of every rule: a checkpoint saved off a
+    # torch.nn.DataParallel model has `module.` welded to the front of every key, which
+    # blinds all of the prefix rules below at once (see DATAPARALLEL_PREFIX).
+    keys = strip_dataparallel(k for k in header if k != "__metadata__")
     # Only DOTTED keys have a prefix. Tensor names are always module-scoped, so this
     # costs nothing there -- but object-pickles reach this classifier through
     # classify_pickle with plain ATTRIBUTE names harvested from __setstate__, and a bare
@@ -725,6 +800,15 @@ def classify_safetensors_header(header: dict) -> str | None:
                  "controlnet_mid_block.", "controlnet_blocks.",
                  "controlnet_x_embedder."):
         return "controlnet"
+    # ---- auxiliary DETECTOR / ESTIMATOR architectures. They sit above the generic model
+    # shapes below because they are unmistakable -- nothing else names a tensor `BboxHead`
+    # or `Mconv3_stage4` -- and because both families ship as bare .pth files whose only
+    # other signal is a filename that can be actively misleading (`facenet.pth` is a pose
+    # model, not a face-recognition net).
+    if any_start(*RETINAFACE_HEAD_PREFIXES):
+        return "facedetection"
+    if any(POSE_STAGE_KEY_RE.match(k) for k in keys):
+        return POSE_STAGE_CATEGORY
     # A vision tower is evidence that a model CAN SEE, not that it IS an image encoder.
     # A multimodal LLM ships one bolted onto a language decoder (model.layers./
     # language_model.) through a projector -- and one of those, a gemma-3-12b shipped as
@@ -756,7 +840,11 @@ def classify_safetensors_header(header: dict) -> str | None:
         return "text_encoders"
     if any_start("first_stage_model."):
         return "vae"
-    if "decoder." in prefixes and "encoder." in prefixes:
+    # An encoder/decoder PAIR is a shape, not an identity: it must be backed by real
+    # autoencoder internals before it may claim `vae` (see VAE_ANATOMY_PREFIXES). Bare
+    # encoder./decoder. falls through to abstain, and naming gets to decide.
+    if ("decoder." in prefixes and "encoder." in prefixes
+            and _has_vae_anatomy(keys)):
         return "vae"
     if any_start("text_model.", "t5.", "enc."):
         return "text_encoders"
@@ -1027,7 +1115,9 @@ DISTINCTIVE_PREFIXES = (
     "controlnet_cond_embedding.", "controlnet_down_blocks.", "controlnet_mid_block.",
     "controlnet_blocks.", "controlnet_x_embedder.",
     "text_embedding_projection.", "transformer_blocks.", "patch_embedding.",
-)
+    # ...and the RetinaFace heads, which name their architecture as squarely as any of
+    # the above (defined once, up with the rule that matches them).
+) + RETINAFACE_HEAD_PREFIXES
 
 
 def rate_safetensors(header: dict) -> tuple[str, float] | None:
@@ -1035,10 +1125,16 @@ def rate_safetensors(header: dict) -> tuple[str, float] | None:
     cat = classify_safetensors_header(header)
     if not cat:
         return None
-    keys = [k for k in header if k != "__metadata__"]
-    if any(k.startswith(DISTINCTIVE_PREFIXES) for k in keys) or any(
-            k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k or ".lora_B" in k
-            or ".lora_down" in k or ".lora_up" in k for k in keys):
+    # Same normalization the classifier ran on, for the same reason: a DataParallel
+    # `module.` wrapper must not cost a file its confidence rating either.
+    keys = strip_dataparallel(k for k in header if k != "__metadata__")
+    if (any(k.startswith(DISTINCTIVE_PREFIXES) for k in keys)
+            # a CPM/OpenPose stage conv names its architecture outright, but it is a
+            # PATTERN rather than a fixed prefix, so it cannot live in the tuple above
+            or any(POSE_STAGE_KEY_RE.match(k) for k in keys)
+            or any(k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k
+                   or ".lora_B" in k or ".lora_down" in k or ".lora_up" in k
+                   for k in keys)):
         return cat, EMBEDDED_MAX_RATING
     meta = header.get("__metadata__") or {}
     if str(meta.get("modelspec.architecture", "")):
@@ -1646,8 +1742,12 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
         try:
             keys, modules = read_pickle_signals(src.path)
             rows.append(("pickle modules", cap(modules) or "(none)"))
+            # DISPLAY ONLY: a torch `_metadata` OrderedDict carries an entry keyed on the
+            # empty string (the root module), which harvests into the key set and renders
+            # as a phantom leading item -- ", _metadata, module". The classifier is
+            # indifferent to it; a human reading the evidence is not.
             rows.append(("pickle key prefixes",
-                         cap({k.split(".")[0] for k in keys}) or "(none)"))
+                         cap({k.split(".")[0] for k in keys} - {""}) or "(none)"))
             rows.append(("pickle sample keys", cap(sorted(keys)[:6], 6) or "(none)"))
         except (OSError, ValueError, EOFError, pickle.UnpicklingError,
                 zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:

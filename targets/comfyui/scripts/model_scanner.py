@@ -139,7 +139,15 @@ REGISTRY_VERSION = 2
 #    (name/path/sidecar) evidence is trusted less. Precedence changed for every file.
 # 9: inventory categories named by ROLE, not container: ctranslate2 + ggml-asr -> asr,
 #    gguf-llm -> llm; entries gain a `format` field. New content rules besides.
-HEURISTICS_VERSION = 9
+# 10: content-rule changes, all from Jei's collection: AnimateDiff motion LORAS split off
+#    from motion MODULES (new linkable `animatediff_motion_lora`) and the motion signal
+#    itself narrowed to UNet-block context (a video-depth model's `head.motion_modules.`
+#    was reading as AnimateDiff); a vision tower that co-occurs with a language decoder is
+#    a multimodal LLM (text_encoders), not clip_vision; DiT ControlNets (controlnet_blocks.
+#    / controlnet_x_embedder.) outrank the bare-DiT rule; and legacy (pre-1.6, non-zip)
+#    torch files are finally readable, so files that yielded nothing now classify.
+#    Every registry must re-run.
+HEURISTICS_VERSION = 10
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -181,6 +189,11 @@ DETECTOR_CATEGORIES = {
     "facerestore_models",  # ReActor / facerestore: CodeFormer, GFPGAN, RestoreFormer
     "controlnet_aux",     # ControlNet-aux annotator / pose-estimator weights
     "animatediff_models",  # AnimateDiff-Evolved motion modules (temporal transformers)
+    # AnimateDiff-Evolved registers TWO folders (animatediff/utils_model.py): the motion
+    # modules above and the motion LORAS below, which are loaded by a DIFFERENT node and
+    # are invisible to it anywhere else. They share the motion-module tensor layout, so
+    # only the LoRA processor keys tell them apart (see classify_safetensors_header).
+    "animatediff_motion_lora",
 }
 CATEGORIES |= DETECTOR_CATEGORIES
 
@@ -296,6 +309,22 @@ CONTROLNET_NAME_RE = re.compile(r"^control_(?:v\d|sd\d|lora)")
 #     thing that says what they are.
 # All distinctive multi-character names, so no control_* ControlNet filename contains one.
 ANNOTATOR_NAME_RE = re.compile(r"(?:^|_)(?:depth_anything|zoed|annotators?)(?:$|_)")
+
+# AnimateDiff temporal stack, IN UNET-BLOCK CONTEXT. The bare `.motion_modules.` /
+# `.temporal_transformer.` substrings are not enough: Metric-Video-Depth-Anything-Large
+# names its temporal head `head.motion_modules.0.temporal_transformer.*` and was filed as
+# an AnimateDiff motion module on that alone. AnimateDiff modules and motion LoRAs both
+# hang off a UNet's down_blocks/mid_block/up_blocks, and a depth model's `head.`/
+# `pretrained.` trunk cannot reach that shape -- so the block prefix IS the discriminator.
+ANIMATEDIFF_KEY_RE = re.compile(
+    r"(?:^|\.)(?:down_blocks|mid_block|up_blocks)\.(?:[^.]+\.)*"
+    r"(?:motion_modules|temporal_transformer)\.")
+
+# The LoRA processor that separates an AnimateDiff motion LORA from the motion MODULE it
+# adapts -- same tensor layout otherwise. Note the spelling: `.to_k_lora.down.`, never
+# `.lora_down`, which is why the generic lora rule never sees these files.
+MOTION_LORA_MARKERS = ("to_q_lora", "to_k_lora", "to_v_lora", "to_out_lora",
+                       "_lora.down.", "_lora.up.")
 
 # generic basenames that must never be used as link names (provenance rule)
 GENERIC_STEM_RE = re.compile(
@@ -675,17 +704,36 @@ def classify_safetensors_header(header: dict) -> str | None:
         return "checkpoints"
     # AnimateDiff motion modules ride inside a UNet-shaped state dict (down_blocks./
     # mid_block./up_blocks.), so they must be tested BEFORE any generic block rule --
-    # the giveaway is the temporal stack hanging off each block.
-    if any(".motion_modules." in k or ".temporal_transformer." in k for k in keys):
+    # the giveaway is the temporal stack hanging off each block (ANIMATEDIFF_KEY_RE).
+    if any(ANIMATEDIFF_KEY_RE.search(k) for k in keys):
+        # ...and a motion LORA has the SAME layout as the motion module it adapts, so the
+        # only thing separating them is the LoRA processor hanging off each attention
+        # block. Without this the whole AnimateDiff-Motion-LoRAs family filed as motion
+        # MODULES, where the loader that wants them (AnimateDiffLoraLoader) never looks.
+        if any(m in k for k in keys for m in MOTION_LORA_MARKERS):
+            return "animatediff_motion_lora"
         return "animatediff_models"
     if any_start("control_model."):
         return "controlnet"
     # diffusers-format ControlNet: the zero-conv trunk that makes it a ControlNet rather
-    # than the UNet it is otherwise shaped like.
+    # than the UNet it is otherwise shaped like. `controlnet_blocks.` /
+    # `controlnet_x_embedder.` are the DiT-era spelling of the same idea (InstantX's
+    # Qwen-Image ControlNets) -- and they must keep their place ABOVE the bare-DiT rules
+    # below, which see img_in./txt_in./transformer_blocks. and call it a diffusion model
+    # at 0.99: a DiT ControlNet has all of those too, plus the trunk that overrides them.
     if any_start("controlnet_cond_embedding.", "controlnet_down_blocks.",
-                 "controlnet_mid_block."):
+                 "controlnet_mid_block.", "controlnet_blocks.",
+                 "controlnet_x_embedder."):
         return "controlnet"
+    # A vision tower is evidence that a model CAN SEE, not that it IS an image encoder.
+    # A multimodal LLM ships one bolted onto a language decoder (model.layers./
+    # language_model.) through a projector -- and one of those, a gemma-3-12b shipped as
+    # an LTX-2 text encoder, scored clip_vision@0.99 purely because `vision_model.` was
+    # present (Jei's verdict, s30: it is a text encoder). The decoder is what settles it;
+    # a real CLIP-Vision / IP-Adapter image_encoder has a vision tower and NOTHING else.
     if any_start("vision_model."):
+        if any_start("model.layers.", "language_model.", "multi_modal_projector."):
+            return "text_encoders"
         return "clip_vision"
     # LTX-2 projection layer: bridges text embeddings into the AV transformer. Loads from
     # ComfyUI/models/text_encoders despite not being an encoder itself.
@@ -715,9 +763,36 @@ def classify_safetensors_header(header: dict) -> str | None:
     return None
 
 
-def _restricted_unpickle(fileobj) -> tuple[set, set]:
+# torch's LEGACY (pre-1.6, `_use_new_zipfile_serialization=False`) container is not a zip:
+# it is several pickles written back to back -- MAGIC_NUMBER, PROTOCOL_VERSION, sys_info,
+# THEN the payload, then the storage-key list, then raw tensor bytes. A reader that loads
+# one pickle and stops therefore gets the magic NUMBER and nothing else, which is exactly
+# how facenet.pth and detection_Resnet50_Final.pth surfaced as "(none)" on 150 MB files.
+# These two constants identify the preamble so the payload can be told apart from it.
+TORCH_LEGACY_MAGIC = 0x1950A86A20F9469CFC6C
+TORCH_LEGACY_SYSINFO_KEYS = {"protocol_version", "little_endian", "type_sizes"}
+# 4 covers magic + version + sys_info + payload; a couple spare for writer variations.
+LEGACY_MAX_PICKLES = 6
+
+
+def _is_legacy_preamble(obj) -> bool:
+    """True for the header objects torch writes AHEAD of the payload."""
+    if isinstance(obj, bool):
+        return False
+    if isinstance(obj, int):
+        return True                      # MAGIC_NUMBER / PROTOCOL_VERSION
+    if isinstance(obj, dict) and obj and set(obj) <= TORCH_LEGACY_SYSINFO_KEYS:
+        return True                      # sys_info -- its keys are NOT tensor names
+    return False
+
+
+def _restricted_unpickle(fileobj, max_objects: int = 1) -> tuple[set, set]:
     """Recover a pickle's state-dict KEYS and the MODULE paths it references, without
     executing any of its payload.
+
+    `max_objects` > 1 reads pickles SEQUENTIALLY from one stream (the legacy torch
+    layout above), skipping preamble objects and stopping at the first payload that
+    yields keys. Every object goes through the same restricted machinery.
 
     SECURITY: `.pt`/`.pth` are Python pickles, and a normal load executes arbitrary code
     -- unacceptable for files pulled off the internet. Here `find_class` never imports or
@@ -771,16 +846,36 @@ def _restricted_unpickle(fileobj) -> tuple[set, set]:
         def persistent_load(self, pid):
             return _Inert()
 
-    obj = _Restricted(fileobj).load()
-    # a plain dict / OrderedDict may come back concrete; harvest its keys (and one level
-    # of nesting, e.g. {"state_dict": {...}}).
-    stack, seen = [obj], 0
-    while stack and seen < 8:
-        cur = stack.pop()
-        seen += 1
-        if isinstance(cur, dict):
-            keys.update(k for k in cur if isinstance(k, str))
-            stack.extend(v for v in cur.values() if isinstance(v, dict))
+    for n in range(max_objects):
+        try:
+            obj = _Restricted(fileobj).load()
+        except Exception:
+            # Past the payload a legacy stream is RAW STORAGE BYTES, so the read that
+            # walks off the end is expected once objects have come back. Failing on the
+            # FIRST one is different: the file is not a pickle at all, and that error is
+            # the most informative thing we have -- raise it so the caller warns instead
+            # of recording a silent blank. (A stream that reads cleanly but yields
+            # nothing is caught by _signals_or_raise, which can say so precisely.)
+            if n == 0:
+                raise
+            break
+        if max_objects > 1 and _is_legacy_preamble(obj):
+            continue
+        if max_objects > 1 and isinstance(obj, list):
+            break     # the storage-key list: the payload is behind us and what follows
+                      # is RAW TENSOR BYTES, which must never be fed to the unpickler
+                      # (a stray length-prefixed opcode there could ask for a huge read)
+        # a plain dict / OrderedDict may come back concrete; harvest its keys (and one
+        # level of nesting, e.g. {"state_dict": {...}}).
+        stack, seen = [obj], 0
+        while stack and seen < 8:
+            cur = stack.pop()
+            seen += 1
+            if isinstance(cur, dict):
+                keys.update(k for k in cur if isinstance(k, str))
+                stack.extend(v for v in cur.values() if isinstance(v, dict))
+        if keys:
+            break
     return keys, modules
 
 
@@ -796,16 +891,33 @@ def _is_ct2_layout(src: SourceFile) -> bool:
             and any((src.config_dir / v).is_file() for v in CT2_SIBLINGS))
 
 
+def _signals_or_raise(keys: set, modules: set, what: str) -> tuple[set, set]:
+    """Nothing harvested is a RESULT that must be reported, never a silent blank.
+
+    A read that succeeds and yields nothing looked identical to a file with no
+    recognisable structure -- both printed `(none)` and cast no vote -- so a 150 MB
+    weight file could report exactly as much as an empty one. Raising puts the reason in
+    front of whoever is looking (WARN on sync, `pickle read FAILED ...` in inspect);
+    callers already treat a raise as warn-and-continue, so nothing becomes fatal.
+    """
+    if not keys and not modules:
+        raise ValueError(f"empty: {what} yielded no state-dict keys "
+                         f"and no module names")
+    return keys, modules
+
+
 def read_pickle_signals(path: Path) -> tuple[set, set]:
     """(state-dict keys, referenced module paths) for a pickled checkpoint.
 
-    Modern torch files are zip archives holding a small `data.pkl`; legacy ones are a
-    bare pickle followed by the raw storages. Either way only the pickle STRUCTURE is
-    read -- never the tensor payload -- so cost is bounded regardless of file size.
+    Modern torch files are zip archives holding a small `data.pkl`; legacy ones
+    (pre-1.6, or `_use_new_zipfile_serialization=False`) are a SEQUENCE of pickles --
+    magic number, protocol version, sys_info, payload -- followed by the raw storages.
+    Either way only the pickle STRUCTURE is read, never the tensor payload, so cost is
+    bounded regardless of file size.
     """
     with open(path, "rb") as f:
-        head = f.read(2)
-    if head == b"PK":                          # zip archive (modern torch.save)
+        head = f.read(8)
+    if head[:2] == b"PK":                      # zip archive (modern torch.save)
         with zipfile.ZipFile(path) as z:
             names = [n for n in z.namelist() if n.endswith("data.pkl")]
             if not names:
@@ -818,9 +930,16 @@ def read_pickle_signals(path: Path) -> tuple[set, set]:
                     "zip archive with no data.pkl member; contains: "
                     + ", ".join(z.namelist()[:8]))
             with z.open(names[0]) as fh:
-                return _restricted_unpickle(fh)
-    with open(path, "rb") as f:                # legacy bare pickle
-        return _restricted_unpickle(f)
+                return _signals_or_raise(*_restricted_unpickle(fh),
+                                         what=f"zip member {names[0]}")
+    # Non-zip: read the stream as a legacy multi-pickle container. A plain single
+    # pickle (what the rest of the world writes, and what the tests hand-build) is just
+    # the degenerate case -- its payload is object #1 and the loop stops there.
+    with open(path, "rb") as f:
+        keys, modules = _restricted_unpickle(f, max_objects=LEGACY_MAX_PICKLES)
+    return _signals_or_raise(
+        keys, modules,
+        what=f"legacy (non-zip) pickle stream, first bytes {head!r},")
 
 
 # Module paths that identify a model by the code that produced it -- a far stronger
@@ -906,6 +1025,7 @@ DISTINCTIVE_PREFIXES = (
     # roots (Qwen-Image / Wan / adaLN `net.` stacks). Each names its model outright, so
     # they belong at the top rating rather than the generic 0.6 inference.
     "controlnet_cond_embedding.", "controlnet_down_blocks.", "controlnet_mid_block.",
+    "controlnet_blocks.", "controlnet_x_embedder.",
     "text_embedding_projection.", "transformer_blocks.", "patch_embedding.",
 )
 
@@ -1531,7 +1651,11 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
             rows.append(("pickle sample keys", cap(sorted(keys)[:6], 6) or "(none)"))
         except (OSError, ValueError, EOFError, pickle.UnpicklingError,
                 zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:
-            rows.append(("pickle", f"UNREADABLE: {e}"))
+            # NEVER silent. Both shapes of non-answer land here -- a read that threw and
+            # a read that yielded nothing (_signals_or_raise turns the latter into an
+            # `empty: ...` reason) -- because `(none)` on a 150 MB file tells a human
+            # nothing at all about which of the two happened.
+            rows.append(("pickle read", f"FAILED: {e}"))
             # When the pickle cannot be read, what the container actually holds is the
             # next question -- so answer it here rather than in another round trip.
             try:

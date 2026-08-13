@@ -53,6 +53,67 @@ def safetensors_bytes(tensor_names, metadata=None) -> bytes:
     return len(hj).to_bytes(8, "little") + hj + b"\x00" * off
 
 
+# --- torch LEGACY serialization (pre-1.6 / _use_new_zipfile_serialization=False) -------
+# Not a zip: a SEQUENCE of pickles -- magic number, protocol version, sys_info, payload,
+# storage-key list -- followed by the raw storage bytes. Hand-built because there is no
+# torch in this environment (and none is wanted: the reader must never need one).
+TORCH_LEGACY_MAGIC = 0x1950A86A20F9469CFC6C
+TORCH_LEGACY_PROTOCOL_VERSION = 1001
+
+
+class _StoragePickler(pickle.Pickler):
+    """Emits BINPERSID for the ('storage', ...) tuples torch writes per tensor, which is
+    what forces the reader's persistent_load to hand back an inert placeholder."""
+
+    def persistent_id(self, obj):
+        if isinstance(obj, tuple) and obj and obj[0] == "storage":
+            return obj
+        return None
+
+
+def storage_ref(key="0", numel=4) -> tuple:
+    return ("storage", "FloatStorage", key, "cpu", numel)
+
+
+def torch_legacy_bytes(payload=None, *, preamble=True, trailer=True) -> bytes:
+    """payload=None builds a stream that is PREAMBLE ONLY -- the truncated/corrupt case."""
+    buf = io.BytesIO()
+    if preamble:
+        pickle.dump(TORCH_LEGACY_MAGIC, buf, protocol=2)
+        pickle.dump(TORCH_LEGACY_PROTOCOL_VERSION, buf, protocol=2)
+        pickle.dump({"protocol_version": TORCH_LEGACY_PROTOCOL_VERSION,
+                     "little_endian": True,
+                     "type_sizes": {"short": 2, "int": 4, "long": 8}},
+                    buf, protocol=2)
+    if payload is not None:
+        _StoragePickler(buf, protocol=2).dump(payload)
+    if trailer:
+        pickle.dump(["0"], buf, protocol=2)     # serialized_storage_keys
+        buf.write(b"\x00" * 128)                # raw storage bytes: NOT a pickle
+    return buf.getvalue()
+
+
+# The AnimateDiff motion-LORA tensor shape, verbatim from Jei's collection: a motion
+# module's layout with a LoRA processor hanging off each attention block.
+def motion_lora_keys() -> list:
+    base = ("down_blocks.0.motion_modules.0.temporal_transformer"
+            ".transformer_blocks.0.attention_blocks.0.processor")
+    return [f"{base}.{proj}_lora.{d}.weight"
+            for proj in ("to_q", "to_k", "to_v", "to_out") for d in ("down", "up")] + [
+        "mid_block.motion_modules.0.temporal_transformer.norm.weight",
+        "up_blocks.1.motion_modules.0.temporal_transformer"
+        ".transformer_blocks.0.attention_blocks.1.processor.to_k_lora.up.weight",
+    ]
+
+
+# ...and the motion MODULE shape that must not move with it (same family, no processor).
+def motion_module_keys() -> list:
+    return ["down_blocks.0.motion_modules.0.temporal_transformer"
+            ".transformer_blocks.0.attention_blocks.0.to_q.weight",
+            "mid_block.motion_modules.0.temporal_transformer.norm.bias",
+            "up_blocks.2.motion_modules.1.temporal_transformer.proj_out.weight"]
+
+
 def gguf_bytes(architecture=None, extra_kv=None) -> bytes:
     """Minimal valid GGUF: magic, v3, 0 tensors, metadata kv (string type only)."""
     def s(x: str) -> bytes:
@@ -736,6 +797,271 @@ class ScannerTest(unittest.TestCase):
         p.write_bytes(b"not a pickle at all")
         with self.assertRaises(Exception):
             ms.read_pickle_signals(p)
+
+    # ------------------------- heuristics 10: legacy torch serialization (s32 field)
+    def test_legacy_torch_stream_is_read_not_silently_skipped(self):
+        """THE BUG: `facenet.pth` (153.7 MB) and `detection_Resnet50_Final.pth`
+        (109.5 MB) inspected as `pickle modules (none) / key prefixes (none) / sample
+        keys (none)` -- no votes, no error, nothing. They are LEGACY torch containers
+        (pre-1.6, not a zip): magic number, protocol version, sys_info and only THEN the
+        payload. The reader loaded exactly one pickle, got the magic NUMBER, harvested
+        nothing from an int, and reported success. Reading the stream sequentially --
+        skipping the preamble, through the same restricted unpickler -- is the fix."""
+        d = self.fx.root
+        # guard the fixture: object #1 really is the preamble, not the payload
+        blob = torch_legacy_bytes({"state_dict": {
+            "encoder.conv_in.weight": storage_ref(),
+            "decoder.conv_out.weight": storage_ref()}})
+        self.assertEqual(pickle.loads(blob), TORCH_LEGACY_MAGIC)
+        self.assertFalse(blob.startswith(b"PK"))
+
+        p = d / "legacy-state-dict.pth"
+        p.write_bytes(blob)
+        keys, modules = ms.read_pickle_signals(p)
+        # the payload's keys are harvested, the sys_info preamble's keys are NOT
+        self.assertIn("encoder.conv_in.weight", keys)
+        self.assertIn("state_dict", keys)
+        for preamble_key in ("protocol_version", "little_endian", "type_sizes"):
+            self.assertNotIn(preamble_key, keys)
+        self.assertEqual(ms.classify_pickle(keys, modules), "vae")
+
+        # ...and the module path of an object-pickle payload survives the same journey,
+        # without importing anything: preamble, then an unimportable class.
+        q = d / "legacy-object.pth"
+        q.write_bytes(torch_legacy_bytes(None, trailer=False)
+                      + self._global_reduce("segment_anything.modeling.sam", "Sam"))
+        keys, modules = ms.read_pickle_signals(q)
+        self.assertIn("segment_anything.modeling.sam.sam", modules)
+        self.assertEqual(ms.classify_pickle(keys, modules), "sams")
+        self.assertNotIn("segment_anything", sys.modules)
+
+    def test_legacy_stream_end_to_end_classifies_and_votes(self):
+        self.fx.add_local_file("mystery/legacy-vae.pth", torch_legacy_bytes(
+            {"first_stage_model.decoder.conv_in.weight": storage_ref()}))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), {"vae/legacy-vae.pth"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "vae")
+        self.assertTrue(any(s.startswith("pickle=vae@") for s in entry["signals"]),
+                        entry["signals"])
+        self.assertNotIn("WARN", out)
+
+    def test_a_read_that_yields_nothing_is_reported_not_hidden(self):
+        """`(none)` on a 150 MB file is the failure mode. Whatever the reason -- a
+        truncated legacy stream, a zip with a data.pkl that holds nothing -- the reason
+        itself must reach `inspect`, and the file must still cast no vote and not crash
+        the scan."""
+        # (a) legacy container with the preamble and no payload at all
+        truncated = torch_legacy_bytes(None)
+        with self.assertRaises(ValueError) as cm:
+            p = self.fx.root / "truncated.pth"
+            p.write_bytes(truncated)
+            ms.read_pickle_signals(p)
+        self.assertIn("empty:", str(cm.exception))
+        self.assertIn("legacy", str(cm.exception))
+        # (b) the zip path is held to the same rule
+        z = self.fx.root / "hollow.pt"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("archive/data.pkl", pickle.dumps(1234))
+        with self.assertRaises(ValueError) as cm:
+            ms.read_pickle_signals(z)
+        self.assertIn("empty:", str(cm.exception))
+
+        # end to end: it surfaces in inspect, casts no vote, and the sync survives it
+        self.fx.add_local_file("signal_free.pth", truncated)
+        rc, out = self.fx.inspect("signal_free")
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r"pickle read\s+FAILED: empty:")
+        self.assertNotIn("(none)", out)          # never a silent blank
+        self.assertIn("file magic", out)         # what the container actually holds
+        self.assertIn("(none -- no measure could form a judgement)", out)
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), set())
+        self.assertIn("UNCLASSIFIED  signal_free.pth", out)
+
+    # ------------------- heuristics 10: AnimateDiff motion LORAS vs motion MODULES
+    def test_animatediff_motion_lora_is_its_own_category(self):
+        """8 real `AnimateDiff-Motion-LoRAs_*.ckpt` filed as `animatediff_models`: the
+        motion-module rule fires on `.motion_modules.` and the plain lora rule cannot
+        help (these spell it `.to_k_lora.down.`, never `.lora_down`). AnimateDiff-Evolved
+        registers `animatediff_motion_lora` as a SEPARATE folder and a separate loader
+        node, so a motion LoRA in the motion-module dir is invisible to the only thing
+        that loads it."""
+        self.assertIn("animatediff_motion_lora", ms.CATEGORIES)
+        self.assertEqual(ms.SEGMENT_MAP["animatediff_motion_lora"],
+                         "animatediff_motion_lora")
+        lora_hdr = {k: {} for k in motion_lora_keys()}
+        self.assertEqual(ms.classify_safetensors_header(lora_hdr),
+                         "animatediff_motion_lora")
+        # each processor spelling on its own is enough
+        for proj in ("to_q", "to_k", "to_v", "to_out"):
+            k = ("down_blocks.0.motion_modules.0.temporal_transformer"
+                 f".transformer_blocks.0.attention_blocks.0.processor.{proj}_lora"
+                 ".down.weight")
+            self.assertEqual(ms.classify_safetensors_header({k: {}}),
+                             "animatediff_motion_lora", proj)
+        # THE case that must NOT move: motion modules carry no processor keys
+        self.assertEqual(
+            ms.classify_safetensors_header({k: {} for k in motion_module_keys()}),
+            "animatediff_models")
+
+    def test_motion_modules_signal_requires_unet_block_context(self):
+        """A second field counterexample: Metric-Video-Depth-Anything-Large calls its
+        temporal head `head.motion_modules.0.temporal_transformer.*` (prefixes: head,
+        pretrained) and was filed `animatediff_models`@0.4 off the bare substring. Real
+        AnimateDiff weights hang off a UNet's down_blocks/mid_block/up_blocks; a depth
+        model's head cannot. With the block context required, the file carries no content
+        signal at all and its NAME correctly makes it an annotator."""
+        depth = {k: {} for k in (
+            "head.motion_modules.0.temporal_transformer.norm.bias",
+            "head.motion_modules.1.temporal_transformer.proj_in.weight",
+            "pretrained.blocks.0.attn.qkv.weight")}
+        self.assertIsNone(ms.classify_safetensors_header(depth))
+        self.assertIsNone(ms.rate_safetensors(depth))
+        # end to end: the pickle carries the same keys, and naming settles it
+        self.fx.add_local_file(
+            "metric_video_depth_anything_vitl.pth",
+            torch_legacy_bytes({k: storage_ref() for k in depth}))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {"controlnet_aux/metric_video_depth_anything_vitl.pth"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "controlnet_aux")
+        self.assertFalse([s for s in entry["signals"] if s.startswith("pickle=")],
+                         entry["signals"])
+
+    def test_dit_controlnet_outranks_the_bare_dit_rule(self):
+        """InstantX/Qwen-Image-ControlNet-Inpainting is a ControlNet built ON a DiT, so
+        it has every bare-DiT prefix (img_in./txt_in./transformer_blocks.) that scores
+        diffusion_models@0.99 -- plus the controlnet trunk that overrides them. The
+        zero-conv rule already sat above the DiT rules; it just did not know the DiT-era
+        spelling (controlnet_blocks. / controlnet_x_embedder.)."""
+        dit_controlnet = {k: {} for k in (
+            "controlnet_blocks.0.weight", "controlnet_x_embedder.weight",
+            "img_in.weight", "txt_in.weight", "txt_norm.weight",
+            "time_text_embed.timestep_embedder.linear_1.weight",
+            "transformer_blocks.0.attn.to_q.weight")}
+        self.assertEqual(ms.classify_safetensors_header(dit_controlnet), "controlnet")
+        self.assertEqual(ms.rate_safetensors(dit_controlnet),
+                         ("controlnet", ms.EMBEDDED_MAX_RATING))
+        # the trunk alone names the model outright, so it rates as a DISTINCTIVE prefix
+        # in its own right (not merely on the transformer_blocks. it shares with a DiT)
+        self.assertEqual(
+            ms.rate_safetensors({"controlnet_blocks.0.weight": {},
+                                 "controlnet_x_embedder.weight": {}}),
+            ("controlnet", ms.EMBEDDED_MAX_RATING))
+        # REGRESSION GUARD: a pure DiT (Qwen-Image-Edit shape) stays diffusion_models
+        pure_dit = {k: {} for k in (
+            "img_in.weight", "txt_in.weight", "txt_norm.weight",
+            "transformer_blocks.0.attn.to_q.weight")}
+        self.assertEqual(ms.classify_safetensors_header(pure_dit), "diffusion_models")
+        # end to end, with the generic component filename the repo actually ships
+        self.fx.add_hf_file("InstantX/Qwen-Image-ControlNet-Inpainting",
+                            "diffusion_pytorch_model.safetensors",
+                            safetensors_bytes(list(dit_controlnet)))
+        self.fx.add_hf_file("Comfy-Org/Qwen-Image-Edit-2511_FP8",
+                            "qwen-image-edit-2511-fp8.safetensors",
+                            safetensors_bytes(list(pure_dit)))
+        rc, out = self.fx.sync()
+        self.assertEqual(tree_links(self.fx.tree), {
+            "controlnet/Qwen-Image-ControlNet-Inpainting--diffusion_pytorch_model"
+            ".safetensors",
+            "diffusion_models/qwen-image-edit-2511-fp8.safetensors"})
+
+    def test_motion_lora_split_reaches_both_readers(self):
+        """The discriminator lives in the SHARED key classifier, so the pickle path
+        (the 8 `.ckpt` bundles) and the safetensors path (`aidma-RUN-Motion Lora`) both
+        get it -- and both land in the tree under the right folder."""
+        # pickle side: the .ckpt shape, keys nested under state_dict beside epoch/global_step
+        ckpt = torch_legacy_bytes({
+            "epoch": 0, "global_step": 1,
+            "state_dict": {k: storage_ref() for k in motion_lora_keys()}})
+        names = [f"AnimateDiff-Motion-LoRAs_v2_lora_{m}.ckpt" for m in
+                 ("PanLeft", "PanRight", "RollingAnticlockwise", "RollingClockwise",
+                  "TiltDown", "TiltUp", "ZoomIn", "ZoomOut")]
+        for n in names:
+            self.fx.add_local_file(n, ckpt + n.encode())   # distinct identities
+        # ...and the motion MODULE bundle in the same drop, which must stay put
+        self.fx.add_local_file("AnimateDiff-Motion-Modules_v1.5-v2.ckpt",
+                               torch_legacy_bytes({"state_dict": {
+                                   k: storage_ref() for k in motion_module_keys()}}))
+        # safetensors side. The field file carries `model_type=motion_director, rank=64`
+        # in __metadata__; it is here to prove the KEY rule suffices without it (nothing
+        # reads model_type -- only modelspec.architecture is consulted).
+        self.fx.add_local_file("aidma-RUN-Motion Lora.safetensors",
+                               safetensors_bytes(motion_lora_keys(),
+                                                 {"model_type": "motion_director",
+                                                  "rank": "64"}))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree),
+                         {f"animatediff_motion_lora/{n}" for n in names}
+                         | {"animatediff_motion_lora/aidma-RUN-Motion Lora.safetensors",
+                            "animatediff_models/AnimateDiff-Motion-Modules_v1.5-v2.ckpt"})
+        cats = {e["display"]: e["category"]
+                for e in self.fx.load_registry()["entries"].values()}
+        self.assertEqual(cats["AnimateDiff-Motion-Modules_v1.5-v2.ckpt"],
+                         "animatediff_models")
+        for n in names:
+            self.assertEqual(cats[n], "animatediff_motion_lora", n)
+        self.assertNotIn("UNCLASSIFIED", out)
+
+    # ------------------- heuristics 10: a vision tower is not always a vision model
+    def test_multimodal_llm_vision_tower_is_a_text_encoder_not_clip_vision(self):
+        """A confident FALSE POSITIVE: gemma-3-12b NVFP4 (12.1 GB, 1864 tensors) shipped
+        as an LTX-2 text encoder scored clip_vision@0.99 because `vision_model.` was
+        present. The decoder beside it (model.layers. / multi_modal_projector) is what
+        says the vision tower is a COMPONENT, not the model (Jei's verdict, s30)."""
+        gemma = {k: {} for k in (
+            "model.layers.10.mlp.down_proj.weight_scale_2",
+            "model.layers.0.self_attn.q_proj.weight",
+            "multi_modal_projector.mm_input_projection_weight",
+            "vision_model.vision_model.encoder.layers.0.mlp.fc1.weight")}
+        self.assertEqual(ms.classify_safetensors_header(gemma), "text_encoders")
+        # high confidence, not a hedge: `vision_model.` is still a distinctive prefix
+        self.assertEqual(ms.rate_safetensors(gemma),
+                         ("text_encoders", ms.EMBEDDED_MAX_RATING))
+        # each decoder spelling on its own is enough
+        for decoder in ("model.layers.0.mlp.up_proj.weight",
+                        "language_model.layers.0.mlp.up_proj.weight",
+                        "multi_modal_projector.linear.weight"):
+            self.assertEqual(ms.classify_safetensors_header(
+                {"vision_model.encoder.layers.0.mlp.fc1.weight": {}, decoder: {}}),
+                "text_encoders", decoder)
+        # REGRESSION GUARD: the two real IP-Adapter image encoders are vision-ONLY and
+        # must stay clip_vision at 0.99 -- this rule may only fire on co-occurrence.
+        for ip_adapter in (
+            {"vision_model.encoder.layers.0.mlp.fc1.weight": {},
+             "vision_model.post_layernorm.weight": {},
+             "visual_projection.weight": {}},
+            {"vision_model.embeddings.patch_embedding.weight": {}},
+        ):
+            self.assertEqual(ms.classify_safetensors_header(ip_adapter), "clip_vision")
+            self.assertEqual(ms.rate_safetensors(ip_adapter),
+                             ("clip_vision", ms.EMBEDDED_MAX_RATING))
+        # a pure LLM (no vision tower) is untouched by this rule: config.json still
+        # decides, so sharded LLM repos keep classifying `llm`.
+        self.assertIsNone(ms.classify_safetensors_header(
+            {"model.layers.0.mlp.up_proj.weight": {}}))
+
+    def test_multimodal_text_encoder_end_to_end(self):
+        self.fx.add_hf_file("Lightricks/LTX-2", "text_encoder/gemma-3-12b-nvfp4.safetensors",
+                            safetensors_bytes([
+                                "model.layers.10.mlp.down_proj.weight_scale_2",
+                                "multi_modal_projector.mm_input_projection_weight",
+                                "vision_model.encoder.layers.0.mlp.fc1.weight"]))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            tree_links(self.fx.tree),
+            {"text_encoders/gemma-3-12b-nvfp4.safetensors"})
+        entry = next(iter(self.fx.load_registry()["entries"].values()))
+        self.assertEqual(entry["category"], "text_encoders")
+        self.assertTrue(any(s == "safetensors=text_encoders@0.99"
+                            for s in entry["signals"]), entry["signals"])
 
     # ------------------------------------------------- s29 confidence model (Jei's)
     def test_lofi_cannot_outvote_embedded_evidence(self):

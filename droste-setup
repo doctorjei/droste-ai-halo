@@ -58,9 +58,14 @@ declare -A BOX_NAME=(
   [comfyui]="ComfyUI" [llama]="llama.cpp" [vllm]="vLLM" [ds4]="DwarfStar 4" [finetuning]="Finetuning"
 )
 
-# Human-readable titles for each prompted bind family (underlined per-bind header).
+# Human-readable titles for each prompted bind family (used in the path prompt).
 declare -A BIND_TITLE=(
   [data]="Program Data" [input]="Input Files" [output]="Output Files" [workspace]="Workspace"
+)
+
+# Summary-box row headers for the same families (shorter — the box is narrow).
+declare -A BIND_ROW=(
+  [data]="Data Path" [input]="Input" [output]="Output" [workspace]="Workspace"
 )
 
 # Canonical container-side service port (SERVICE row of each build-spec). This
@@ -91,8 +96,10 @@ declare -A BOX_DESC=(
 
 # Extra CRITICAL binds beyond /opt/data + the shared HF cache (CRITICAL rows):
 # space-separated "label:container-dest". These hold irreplaceable user work.
+# ORDER IS DISPLAY ORDER: it drives both the path prompts and the summary box
+# rows, so comfyui lists output before input (Jei's mockup, both places).
 declare -A BOX_EXTRA_BINDS=(
-  [comfyui]="input:/opt/ComfyUI/input output:/opt/ComfyUI/output"
+  [comfyui]="output:/opt/ComfyUI/output input:/opt/ComfyUI/input"
   [llama]=""
   [vllm]=""
   [ds4]=""
@@ -144,6 +151,10 @@ INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 # (mostly the venv; torch-stack boxes are multi-GB, llama/ds4 are compiled
 # binaries with a small venv). TODO(Jei-tune): replace with measured numbers
 # from `podman image inspect` / du on a real host; same for the fuse ballpark.
+# Reference only since Data Mapping became a WHOLE-INSTALL decision (it is asked
+# once, for the most primary path, and applied to the rest), so its copy-mode row
+# quotes the install-wide range rather than one box's share.
+# shellcheck disable=SC2034
 declare -A BOX_COPY_GB=(
   [comfyui]=14 [llama]=1 [vllm]=15 [ds4]=1 [finetuning]=16
 )
@@ -200,11 +211,14 @@ if [[ $PLAIN -eq 1 ]]; then
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --plain / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
-  C_BRK="" C_DEF="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD=""
-  C_TBRK="" C_TIDX="" C_ALLB="" C_ALL="" C_ALLT="" C_ARROW="" C_SUBJ="" C_NOTE=""
+  C_BRK="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD=""
+  C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
   C_EXH="" C_FILE="" C_ERR=""
+  C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
+  C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
+  C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_MOPT="" C_MCAT=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
@@ -213,8 +227,11 @@ if [[ $PLAIN -eq 1 ]]; then
   # The ASCII glyph already carries its own brackets, so the Legend adds none
   # (GB_L/GB_R empty); LEG_PAD is the trailing pad of Jei's approved Key row.
   GS_YES="[+]" GS_NO="[-]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R="" LEG_PAD=""
-  BULLET="-" ARROW_G=" ---> "
+  BULLET="-" ARROW_G=" ---> " ARROW_M="-->"
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
+  # The two banner weights collapse onto the same ASCII drawing in --plain.
+  BANTL="." BANTR="." BANBL="'" BANBR="'" BANH="-" BANV="|"
+  BANTL2="." BANTR2="." BANBL2="'" BANBR2="'" BANH2="-" BANV2="|"
 else
   RESET=$'\e[0m' DIVCH="─"
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
@@ -225,15 +242,12 @@ else
   C_SUB=$'\e[4;97m'     # underlined subtitle / table header
   C_SUB2=$'\e[4;37m'    # underlined subtitle, intro variant (Resource Path)
   C_TEXT=$'\e[0;37m'    # body + prompt text
-  C_BRK=$'\e[0;32m'     # [default] brackets
-  C_DEF=$'\e[0;92m'     # [default] value
+  C_BRK=$'\e[0;32m'     # option-list brackets, default row
   C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m' C_OKT=$'\e[0;36m'    # preflight ok row
   C_BADB=$'\e[0;31m' C_BAD=$'\e[0;91m'                    # preflight [!!] row
-  C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'                   # table [N]
-  C_ALLB=$'\e[0;32m' C_ALL=$'\e[0;92m' C_ALLT=$'\e[0;97m' # table [all] row
+  C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'  # table [N] + option-list, other rows
   C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
   C_SUBJ=$'\e[1;97m'    # sub-notice subject
-  C_NOTE=$'\e[3;97m'    # propagated-choice note
   C_HDR=$'\e[1;4;97m'   # dashboard section titles + column headers
   C_SVC=$'\e[3;37m'     # dashboard service name, and inline asides
   C_PORT=$'\e[1;93m'    # dashboard host port
@@ -245,6 +259,22 @@ else
   C_EXH=$'\e[1;4;97m'   # Executing-section headers (same SGR as C_HDR)
   C_FILE=$'\e[3;37m'    # emitted file names + the closing "Wrote NOTES.md."
   C_ERR=$'\e[1;91m'     # the [ERROR] tag of a failed pull/create status line
+  # Answer PROMPTS (the "<text> [options] {:|?} " line). Deliberately a
+  # different bracket colour from the option LISTS above them: in a prompt the
+  # bracket is punctuation around the choice, in a list it indexes the row.
+  C_PBRK=$'\e[1;97m'    # prompt [ ]
+  C_PDEF=$'\e[1;92m'    # prompt default option / default value
+  C_PALT=$'\e[1;94m'    # prompt non-default option
+  C_IN=$'\e[1;93m'      # what the user types
+  # Option LIST rows: the bracket keeps the dark shade, the whole row text takes
+  # the bright one (default = green, everything else = blue).
+  C_OPTD=$'\e[1;92m' C_OPTN=$'\e[1;94m'
+  C_CTR=$'\e[0;33m'     # box table: Container column
+  C_SVCN=$'\e[1;95m'    # box table: Service column
+  # Per-box summary box.
+  C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[1;94m' C_SVAL=$'\e[1;96m'
+  C_MOPT=$'\e[1;92m'    # mitigation line: the option applied (fuse/copy/ignore)
+  C_MCAT=$'\e[1;94m'    # mitigation line: the path categories it applies to
   # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
   # (the bar can be wider than the status line that replaces it).
   CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
@@ -256,8 +286,12 @@ else
   # trailing pad of Jei's approved Key row.
   GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
   LEG_PAD="  "
-  BULLET="·" ARROW_G=" 🭹🭹🭹⮞ "
+  BULLET="·" ARROW_G=" 🭹🭹🭹⮞ " ARROW_M="🭹🭹⮞"
   BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
+  # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
+  # the per-box titles. The light set above is the summary box's.
+  BANTL="╔" BANTR="╗" BANBL="╚" BANBR="╝" BANH="═" BANV="║"
+  BANTL2="┏" BANTR2="┓" BANBL2="┗" BANBR2="┛" BANH2="━" BANV2="┃"
 fi
 
 say()  { printf '%s\n' "$*"; }
@@ -268,9 +302,13 @@ wrap() { printf '%s\n' "$*" | fold -s -w 79; }
 section() {   # ── Name ──────... divider, 78 cols.  name [intro]
   # "intro" = the opening sections (Preflight, Resource Path), which Jei drew
   # with a bolder label than the rest.
-  local name=$1 style=${2:-} line fill i n lcol=$C_LABEL
+  # 78 is the drawn width; on a narrower terminal the rule clamps to the screen
+  # rather than wrapping onto a second line of stray divider characters.
+  local name=$1 style=${2:-} line fill i n w lcol=$C_LABEL
   [[ $style == intro ]] && lcol=$C_LABEL2
-  n=$(( 79 - ${#name} - 6 ))
+  w=$(term_width); [[ $w -gt 78 ]] && w=78
+  n=$(( w - ${#name} - 5 ))
+  [[ $n -lt 1 ]] && n=1
   fill=""
   # shellcheck disable=SC2324  # string append of the divider char, not math
   for (( i = 0; i < n; i = i + 1 )); do fill+=$DIVCH; done
@@ -293,26 +331,56 @@ hdr() { printf '%s%s%s\n' "$C_HDR" "$1" "$RESET"; }
 # moved default left the rows contradicting the hint one line below them. Case
 # is display-only: ask_choice lowercases both sides before validating.
 # Padding is emitted only when there is a tail.
+#
+# Colour: the brackets keep the dark shade (green when this row is the current
+# default, blue otherwise) and EVERYTHING else on the row — letter, rest, pad,
+# tail — takes the matching bright one, so a row reads as one object.
 opt_row() {   # letter rest tail column-width is-default
-  local ltr=$1 rest=$2 tail=$3 cw=$4 isdef=$5 brk idx pad=0
+  local ltr=$1 rest=$2 tail=$3 cw=$4 isdef=$5 brk txt pad=0
   if [[ $isdef -eq 1 ]]; then
-    brk=$C_BRK idx=$C_DEF ltr=${ltr^^}
+    brk=$C_BRK txt=$C_OPTD ltr=${ltr^^}
   else
-    brk=$C_TBRK idx=$C_TIDX ltr=${ltr,,}
+    brk=$C_TBRK txt=$C_OPTN ltr=${ltr,,}
   fi
   if [[ -n $tail ]]; then
     pad=$(( cw - ${#rest} - 3 )); [[ $pad -lt 1 ]] && pad=1
   fi
   printf '  %s[%s%s%s]%s%s%*s%s%s\n' \
-    "$brk" "$idx" "$ltr" "$brk" "$C_TEXT" "$rest" "$pad" "" "$tail" "$RESET"
+    "$brk" "$txt" "$ltr" "$brk" "$txt" "$rest" "$pad" "" "$tail" "$RESET"
 }
 
 # 1 when $1 is the default letter of an ask_choice letters string ($2 = that
 # string; its first character is the default, by ask_choice's own contract).
 isdef() { [[ $1 == "${2:0:1}" ]] && printf 1 || printf 0; }
 
-# A colored "[default]" bracket for prompt suffixes (green [ ], bright value).
-dflt() { printf '%s[%s%s%s]%s' "$C_BRK" "$C_DEF" "$1" "$C_BRK" "$C_TEXT"; }
+# PROMPT STRUCTURE (installer-wide, Jei s33):
+#     <prompt text> [options] {':'|'?'} <one trailing space>
+# The terminal punctuation sits AFTER the options cluster — ':' closes a value
+# prompt, '?' a yes/no one — and the prompt text itself never ends in '?'.
+# y/n options are always listed y-first with the DEFAULT capitalised.
+#
+# A colored "[default]" bracket for value prompts (white [ ], green value).
+dflt() { printf '%s[%s%s%s]%s' "$C_PBRK" "$C_PDEF" "$1" "$C_PBRK" "$C_TEXT"; }
+
+# The multi-option cluster "[d/s/B]" of a choice prompt, painted per option:
+# the DEFAULT (the capital letter, matched case-insensitively against $2) green,
+# every other option blue, the separators and the closing punctuation body text.
+# $1 = slash-separated options in DISPLAY order, $2 = the default option.
+hint() {   # "d/s/B" default
+  local opts=$1 def=$2 tok first=1 out=""
+  local IFS=/
+  for tok in $opts; do
+    [[ $first -eq 1 ]] || out+="$C_TEXT/"
+    first=0
+    if [[ ${tok,,} == "${def,,}" ]]; then out+="$C_PDEF$tok"; else out+="$C_PALT$tok"; fi
+  done
+  printf '%s[%s%s]%s' "$C_PBRK" "$out" "$C_PBRK" "$C_TEXT"
+}
+
+# The y/n cluster: always [y/N] order, the default capitalised.
+hint_yn() {   # Y|N
+  if [[ $1 == Y ]]; then hint "Y/n" Y; else hint "y/N" N; fi
+}
 
 # Indented red `-> sub-notice (secondary information about the answer above),
 # set off from the next prompt by a blank line.
@@ -323,18 +391,27 @@ subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
 pf_ok()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
 pf_bad() { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
 
-# A titled box drawn with the light box-drawing glyphs (ASCII in --plain mode).
+# A titled box drawn with the banner glyphs (ASCII in --plain mode).
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
+# Two weights: the ONE installer title is DOUBLE-ruled, each per-box title HEAVY.
+BANNER_W=0                       # outer width of the last banner drawn
 banner() {   # text [bold]
   local text=$1 bold=${2:-} n i fill top mid bot tcol
+  local tl=$BANTL tr=$BANTR bl=$BANBL br=$BANBR h=$BANH v=$BANV
   n=$(( ${#text} + 2 ))          # text plus one space of padding each side
-  fill=""
-  for (( i = 0; i < n; i = i + 1 )); do fill+=$BOXH; done
-  top="$BOXTL$fill$BOXTR"
-  bot="$BOXBL$fill$BOXBR"
   # "bold" marks the per-box banners; the top installer banner is the title one.
-  if [[ $bold == bold ]]; then tcol=$C_BTITLE; else tcol=$C_TITLE; fi
-  mid="$BOXV $tcol$text$C_FRAME $BOXV"
+  if [[ $bold == bold ]]; then
+    tcol=$C_BTITLE
+    tl=$BANTL2 tr=$BANTR2 bl=$BANBL2 br=$BANBR2 h=$BANH2 v=$BANV2
+  else
+    tcol=$C_TITLE
+  fi
+  BANNER_W=$(( n + 2 ))
+  fill=""
+  for (( i = 0; i < n; i = i + 1 )); do fill+=$h; done
+  top="$tl$fill$tr"
+  bot="$bl$fill$br"
+  mid="$v $tcol$text$C_FRAME $v"
   printf '\n'
   # Wrap each line separately so it renders even when RESET is empty (--plain).
   printf '  %s%s%s\n' "$C_FRAME" "$top" "$RESET"
@@ -535,34 +612,35 @@ init_input() {
 
 ANS=""
 ask_raw() {  # $1 = prompt text (printed without newline)
-  # ONE place owns the 2-space prompt indent — call sites pass bare text.
-  printf '  %s' "$1"
+  # ONE place owns the 2-space prompt indent and the body-text colour — call
+  # sites pass bare text (which may carry its own [option] colours inside).
+  #
+  # What the user TYPES is bright yellow. On a tty the colour is opened before
+  # the read so the terminal's own echo wears it, and closed after (the RESET
+  # lands at the head of the next line, where it is invisible). Under scripted
+  # input there is no echo, so the answer is printed here already dressed —
+  # which is also what makes a scripted transcript byte-comparable to the
+  # approved runthrough.
+  printf '  %s%s' "$C_TEXT" "$1"
+  [[ $SCRIPTED -eq 1 ]] || printf '%s' "$C_IN"
   if ! IFS= read -r ANS <&"$ASK_FD"; then
-    printf '\n'
+    printf '%s\n' "$RESET"
     die "prompt input exhausted"
   fi
-  if [[ $SCRIPTED -eq 1 ]]; then printf '%s\n' "$ANS"; fi
+  if [[ $SCRIPTED -eq 1 ]]; then
+    if [[ -n $ANS ]]; then printf '%s%s%s\n' "$C_IN" "$ANS" "$RESET"
+    else printf '%s\n' "$RESET"; fi
+  else
+    printf '%s' "$RESET"
+  fi
 }
 
 ANS_YN=0
-ask_yn() {  # question default(Y|N)  → ANS_YN=1/0
-  local q=$1 def=$2 hint
-  [[ $def == Y ]] && hint=$(dflt "Y/n") || hint=$(dflt "y/N")
+ask_yn() {  # question default(Y|N)  → ANS_YN=1/0   (renders "... [Y/n]? ")
+  local q=$1 def=$2 h
+  h=$(hint_yn "$def")
   while :; do
-    ask_raw "$q $hint: "
-    case "$ANS" in
-      "") [[ $def == Y ]] && ANS_YN=1 || ANS_YN=0; return 0 ;;
-      y|Y) ANS_YN=1; return 0 ;;
-      n|N) ANS_YN=0; return 0 ;;
-    esac
-  done
-}
-
-ask_yn_q() {  # question default(Y|N) → ANS_YN  (renders "... [y/N]?: ")
-  local q=$1 def=$2 hint
-  [[ $def == Y ]] && hint=$(dflt "Y/n") || hint=$(dflt "y/N")
-  while :; do
-    ask_raw "$q $hint?: "
+    ask_raw "$q $h? "
     case "$ANS" in
       "") [[ $def == Y ]] && ANS_YN=1 || ANS_YN=0; return 0 ;;
       y|Y) ANS_YN=1; return 0 ;;
@@ -574,10 +652,10 @@ ask_yn_q() {  # question default(Y|N) → ANS_YN  (renders "... [y/N]?: ")
 ANS_CH=""
 ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower)
   local q=$1 letters=$2 def=${2:0:1} c
-  # Color a trailing "[a/b/C]" hint exactly like every other [default] bracket
-  # (the hint is part of the caller's prompt text, so it is re-wrapped here).
+  # Paint a trailing "[a/b/C]" cluster per option (the cluster is part of the
+  # caller's prompt text, in DISPLAY order, so it is re-wrapped here).
   if [[ $q =~ ^(.*)\[([^][]*)\]$ ]]; then
-    q="${BASH_REMATCH[1]}$(dflt "${BASH_REMATCH[2]}")"
+    q="${BASH_REMATCH[1]}$(hint "${BASH_REMATCH[2]}" "$def")"
   fi
   while :; do
     ask_raw "$q: "
@@ -590,60 +668,52 @@ ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower
   done
 }
 
+# The caller supplies the FULL prompt label; we append the "[default]: " suffix.
+# The old "-> /absolute/path" echo under the answer is gone (Jei s32): the path
+# is repeated in the summary box, and the echo doubled every prompt.
 ANS_PATH=""
-ask_path_raw() {  # label default → ANS_PATH (absolute; NOT created)
-  local label=$1 def=$2 typed
-  ask_raw "What path should be used for $label? $(dflt "$(home_disp "$def")") "
-  typed=$ANS
-  [[ -z $ANS ]] && ANS=$def
-  ANS_PATH=$(expand_path "$ANS")
-  # Make the interpretation visible whenever the typed answer was not
-  # already the resolved absolute form (relative tokens, ~, ./x, x/../y).
-  if [[ -n $typed && $typed != "$ANS_PATH" ]]; then
-    say "  -> $ANS_PATH"
-  fi
-  return 0
-}
-
-ask_path() {  # label default → ANS_PATH (existing dir, or confirm-create, else re-ask)
-  # No silent mkdir: an existing dir is accepted as-is; otherwise confirm before
-  # creating, and re-ask the path if the user declines or the create fails.
-  while :; do
-    ask_path_raw "$1" "$2"
-    [[ -d $ANS_PATH ]] && return 0
-    ask_yn "Create $(home_disp "$ANS_PATH")?" Y
-    if [[ $ANS_YN -eq 1 ]]; then
-      mkdir -p "$ANS_PATH" 2>/dev/null && return 0
-      warn "could not create $ANS_PATH — pick another location"
-    fi
-  done
-}
-
-# Terse variant: the caller supplies the FULL prompt label; we append the
-# "[default]: " suffix. Same expand + interpretation-echo as ask_path_raw.
 ask_path_as_raw() {  # "prompt label" default → ANS_PATH (absolute; NOT created)
-  local label=$1 def=$2 typed
+  local label=$1 def=$2
   ask_raw "$label $(dflt "$(home_disp "$def")"): "
-  typed=$ANS
   [[ -z $ANS ]] && ANS=$def
   ANS_PATH=$(expand_path "$ANS")
-  if [[ -n $typed && $typed != "$ANS_PATH" ]]; then
-    say "  -> $ANS_PATH"
-  fi
   return 0
+}
+
+# No silent mkdir, ever: an existing dir is accepted as-is; a missing one is
+# confirmed first. The confirmation can be answered ONCE for the whole run —
+# immediately after the FIRST create, "Do this for all new paths?" turns every
+# later missing directory into a silent mkdir.
+CREATE_ALL=0
+CREATE_ASKED=0
+ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
+  local p=$1 yn
+  [[ -d $p ]] && return 0
+  if [[ $CREATE_ALL -eq 1 ]]; then
+    mkdir -p "$p" 2>/dev/null && return 0
+    warn "could not create $p"
+    return 1
+  fi
+  ask_yn "Create $(home_disp "$p")" Y
+  yn=$ANS_YN
+  # Offered once, and only after a YES: "do this for all" is meaningless as a
+  # follow-up to a refusal (the path is about to be re-asked).
+  if [[ $CREATE_ASKED -eq 0 && $yn -eq 1 ]]; then
+    CREATE_ASKED=1
+    ask_yn "Do this for all new paths" Y
+    [[ $ANS_YN -eq 1 ]] && CREATE_ALL=1
+  fi
+  if [[ $yn -eq 1 ]]; then
+    mkdir -p "$p" 2>/dev/null && return 0
+    warn "could not create $p — pick another location"
+  fi
+  return 1
 }
 
 ask_path_as() {  # "prompt label" default → ANS_PATH (existing dir, or confirm-create, else re-ask)
-  # No silent mkdir: an existing dir is accepted as-is; otherwise confirm before
-  # creating, and re-ask the path if the user declines or the create fails.
   while :; do
     ask_path_as_raw "$1" "$2"
-    [[ -d $ANS_PATH ]] && return 0
-    ask_yn "Create $(home_disp "$ANS_PATH")?" Y
-    if [[ $ANS_YN -eq 1 ]]; then
-      mkdir -p "$ANS_PATH" 2>/dev/null && return 0
-      warn "could not create $ANS_PATH — pick another location"
-    fi
+    ensure_dir "$ANS_PATH" && return 0
   done
 }
 
@@ -651,7 +721,7 @@ ANS_PORT=""
 ask_port() {  # box default → ANS_PORT
   local box=$1 def=$2 other
   while :; do
-    ask_raw "What host port should be used for ${BOX_NAME[$box]} $(dflt "$def")? "
+    ask_raw "Host port for ${BOX_NAME[$box]} $(dflt "$def"): "
     [[ -z $ANS ]] && ANS=$def
     if [[ ! $ANS =~ ^[0-9]+$ ]] || (( ANS < 1 || ANS > 65535 )); then
       say "  Please give a port number (1-65535)."
@@ -726,7 +796,7 @@ preflight() {
     pf_ok "user is in the render + video groups"
   fi
   if [[ -e /dev/fuse ]]; then
-    pf_ok "/dev/fuse present (fuse-overlayfs fallback available)"
+    pf_ok "/dev/fuse present (fuse-overlayfs fallback option)"
   else
     pf_bad "/dev/fuse missing — fuse-overlayfs fallback unavailable"
   fi
@@ -739,12 +809,18 @@ preflight() {
   else
     pf_bad "no compose provider — compose files written anyway; plain $RUNTIME used"
   fi
-  # python3 renders the pull progress bar (it aggregates the REST API's
-  # per-layer byte counts); without it an image pull has no way to report.
+  # The pull path is curl (POST to the podman REST API) piped into python3
+  # (which aggregates the per-layer byte counts into one bar). Both are hard
+  # dependencies of an image pull; neither is needed to write definitions.
   if command -v python3 >/dev/null 2>&1; then
     pf_ok "python3 found (image-pull progress)"
   else
     pf_bad "python3 not found — image pulls will fail (definitions still written)"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    pf_ok "curl found (image-pull transport)"
+  else
+    pf_bad "curl not found — image pulls will fail (definitions still written)"
   fi
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
   [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (needed for the distrobox lane)"
@@ -904,18 +980,21 @@ select_boxes() {
   else
     section "Select Boxes"
     say ""
-    # Columns land at 2 / 8 / 21 / 35 / 72 (see the display spec).
-    printf '  %s %-5s%-13s%-14s%-37s%-5s%s\n' \
+    # Columns land at 2 / 8 / 21 / 34 / 69. Each column carries its own colour
+    # THROUGH its padding, so the row reads as four coloured fields, and the
+    # [all] row wears the whole default-option scheme of an option list.
+    printf '  %s %-5s%-13s%-13s%-35s%-5s%s\n' \
       "$C_SUB" "#" "Container" "Service" "Description" "Port" "$RESET"
     idx=1
     for box in "${BOXES[@]}"; do
-      printf '  %s[%s%d%s]%s   %-13s%-14s%-37s%s%s\n' \
-        "$C_TBRK" "$C_TIDX" "$idx" "$C_TBRK" "$C_TEXT" \
-        "$box" "${BOX_SERVICE[$box]}" "${BOX_DESC[$box]}" "${BOX_HOST_PORT[$box]}" "$RESET"
+      printf '  %s[%s%d%s]%s   %s%-13s%s%-13s%s%-35s%s%s%s\n' \
+        "$C_TBRK" "$C_TIDX" "$idx" "$C_TBRK" "$RESET" \
+        "$C_CTR" "$box" "$C_SVCN" "${BOX_SERVICE[$box]}" \
+        "$C_TEXT" "${BOX_DESC[$box]}" "$C_PORT" "${BOX_HOST_PORT[$box]}" "$RESET"
       idx=$((idx+1))
     done
-    printf '  %s[%s%s%s]%s %s%s%s\n' \
-      "$C_ALLB" "$C_ALL" "all" "$C_ALLB" "$C_TEXT" "$C_ALLT" "all of these" "$RESET"
+    printf '  %s[%s%s%s]%s%s%s\n' \
+      "$C_BRK" "$C_OPTD" "all" "$C_BRK" "$C_OPTD" " all of them" "$RESET"
     say ""
     while :; do
       ask_raw "Which box(es)? (names or numbers, space-separated) $(dflt all): "
@@ -932,6 +1011,10 @@ select_boxes() {
       done
       [[ $ok -eq 1 && ${#want[@]} -gt 0 ]] && break
     done
+    # One answer can settle every per-box port question: the table above just
+    # showed the defaults, so this is the moment they can be accepted wholesale.
+    ask_yn "Use default ports for all services" Y
+    [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
   fi
   SELECTED=()
   for box in "${BOXES[@]}"; do
@@ -993,7 +1076,7 @@ hydrate_keep() {  # box
 # ── Shared questions ─────────────────────────────────────────────────────────
 shared_questions() {
   section "Shared Storage"
-  sub "Please provide paths for caches, models, & other data shared across boxes."
+  sub "Please provide paths for shared box data (caches, models, etc.)."
   local def=$HOME/.cache/huggingface box
   for box in "${BOXES[@]}"; do    # seed default from an existing setup
     if [[ -n "${EXD_PATH["$box:hf"]:-}" ]]; then
@@ -1010,17 +1093,9 @@ shared_questions() {
       break
     fi
   done
-  ask_path_as "Compute cache (MIOpen/Triton/torch/vLLM kernels)" "$def"
+  ask_path_as "Compute cache (MIOpen/Triton/torch/kernels)" "$def"
   COMPUTE_CACHE=$ANS_PATH
-  # Same y/N semantics as ask_yn (default N); inline only so the "?" renders
-  # after the [y/N] bracket per the display spec.
-  while :; do
-    ask_raw "Bind read-only local model collection at /opt/models (optional) $(dflt "y/N")? "
-    case "$ANS" in
-      ""|n|N) ANS_YN=0; break ;;
-      y|Y) ANS_YN=1; break ;;
-    esac
-  done
+  ask_yn "Bind read-only model collection to /opt/models" N
   if [[ $ANS_YN -eq 1 ]]; then
     def=$HOME/models
     for box in "${BOXES[@]}"; do
@@ -1052,28 +1127,138 @@ probe_fstype() {  # dir → FSTYPE
 
 MIT_ALL=""        # ""=unset, else fuse|copy|ignore applied to all later paths
 MIT_ASKED=0
+MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
 
-fs_mitigation_menu() {  # box dir fstype → ANS_CH in {f,c,i,n}
-  local box=$1 dir=$2 fstype=$3 letters="Fcni"
-  : "$fstype"   # probed type kept in the signature (no longer shown inline)
+# One continuous block of prose, word-wrapped to the screen and indented two.
+prose() {   # text
+  local w line
+  w=$(( $(term_width) - 2 ))
+  while IFS= read -r line; do
+    printf '  %s%s%s\n' "$C_TEXT" "$line" "$RESET"
+  done < <(printf '%s\n' "$1" | fold -s -w "$w" | sed 's/[[:space:]]*$//')
+  return 0
+}
+
+# The Data Mapping section: shown for the FIRST writable path that lands on a
+# filesystem kernel overlayfs will not take, and again later for any path still
+# unaccounted for (the "apply to all" answer is what stops the repeats).
+# "nested" = shown from inside a per-box section, which wants a blank line above.
+data_mapping_menu() {  # dir [nested] → ANS_CH in {f,c,n,i}
+  local dir=$1 nested=${2:-} letters="Fcni"
+  [[ $nested == nested ]] && say ""
+  section "Data Mapping"
   say ""
-  # Fixed three-line wording (not wrap, so the phrasing stays exact); only the
-  # first line grows with the path.
-  say "  The filesystem for $(home_disp "$dir") is incompatible with droste's"
-  say "  default tool, Linux's overlayfs. Note: if ignored, filesystem must be"
-  say "  changed before containers can load."
-  say ""
-  printf '  %s%s%s\n' "$C_SUB" \
-    "Review the following and select a mechanism to address the incompatibility." "$RESET"
-  opt_row F "use overlay fallback" \
-    "(userspace; app files ~30% slower; models OK)" 28 "$(isdef F "$letters")"
-  opt_row c "opies files as fallback" \
-    "(no overlay; more storage: ~${BOX_COPY_GB[$box]} GB for $box)" 28 "$(isdef c "$letters")"
-  opt_row n "ew path" "(most efficient)" 28 "$(isdef n "$letters")"
-  opt_row i "gnore" "(\"ostrich solution\"; box will fail on start)" 28 "$(isdef i "$letters")"
+  prose "The filesystem for $(home_disp "$dir") is incompatible with droste's default tool, Linux's overlayfs. Note: if ignored, filesystem must be changed before any containers can load."
+  sub "Select an option to address filesystem incompatibility."
+  opt_row F "use overlay" \
+    "(app files ~30% slower; models OK)" 16 "$(isdef F "$letters")"
+  opt_row c "opied files" \
+    "(approx. 10-20 GB more storage)" 16 "$(isdef c "$letters")"
+  opt_row n "ew path" "(most efficient)" 16 "$(isdef n "$letters")"
+  opt_row i "gnore" "(\"ostrich solution\"; will fail on start)" 16 "$(isdef i "$letters")"
   say ""
   ask_choice "Identify how to proceed [F/c/n/i]" "$letters"
   return 0
+}
+
+# Probe ONE path and settle its overlay mitigation.
+#   MIT_MODE=""            the filesystem is fine (or the path is not writable)
+#   MIT_MODE=fuse|copy|ignore
+#   return 2               the user asked for a NEW PATH — the caller re-asks
+# The first hostile path opens the menu; "Apply this decision to all paths" is
+# offered exactly once and, when accepted, silences every later path.
+mitigate_path() {  # dir [nested]
+  local dir=$1 nested=${2:-}
+  MIT_MODE=""
+  probe_fstype "$dir"
+  overlay_hostile_fs "$FSTYPE" || return 0
+  if [[ -n $MIT_ALL ]]; then
+    MIT_MODE=$MIT_ALL
+    return 0
+  fi
+  data_mapping_menu "$dir" "$nested"
+  case "$ANS_CH" in
+    f) MIT_MODE=fuse ;;
+    c) MIT_MODE=copy ;;
+    i) MIT_MODE=ignore ;;
+    n) return 2 ;;
+  esac
+  if [[ $MIT_ASKED -eq 0 ]]; then
+    MIT_ASKED=1
+    ask_yn "Apply this decision to all paths" Y
+    [[ $ANS_YN -eq 1 ]] && MIT_ALL=$MIT_MODE
+  fi
+  return 0
+}
+
+# The paths that exist before any box section, most primary first.
+mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
+  case "$1" in
+    rc)      printf '%s' "$EMIT_DIR" ;;
+    base)    [[ -n $DATA_ROOT && $DATA_ROOT != "$EMIT_DIR" ]] \
+               && printf '%s' "$DATA_ROOT" ;;
+    compute) printf '%s' "$COMPUTE_CACHE" ;;
+    hf)      printf '%s' "$HF_CACHE" ;;
+  esac
+  return 0
+}
+
+# Re-ask ONE of those paths (the "new path" answer) and take the new value.
+reask_slot() {  # slot → 0 when re-asked
+  case "$1" in
+    rc)
+      ask_path_as "Identify a path for droste resource storage" "$EMIT_DIR"
+      # A data base that merely tracked the resource path keeps tracking it.
+      [[ $DATA_ROOT == "$EMIT_DIR" ]] && DATA_ROOT=""
+      EMIT_DIR=$ANS_PATH
+      DEFAULT_ROOT=$EMIT_DIR
+      # Everything the old resource path implied has to be re-derived: which
+      # boxes already exist there, and what the user wants done about them.
+      EX_COMPOSE=() EX_INI=() EX_CTR=() EX_DBX=() EXD_PATH=()
+      EXD_PORT=() EXD_AS=() EXD_MODE=() EXD_LANE=()
+      detect_existing
+      resolve_actions
+      ;;
+    base)
+      ask_path_as "Base path for service data" "$(data_root)"
+      DATA_ROOT=$ANS_PATH ;;
+    compute)
+      ask_path_as "Compute cache (MIOpen/Triton/torch/kernels)" "$COMPUTE_CACHE"
+      COMPUTE_CACHE=$ANS_PATH ;;
+    hf)
+      ask_path_as "HuggingFace cache (models)" "$HF_CACHE"
+      HF_CACHE=$ANS_PATH ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# Data Mapping over the paths chosen BEFORE any box section. Only the FIRST /
+# most primary hostile one opens the section (Jei's spec); whatever the user
+# answers there either covers every path that follows ("apply to all") or leaves
+# the remaining paths to raise it again where they arise, box paths included.
+global_mitigation() {
+  local slot dir rc
+  while :; do
+    dir=""
+    for slot in rc base compute hf; do
+      dir=$(mitigation_slot_path "$slot")
+      [[ -n $dir ]] || continue
+      probe_fstype "$dir"
+      overlay_hostile_fs "$FSTYPE" && break
+      dir=""
+    done
+    [[ -z $dir ]] && return 0
+    rc=0
+    mitigate_path "$dir" || rc=$?
+    if [[ $rc -ne 2 ]]; then
+      # Close the section the way a per-box section closes, so the banner
+      # below it keeps the same two-line gap as every other banner.
+      say ""
+      return 0
+    fi
+    reask_slot "$slot" || return 0
+  done
 }
 
 # ── Pattern propagation for the path family ──────────────────────────────────
@@ -1081,14 +1266,38 @@ PATTERN_ROOT=""      # user-approved root for auto-filled paths
 PATTERN_ASKED=0
 DEFAULT_ROOT=""      # emit dir (default ~/droste)
 
-path_default() {  # box label → default path (existing > pattern > root)
+# Base path for the DATA family (data/input/output/workspace) — the Resource
+# Path section can point it somewhere other than the resource dir. Caches are
+# deliberately NOT part of the family: they were asked separately.
+DATA_ROOT=""     # "" = the resource path itself
+DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>/data, never asked
+PORTS_DEFAULT=0  # 1 = every box takes the default host port, never asked
+
+data_root() { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT}"; }
+
+# The two questions that follow the resource path. Answering the first settles
+# every later per-box DATA question in one go; the second moves the whole data
+# family (data/input/output/workspace — NOT the caches) to a base of its own,
+# which then supplies the defaults for all of them.
+resource_path_policy() {
+  ask_yn "Store all service data here ($(home_disp "$EMIT_DIR")/<box>/data)" Y
+  [[ $ANS_YN -eq 1 ]] && DATA_AUTO=1
+  ask_yn "Provide a different base path for data" N
+  if [[ $ANS_YN -eq 1 ]]; then
+    ask_path_as "Base path for service data" "$EMIT_DIR"
+    DATA_ROOT=$ANS_PATH
+  fi
+  return 0
+}
+
+path_default() {  # box label → default path (existing > pattern > data base)
   local box=$1 label=$2
   if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
     printf '%s' "${EXD_PATH["$box:$label"]}"
   elif [[ -n $PATTERN_ROOT ]]; then
     printf '%s/%s/%s' "$PATTERN_ROOT" "$box" "$label"
   else
-    printf '%s/%s/%s' "$DEFAULT_ROOT" "$box" "$label"
+    printf '%s/%s/%s' "$(data_root)" "$box" "$label"
   fi
 }
 
@@ -1097,7 +1306,9 @@ maybe_offer_pattern() {  # box label answered-path
   [[ $PATTERN_ASKED -eq 1 ]] && return 0
   [[ ${ACTION[$box]} == modify ]] && return 0
   PATTERN_ASKED=1
-  [[ $got == "$DEFAULT_ROOT/$box/$label" ]] && return 0
+  # Nothing to propagate when the answer WAS the offered default — including the
+  # case where that default already came from a chosen base data path.
+  [[ $got == "$(path_default "$box" "$label")" ]] && return 0
   if [[ $got == */"$box"/"$label" ]]; then
     root=${got%/"$box"/"$label"}
   elif [[ $got == */"$label" ]]; then
@@ -1108,71 +1319,71 @@ maybe_offer_pattern() {  # box label answered-path
   fi
   [[ -z $root || $root == / ]] && return 0
   example="$root/comfyui/input"
-  say "  Apply this pattern to all shared resource bindings"
-  ask_yn "(e.g. $(home_disp "$example"))?" Y
+  printf '  %s%s%s\n' "$C_TEXT" "Apply this pattern to all shared resource bindings" "$RESET"
+  ask_yn "(e.g. $(home_disp "$example"))" Y
   [[ $ANS_YN -eq 1 ]] && PATTERN_ROOT=$root
   return 0
 }
 
-# Ask (or pattern-fill) one bind path for a box; sets PATHS[box:label].
-ask_bind_path() {  # box label dest prose
-  local box=$1 label=$2 dest=$3 prose=$4 def
-  : "$prose" "$dest"   # kept for call-site compatibility; the prompt derives both
-  def=$(path_default "$box" "$label")
-  if [[ -n $PATTERN_ROOT && ${ACTION[$box]} != modify && $PATTERN_ASKED -eq 1 ]]; then
-    PATHS["$box:$label"]=$def
-    mkdir -p "$def" 2>/dev/null || warn "could not create $def"
-    say "  $box $label: $(home_disp "$def") (pattern)"
-  else
-    # No per-bind header: the prompt itself names the box + bind family.
-    ask_path_as "Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}" "$def"
-    PATHS["$box:$label"]=$ANS_PATH
-    maybe_offer_pattern "$box" "$label" "$ANS_PATH"
-  fi
-  return 0
-}
+# Which labels of a box ended up on an overlay-hostile filesystem, and the
+# filesystem that triggered it (both feed the mitigation line under the box).
+declare -A MIT_LABELS MIT_FS
 
-# Data dir + fs probe + mitigation loop; sets PATHS[box:data] CFG_MODE CFG_FS.
-choose_data_dir() {  # box
-  local box=$1 def dir
+# Settle ONE bind path of a box: pick it (automated, pattern-filled, or asked),
+# make sure it exists, and answer its filesystem question. Sets PATHS[box:label]
+# — plus CFG_FS/CFG_MODE when the label is the data dir, since /opt/data is the
+# bind the in-box overlay is actually built on.
+set_bind_path() {  # box label
+  local box=$1 label=$2 def rc force=0
   while :; do
-    ask_bind_path "$box" data /opt/data "the data dir"
-    dir=${PATHS["$box:data"]}
-    probe_fstype "$dir"
-    CFG_FS[$box]=$FSTYPE
-    if ! overlay_hostile_fs "$FSTYPE"; then
-      CFG_MODE[$box]=""
-      break
+    def=$(path_default "$box" "$label")
+    if [[ $force -eq 0 && $label == data && $DATA_AUTO -eq 1 \
+          && ${ACTION[$box]} != modify ]]; then
+      ANS_PATH=$def
+      ensure_dir "$ANS_PATH" || :
+    elif [[ $force -eq 0 && -n $PATTERN_ROOT && ${ACTION[$box]} != modify \
+            && $PATTERN_ASKED -eq 1 ]]; then
+      ANS_PATH=$def
+      ensure_dir "$ANS_PATH" || :
+      printf '  %s%s %s: %s (pattern)%s\n' \
+        "$C_TEXT" "$box" "$label" "$(home_disp "$ANS_PATH")" "$RESET"
+    else
+      # No per-bind header: the prompt itself names the box + bind family.
+      ask_path_as "Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}" "$def"
+      maybe_offer_pattern "$box" "$label" "$ANS_PATH"
     fi
-    # Both lanes build the same overlays on /opt/data (the init hook runs
-    # the resolver in-box), so distrobox-only boxes get the same menu.
-    if [[ -n $MIT_ALL ]]; then
-      CFG_MODE[$box]=$MIT_ALL
-      subnote "${C_SUBJ}$FSTYPE detected${C_TEXT} — applying earlier choice ($MIT_ALL)."
-      break
+    PATHS["$box:$label"]=$ANS_PATH
+    # Modify with the SAME path keeps the mitigation already recorded for it
+    # (re-prompts default to current values); a changed path is re-decided.
+    if [[ $label == data && ${ACTION[$box]} == modify && -n "${EXD_MODE[$box]:-}" \
+          && $ANS_PATH == "${EXD_PATH["$box:data"]:-}" ]]; then
+      probe_fstype "$ANS_PATH"
+      CFG_FS[$box]=$FSTYPE
+      if overlay_hostile_fs "$FSTYPE"; then
+        CFG_MODE[$box]=${EXD_MODE[$box]}
+        MIT_LABELS[$box]="${MIT_LABELS[$box]:-} $label"
+        MIT_FS[$box]=$FSTYPE
+      fi
+      return 0
     fi
-    # Modify with the same path: keep the recorded mitigation (re-prompts
-    # default to current values); a changed path gets the full menu.
-    if [[ ${ACTION[$box]} == modify && -n "${EXD_MODE[$box]:-}" \
-          && $dir == "${EXD_PATH["$box:data"]:-}" ]]; then
-      CFG_MODE[$box]=${EXD_MODE[$box]}
-      subnote "${C_SUBJ}$FSTYPE detected${C_TEXT} — keeping the existing choice (DROSTE_OVERLAY_MODE=${EXD_MODE[$box]})."
-      break
-    fi
-    fs_mitigation_menu "$box" "$dir" "$FSTYPE"
-    case "$ANS_CH" in
-      f) CFG_MODE[$box]=fuse ;;
-      c) CFG_MODE[$box]=copy ;;
-      i) CFG_MODE[$box]=ignore ;;
-      n) PATTERN_ROOT=""; continue ;;   # re-ask this path explicitly
-    esac
-    if [[ $MIT_ASKED -eq 0 ]]; then
-      MIT_ASKED=1
-      ask_yn "Apply this decision to all paths?" Y
-      [[ $ANS_YN -eq 1 ]] && MIT_ALL=${CFG_MODE[$box]}
+    rc=0
+    mitigate_path "$ANS_PATH" nested || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      # "new path": this one gets asked explicitly, whatever settled it before.
+      PATTERN_ROOT=""
+      force=1
+      continue
     fi
     break
   done
+  [[ $label == data ]] && CFG_FS[$box]=$FSTYPE
+  if [[ -n $MIT_MODE ]]; then
+    [[ $label == data ]] && CFG_MODE[$box]=$MIT_MODE
+    MIT_LABELS[$box]="${MIT_LABELS[$box]:-} $label"
+    MIT_FS[$box]=$FSTYPE
+  elif [[ $label == data ]]; then
+    CFG_MODE[$box]=""
+  fi
   return 0
 }
 
@@ -1183,15 +1394,19 @@ LANE_ASKED=0
 
 configure_box() {  # box remaining-after-this (count)
   local box=$1 remaining=$2 pair label dest lane_def lane_letters lane_hint
+  local asked=0 bw
   banner "${BOX_BANNER[$box]}" bold
+  bw=$BANNER_W
 
-  # Lane (Db/Sv/both) + AutoStart — propagatable after the first box.
-  section "Installation Variant(s)"
+  # Lane (Db/Sv/both) + AutoStart — propagatable after the first box. When an
+  # earlier box already settled it there is nothing to show: the box falls
+  # straight through to its summary.
   if [[ -n $LANE_ALL && ${ACTION[$box]} != modify ]]; then
     CFG_LANE[$box]=$LANE_ALL
     CFG_AS[$box]=$AS_ALL
-    printf '%s  Lane: %s (applied to all boxes)%s\n' "$C_NOTE" "$LANE_ALL" "$RESET"
   else
+    asked=1
+    section "Installation Variant(s)"
     # The default lane must be settled BEFORE the options are drawn, so the
     # green option and the capitalised letter in the hint always agree.
     lane_def="b"   # default = BOTH lanes (server + distrobox)
@@ -1223,15 +1438,15 @@ configure_box() {  # box remaining-after-this (count)
     CFG_AS[$box]=""
     if [[ ${CFG_LANE[$box]} != distrobox ]]; then
       if [[ ${ACTION[$box]} == modify && -n "${EXD_AS[$box]:-}" ]]; then
-        ask_yn_q "Auto-start the $box server at boot" Y
+        ask_yn "Auto-start the $box server at boot" Y
       else
-        ask_yn_q "Auto-start the $box server at boot" N
+        ask_yn "Auto-start the $box server at boot" N
       fi
       [[ $ANS_YN -eq 1 ]] && CFG_AS[$box]=1
     fi
     if [[ $LANE_ASKED -eq 0 && $remaining -gt 0 ]]; then
       LANE_ASKED=1
-      ask_yn "Apply this choice to all boxes?" Y
+      ask_yn "Apply this choice to all boxes" Y
       if [[ $ANS_YN -eq 1 ]]; then
         LANE_ALL=${CFG_LANE[$box]}
         AS_ALL=${CFG_AS[$box]}
@@ -1239,18 +1454,33 @@ configure_box() {  # box remaining-after-this (count)
     fi
   fi
 
+  # Which of this box's binds still have a question to answer? The data dir is
+  # skipped when the Resource Path section already placed every box's data; the
+  # port when the box table's defaults were accepted wholesale. What remains
+  # decides whether the Program Paths section is drawn at all.
+  local -a todo=()
+  local want_port=0
+  if [[ $DATA_AUTO -eq 0 || ${ACTION[$box]} == modify ]]; then todo+=(data); fi
+  for pair in ${BOX_EXTRA_BINDS[$box]}; do
+    todo+=("${pair%%:*}")
+  done
+  if [[ ${CFG_LANE[$box]} != distrobox ]]; then
+    if [[ $PORTS_DEFAULT -eq 0 || ${ACTION[$box]} == modify ]]; then want_port=1; fi
+  fi
+  if [[ ${#todo[@]} -gt 0 || $want_port -eq 1 ]]; then
+    asked=1
+    section "Program Paths"
+    sub "Program data, input, output, etc."
+  fi
+
   # Data dir (+ fs probe / overlay mitigation), then the other CRITICAL binds.
   # Both lanes share this ONE /opt/data host path (only the container name
   # differs between lanes).
-  section "Data Mapping"
-  sub "Program data, input, output, etc."
-  choose_data_dir "$box"
+  set_bind_path "$box" data
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*} dest=${pair#*:}
-    case "$label" in
-      workspace) ask_bind_path "$box" "$label" "$dest" "the workspace" ;;
-      *) ask_bind_path "$box" "$label" "$dest" "the $label dir" ;;
-    esac
+    : "$dest"          # the container side is the emitters' business, not ours
+    set_bind_path "$box" "$label"
   done
 
   # Host port (server lane only).
@@ -1258,19 +1488,119 @@ configure_box() {  # box remaining-after-this (count)
     local pdef=${BOX_HOST_PORT[$box]}
     [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]] \
       && pdef=${EXD_PORT[$box]}
-    ask_port "$box" "$pdef"
-    CFG_PORT[$box]=$ANS_PORT
+    if [[ $want_port -eq 1 ]]; then
+      ask_port "$box" "$pdef"
+      CFG_PORT[$box]=$ANS_PORT
+    else
+      CFG_PORT[$box]=$pdef
+    fi
   else
     CFG_PORT[$box]=""
   fi
+
+  [[ $asked -eq 1 ]] && say ""
+  summary_box "$box" "$bw"
+  mitigation_line "$box"
+  say ""
+  return 0
+}
+
+# ── Per-box summary ──────────────────────────────────────────────────────────
+# The box that closes each per-box section: what will be installed, where its
+# data lands, and which host port it answers on. Values are BARE (no brackets).
+# Width: the banner's, so the two stack; wider only when a path needs it, and
+# never past the screen — a path that still will not fit is elided by fit_path.
+SUM_HDR_W=12       # "Installing: " is the longest header, and sets the column
+
+summary_box() {  # box banner-width
+  local box=$1 bw=$2 inner avail pair label lane
+  local -a keys=() vals=()
+  lane=${CFG_LANE[$box]}
+  case "$lane" in
+    both) vals+=("distrobox & server") ;;
+    server) vals+=("server") ;;
+    *) vals+=("distrobox") ;;
+  esac
+  keys+=("Installing:")
+  keys+=("${BIND_ROW[data]}:") vals+=("$(home_disp "${PATHS["$box:data"]}")")
+  for pair in ${BOX_EXTRA_BINDS[$box]}; do
+    label=${pair%%:*}
+    keys+=("${BIND_ROW[$label]}:") vals+=("$(home_disp "${PATHS["$box:$label"]}")")
+  done
+  if [[ -n "${CFG_PORT[$box]:-}" ]]; then
+    keys+=("Port:") vals+=("${CFG_PORT[$box]}")
+  fi
+  # Widest row wins, floored at the banner and capped at the screen. A row that
+  # sets the width keeps one space in front of the right border, mirroring the
+  # one after the left one.
+  inner=$(( bw - 2 ))
+  local i n w
+  n=${#vals[@]}
+  for (( i = 0; i < n; i = i + 1 )); do
+    w=$(( 4 + SUM_HDR_W + ${#vals[i]} ))
+    [[ $w -gt $inner ]] && inner=$w
+  done
+  avail=$(( $(term_width) - 4 ))
+  [[ $inner -gt $avail ]] && inner=$avail
+  local fill="" v
+  # shellcheck disable=SC2324  # string append of the border char, not math
+  for (( i = 0; i < inner; i = i + 1 )); do fill+=$BOXH; done
+  printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXTL" "$fill" "$BOXTR" "$RESET"
+  for (( i = 0; i < n; i = i + 1 )); do
+    v=$(fit_path "${vals[i]}" $(( inner - 4 - SUM_HDR_W )))
+    printf '  %s%s%s %s+%s %s%-*s%s%s%*s%s%s%s\n' \
+      "$C_SBOX" "$BOXV" "$RESET" "$C_SBUL" "$RESET" \
+      "$C_SHDR" "$SUM_HDR_W" "${keys[i]}" "$C_SVAL" "$v" \
+      "$(( inner - 3 - SUM_HDR_W - ${#v} ))" "" "$C_SBOX" "$BOXV" "$RESET"
+  done
+  printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXBL" "$fill" "$BOXBR" "$RESET"
+  return 0
+}
+
+# The one-line consequence under the summary box: what the filesystem forced,
+# and which of the box's paths it applies to. Nothing is printed when the
+# filesystem was fine.
+MIT_ORDER="data input output workspace"   # reading order of the sentence
+
+mitigation_line() {  # box
+  local box=$1
+  local mode=${CFG_MODE[$box]:-} fs cats="" i n got k
+  local -a labels=()
+  got=" ${MIT_LABELS[$box]:-} "
+  # Listed in reading order, not in the order the paths happened to be asked.
+  for k in $MIT_ORDER; do
+    [[ $got == *" $k "* ]] && labels+=("$k")
+  done
+  n=${#labels[@]}
+  [[ $n -eq 0 ]] && return 0
+  [[ -z $mode ]] && mode=$MIT_ALL
+  [[ -z $mode ]] && return 0
+  fs=${MIT_FS[$box]:-${CFG_FS[$box]:-unknown}}
+  # One item stands alone, two are joined with "and", three or more take the
+  # comma series ("data, input, & output").
+  for (( i = 0; i < n; i = i + 1 )); do
+    if [[ $i -eq 0 ]]; then
+      cats="$C_MCAT${labels[i]}"
+    elif [[ $i -eq $(( n - 1 )) && $n -eq 2 ]]; then
+      cats+="$C_TEXT and $C_MCAT${labels[i]}"
+    elif [[ $i -eq $(( n - 1 )) ]]; then
+      cats+="$C_TEXT, & $C_MCAT${labels[i]}"
+    else
+      cats+="$C_TEXT, $C_MCAT${labels[i]}"
+    fi
+  done
+  printf '    %s%s%s %s%s detected%s — using %s%s%s for %s%s.%s\n' \
+    "$C_ARROW" "$ARROW_M" "$RESET" "$C_SUBJ" "$fs" "$C_TEXT" \
+    "$C_MOPT" "$mode" "$C_TEXT" "$cats" "$C_TEXT" "$RESET"
   return 0
 }
 
 # ── Build ladder ─────────────────────────────────────────────────────────────
 ask_ladder() {
   local letters="Awpc"
-  section "Build & Activation"
-  sub "Options for records & startup"
+  banner "Build & Activation" bold
+  section "Records & Startup"
+  sub "Please indicate your selection for box preparation:"
   opt_row w "" "Write definition(s) only (compose & ini)" 4 "$(isdef w "$letters")"
   opt_row p "" "Pull image(s) & write definition(s)" 4 "$(isdef p "$letters")"
   opt_row c "" "Pull, write, & create box(es)" 4 "$(isdef c "$letters")"
@@ -2119,12 +2449,13 @@ main() {
   preflight
 
   section "Resource Path" intro
-  sub "Re-creation (compose.yaml/distrobox ini), logs, & program data" intro
+  sub "(Re)Creation (compose.yaml/distrobox ini), logs, & data" intro
   # A typo here fans out into every emitted file — ask_path_as confirms before
   # creating (and re-asks if the user declines or the create fails).
-  ask_path_as "Please Identify a path to use for droste resources" "$HOME/droste"
+  ask_path_as "Identify a path for droste resource storage" "$HOME/droste"
   EMIT_DIR=$ANS_PATH
   DEFAULT_ROOT=$EMIT_DIR
+  resource_path_policy
 
   detect_existing
   select_boxes
@@ -2134,6 +2465,9 @@ main() {
     local i n box
     if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
       shared_questions
+      # Every writable path chosen so far is known now, so the filesystem
+      # question can be asked once, for the most primary of them.
+      global_mitigation
       n=${#CONFIGURE[@]}
       for (( i = 0; i < n; i = i + 1 )); do
         box=${CONFIGURE[$i]}

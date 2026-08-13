@@ -60,6 +60,9 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     expected to need updating whenever transformers moves its range; the gate is precisely what
 #     makes that loud).
 #     NB torch is fine by PEP 440: a local version (`2.9.1+rocm...`) satisfies `==2.9.1`.
+#     pybind11: the amd-aiter nightly began declaring it as a RUNTIME dep (AITER JIT-compiles
+#     kernels at run time) between 2026-08-12 and -13 — the gate caught the drift (run
+#     31654555755); installed rather than allowlisted because it is satisfiable.
 #  6. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
@@ -69,6 +72,7 @@ RUN export PIP_USE_DEPRECATED=legacy-resolver \
     && pip install /tmp/wheels/vllm*.whl \
     && pip install ray \
     && pip install 'tokenizers>=0.22.0,<=0.23.0' \
+    && pip install pybind11 \
     && rm -rf /tmp/wheels /root/.cache/pip \
     && rm -rf /opt/fp8/bench /opt/fp8/docs /opt/fp8/README.md /opt/fp8/serve_*.sh /opt/fp8/.gitignore
 

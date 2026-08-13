@@ -158,7 +158,7 @@ REGISTRY_VERSION = 2
 #    controlnet_aux, so `facenet.pth` -- a pose model, not a face-recognition net --
 #    classifies by content instead of by its misleading name.
 #    Every registry must re-run.
-HEURISTICS_VERSION = 11
+HEURISTICS_VERSION = 12
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -355,9 +355,10 @@ def strip_dataparallel(keys) -> list:
     return [k[n:] if k.startswith(DATAPARALLEL_PREFIX) else k for k in keys]
 
 
-# REAL autoencoder anatomy, in both spellings: ldm (`encoder.down.` / `decoder.up.`) and
-# diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`), plus the quantisation convs
-# that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
+# REAL autoencoder anatomy, in THREE spellings: ldm (`encoder.down.` / `decoder.up.`),
+# diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`) and the causal-video
+# autoencoders (`encoder.downsamples.` / `decoder.upsamples.`), plus the quantisation
+# convs that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
 #
 # Required because "has an encoder and a decoder" is not "is a VAE". parsing_parsenet.pth
 # -- ParseNet, a face-PARSING/segmentation net, 85.3 MB -- has prefixes
@@ -366,8 +367,19 @@ def strip_dataparallel(keys) -> list:
 # shaped like an autoencoder; only an autoencoder has an autoencoder's insides. Without
 # anatomy the vae rule simply does not fire -- it abstains rather than guessing some other
 # category -- and the naming measures decide.
+#
+# The Wan spelling is here because the quant convs are NOT: a field dump of the real
+# wan_2.1_vae.safetensors (Jei, s33) has top-level prefixes `conv1, conv2, decoder,
+# encoder` with keys like `decoder.upsamples.0.residual.0.gamma` and NO quant_conv /
+# post_quant_conv anywhere -- so the resample stack is the only anatomy such a file has
+# to offer. PROVENANCE DIFFERS between the two halves of that pair: `decoder.upsamples.`
+# is PROVEN (it is in the dump); `encoder.downsamples.` is INFERRED from the encoder/
+# decoder symmetry every one of these autoencoders is built with, and is unconfirmed.
+# Both are narrow enough to be safe either way -- ParseNet, the counterexample this whole
+# rule exists for, has neither (its encoder/decoder are bare `encoder.0` / `decoder.0`).
 VAE_ANATOMY_PREFIXES = ("encoder.down.", "decoder.up.",
-                        "encoder.down_blocks.", "decoder.up_blocks.")
+                        "encoder.down_blocks.", "decoder.up_blocks.",
+                        "encoder.downsamples.", "decoder.upsamples.")
 
 
 def _has_vae_anatomy(keys) -> bool:
@@ -1132,6 +1144,14 @@ def rate_safetensors(header: dict) -> tuple[str, float] | None:
             # a CPM/OpenPose stage conv names its architecture outright, but it is a
             # PATTERN rather than a fixed prefix, so it cannot live in the tuple above
             or any(POSE_STAGE_KEY_RE.match(k) for k in keys)
+            # ...and so is the AnimateDiff temporal stack. Its BLOCK roots (down_blocks./
+            # mid_block./up_blocks.) are the generic UNet skeleton and must NEVER join
+            # DISTINCTIVE_PREFIXES -- half the collection would inherit 0.99 off them.
+            # The composite is the opposite: a temporal_transformer hanging off a UNet
+            # block names AnimateDiff as squarely as `control_model.` names a ControlNet,
+            # and rating the 8 motion LoRAs + the motion modules at the generic 0.6 left
+            # them scoring 0.4-0.45 -- looking like guesses when the shape is conclusive.
+            or any(ANIMATEDIFF_KEY_RE.search(k) for k in keys)
             or any(k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k
                    or ".lora_B" in k or ".lora_down" in k or ".lora_up" in k
                    for k in keys)):
@@ -1149,6 +1169,9 @@ def rate_pickle(keys: set, modules: set) -> tuple[str, float] | None:
         if needle in joined and (refine is None or refine in joined):
             return cat, EMBEDDED_MAX_RATING
     if keys:
+        # ONE seam: every key-side rating tier (distinctive prefixes, pose stages, the
+        # AnimateDiff temporal stack, lora processors) reaches the pickle path through
+        # this call, so a lift there needs no twin here -- it arrives capped at 0.95.
         rated = rate_safetensors({k: {} for k in keys})
         if rated:
             # keys are strong but one step below a module path naming the class
@@ -1745,10 +1768,12 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
             # DISPLAY ONLY: a torch `_metadata` OrderedDict carries an entry keyed on the
             # empty string (the root module), which harvests into the key set and renders
             # as a phantom leading item -- ", _metadata, module". The classifier is
-            # indifferent to it; a human reading the evidence is not.
+            # indifferent to it; a human reading the evidence is not. BOTH rows need the
+            # filter: the empty key sorts first, so the sample row led with it too.
+            named = [k for k in sorted(keys) if k]
             rows.append(("pickle key prefixes",
-                         cap({k.split(".")[0] for k in keys} - {""}) or "(none)"))
-            rows.append(("pickle sample keys", cap(sorted(keys)[:6], 6) or "(none)"))
+                         cap({k.split(".")[0] for k in named}) or "(none)"))
+            rows.append(("pickle sample keys", cap(named[:6], 6) or "(none)"))
         except (OSError, ValueError, EOFError, pickle.UnpicklingError,
                 zipfile.BadZipFile, AttributeError, ImportError, IndexError) as e:
             # NEVER silent. Both shapes of non-answer land here -- a read that threw and

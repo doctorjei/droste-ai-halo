@@ -135,6 +135,21 @@ def diffusers_vae_keys() -> list:
             "quant_conv.weight", "post_quant_conv.weight"]
 
 
+# ...and the THIRD spelling, from Jei's field dump of the real wan_2.1_vae.safetensors
+# (s33): a causal-video autoencoder. Two things make it its own case -- the resample
+# stacks are spelled `upsamples`/`downsamples`, and there is NO quant_conv /
+# post_quant_conv anywhere in the file, so the ldm/diffusers anatomy finds nothing to
+# match. Its top-level prefixes are `conv1, conv2, decoder, encoder`, hence the bare
+# root convs here. PROVENANCE: the `decoder.upsamples.` keys are verbatim from the dump;
+# `encoder.downsamples.` is the symmetric encoder spelling, inferred, not yet confirmed.
+def wan_vae_keys() -> list:
+    return ["conv1.weight", "conv2.weight",
+            "decoder.upsamples.0.residual.0.gamma",
+            "decoder.upsamples.0.residual.2.bias",
+            "encoder.downsamples.0.residual.0.gamma",
+            "encoder.conv1.weight", "decoder.conv2.bias"]
+
+
 # ...and the counterexample itself: ParseNet (parsing_parsenet.pth, 85.3 MB), a face-
 # PARSING/segmentation net. Prefixes verbatim from Jei's field dump -- `body, decoder,
 # encoder, out_img_conv, out_mask_conv`, sample key `body.0.conv1.conv2d`.
@@ -1058,13 +1073,29 @@ class ScannerTest(unittest.TestCase):
                          {f"animatediff_motion_lora/{n}" for n in names}
                          | {"animatediff_motion_lora/aidma-RUN-Motion Lora.safetensors",
                             "animatediff_models/AnimateDiff-Motion-Modules_v1.5-v2.ckpt"})
-        cats = {e["display"]: e["category"]
-                for e in self.fx.load_registry()["entries"].values()}
+        entries = {e["display"]: e
+                   for e in self.fx.load_registry()["entries"].values()}
+        cats = {d: e["category"] for d, e in entries.items()}
         self.assertEqual(cats["AnimateDiff-Motion-Modules_v1.5-v2.ckpt"],
                          "animatediff_models")
         for n in names:
             self.assertEqual(cats[n], "animatediff_motion_lora", n)
         self.assertNotIn("UNCLASSIFIED", out)
+        # heuristics 12: the shape is CONCLUSIVE, so both readers rate at the top tier --
+        # the pickle side one step down, as every key-derived pickle rating is. Under 11
+        # these were the generic 0.6 and scored 0.48 / 0.6.
+        self.assertIn("pickle=animatediff_motion_lora@0.95", entries[names[0]]["signals"])
+        self.assertIn("pickle=animatediff_models@0.95",
+                      entries["AnimateDiff-Motion-Modules_v1.5-v2.ckpt"]["signals"])
+        self.assertIn("safetensors=animatediff_motion_lora@0.99",
+                      entries["aidma-RUN-Motion Lora.safetensors"]["signals"])
+        self.assertEqual(entries[names[0]]["confidence"], 0.76)
+        self.assertEqual(entries["aidma-RUN-Motion Lora.safetensors"]["confidence"], 0.849)
+        # ...and the disagreement with the NAME (both read `lora`) is untouched by the
+        # lift: raising content's confidence must not silence the naming measures.
+        for n in names + ["aidma-RUN-Motion Lora.safetensors"]:
+            self.assertEqual(entries[n]["disputed"], "ladder=loras", n)
+            self.assertIn("filename=loras@0.3", entries[n]["signals"])
 
     # ------------------- heuristics 10: a vision tower is not always a vision model
     def test_multimodal_llm_vision_tower_is_a_text_encoder_not_clip_vision(self):
@@ -1240,6 +1271,10 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertRegex(ins, r"pickle key prefixes\s+_metadata, module")
         self.assertNotRegex(ins, r"pickle key prefixes\s+,")
+        # heuristics 12: the SAMPLE row had the same phantom -- the empty key sorts
+        # first, so it led every sample list too. Same filter, same display-only scope.
+        self.assertRegex(ins, r"pickle sample keys\s+_metadata, module,")
+        self.assertNotRegex(ins, r"pickle sample keys\s+,")
         self.assertIn("module.BboxHead.0.conv1x1.weight", ins)
 
     # ------------------- heuristics 11: CPM / OpenPose stage convs -> controlnet_aux
@@ -1274,6 +1309,74 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(entry["category"], "controlnet_aux")
         self.assertTrue(any(s.startswith("pickle=controlnet_aux@")
                             for s in entry["signals"]), entry["signals"])
+
+    # ------------- heuristics 12: the causal-video autoencoder spells its anatomy
+    def test_wan_causal_video_vae_anatomy_votes_vae(self):
+        """Field dump of the real wan_2.1_vae.safetensors (Jei, s33): top-level prefixes
+        `conv1, conv2, decoder, encoder`, keys like `decoder.upsamples.0.residual.0.gamma`
+        -- and NO quant_conv / post_quant_conv anywhere. Under heuristics 11 that file had
+        an encoder/decoder pair and NOTHING the anatomy rule recognised, so it abstained
+        and fell to naming. `upsamples`/`downsamples` is the third spelling that ships."""
+        wan = {k: {} for k in wan_vae_keys()}
+        # the premise of the case: no quantisation convs to fall back on
+        self.assertFalse([k for k in wan if "quant_conv." in k])
+        self.assertEqual({k.split(".")[0] for k in wan},
+                         {"conv1", "conv2", "decoder", "encoder"})
+        self.assertEqual(ms.classify_safetensors_header(wan), "vae")
+        self.assertEqual(ms.rate_safetensors(wan), ("vae", 0.6))
+        # each spelling is sufficient on its own. The decoder half is PROVEN from the
+        # dump; the encoder half is the symmetric inference, asserted so a later field
+        # dump that contradicts it fails here rather than silently drifting.
+        for anatomy, proven in (("decoder.upsamples.0.residual.0.gamma", True),
+                                ("encoder.downsamples.0.residual.0.gamma", False)):
+            self.assertEqual(ms.classify_safetensors_header(
+                {"encoder.conv1.weight": {}, "decoder.conv2.weight": {},
+                 anatomy: {}}), "vae", anatomy)
+        # REGRESSION GUARD: widening the anatomy must not revive the false positive the
+        # rule was built for. ParseNet has neither spelling and still abstains outright.
+        parsenet = {k: {} for k in parsenet_keys()}
+        self.assertIsNone(ms.classify_safetensors_header(parsenet))
+        self.assertIsNone(ms.rate_safetensors(parsenet))
+        # ...nor may it disturb the two spellings that already worked.
+        for shape in (ldm_vae_keys(), diffusers_vae_keys()):
+            self.assertEqual(ms.rate_safetensors({k: {} for k in shape}),
+                             ("vae", 0.6), shape[1])
+        # end to end, under a name that says nothing: content has to carry it
+        self.fx.add_local_file("wan_2.1_vae.safetensors",
+                               safetensors_bytes(wan_vae_keys()))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), {"vae/wan_2.1_vae.safetensors"})
+
+    # ------------- heuristics 12: the AnimateDiff temporal stack is CONCLUSIVE evidence
+    def test_animatediff_shape_rates_at_the_distinctive_tier(self):
+        """The 8 motion-LoRA .ckpt bundles and `aidma-RUN-Motion Lora.safetensors` were
+        classified right but rated at the GENERIC 0.6 encoder-shape tier, scoring 0.4-0.45
+        -- reading as guesses when the shape is conclusive. A temporal_transformer hanging
+        off a UNet block names AnimateDiff as squarely as `control_model.` names a
+        ControlNet, so it rates with the distinctive prefixes."""
+        for keys, want in ((motion_lora_keys(), "animatediff_motion_lora"),
+                           (motion_module_keys(), "animatediff_models")):
+            hdr = {k: {} for k in keys}
+            self.assertEqual(ms.rate_safetensors(hdr),
+                             (want, ms.EMBEDDED_MAX_RATING), want)
+            # the pickle rater derives from the same helper, so the .ckpt side is lifted
+            # by the same change -- one step down, as any key-derived pickle rating is
+            self.assertEqual(ms.rate_pickle(set(keys), set()), (want, 0.95), want)
+        # ...and the lift is the COMPOSITE, never the block roots. Those are the generic
+        # UNet skeleton -- half the collection has them -- so they must stay OUT of
+        # DISTINCTIVE_PREFIXES and must not rate above the generic tier on their own.
+        for root in ("down_blocks.", "mid_block.", "up_blocks."):
+            self.assertNotIn(root, ms.DISTINCTIVE_PREFIXES)
+        plain_unet = {"down_blocks.0.resnets.0.conv1.weight": {},
+                      "mid_block.attentions.0.proj_in.weight": {},
+                      "up_blocks.1.resnets.0.conv2.weight": {}}
+        self.assertIsNone(ms.rate_safetensors(plain_unet))
+        # the depth model that borrowed the substring is still not AnimateDiff, and so is
+        # still not lifted: its temporal head hangs off `head.`, not off a UNet block
+        depth = {"pretrained.blocks.0.attn.qkv.weight": {},
+                 "head.motion_modules.0.temporal_transformer.norm.bias": {}}
+        self.assertIsNone(ms.rate_safetensors(depth))
 
     # ------------------------------------------------- s29 confidence model (Jei's)
     def test_lofi_cannot_outvote_embedded_evidence(self):

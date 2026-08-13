@@ -9,11 +9,11 @@
 # It guides lane choice (server container and/or distrobox), every bind in the
 # mount contract, host ports, and overlay-hostile-filesystem mitigation; then
 # it EMITS per-box recreation records into an emit dir (default ~/droste/):
-#   droste-<box>-halo-server.compose.yaml  (server lane — always written for
-#                                     that lane, even when no compose provider
-#                                     is installed; fallback creation uses plain
+#   <box>-halo-srv.cmp.yaml          (server lane — always written for that
+#                                     lane, even when no compose provider is
+#                                     installed; fallback creation uses plain
 #                                     `podman create` with identical flags)
-#   droste-<box>-halo-box.ini        (distrobox lane — native assemble record)
+#   <box>-halo-dbox.ini              (distrobox lane — native assemble record)
 #   NOTES.md                         (full guide with YOUR real paths baked in)
 # and optionally pulls images / creates boxes / starts servers (build ladder).
 #
@@ -196,7 +196,7 @@ case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
 esac
 
 if [[ $PLAIN -eq 1 ]]; then
-  ITALIC="" RESET="" DIVCH="-"
+  RESET="" DIVCH="-"
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --plain / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
@@ -204,6 +204,11 @@ if [[ $PLAIN -eq 1 ]]; then
   C_TBRK="" C_TIDX="" C_ALLB="" C_ALL="" C_ALLT="" C_ARROW="" C_SUBJ="" C_NOTE=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
+  C_EXH="" C_FILE="" C_ERR=""
+  # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
+  # (and any dumb terminal) gets ONE static status line per image instead, so
+  # the section stays byte-for-byte free of control sequences.
+  CR="" EL="" BAR_F="#" BAR_E="-"
   # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
   # The ASCII glyph already carries its own brackets, so the Legend adds none
   # (GB_L/GB_R empty); LEG_PAD is the trailing pad of Jei's approved Key row.
@@ -211,7 +216,7 @@ if [[ $PLAIN -eq 1 ]]; then
   BULLET="-" ARROW_G=" ---> "
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
 else
-  ITALIC=$'\e[3m' RESET=$'\e[0m' DIVCH="─"
+  RESET=$'\e[0m' DIVCH="─"
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
   C_TITLE=$'\e[1;96m'   # installer title (top banner only)
   C_BTITLE=$'\e[0;96m'  # per-box banner title
@@ -237,6 +242,12 @@ else
   C_CMD=$'\e[0;95m'     # its verb                 (enter, compose, assemble create)
   C_TGT=$'\e[0;92m'     # its target               (paths, container names)
   C_PH=$'\e[0;94m'      # the <box> placeholder inside a target
+  C_EXH=$'\e[1;4;97m'   # Executing-section headers (same SGR as C_HDR)
+  C_FILE=$'\e[3;37m'    # emitted file names + the closing "Wrote NOTES.md."
+  C_ERR=$'\e[1;91m'     # the [ERROR] tag of a failed pull/create status line
+  # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
+  # (the bar can be wider than the status line that replaces it).
+  CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
   # The emoji glyphs bring their own color, so the state cell resets to bare.
   C_GLYPH=$RESET
   # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
@@ -728,6 +739,13 @@ preflight() {
   else
     pf_bad "no compose provider — compose files written anyway; plain $RUNTIME used"
   fi
+  # python3 renders the pull progress bar (it aggregates the REST API's
+  # per-layer byte counts); without it an image pull has no way to report.
+  if command -v python3 >/dev/null 2>&1; then
+    pf_ok "python3 found (image-pull progress)"
+  else
+    pf_bad "python3 not found — image pulls will fail (definitions still written)"
+  fi
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
   [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (needed for the distrobox lane)"
   # group_add strategy: rootless podman must use keep-groups (numeric GIDs get
@@ -755,8 +773,12 @@ preflight() {
 # between lanes; the /opt/data host path (PATHS[box:data]) is SHARED by both.
 server_name() { printf 'droste-%s-halo-server' "$1"; }
 dbox_name()   { printf 'droste-%s-halo-box' "$1"; }
-compose_file() { printf '%s/droste-%s-halo-server.compose.yaml' "$EMIT_DIR" "$1"; }
-ini_file()     { printf '%s/droste-%s-halo-box.ini' "$EMIT_DIR" "$1"; }
+# FILE names are deliberately SHORTER than the container names they describe:
+# the emit dir is a user-facing directory, so the redundant "droste-" prefix is
+# dropped and the lane words abbreviated (server→srv, box→dbox, compose→cmp).
+# Container names are unchanged — only the on-disk records were renamed.
+compose_file() { printf '%s/%s-halo-srv.cmp.yaml' "$EMIT_DIR" "$1"; }
+ini_file()     { printf '%s/%s-halo-dbox.ini' "$EMIT_DIR" "$1"; }
 
 dest_to_label() {  # box dest → label ("" if unknown)
   local box=$1 dest=$2 pair
@@ -1260,12 +1282,12 @@ ask_ladder() {
 }
 
 # ── Emitters ─────────────────────────────────────────────────────────────────
-emit_compose() {  # box → writes droste-<box>-halo-server.compose.yaml
-  local box=$1 f pair label dest
+emit_compose() {  # box → writes <box>-halo-srv.cmp.yaml
+  local box=$1 f base pair label dest
   f=$(compose_file "$box")
+  base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
   {
-    printf '# %s — generated by droste-setup on %s\n' \
-      "$(basename "$f")" "$(date +%F)"
+    printf '# %s — generated by droste-setup on %s\n' "$base" "$(date +%F)"
     printf '# Recreate this box any time with:\n'
     printf '#   %s compose -f %s up -d\n' "${RUNTIME:-podman}" "$f"
     printf '# Contract source: targets/%s/build-spec (droste-ai-halo repo).\n' "$box"
@@ -1337,18 +1359,18 @@ emit_compose() {  # box → writes droste-<box>-halo-server.compose.yaml
     fi
     printf '    # security_opt: ["seccomp=unconfined"]  # uncomment if GPU fails\n'
   } > "$f"
-  printf '  %s%sWrote %s.%s\n' "$C_TEXT" "$ITALIC" "$(home_disp "$f")" "$RESET"
+  exec_file "$base"
   return 0
 }
 
-emit_ini() {  # box → writes droste-<box>-halo-box.ini (distrobox assemble record)
-  local box=$1 f pair label dest vols flags data
+emit_ini() {  # box → writes <box>-halo-dbox.ini (distrobox assemble record)
+  local box=$1 f base pair label dest vols flags data
   f=$(ini_file "$box")
+  base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
   # Same /opt/data host path as the server lane (emit_compose) — shared.
   data=${PATHS["$box:data"]}
   {
-    printf '# %s.ini — generated by droste-setup on %s\n' \
-      "$(dbox_name "$box")" "$(date +%F)"
+    printf '# %s — generated by droste-setup on %s\n' "$base" "$(date +%F)"
     printf '# Create/recreate with:  distrobox assemble create --file %s\n' "$f"
     printf '# Modeled on targets/%s/distrobox.ini (droste-ai-halo repo).\n' "$box"
     printf '# Unified lane: the init hook runs the same resolver as the\n'
@@ -1405,8 +1427,229 @@ emit_ini() {  # box → writes droste-<box>-halo-box.ini (distrobox assemble rec
       fi
     fi
   } > "$f"
-  printf '  %s%sWrote %s.%s\n' "$C_TEXT" "$ITALIC" "$(home_disp "$f")" "$RESET"
+  exec_file "$base"
   return 0
+}
+
+# ── Executing-section output ─────────────────────────────────────────────────
+# Every line the Executing section prints comes from one of these four helpers,
+# and NOTHING a tool writes reaches the screen: podman's and distrobox's own
+# chatter is captured to a log (see step_log) and only its tail is shown, and
+# only on failure. The section is the one place the installer speaks while
+# something slow is happening, so it stays a fixed, readable shape.
+
+# Underlined bright-white group header; the blank line above it is part of it.
+exec_hdr() { printf '\n  %s%s%s\n' "$C_EXH" "$1" "$RESET"; }
+
+# One emitted file name, italic light grey.
+exec_file() { printf '  %s%s%s\n' "$C_FILE" "$1" "$RESET"; }
+
+# Width of the name column in [OK]/[ERROR] status lines: the longest name in
+# the group plus the mockup's five-space gap, clamped so the tag still lands
+# inside the terminal (a name longer than that simply pushes the tag right).
+STATUS_W=0
+status_width() {   # name...
+  local n max=0 w avail
+  for n in "$@"; do [[ ${#n} -gt $max ]] && max=${#n}; done
+  w=$(( max + 5 ))
+  avail=$(( $(term_width) - 2 - 7 ))    # indent + "[ERROR]"
+  [[ $w -gt $avail ]] && w=$avail
+  [[ $w -lt 1 ]] && w=1
+  STATUS_W=$w
+  return 0
+}
+
+# The two status lines. Both open with CR + close with erase-to-EOL so a line
+# can overwrite a progress bar of any width (both are empty in --plain, where
+# no bar was ever drawn).
+status_ok() {   # name
+  printf '%s  %s%-*s%s%s[%s%s%s]%s%s\n' \
+    "$CR" "$C_TEXT" "$STATUS_W" "$1" "$RESET" \
+    "$C_OKB" "$C_OK" "OK" "$C_OKB" "$RESET" "$EL"
+}
+
+# Failure: the tag, then the LAST THREE captured lines (enough to name the
+# cause), then where the whole capture lives. Raw tool output is never streamed.
+status_err() {   # name log-path
+  local name=$1 log=$2 line
+  printf '%s  %s%-*s%s%s[%s%s%s]%s%s\n' \
+    "$CR" "$C_TEXT" "$STATUS_W" "$name" "$RESET" \
+    "$C_BADB" "$C_ERR" "ERROR" "$C_BADB" "$RESET" "$EL"
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    printf '    %s%s%s\n' "$C_TEXT" "$line" "$RESET"
+  done < <(tail -n 3 "$log" 2>/dev/null)
+  printf '  %sfull log: %s%s\n' "$C_FILE" "$(home_disp "$log")" "$RESET"
+  return 0
+}
+
+# Per-step capture file under the resource path (whose stated purpose is
+# "(re)creation records, logs, & data"). Falls back to the temp dir if that
+# directory cannot be made, so a failed pull still has somewhere to say why.
+step_log() {   # step name → path
+  local d=$EMIT_DIR/logs
+  mkdir -p "$d" 2>/dev/null || d=${TMPDIR:-/tmp}
+  printf '%s/%s-%s.log' "$d" "$1" "$2"
+}
+
+# ── Image pull: podman REST API + one aggregated progress bar ────────────────
+# `podman pull` draws its per-layer bars only on a tty, so ANY capture or filter
+# of the CLI destroys exactly the progress that matters on multi-GB ROCm layers
+# (and the old `grep -Ev 'skipped: already exists'` filter matched the tty
+# wording, which is not what a piped pull emits — so it dropped nothing while
+# silencing everything). The API reports byte counts regardless of tty: bring up
+# a transient service, POST the Docker-compat /images/create, and aggregate the
+# JSON stream into ONE line per image.
+PULL_SOCK=""
+PULL_SVC_PID=""
+
+pull_service_stop() {
+  [[ -n $PULL_SVC_PID ]] && kill "$PULL_SVC_PID" 2>/dev/null
+  [[ -n $PULL_SOCK ]] && rm -f "$PULL_SOCK" 2>/dev/null
+  PULL_SVC_PID="" PULL_SOCK=""
+  return 0
+}
+
+# Unique socket per run, in the runtime dir (never /tmp when we can help it).
+pull_service_start() {   # log → 0 once the socket is live
+  local log=$1 i
+  PULL_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/droste-pull-$$.sock
+  rm -f "$PULL_SOCK" 2>/dev/null || :
+  "${RUNTIME:-podman}" system service --time=0 "unix://$PULL_SOCK" >>"$log" 2>&1 &
+  PULL_SVC_PID=$!
+  trap pull_service_stop EXIT
+  for (( i = 0; i < 100; i = i + 1 )); do
+    [[ -S $PULL_SOCK ]] && return 0
+    # A service that died says so above this line, in its own words.
+    if ! kill -0 "$PULL_SVC_PID" 2>/dev/null; then
+      printf 'the API service exited before creating %s\n' "$PULL_SOCK" >>"$log"
+      pull_service_stop
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf 'no API socket at %s after 10s\n' "$PULL_SOCK" >>"$log"
+  pull_service_stop
+  return 1
+}
+
+# The aggregator. Reads the /images/create JSON stream on stdin, sums every
+# layer's progressDetail, and repaints ONE line; cached ("Already exists")
+# layers count as complete and print nothing of their own. It leaves the cursor
+# on that line WITHOUT a newline — the caller's status line overwrites it.
+_pull_progress_py() {
+  cat <<'PY'
+import json, sys, time
+
+label, width, fill, empty, plain = sys.argv[1:6]
+width = int(width)
+quiet = plain == "1"
+out = sys.stdout
+
+layers = {}                                    # id -> [current, total]
+state = {"seen": False, "last": 0.0, "extract": set()}
+dec = json.JSONDecoder()
+
+
+def sizes(cur, tot):
+    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20)):
+        if tot >= div:
+            return "%.1f/%.1f %s" % (cur / float(div), tot / float(div), unit)
+    return "%.0f/%.0f KB" % (cur / 1024.0, tot / 1024.0)
+
+
+def paint(final=False):
+    if quiet:
+        return
+    now = time.time()
+    if not final and now - state["last"] < 0.1:
+        return
+    state["last"] = now
+    cur = sum(v[0] for v in layers.values())
+    tot = sum(v[1] for v in layers.values())
+    if final:
+        pct = 100
+    elif tot:
+        pct = min(100, int(cur * 100 // tot))
+    else:
+        pct = 0
+    if state["extract"] and (not tot or cur >= tot):
+        tail = "  %3d%%  extracting" % pct
+    elif tot:
+        tail = "  %3d%%  %s" % (pct, sizes(cur, tot))
+    else:
+        tail = "  %3d%%" % pct           # every layer cached: no bytes to count
+    # The tail is padded to a fixed width so the bar cannot change length
+    # mid-download (the size text grows by a digit as it climbs).
+    tail = tail.ljust(20)
+    room = width - 4 - len(label) - len(tail)
+    if room >= 8:
+        n = min(room, 40)
+        done = n * pct // 100
+        line = "  %s  %s%s" % (label, fill * done + empty * (n - done), tail)
+    else:
+        line = "  %s%s" % (label, tail)
+    out.write("\r" + line + "\x1b[K")
+    out.flush()
+
+
+def handle(o):
+    state["seen"] = True
+    if o.get("error") or o.get("errorDetail"):
+        msg = o.get("error") or (o.get("errorDetail") or {}).get("message")
+        sys.stderr.write("pull API: %s\n" % (msg or "unknown error"))
+        sys.exit(1)
+    st = o.get("status") or ""
+    lid = o.get("id") or ""
+    if not lid:
+        return
+    pd = o.get("progressDetail") or {}
+    if st.startswith("Already exists"):
+        layers.setdefault(lid, [0, 0])
+    elif st.startswith("Downloading"):
+        layers[lid] = [int(pd.get("current") or 0), int(pd.get("total") or 0)]
+    elif st.startswith("Download complete") or st.startswith("Pull complete"):
+        if lid in layers:
+            layers[lid][0] = layers[lid][1]
+        state["extract"].discard(lid)
+    elif st.startswith("Extracting"):
+        state["extract"].add(lid)
+    paint()
+
+
+buf = ""
+for chunk in sys.stdin:
+    buf += chunk
+    while True:
+        buf = buf.lstrip()
+        if not buf:
+            break
+        try:
+            obj, idx = dec.raw_decode(buf)
+        except ValueError:
+            break
+        buf = buf[idx:]
+        handle(obj)
+
+if not state["seen"]:
+    sys.stderr.write("pull API: no progress stream received\n")
+    sys.exit(1)
+paint(final=True)
+PY
+}
+
+pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
+  local box=$1 img repo tag log rc=0
+  img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
+  repo=${img%:*} tag=${img##*:}
+  log=$(step_log pull "$box")
+  : > "$log"
+  curl -fsS --unix-socket "$PULL_SOCK" -X POST \
+       "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
+    | python3 -c "$(_pull_progress_py)" \
+        "$img..." "$(term_width)" "$BAR_F" "$BAR_E" "$PLAIN" 2>>"$log" \
+    || rc=$?
+  return $rc
 }
 
 # ── Execution (the ladder rungs) ─────────────────────────────────────────────
@@ -1447,74 +1690,76 @@ plain_create_args() {  # box → prints podman/docker create args (one per line)
 }
 
 create_server() {  # box
-  local box=$1 f args=()
+  local box=$1 f name log args=() rc=0
+  name=$(server_name "$box")
   f=$(compose_file "$box")
+  log=$(step_log create "$name")
+  : > "$log"
   if [[ ${ACTION[$box]:-} == recreate && -n "${EX_CTR[$box]:-}" ]]; then
-    "$RUNTIME" rm -f "$(server_name "$box")" >/dev/null 2>&1 \
-      || warn "could not remove old container $(server_name "$box")"
+    "$RUNTIME" rm -f "$name" >>"$log" 2>&1 \
+      || printf 'could not remove the old container %s\n' "$name" >>"$log"
   fi
-  printf '%s%sCreating %s...%s\n' "$C_TEXT" "$ITALIC" "$(server_name "$box")" "$RESET"
+  # Everything the runtime says goes to the log, not the screen: one status
+  # line per container is the whole report (the log's tail speaks on failure).
   if [[ -n $COMPOSE_CMD ]]; then
     if [[ $RUNG == a ]]; then
-      $COMPOSE_CMD -f "$f" up -d >/dev/null \
-        && SESSION_STATE[$box]=ACTIVE \
-        || warn "compose up failed for $box (see output above)"
-    else
-      if $COMPOSE_CMD -f "$f" up --no-start >/dev/null 2>&1 \
-         || $COMPOSE_CMD -f "$f" create >/dev/null; then
-        SESSION_STATE[$box]=STOPPED
+      if $COMPOSE_CMD -f "$f" up -d >>"$log" 2>&1; then
+        SESSION_STATE[$box]=ACTIVE
       else
-        warn "compose create failed for $box"
+        rc=1
       fi
+    elif $COMPOSE_CMD -f "$f" up --no-start >>"$log" 2>&1 \
+         || $COMPOSE_CMD -f "$f" create >>"$log" 2>&1; then
+      SESSION_STATE[$box]=STOPPED
+    else
+      rc=1
     fi
   else
     mapfile -t args < <(plain_create_args "$box")
-    if "$RUNTIME" create "${args[@]}" >/dev/null; then
+    if "$RUNTIME" create "${args[@]}" >>"$log" 2>&1; then
       SESSION_STATE[$box]=STOPPED
-      if [[ $RUNG == a ]]; then
-        "$RUNTIME" start "$(server_name "$box")" \
-          && SESSION_STATE[$box]=ACTIVE \
-          || warn "could not start $(server_name "$box")"
+      if [[ $RUNG == a ]] && ! "$RUNTIME" start "$name" >>"$log" 2>&1; then
+        rc=1
+      elif [[ $RUNG == a ]]; then
+        SESSION_STATE[$box]=ACTIVE
       fi
     else
-      warn "$RUNTIME create failed for $box"
+      rc=1
     fi
   fi
+  if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
   return 0
 }
 
 create_distrobox() {  # box
-  local box=$1
+  local box=$1 name log rc=0
+  name=$(dbox_name "$box")
+  log=$(step_log create "$name")
+  : > "$log"
   if [[ $HAVE_DISTROBOX -eq 0 ]]; then
-    warn "distrobox not installed — skipped creating $(dbox_name "$box")"
+    printf 'distrobox is not installed, so %s cannot be created\n' "$name" >>"$log"
+    printf 'install it (https://distrobox.it) and re-run droste-setup\n' >>"$log"
+    status_err "$name..." "$log"
     return 0
   fi
   if [[ ${ACTION[$box]:-} == recreate && -n "${EX_DBX[$box]:-}" ]]; then
-    distrobox rm -f "$(dbox_name "$box")" >/dev/null 2>&1 \
-      || warn "could not remove old distrobox $(dbox_name "$box")"
+    distrobox rm -f "$name" >>"$log" 2>&1 \
+      || printf 'could not remove the old distrobox %s\n' "$name" >>"$log"
   fi
-  printf '%s%sCreating %s...%s\n' "$C_TEXT" "$ITALIC" "$(dbox_name "$box")" "$RESET"
-  # Drop distrobox's own duplicated chatter, keeping "... [ OK ]" and
-  # "successfully created.":
-  #   " - Creating <name>..."  duplicates the line printed just above;
-  #   "To enter, run: / distrobox enter <name>"  is repeated once PER BOX, and the
-  #     dashboard's Shortcuts block already carries the enter command.
-  # Anchored loosely (optional indent) because the exact spacing is upstream's to
-  # change. The blank line between the two is deliberately LEFT, so consecutive
-  # boxes stay visually separated. PIPESTATUS[0] preserves distrobox's real status
-  # (grep exits 1 when it filters everything, which must NOT look like failure).
-  local rc=0
-  distrobox assemble create --file "$(ini_file "$box")" \
-    | grep -vE '^ - Creating |^[[:space:]]*To enter, run:[[:space:]]*$|^[[:space:]]*distrobox enter ' \
-    || rc=${PIPESTATUS[0]}
-  [[ $rc -eq 0 ]] || warn "distrobox assemble failed for $box"
+  # distrobox narrates its own creation ("Creating '<name>' using image ...",
+  # "Distrobox '<name>' successfully created.", "To enter, run:") — three lines
+  # per box that say what our one status line already says. The former grep
+  # filter matched almost none of them (it wanted a " - Creating" prefix
+  # upstream never emitted, and had no pattern at all for "successfully
+  # created"), so the whole capture goes to the log instead.
+  distrobox assemble create --file "$(ini_file "$box")" >>"$log" 2>&1 || rc=$?
+  if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
   return 0
 }
 
 execute() {
-  local box lane b ladder=() rc=0
+  local box lane b ladder=() names=() svc_log rc=0
   section "Executing"
-  say ""
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
   # start from their existing, un-rewritten definitions), in canonical order.
   for b in "${BOXES[@]}"; do
@@ -1524,30 +1769,50 @@ execute() {
   done
   # Emit definitions ONLY for (re)configured boxes — kept boxes are never
   # rewritten (never-clobber).
-  for box in "${CONFIGURE[@]}"; do
-    lane=${CFG_LANE[$box]}
-    [[ $lane != distrobox ]] && emit_compose "$box"
-    [[ $lane != server ]] && emit_ini "$box"
-  done
-  if [[ $RUNG != w ]]; then
-    for box in "${ladder[@]}"; do
-      printf '  %spulling %s%s%s ...%s\n' "$C_TEXT" \
-        "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX" "$RESET"
-      # A cached layer prints one "Copying blob <id> skipped: already exists"
-      # line EACH, and these images run to ~40 layers, so a re-pull that
-      # transfers nothing still scrolls pages of it. Drop only the no-op lines
-      # (podman's wording and docker's "Already exists"); real transfer progress
-      # is left alone, which matters on multi-GB ROCm layers. Progress goes to
-      # stderr, hence 2>&1. PIPESTATUS[0] keeps the runtime's real status --
-      # grep exits 1 when it filters everything, which must not look like a
-      # failed pull.
-      rc=0
-      "${RUNTIME:-podman}" pull "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}" 2>&1 \
-        | grep -Ev 'skipped: already exists|: Already exists' || rc=${PIPESTATUS[0]}
-      [[ $rc -eq 0 ]] || warn "pull failed for $box"
+  if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
+    exec_hdr "Writing Configuration Files"
+    for box in "${CONFIGURE[@]}"; do
+      lane=${CFG_LANE[$box]}
+      [[ $lane != distrobox ]] && emit_compose "$box"
+      [[ $lane != server ]] && emit_ini "$box"
     done
   fi
-  if [[ $RUNG == c || $RUNG == a ]]; then
+  if [[ $RUNG != w && ${#ladder[@]} -gt 0 ]]; then
+    exec_hdr "Pulling Images"
+    names=()
+    for box in "${ladder[@]}"; do
+      names+=("${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}...")
+    done
+    status_width "${names[@]}"
+    svc_log=$(step_log pull service)
+    : > "$svc_log"
+    # The API service is the pull mechanism, not an optimisation: if it will not
+    # start, that is an error like any other (same binary, user, and storage as
+    # the CLI), reported once — the per-image lines would all say the same thing.
+    if pull_service_start "$svc_log"; then
+      for box in "${ladder[@]}"; do
+        rc=0
+        pull_image "$box" || rc=$?
+        if [[ $rc -eq 0 ]]; then
+          status_ok "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..."
+        else
+          status_err "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..." "$(step_log pull "$box")"
+        fi
+      done
+      pull_service_stop
+    else
+      status_err "${RUNTIME:-podman} system service..." "$svc_log"
+    fi
+  fi
+  if [[ ( $RUNG == c || $RUNG == a ) && ${#ladder[@]} -gt 0 ]]; then
+    exec_hdr "Creating Boxes"
+    names=()
+    for box in "${ladder[@]}"; do
+      lane=${CFG_LANE[$box]}
+      [[ $lane != distrobox ]] && names+=("$(server_name "$box")...")
+      [[ $lane != server ]] && names+=("$(dbox_name "$box")...")
+    done
+    status_width "${names[@]}"
     for box in "${ladder[@]}"; do
       lane=${CFG_LANE[$box]}
       [[ $lane != distrobox ]] && create_server "$box"
@@ -1697,9 +1962,10 @@ write_notes() {
     printf 'On the GPU host, the repo'\''s `scaffolding/check-rocm.sh` validates\n'
     printf 'GPU access + per-box smoke across all images (see its --help).\n'
   } > "$f"
-  # Two blank lines: this closes the run's chattiest phase (the pull/create/start
-  # output) and opens the final report, which reads as its own page.
-  printf '\n\n%sWrote %s.%s\n' "$C_TEXT" "$(home_disp "$f")" "$RESET"
+  # Jei's "---" is deliberate: a plain rule that says "that part is done",
+  # closing the run's chattiest phase before the final report opens below.
+  printf '\n%s---%s\n%sWrote %s.%s\n' \
+    "$C_TEXT" "$RESET" "$C_FILE" "$(home_disp "$f")" "$RESET"
   return 0
 }
 
@@ -1831,11 +2097,11 @@ dashboard() {
   printf '%s%s%s\n' "$C_SUB" "Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
   printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "server:" \
     "$C_EXE" "podman " "$C_CMD" "compose " \
-    "$C_TGT" "-f droste-" "$C_PH" "<box>" "$C_TGT" \
-    "-halo-server.compose.yaml up -d" "$RESET"
+    "$C_TGT" "-f " "$C_PH" "<box>" "$C_TGT" \
+    "-halo-srv.cmp.yaml up -d" "$RESET"
   printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "distrobox:" \
     "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
-    "$C_TGT" "--file droste-" "$C_PH" "<box>" "$C_TGT" "-halo-box.ini" "$RESET"
+    "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo-dbox.ini" "$RESET"
   say ""
   printf '%s%s%s\n' "$C_STAR" \
     "*ComfyUI models scanned at start; to add more run: hf download <shared cache>" "$RESET"

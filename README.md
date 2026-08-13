@@ -226,9 +226,9 @@ and the two run side by side out of the box. It **probes each data dir's
 filesystem** and, on an overlay-hostile one (ecryptfs/NFS/…, see
 Troubleshooting), offers another location, the fuse-overlayfs fallback, or
 copy-mode. It then emits per-box **recreation records** into `~/droste/` —
-`droste-<box>-halo-server.compose.yaml` (server lane; when no compose provider is
+`<box>-halo-srv.cmp.yaml` (server lane; when no compose provider is
 installed, creation falls back to plain `podman create` with identical flags),
-`droste-<box>-halo-box.ini` (distrobox lane), and a `NOTES.md` guide with your real
+`<box>-halo-dbox.ini` (distrobox lane), and a `NOTES.md` guide with your real
 paths baked in — and can pull images, create boxes, and start servers.
 **Safe to re-run:** existing compose/ini files, containers, and distroboxes are
 detected and listed; per box you choose keep / recreate / modify — nothing is

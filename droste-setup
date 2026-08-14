@@ -6,16 +6,25 @@
 #   curl <url> | bash            (all prompts read from /dev/tty)
 #   curl <url> | bash -s -- comfyui llama     (argv = direct-to-box shortcut)
 #
-# It guides lane choice (server container and/or distrobox), every bind in the
-# mount contract, host ports, and overlay-hostile-filesystem mitigation; then
-# it EMITS per-box recreation records into an emit dir (default ~/droste/):
-#   <box>-halo-srv.cmp.yaml          (server lane — always written for that
-#                                     lane, even when no compose provider is
-#                                     installed; fallback creation uses plain
-#                                     `podman create` with identical flags)
-#   <box>-halo-dbox.ini              (distrobox lane — native assemble record)
+# ONE CONTAINER PER BOX, TWO DOORS (the merged shape): `distrobox assemble`
+# creates `droste-<box>-halo`; `distrobox enter` is the interactive door and
+# `podman start` is the server door (the init hook reads server.env from the
+# box's data dir and launches the service on its configured port). There is no
+# separate server container and no compose file any more.
+#
+# It guides every bind in the mount contract, host ports, whether each box
+# serves at box start / at host boot, and overlay-hostile-filesystem
+# mitigation; then it EMITS per-box recreation records into an emit dir
+# (default ~/droste/):
+#   <box>-halo.ini                   (distrobox assemble record — the ONE
+#                                     container definition, healthcheck flags
+#                                     and all)
+#   <data dir>/server.env            (the serve config the box reads at every
+#                                     start: SERVE=1/0 + PORT=<host port>)
 #   NOTES.md                         (full guide with YOUR real paths baked in)
 # and optionally pulls images / creates boxes / starts servers (build ladder).
+# Boxes asked to start at HOST BOOT also get a systemd user unit
+# (~/.config/systemd/user/droste-<box>.service) doing `podman start`.
 #
 # Re-runs are safe: existing definition files are detected and listed, and you
 # choose keep / modify / recreate for them — SETTINGS FILES are never silently
@@ -71,15 +80,11 @@ declare -A BIND_ROW=(
   [data]="Data Path" [input]="Input" [output]="Output" [workspace]="Workspace"
 )
 
-# Canonical container-side service port (SERVICE row of each build-spec). This
-# is the RIGHT half of ports: "HOST:CONTAINER" — never use it as a host default.
-declare -A BOX_PORT=(
-  [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8000 [finetuning]=8888
-)
-
-# Default HOST-side port offered at the prompt (left half of "HOST:CONTAINER").
-# ds4 listens on 8000 inside the container, same as vllm, so its host default is
-# nudged to 8001 to keep both servers runnable side by side out of the box.
+# Default HOST-side port offered at the prompt. In the merged shape there is no
+# publish/remap to be had (distrobox containers use HOST networking), so this is
+# the port the service BINDS: droste-setup writes it into server.env and the
+# init hook passes it to the service. ds4's upstream default is 8000, same as
+# vllm, so its default is nudged to 8001 to keep both runnable side by side.
 declare -A BOX_HOST_PORT=(
   [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8001 [finetuning]=8888
 )
@@ -137,17 +142,48 @@ declare -A BIND_DESC=(
 # The ONE pre-first-use action (dashboard Notes column; @DATA@ substituted).
 declare -A BOX_NOTE=(
   [comfyui]=""
-  [llama]="Set model: @DATA@/llama.env"
-  [vllm]="Set model: @DATA@/vllm_config.yaml"
-  [ds4]="Set model: @DATA@/ds4.env"
-  [finetuning]="Token: podman logs droste-finetuning-halo-server"
+  [llama]="Model: @DATA@/llama.env"
+  [vllm]="Model: @DATA@/vllm_config.yaml"
+  [ds4]="Model: @DATA@/ds4.env"
+  [finetuning]="Token: podman logs droste-finetuning-halo"
 )
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
 IMAGE_SUFFIX="-halo:latest"
-# Container/box names = droste-<box>-halo-<lane> (mirrors the image stem); see
-# server_name()/dbox_name(). No fixed prefix works since <box> sits before -halo.
+# ONE container per box, named exactly like the image stem: droste-<box>-halo.
+# (The old -server / -box lane suffixes are gone with the lanes; see box_ctr().)
 INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
+
+# ── Healthcheck contract (P1's droste-healthcheck.sh, baked in every image) ───
+# droste-setup wires podman's healthcheck at CREATE time (the images carry no
+# HEALTHCHECK of their own): the probe reads the box's server.env for the port
+# and the build-spec for the endpoint, and answers HEALTHY for a box that is not
+# configured to serve — so these flags are unconditional, interactive-only boxes
+# included. With --health-on-failure=restart a failing probe restarts the
+# container, which re-runs the init line and therefore relaunches the service.
+HEALTH_CMD="/opt/resources/resolve/droste-healthcheck.sh"
+HEALTH_INTERVAL="30s"
+HEALTH_RETRIES=3
+# ⚠️ START PERIOD IS THE LOAD-BEARING NUMBER (P1 finding). Failures inside it do
+# not count, so it must comfortably cover the box's WORST first-start: these
+# services answer nothing (llama actively 503s on /health) until multi-GB
+# weights are read off disk. Too short + on-failure=restart = a restart loop
+# that never finishes loading, so every value below is deliberately generous —
+# the only cost of erring long is a later first detection of a real failure.
+#   comfyui     torch import + model-tree rescan of the whole HF cache
+#   llama       GGUF load, 503s throughout
+#   vllm        weight load + torch.compile / graph capture on first run
+#   ds4         80-430 GB of MoE quants off disk
+#   finetuning  jupyter is up in seconds; keep a margin for the resolver
+declare -A BOX_HEALTH_START=(
+  [comfyui]=10m [llama]=30m [vllm]=45m [ds4]=90m [finetuning]=5m
+)
+# Graceful stop: distrobox-init does NOT forward SIGTERM to the served process
+# (P1 finding 4), so on `podman stop` the service is killed rather than asked to
+# exit. distrobox-init itself answers SIGTERM promptly (0.32 s measured), so a
+# roomier timeout costs nothing in practice and leaves the door open for a
+# future signal-forwarding shim. NOTES.md states the consequence plainly.
+STOP_TIMEOUT=20
 
 # ── Copy-mode size + fuse speed constants ────────────────────────────────────
 # Rough size of the baked content copy-mode would duplicate onto /opt/data
@@ -178,9 +214,11 @@ usage() {
 Usage: droste-setup [OPTIONS] [BOX ...]
 
 Interactive setup for the droste *-halo AI boxes (Strix Halo / gfx1151).
-Guides lanes (server container / distrobox), binds, ports, and filesystem
-gotchas; writes per-box recreation records (compose.yaml + distrobox ini)
-plus a NOTES.md, and can pull images, create boxes, and start servers.
+ONE container per box (droste-<box>-halo), entered with distrobox and
+served with podman. Guides binds, ports, serve-at-box-start and
+serve-at-host-boot, and filesystem gotchas; writes per-box recreation
+records (<box>-halo.ini + server.env) plus a NOTES.md, and can pull
+images, create boxes, and start servers.
 
 BOX      comfyui llama vllm ds4 finetuning   (default: interactive menu)
 
@@ -221,16 +259,18 @@ if [[ $PLAIN -eq 1 ]]; then
   C_EXH="" C_FILE="" C_ERR=""
   C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
   C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
-  C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_MOPT="" C_MCAT=""
-  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETN="" C_SELP="" C_IMGN="" C_PATHB="" C_PATHG=""
+  C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_SGRP="" C_MOPT="" C_MCAT=""
+  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP="" C_IMGN=""
+  C_PATHB="" C_PATHG=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
   CR="" EL="" BAR_F="#" BAR_E="-"
-  # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
+  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HstSv.
   # The ASCII glyph already carries its own brackets, so the Legend adds none
-  # (GB_L/GB_R empty); LEG_PAD is the trailing pad of Jei's approved Key row.
-  GS_YES="[+]" GS_NO="[-]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R="" LEG_PAD=""
+  # (GB_L/GB_R empty). Jei's rev-2 spelling is [Y]/[N]/[?] (it supersedes the
+  # earlier [+]/[-]/[?], and only here — no other ASCII fallback changed).
+  GS_YES="[Y]" GS_NO="[N]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R=""
   BULLET="-" ARROW_G=" ---> " ARROW_M="-->"
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
   # The two banner weights collapse onto the same ASCII drawing in --plain.
@@ -257,7 +297,7 @@ else
   C_PORT=$'\e[1;93m'    # dashboard host port
   C_STAR=$'\e[1;3;97m'  # the *ComfyUI footnote
   C_EXE=$'\e[0;33m'     # a command's executable   (podman, distrobox)
-  C_CMD=$'\e[0;95m'     # its verb                 (enter, compose, assemble create)
+  C_CMD=$'\e[0;95m'     # its verb                 (enter, start, assemble create)
   C_TGT=$'\e[0;92m'     # its target               (paths, container names)
   C_PH=$'\e[0;94m'      # the <box> placeholder inside a target
   C_EXH=$'\e[1;4;97m'   # Executing-section headers (same SGR as C_HDR)
@@ -275,14 +315,16 @@ else
   C_OPTD=$'\e[1;92m' C_OPTN=$'\e[1;94m'
   C_CTR=$'\e[0;33m'     # box table: Container column
   C_SVCN=$'\e[1;95m'    # box table: Service column
-  # Per-box summary box.
+  # Per-box summary box (C_SGRP = its "* Paths" / "* Server" group headers).
   C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[1;94m' C_SVAL=$'\e[1;96m'
+  C_SGRP=$'\e[1;4;95m'
   C_MOPT=$'\e[1;92m'    # mitigation line: the option applied (fuse/copy/ignore)
   C_MCAT=$'\e[1;94m'    # mitigation line: the path categories it applies to
   # Quit notice + the two detected/present listings + inline path emphasis.
   C_QTXT=$'\e[3;37m'    # quit notice body (light grey italic)
   C_QEXIT=$'\e[1;93m'   # the word "exit" in the quit notice
   C_QKEY=$'\e[1;92m'    # the word "quit" (what the user actually types)
+  C_DETH=$'\e[1;3;4;95m'  # "Previous box setup configurations detected:"
   C_DETN=$'\e[0;33m'    # box names in the detected-configurations listing
   C_SELP=$'\e[1;3;95m'  # "Select the boxes you wish to edit, modify, or rebuild."
   C_IMGN=$'\e[1;92m'    # box names in the images-already-present listing
@@ -293,12 +335,10 @@ else
   CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
   # The emoji glyphs bring their own color, so the state cell resets to bare.
   C_GLYPH=$RESET
-  # Dashboard state cell — ONE glyph triplet serves all four of On/Srv/Box/Auto.
+  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HstSv.
   # ⚫ covers NA *and* unknown, so there is no separate "unknown" glyph. The
-  # Legend wraps the emoji in its own brackets (GB_L/GB_R); LEG_PAD is the
-  # trailing pad of Jei's approved Key row.
+  # Legend wraps the emoji in its own brackets (GB_L/GB_R).
   GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
-  LEG_PAD="  "
   BULLET="·" ARROW_G=" 🭹🭹🭹⮞ " ARROW_M="🭹🭹⮞"
   BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
   # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
@@ -470,6 +510,14 @@ sub() {   # text [intro]
   local scol=$C_SUB
   [[ ${2:-} == intro ]] && scol=$C_SUB2
   printf '\n  %s%s%s\n' "$scol" "$1" "$RESET"
+}
+
+# A SUBHEADER inside a section — bold, bright white, underlined (the heavier
+# cousin of sub()). It groups a run of questions that share a subject:
+# "Networking" / "Storage Paths" in General Setup, "Networking" / "<Box> Paths"
+# in a per-box Box Settings section.
+subhdr() {   # text
+  printf '\n  %s%s%s\n' "$C_HDR" "$1" "$RESET"
 }
 
 # Pad a cell whose DISPLAY width may differ from its byte length (emoji).
@@ -720,6 +768,45 @@ ask_yn() {  # question default(Y|N)  → ANS_YN=1/0   (renders "... [Y/n]? ")
   done
 }
 
+# The INLINE three-way cluster "[y]es, [N]o, or [c]ase-by-case". It is written
+# out as prose rather than squeezed into a "[y/n/c]" hint because the middle
+# option needs a name a reader can act on, and it wears OPTION-LIST colours
+# (Jei's mockup comment): the current default green with its letter capitalised,
+# the other two blue — exactly what opt_row does one row at a time.
+YNC_WORDS="y:es n:o c:ase-by-case"
+opt_inline() {   # default(y|n|c) → the painted cluster
+  local def=$1 pair ltr rest brk txt out="" i=0
+  for pair in $YNC_WORDS; do
+    ltr=${pair%%:*} rest=${pair#*:}
+    if [[ $ltr == "$def" ]]; then brk=$C_BRK txt=$C_OPTD ltr=${ltr^^}
+    else brk=$C_TBRK txt=$C_OPTN; fi
+    case "$i" in
+      0) : ;;
+      1) out+="$C_TEXT, " ;;
+      *) out+="$C_TEXT, or " ;;
+    esac
+    out+="${brk}[$txt$ltr$brk]$txt$rest"
+    i=$((i + 1))
+  done
+  printf '%s%s' "$out" "$C_TEXT"
+}
+
+# The three-way question itself. Answers: a bare letter, the whole word, or
+# empty for the default. ANS_3 is always one of y|n|c.
+ANS_3=""
+ask_ync() {  # "label" default(y|n|c) → ANS_3
+  local q=$1 def=$2
+  while :; do
+    ask_raw "$q: $(opt_inline "$def")? "
+    [[ -z $ANS ]] && ANS=$def
+    case "${ANS,,}" in
+      y|yes)              ANS_3=y; return 0 ;;
+      n|no)               ANS_3=n; return 0 ;;
+      c|case|case-by-case) ANS_3=c; return 0 ;;
+    esac
+  done
+}
+
 ANS_CH=""
 ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower)
   local q=$1 letters=$2 def=${2:0:1} c
@@ -815,16 +902,16 @@ ask_port() {  # box default → ANS_PORT
 
 # ── State ────────────────────────────────────────────────────────────────────
 declare -A ACTION            # box → new|keep|recreate|modify
-declare -A CFG_LANE          # box → server|distrobox|both
-declare -A CFG_AS            # box → 1|""
-declare -A CFG_PORT          # box → host port ("" for distrobox-only)
+declare -A CFG_BOXSV         # box → 1|""  serve when the BOX starts (server.env)
+declare -A CFG_HSTSV         # box → 1|""  start the box at HOST BOOT (user unit)
+declare -A CFG_PORT          # box → host port the service binds
 declare -A CFG_MODE          # box → ""|fuse|copy|ignore  (overlay mitigation)
 declare -A CFG_FS            # box → probed fstype of the data dir
 declare -A PATHS             # "box:label" → absolute host path
-declare -A EX_COMPOSE EX_INI EX_CTR EX_DBX     # detection (1/"" ; EX_CTR=state)
+declare -A EX_INI EX_CTR     # detection (1/"" ; EX_CTR = container state)
 declare -A EX_IMAGE          # box → 1 when its image is already pulled locally
-declare -A EXD_PATH          # "box:label" → parsed host path from old files
-declare -A EXD_PORT EXD_AS EXD_MODE EXD_LANE   # parsed defaults
+declare -A EXD_PATH          # "box:label" → parsed host path from the old ini
+declare -A EXD_PORT EXD_BOXSV EXD_HSTSV EXD_MODE   # parsed defaults
 declare -A SESSION_STATE     # box → ACTIVE|STOPPED (what this run did)
 SELECTED=()                  # chosen boxes, canonical order
 CONFIGURE=()                 # SELECTED minus keeps (definitions (re)generated)
@@ -835,8 +922,8 @@ MODELS_DIR=""                # "" = not configured
 EMIT_DIR=""
 RUNG="w"                     # w|p|c|a
 
-RUNTIME="" ROOTLESS=0 COMPOSE_CMD="" HAVE_DISTROBOX=0
-GROUP_MODE="" GROUP_GIDS=""
+RUNTIME="" RUNTIME_BIN="" ROOTLESS=0 HAVE_DISTROBOX=0
+LINGER=""                    # yes|no|"" (unknown) — user-manager lingering
 
 # ── Preflight (warn, never block) ────────────────────────────────────────────
 preflight() {
@@ -844,10 +931,12 @@ preflight() {
   say ""
   if command -v podman >/dev/null 2>&1; then
     RUNTIME=podman
+    RUNTIME_BIN=$(command -v podman)
     [[ ${EUID:-$(id -u)} -ne 0 ]] && ROOTLESS=1
     pf_ok "podman found ($([[ $ROOTLESS -eq 1 ]] && echo rootless || echo rootful))"
   elif command -v docker >/dev/null 2>&1; then
     RUNTIME=docker
+    RUNTIME_BIN=$(command -v docker)
     pf_ok "docker found (podman not present)"
   else
     pf_bad "neither podman nor docker found — definitions will still be written"
@@ -872,15 +961,6 @@ preflight() {
   else
     pf_bad "/dev/fuse missing — fuse-overlayfs fallback unavailable"
   fi
-  if [[ -n $RUNTIME ]] && "$RUNTIME" compose version >/dev/null 2>&1; then
-    COMPOSE_CMD="$RUNTIME compose"
-    pf_ok "compose provider: $COMPOSE_CMD"
-  elif command -v podman-compose >/dev/null 2>&1; then
-    COMPOSE_CMD="podman-compose"
-    pf_ok "compose provider: podman-compose"
-  else
-    pf_bad "no compose provider — compose files written anyway; plain $RUNTIME used"
-  fi
   # The pull path is curl (POST to the podman REST API) piped into python3
   # (which aggregates the per-layer byte counts into one bar). Both are hard
   # dependencies of an image pull; neither is needed to write definitions.
@@ -894,39 +974,50 @@ preflight() {
   else
     pf_bad "curl not found — image pulls will fail (definitions still written)"
   fi
+  # Lingering: a rootless user manager exits at logout unless the user lingers,
+  # which would take BOTH the boot auto-start units and podman's own healthcheck
+  # timers down with it. Reported here; offered for real (bare `loginctl
+  # enable-linger`, no sudo — verified on hardware) only if a box actually asks
+  # to start at host boot. See enable_linger().
+  probe_linger
+  case "$LINGER" in
+    yes) pf_ok "user lingering enabled (boot auto-start + healthcheck timers)" ;;
+    no)  pf_bad "user lingering off — needed to start boxes at host boot (offered later)" ;;
+    *)   pf_bad "cannot read user lingering state (loginctl missing?)" ;;
+  esac
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
-  [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (needed for the distrobox lane)"
-  # group_add strategy: rootless podman must use keep-groups (numeric GIDs get
-  # remapped away by the userns); rootful/docker take real GIDs.
-  # VERIFY-AT-USE: podman-compose is expected to pass group_add keep-groups
-  # through unmodified (plain `podman create` fallback definitely honors it).
-  if [[ $RUNTIME == podman && $ROOTLESS -eq 1 ]]; then
-    GROUP_MODE="keep-groups"
-  else
-    GROUP_MODE="gids"
-    local gid
-    for g in render video; do
-      gid=$(getent group "$g" 2>/dev/null | cut -d: -f3) || gid=""
-      [[ -n $gid ]] && GROUP_GIDS="$GROUP_GIDS $gid"
-    done
-    GROUP_GIDS=${GROUP_GIDS# }
-    [[ -z $GROUP_GIDS ]] && pf_bad "render/video groups not found; edit group_add later"
-  fi
+  [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (it creates every box)"
+  return 0
+}
+
+# `loginctl show-user -p Linger` without --value (systemd < 231 lacks it), and
+# without failing the run when there is no loginctl / no session at all.
+probe_linger() {
+  local out
+  LINGER=""
+  command -v loginctl >/dev/null 2>&1 || return 0
+  out=$(loginctl show-user "${USER:-$(id -un)}" -p Linger 2>/dev/null) || return 0
+  case "${out#Linger=}" in
+    yes) LINGER=yes ;;
+    no)  LINGER=no ;;
+  esac
   return 0
 }
 
 # ── Existing-setup detection + parsing (re-run safety) ───────────────────────
-# Names mirror the image stem (droste-<box>-halo) plus a lane suffix so BOTH
-# lanes of one box coexist without colliding — only the CONTAINER NAME differs
-# between lanes; the /opt/data host path (PATHS[box:data]) is SHARED by both.
-server_name() { printf 'droste-%s-halo-server' "$1"; }
-dbox_name()   { printf 'droste-%s-halo-box' "$1"; }
-# FILE names are deliberately SHORTER than the container names they describe:
-# the emit dir is a user-facing directory, so the redundant "droste-" prefix is
-# dropped and the lane words abbreviated (server→srv, box→dbox, compose→cmp).
-# Container names are unchanged — only the on-disk records were renamed.
-compose_file() { printf '%s/%s-halo-srv.cmp.yaml' "$EMIT_DIR" "$1"; }
-ini_file()     { printf '%s/%s-halo-dbox.ini' "$EMIT_DIR" "$1"; }
+# ONE container per box, named exactly like the image stem. The FILE name drops
+# the redundant "droste-" prefix (the emit dir is a user-facing directory), and
+# the systemd user unit that starts the box at host boot drops the "-halo".
+box_ctr()   { printf 'droste-%s-halo' "$1"; }
+ini_file()  { printf '%s/%s-halo.ini' "$EMIT_DIR" "$1"; }
+unit_name() { printf 'droste-%s.service' "$1"; }
+unit_file() { printf '%s/.config/systemd/user/%s' "$HOME" "$(unit_name "$1")"; }
+# The serve config the box reads at EVERY start (P1's droste-serve.sh), living
+# on the box's data volume as /opt/data/server.env.
+serve_env_file() {  # box → path ("" when the data dir is not known yet)
+  local d=${PATHS["$1:data"]:-${EXD_PATH["$1:data"]:-}}
+  [[ -n $d ]] && printf '%s/server.env' "$d"
+}
 
 dest_to_label() {  # box dest → label ("" if unknown)
   local box=$1 dest=$2 pair
@@ -942,26 +1033,6 @@ dest_to_label() {  # box dest → label ("" if unknown)
   printf ''
 }
 
-parse_existing_compose() {  # box
-  local box=$1 f line src dest label
-  f=$(compose_file "$box")
-  [[ -f $f ]] || return 0
-  while IFS= read -r line; do
-    if [[ $line =~ ^[[:space:]]*-[[:space:]]+(/[^:]+):(/[^:\"]+)(:ro)?$ ]]; then
-      src=${BASH_REMATCH[1]} dest=${BASH_REMATCH[2]}
-      label=$(dest_to_label "$box" "$dest")
-      [[ -n $label ]] && EXD_PATH["$box:$label"]=$src
-    elif [[ $line =~ ^[[:space:]]*-[[:space:]]+\"?([0-9]+): ]]; then
-      EXD_PORT[$box]=${BASH_REMATCH[1]}
-    elif [[ $line =~ DROSTE_OVERLAY_MODE=([a-z]+) ]]; then
-      EXD_MODE[$box]=${BASH_REMATCH[1]}
-    elif [[ $line =~ ^[[:space:]]*restart: ]]; then
-      EXD_AS[$box]=1
-    fi
-  done < "$f"
-  return 0
-}
-
 parse_existing_ini() {  # box
   local box=$1 f line vols entry src dest label
   f=$(ini_file "$box")
@@ -974,45 +1045,76 @@ parse_existing_ini() {  # box
         dest=${entry#*:}; dest=${dest%%:*}
         src=$(expand_path "$src")
         label=$(dest_to_label "$box" "$dest")
-        # Both lanes share the same /opt/data host path → label 'data'.
         [[ -n $label && -z "${EXD_PATH["$box:$label"]:-}" ]] \
           && EXD_PATH["$box:$label"]=$src
       done
     elif [[ $line =~ DROSTE_OVERLAY_MODE=([a-z]+) ]]; then
-      # additional_flags carries --env DROSTE_OVERLAY_MODE=<mode>; a parsed
-      # compose file (both-lane box) wins over the ini copy.
-      [[ -z "${EXD_MODE[$box]:-}" ]] && EXD_MODE[$box]=${BASH_REMATCH[1]}
+      # additional_flags carries --env DROSTE_OVERLAY_MODE=<mode>.
+      EXD_MODE[$box]=${BASH_REMATCH[1]}
+    elif [[ $line =~ ^#[[:space:]]*droste-setup:[[:space:]]*port=([0-9]+)[[:space:]]+box-start=([a-z]+)[[:space:]]+host-boot=([a-z]+) ]]; then
+      # The record line emit_ini writes: what THIS installer last answered. It
+      # is the fallback for the two live sources below (server.env + systemd),
+      # which are what the user may have changed by hand since.
+      EXD_PORT[$box]=${BASH_REMATCH[1]}
+      [[ ${BASH_REMATCH[2]} == yes ]] && EXD_BOXSV[$box]=1
+      [[ ${BASH_REMATCH[3]} == yes ]] && EXD_HSTSV[$box]=1
     fi
   done < "$f"
+  return 0
+}
+
+# The LIVE serve state of a box: server.env (which the user may have edited with
+# an editor — that is the whole point of the file) wins over the ini's record of
+# what droste-setup last wrote. Parsed the same defensive way P1's serve library
+# parses it: shell-sourceable KEY=VALUE, anything unusable simply ignored.
+parse_serve_env() {  # box
+  local box=$1 f line k v
+  f=$(serve_env_file "$box") || return 0
+  [[ -n $f && -f $f && -r $f ]] || return 0
+  while IFS= read -r line; do
+    line=${line%%#*}
+    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
+    k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
+    case "$k" in
+      SERVE)
+        case "${v,,}" in
+          1|true|yes|on) EXD_BOXSV[$box]=1 ;;
+          *)             EXD_BOXSV[$box]="" ;;
+        esac ;;
+      PORT)
+        [[ $v =~ ^[0-9]+$ ]] && EXD_PORT[$box]=$v ;;
+    esac
+  done < "$f"
+  return 0
+}
+
+# Host-boot state comes from systemd itself, not from a file we wrote: the user
+# may have disabled the unit by hand. `is-enabled` exits non-zero for disabled
+# AND for "no such unit", which are the same answer to us.
+parse_host_unit() {  # box
+  local box=$1
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl --user is-enabled "$(unit_name "$box")" >/dev/null 2>&1; then
+    EXD_HSTSV[$box]=1
+  elif [[ ! -f $(unit_file "$box") ]]; then
+    EXD_HSTSV[$box]=""
+  fi
   return 0
 }
 
 detect_existing() {
   local box state
   for box in "${BOXES[@]}"; do
-    [[ -f $(compose_file "$box") ]] && EX_COMPOSE[$box]=1
     [[ -f $(ini_file "$box") ]] && EX_INI[$box]=1
     if [[ -n $RUNTIME ]]; then
-      state=$("$RUNTIME" ps -a --filter "name=^$(server_name "$box")\$" \
+      state=$("$RUNTIME" ps -a --filter "name=^$(box_ctr "$box")\$" \
               --format '{{.State}}' 2>/dev/null | head -n1) || state=""
       [[ -n $state ]] && EX_CTR[$box]=$state
     fi
-    if [[ $HAVE_DISTROBOX -eq 1 ]]; then
-      distrobox list --no-color 2>/dev/null | \
-        awk -F'|' '{gsub(/ /,"",$2); print $2}' | \
-        grep -qx "$(dbox_name "$box")" && EX_DBX[$box]=1 || true
-    fi
-    parse_existing_compose "$box"
+    # ini FIRST: it is what says where the data dir (hence server.env) is.
     parse_existing_ini "$box"
-    if [[ -n "${EX_COMPOSE[$box]:-}${EX_INI[$box]:-}" ]]; then
-      if [[ -n "${EX_COMPOSE[$box]:-}" && -n "${EX_INI[$box]:-}" ]]; then
-        EXD_LANE[$box]=both
-      elif [[ -n "${EX_COMPOSE[$box]:-}" ]]; then
-        EXD_LANE[$box]=server
-      else
-        EXD_LANE[$box]=distrobox
-      fi
-    fi
+    parse_serve_env "$box"
+    parse_host_unit "$box"
   done
   return 0
 }
@@ -1035,19 +1137,17 @@ detect_images() {
 # because it is the reason a re-runner is about to pick a subset.
 detected_block() {
   local box
-  local -a ini=() yaml=()
+  local -a ini=()
   for box in "${BOXES[@]}"; do
     [[ -n "${EX_INI[$box]:-}" ]] && ini+=("$box")
-    [[ -n "${EX_COMPOSE[$box]:-}" ]] && yaml+=("$box")
   done
-  [[ ${#ini[@]} -eq 0 && ${#yaml[@]} -eq 0 ]] && return 0
+  [[ ${#ini[@]} -eq 0 ]] && return 0
   say ""
+  # ONE list now: one container per box means one settings file per box, so the
+  # old two-lane listing (ini + yaml) has nothing left to distinguish.
   printf '  %s%s%s %s%s%s\n' "$C_ARROW" "$ARROW_M" "$RESET" \
-    "$C_SUBJ" "Previous box setup configurations detected:" "$RESET"
-  [[ ${#ini[@]} -gt 0 ]] && \
-    printf '  %sDistrobox (ini):  %s\n' "$C_TEXT" "$(name_list "$C_DETN" "${ini[@]}")"
-  [[ ${#yaml[@]} -gt 0 ]] && \
-    printf '  %sServer (yaml):    %s\n' "$C_TEXT" "$(name_list "$C_DETN" "${yaml[@]}")"
+    "$C_DETH" "Previous box setup configurations detected:" "$RESET"
+  printf '  %sBox settings (ini):  %s\n' "$C_TEXT" "$(name_list "$C_DETN" "${ini[@]}")"
   say ""
   printf '  %s%s%s\n' "$C_SELP" \
     "Select the boxes you wish to edit, modify, or rebuild." "$RESET"
@@ -1064,7 +1164,7 @@ select_boxes() {
   declare -A want=()
   if [[ ${#ARG_BOXES[@]} -gt 0 ]]; then
     for tok in "${ARG_BOXES[@]}"; do
-      [[ -n "${BOX_PORT[$tok]:-}" ]] || die "unknown box: $tok"
+      [[ -n "${BOX_HOST_PORT[$tok]:-}" ]] || die "unknown box: $tok"
       want[$tok]=1
     done
   else
@@ -1096,7 +1196,7 @@ select_boxes() {
         case "${tok,,}" in
           all|6) for box in "${BOXES[@]}"; do want[$box]=1; done ;;
           [1-5]) pick=${BOXES[$((tok-1))]}; want[$pick]=1 ;;
-          *) if [[ -n "${BOX_PORT[${tok,,}]:-}" ]]; then want[${tok,,}]=1
+          *) if [[ -n "${BOX_HOST_PORT[${tok,,}]:-}" ]]; then want[${tok,,}]=1
              else bad="$bad $tok"; fi ;;
         esac
       done
@@ -1204,7 +1304,7 @@ existing_settings() {
   local -a present=() haveset=()
   for box in "${SELECTED[@]}"; do
     [[ -n "${EX_IMAGE[$box]:-}" ]] && present+=("$box")
-    [[ -n "${EX_COMPOSE[$box]:-}${EX_INI[$box]:-}" ]] && haveset+=("$box")
+    [[ -n "${EX_INI[$box]:-}" ]] && haveset+=("$box")
   done
   if [[ ${#present[@]} -gt 0 || ${#haveset[@]} -gt 0 ]]; then
     section "Existing Settings"
@@ -1223,9 +1323,9 @@ existing_settings() {
 # ladder (pull/create/start) and the dashboard/notes work without re-asking.
 hydrate_keep() {  # box
   local box=$1 pair label
-  CFG_LANE[$box]=${EXD_LANE[$box]:-both}
   CFG_PORT[$box]=${EXD_PORT[$box]:-${BOX_HOST_PORT[$box]}}
-  CFG_AS[$box]=${EXD_AS[$box]:-}
+  CFG_BOXSV[$box]=${EXD_BOXSV[$box]:-}
+  CFG_HSTSV[$box]=${EXD_HSTSV[$box]:-}
   CFG_MODE[$box]=${EXD_MODE[$box]:-}
   CFG_FS[$box]=${CFG_FS[$box]:-?}
   [[ -n "${EXD_PATH["$box:data"]:-}" ]] && PATHS["$box:data"]=${EXD_PATH["$box:data"]}
@@ -1233,7 +1333,7 @@ hydrate_keep() {  # box
     label=${pair%%:*}
     [[ -n "${EXD_PATH["$box:$label"]:-}" ]] && PATHS["$box:$label"]=${EXD_PATH["$box:$label"]}
   done
-  # Shared dirs (needed only for the no-compose-provider plain-create fallback).
+  # Shared dirs, so a kept box can still describe itself in NOTES/the dashboard.
   [[ -z $HF_CACHE      && -n "${EXD_PATH["$box:hf"]:-}" ]]     && HF_CACHE=${EXD_PATH["$box:hf"]}
   [[ -z $COMPUTE_CACHE && -n "${EXD_PATH["$box:caches"]:-}" ]] && COMPUTE_CACHE=${EXD_PATH["$box:caches"]}
   [[ -z $MODELS_DIR    && -n "${EXD_PATH["$box:models"]:-}" ]] && MODELS_DIR=${EXD_PATH["$box:models"]}
@@ -1251,6 +1351,7 @@ hydrate_keep() {  # box
 # skipped, so it contributes nothing either. A pure-recreate selection gets
 # factory defaults everywhere. That is why this runs AFTER Box Options.
 SEED_PORTS=Y                 # "use default ports for all services"
+SEED_SERVE=n SEED_HOST=n     # the two three-way start questions (y|n|c)
 SEED_DATA_Q1=Y SEED_DATA_Q2=N SEED_DATA_BASE=""     # service-data placement
 SEED_OTHER_Q1=Y SEED_OTHER_Q2=N SEED_OTHER_BASE=""  # input/output/workspace
 SEED_HF="" SEED_COMPUTE="" SEED_MODELS_Q=N SEED_MODELS=""
@@ -1286,17 +1387,20 @@ family_base() {   # leaf...
 }
 
 seed_globals() {
-  local box base first_leaf
+  local box base first_leaf yes=0 no=0
   seed_sources
   # Factory values first: with no seed source (all-recreate, all-new, all-keep)
   # these are exactly what every question below offers.
   SEED_PORTS=Y
+  SEED_SERVE=n SEED_HOST=n
   SEED_DATA_Q1=Y SEED_DATA_Q2=N
   SEED_OTHER_Q1=Y SEED_OTHER_Q2=N
   SEED_MODELS_Q=N
   SEED_HF=$HOME/.cache/huggingface
   SEED_COMPUTE=$EMIT_DIR/caches
-  SEED_MODELS=$HOME/models
+  # The model collection lives UNDER the resource path by default (Jei s34):
+  # one directory holds the whole droste installation unless told otherwise.
+  SEED_MODELS=$EMIT_DIR/models
   SEED_DATA_BASE=$EMIT_DIR
   SEED_OTHER_BASE=$EMIT_DIR
   [[ ${#SEED_SRC[@]} -eq 0 ]] && return 0
@@ -1321,6 +1425,27 @@ seed_globals() {
       break
     fi
   done
+  # The two three-way questions: unanimous seed boxes seed their own answer,
+  # a split seeds "case-by-case" (which is what the split IS).
+  yes=0 no=0
+  for box in "${SEED_SRC[@]}"; do
+    [[ -n "${EXD_BOXSV[$box]:-}" ]] && yes=$((yes + 1)) || no=$((no + 1))
+  done
+  if [[ $yes -gt 0 && $no -gt 0 ]]; then SEED_SERVE=c
+  elif [[ $yes -gt 0 ]]; then SEED_SERVE=y
+  else SEED_SERVE=n
+  fi
+  # Host boot is only meaningful for boxes that serve at box start (the
+  # invariant), so only those boxes get a vote here.
+  yes=0 no=0
+  for box in "${SEED_SRC[@]}"; do
+    [[ -n "${EXD_BOXSV[$box]:-}" ]] || continue
+    [[ -n "${EXD_HSTSV[$box]:-}" ]] && yes=$((yes + 1)) || no=$((no + 1))
+  done
+  if [[ $yes -gt 0 && $no -gt 0 ]]; then SEED_HOST=c
+  elif [[ $yes -gt 0 ]]; then SEED_HOST=y
+  else SEED_HOST=n
+  fi
   # Service data: same base as the resource path → Y; a different single base →
   # N + "different base" prefilled; anything else → both N (ask per box).
   base=$(family_base data)
@@ -1349,21 +1474,38 @@ seed_globals() {
   return 0
 }
 
-# ── Network & Storage ────────────────────────────────────────────────────────
-# Ports wholesale, where the two data families live, and the shared caches —
-# one section, because every one of them settles a question that would
-# otherwise be asked once per box.
-network_storage() {
+# ── General Setup ────────────────────────────────────────────────────────────
+# Everything that can be settled ONCE for the whole install: the two networking
+# questions that would otherwise repeat per box (ports, and when a box's server
+# comes up), then where the two data families and the shared caches live.
+general_setup() {
   local box wants_other=0
   for box in "${CONFIGURE[@]}"; do
     [[ -n "${BOX_EXTRA_BINDS[$box]}" ]] && wants_other=1
   done
-  section "Network & Storage"
-  say ""
+  section "General Setup"
+  subhdr "Networking"
   # One answer settles every per-box port question (the table above just showed
   # the defaults, so this is the moment they can be accepted wholesale).
   ask_yn "Use default ports for all services" "$SEED_PORTS"
   [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
+  # Does a box's SERVICE come up when its container starts? (server.env SERVE.)
+  # "case-by-case" hands the question to each box's own section.
+  ask_ync "Start servers at box start" "$SEED_SERVE"
+  SERVE_MODE=$ANS_3
+  # And does the BOX come up at host boot? (a systemd user unit doing `podman
+  # start`.) INVARIANT (Jei): host boot ⇒ box start. So a box that does not
+  # serve at box start is never asked about host boot, at any level:
+  #   box-start = no   → host boot is no, no question anywhere
+  #   box-start = c    → host boot is implicitly case-by-case, and only the
+  #                      boxes that answered yes above are asked
+  #   box-start = yes  → the install-wide question below
+  case "$SERVE_MODE" in
+    y) ask_ync "Start servers at host boot" "$SEED_HOST"; HOST_MODE=$ANS_3 ;;
+    c) HOST_MODE=c ;;
+    *) HOST_MODE=n ;;
+  esac
+  subhdr "Storage Paths"
   ask_yn "Store all service data in $(emph "$(home_disp "$EMIT_DIR")/<box>/data")" \
     "$SEED_DATA_Q1"
   if [[ $ANS_YN -eq 1 ]]; then
@@ -1377,7 +1519,7 @@ network_storage() {
     fi
   fi
   # The other CRITICAL binds (input/output/workspace). Answering this places
-  # them all; declining it hands them back to the per-box Program Paths (A2).
+  # them all; declining it hands them back to the per-box "<Box> Paths" questions (A2).
   if [[ $wants_other -eq 1 ]]; then
     ask_yn "Store other data $(emph "(input, output, workspace, etc.)") in $(emphg "$(home_disp "$(data_root)")/<box>")" \
       "$SEED_OTHER_Q1"
@@ -1511,8 +1653,8 @@ reask_slot() {  # slot → 0 when re-asked
       DEFAULT_ROOT=$EMIT_DIR
       # Everything the old resource path implied has to be re-derived: which
       # boxes already exist there, and what the user wants done about them.
-      EX_COMPOSE=() EX_INI=() EX_CTR=() EX_DBX=() EXD_PATH=()
-      EXD_PORT=() EXD_AS=() EXD_MODE=() EXD_LANE=()
+      EX_INI=() EX_CTR=() EXD_PATH=()
+      EXD_PORT=() EXD_BOXSV=() EXD_HSTSV=() EXD_MODE=()
       detect_existing
       detect_images
       existing_settings
@@ -1564,7 +1706,7 @@ global_mitigation() {
 }
 
 # ── Where the two path families live ─────────────────────────────────────────
-# Both are settled up front in Network & Storage; the old "would you like this
+# Both are settled up front in General Setup; the old "would you like this
 # pattern applied to everything?" follow-up (PATTERN_ROOT) is retired with it.
 DEFAULT_ROOT=""  # emit dir (default ~/droste)
 
@@ -1576,11 +1718,13 @@ DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>/data, never asked
 OTHER_ROOT=""    # "" = wherever the service data family lives
 OTHER_AUTO=0     # 1 = every box's other binds are <base>/<box>/<label>
 PORTS_DEFAULT=0  # 1 = every box takes the default host port, never asked
+SERVE_MODE=n     # y|n|c — serve at box start, install-wide (c = ask per box)
+HOST_MODE=n      # y|n|c — start at host boot, install-wide (c = ask per box)
 
 data_root()  { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT}"; }
 other_root() { printf '%s' "${OTHER_ROOT:-$(data_root)}"; }
 
-# 1 when this label needs no question (Network & Storage already placed it).
+# 1 when this label needs no question (General Setup already placed it).
 auto_label() {  # label
   if [[ $1 == data ]]; then [[ $DATA_AUTO -eq 1 ]]; else [[ $OTHER_AUTO -eq 1 ]]; fi
 }
@@ -1608,7 +1752,7 @@ set_bind_path() {  # box label
   while :; do
     def=$(path_default "$box" "$label")
     if [[ $force -eq 0 ]] && auto_label "$label"; then
-      # Network & Storage placed this family; a modify box's recorded path is
+      # General Setup placed this family; a modify box's recorded path is
       # its own default, so an auto-placed run leaves it exactly where it was.
       ANS_PATH=$def
       ensure_dir "$ANS_PATH" || :
@@ -1651,134 +1795,86 @@ set_bind_path() {  # box label
 }
 
 # ── Per-box configuration ────────────────────────────────────────────────────
-# The two apply-to-all shortcuts are INDEPENDENT (Jei s34): one settles the
-# variants for every box, the other the autostart. Neither is immune to a
-# box's K/m/r any more — every box flows through both; only its DEFAULTS differ
-# (modify → the recorded values, recreate/new → the factory ones).
-LANE_ALL=""      # propagated lane
-AS_ALL=""        # propagated autostart (only meaningful with a server lane)
-LANE_ASKED=0
-AS_ASKED=0
-AS_ALL_SET=0     # AS_ALL is "" for "no", so its own flag says whether it is set
-
-configure_box() {  # box remaining-after-this (count)
-  local box=$1 remaining=$2 pair label dest lane_def lane_letters lane_hint
-  local asked=0 bw need_lane=0 need_as=0 as_def=N
+# ONE section per box now ("Box Settings"), carrying whatever General Setup left
+# unanswered for it: a Networking subheader (its port, and the two start
+# questions when either was answered "case-by-case") and a "<Box> Paths"
+# subheader (the binds no wholesale answer placed). A box with nothing left to
+# ask shows its banner and its summary, and no section at all.
+configure_box() {  # box
+  local box=$1 pair label dest
+  local asked=0 bw sv_def=N hs_def=N pdef
   banner "${BOX_BANNER[$box]}" bold
   bw=$BANNER_W
 
-  # What is left to ask about the lanes? An earlier box may have settled the
-  # variants, the autostart, or both.
-  [[ -z $LANE_ALL ]] && need_lane=1
-  if [[ $need_lane -eq 0 ]]; then
-    CFG_LANE[$box]=$LANE_ALL
-    [[ ${CFG_LANE[$box]} != distrobox && $AS_ALL_SET -eq 0 ]] && need_as=1
-  fi
-  if [[ $need_lane -eq 1 || $need_as -eq 1 ]]; then
-    asked=1
-    section "Installation Variant(s)"
-  fi
-
-  if [[ $need_lane -eq 1 ]]; then
-    # The default lane must be settled BEFORE the options are drawn, so the
-    # green option and the capitalised letter in the hint always agree.
-    lane_def="b"   # default = BOTH lanes (server + distrobox)
-    if [[ ${ACTION[$box]} == modify ]]; then
-      case "${EXD_LANE[$box]:-both}" in
-        server) lane_def="S" ;;
-        distrobox) lane_def="d" ;;
-        *) lane_def="b" ;;
-      esac
-    fi
-    # Letters string first char = shown default (validation unchanged); only the
-    # displayed [d/s/B] order + capitalization reflects the current default.
-    case "$lane_def" in
-      S) lane_letters="Sdb"; lane_hint="[d/S/b]" ;;
-      d) lane_letters="Dsb"; lane_hint="[D/s/b]" ;;
-      *) lane_letters="Bsd"; lane_hint="[d/s/B]" ;;
-    esac
-    sub "Select the containers to install."
-    opt_row d "istrobox" '(interactive $HOME-native toolbox)' 22 "$(isdef D "$lane_letters")"
-    opt_row s "erver container" "(podman/docker, runs the service)" 22 "$(isdef S "$lane_letters")"
-    opt_row B "oth" "" 0 "$(isdef B "$lane_letters")"
-    say ""
-    ask_choice "Identify variants to install for ${BOX_NAME[$box]} $lane_hint" "$lane_letters"
-    case "$ANS_CH" in
-      s) CFG_LANE[$box]=server ;;
-      d) CFG_LANE[$box]=distrobox ;;
-      b) CFG_LANE[$box]=both ;;
-    esac
-    if [[ $LANE_ASKED -eq 0 && $remaining -gt 0 ]]; then
-      LANE_ASKED=1
-      ask_yn "Install the same variants for all boxes" Y
-      [[ $ANS_YN -eq 1 ]] && LANE_ALL=${CFG_LANE[$box]}
-    fi
-    [[ ${CFG_LANE[$box]} != distrobox && $AS_ALL_SET -eq 0 ]] && need_as=1
-  fi
-
-  # Autostart: server lane only, and its own apply-to-all question.
-  CFG_AS[$box]=""
-  if [[ ${CFG_LANE[$box]} != distrobox ]]; then
-    if [[ $need_as -eq 1 ]]; then
-      [[ ${ACTION[$box]} == modify && -n "${EXD_AS[$box]:-}" ]] && as_def=Y
-      ask_yn "Auto-start the $box server at boot" "$as_def"
-      [[ $ANS_YN -eq 1 ]] && CFG_AS[$box]=1
-      if [[ $AS_ASKED -eq 0 && $remaining -gt 0 ]]; then
-        AS_ASKED=1
-        ask_yn "Apply autostart setting to all boxes" Y
-        if [[ $ANS_YN -eq 1 ]]; then
-          AS_ALL=${CFG_AS[$box]}
-          AS_ALL_SET=1
-        fi
-      fi
-    else
-      CFG_AS[$box]=$AS_ALL
-    fi
-  fi
-
-  # Which of this box's binds still have a question to answer? Data and the
-  # other binds are skipped when Network & Storage placed their family; the
-  # port when the box table's defaults were accepted wholesale. What remains
-  # decides whether the Program Paths section is drawn at all.
+  # Which of this box's questions are still open? Data and the other binds are
+  # skipped when General Setup placed their family; the port when the defaults
+  # were accepted wholesale; the two start questions unless their install-wide
+  # answer was "case-by-case" (and, for host boot, unless this box serves).
   local -a todo=()
-  local want_port=0
+  local want_port=0 want_sv=0
   [[ $DATA_AUTO -eq 0 ]] && todo+=(data)
   if [[ $OTHER_AUTO -eq 0 ]]; then
     for pair in ${BOX_EXTRA_BINDS[$box]}; do
       todo+=("${pair%%:*}")
     done
   fi
-  if [[ ${CFG_LANE[$box]} != distrobox && $PORTS_DEFAULT -eq 0 ]]; then want_port=1; fi
-  if [[ ${#todo[@]} -gt 0 || $want_port -eq 1 ]]; then
+  [[ $PORTS_DEFAULT -eq 0 ]] && want_port=1
+  [[ $SERVE_MODE == c ]] && want_sv=1
+  if [[ $want_port -eq 1 || $want_sv -eq 1 || $HOST_MODE == c ]]; then
     asked=1
-    section "Program Paths"
-    sub "Program data, input, output, etc."
+    section "Box Settings"
   fi
 
-  # Data dir (+ fs probe / overlay mitigation), then the other CRITICAL binds.
-  # Both lanes share this ONE /opt/data host path (only the container name
-  # differs between lanes).
+  # ── Networking ────────────────────────────────────────────────────────────
+  # Port first (it is the value the other two answers switch on and off), then
+  # box start, then — only if this box serves — host boot.
+  if [[ $want_port -eq 1 || $want_sv -eq 1 || $HOST_MODE == c ]]; then
+    subhdr "Networking"
+  fi
+  pdef=${BOX_HOST_PORT[$box]}
+  [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]] && pdef=${EXD_PORT[$box]}
+  if [[ $want_port -eq 1 ]]; then
+    ask_port "$box" "$pdef"
+    CFG_PORT[$box]=$ANS_PORT
+  else
+    CFG_PORT[$box]=$pdef
+  fi
+  CFG_BOXSV[$box]=""
+  if [[ $want_sv -eq 1 ]]; then
+    [[ ${ACTION[$box]} == modify && -n "${EXD_BOXSV[$box]:-}" ]] && sv_def=Y
+    ask_yn "Start the ${BOX_NAME[$box]} server at box start" "$sv_def"
+    [[ $ANS_YN -eq 1 ]] && CFG_BOXSV[$box]=1
+  elif [[ $SERVE_MODE == y ]]; then
+    CFG_BOXSV[$box]=1
+  fi
+  CFG_HSTSV[$box]=""
+  if [[ -n "${CFG_BOXSV[$box]}" ]]; then
+    if [[ $HOST_MODE == c ]]; then
+      [[ ${ACTION[$box]} == modify && -n "${EXD_HSTSV[$box]:-}" ]] && hs_def=Y
+      ask_yn "Start the ${BOX_NAME[$box]} server at host boot" "$hs_def"
+      [[ $ANS_YN -eq 1 ]] && CFG_HSTSV[$box]=1
+    elif [[ $HOST_MODE == y ]]; then
+      CFG_HSTSV[$box]=1
+    fi
+  fi
+
+  # ── <Box> Paths ───────────────────────────────────────────────────────────
+  # The data dir (+ fs probe / overlay mitigation), then the other CRITICAL
+  # binds. /opt/data is where server.env lands, so this path is what decides
+  # where the box reads its serve config from.
+  if [[ ${#todo[@]} -gt 0 ]]; then
+    if [[ $asked -eq 0 ]]; then
+      asked=1
+      section "Box Settings"
+    fi
+    subhdr "${BOX_NAME[$box]} Paths"
+  fi
   set_bind_path "$box" data
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*} dest=${pair#*:}
     : "$dest"          # the container side is the emitters' business, not ours
     set_bind_path "$box" "$label"
   done
-
-  # Host port (server lane only).
-  if [[ ${CFG_LANE[$box]} != distrobox ]]; then
-    local pdef=${BOX_HOST_PORT[$box]}
-    [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]] \
-      && pdef=${EXD_PORT[$box]}
-    if [[ $want_port -eq 1 ]]; then
-      ask_port "$box" "$pdef"
-      CFG_PORT[$box]=$ANS_PORT
-    else
-      CFG_PORT[$box]=$pdef
-    fi
-  else
-    CFG_PORT[$box]=""
-  fi
 
   [[ $asked -eq 1 ]] && say ""
   summary_box "$box" "$bw"
@@ -1788,30 +1884,27 @@ configure_box() {  # box remaining-after-this (count)
 }
 
 # ── Per-box summary ──────────────────────────────────────────────────────────
-# The box that closes each per-box section: what will be installed, where its
-# data lands, and which host port it answers on. Values are BARE (no brackets).
+# The box that closes each per-box section: where its data lands, which host
+# port it answers on, and when its server comes up. Values are BARE (no
+# brackets). The rows are GROUPED — "* Paths" then "* Server" — because the two
+# halves answer different questions and the box is read at a glance.
 # Width: the banner's, so the two stack; wider only when a path needs it, and
 # never past the screen — a path that still will not fit is elided by fit_path.
-SUM_HDR_W=12       # "Installing: " is the longest header, and sets the column
+SUM_HDR_W=14       # "Start w Host: " is the longest header, and sets the column
 
 summary_box() {  # box banner-width
-  local box=$1 bw=$2 inner avail pair label lane
-  local -a keys=() vals=()
-  lane=${CFG_LANE[$box]}
-  case "$lane" in
-    both) vals+=("distrobox & server") ;;
-    server) vals+=("server") ;;
-    *) vals+=("distrobox") ;;
-  esac
-  keys+=("Installing:")
-  keys+=("${BIND_ROW[data]}:") vals+=("$(home_disp "${PATHS["$box:data"]}")")
+  local box=$1 bw=$2 inner avail pair label
+  local -a keys=() vals=() kind=()
+  keys+=("Paths") vals+=("") kind+=(g)
+  keys+=("${BIND_ROW[data]}:") vals+=("$(home_disp "${PATHS["$box:data"]}")") kind+=(v)
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
-    keys+=("${BIND_ROW[$label]}:") vals+=("$(home_disp "${PATHS["$box:$label"]}")")
+    keys+=("${BIND_ROW[$label]}:") vals+=("$(home_disp "${PATHS["$box:$label"]}")") kind+=(v)
   done
-  if [[ -n "${CFG_PORT[$box]:-}" ]]; then
-    keys+=("Port:") vals+=("${CFG_PORT[$box]}")
-  fi
+  keys+=("Server") vals+=("") kind+=(g)
+  keys+=("Port:") vals+=("${CFG_PORT[$box]}") kind+=(v)
+  keys+=("Start w Box:") vals+=("$(yn_word "${CFG_BOXSV[$box]:-}")") kind+=(v)
+  keys+=("Start w Host:") vals+=("$(yn_word "${CFG_HSTSV[$box]:-}")") kind+=(v)
   # Widest row wins, floored at the banner and capped at the screen. A row that
   # sets the width keeps one space in front of the right border, mirroring the
   # one after the left one.
@@ -1829,6 +1922,16 @@ summary_box() {  # box banner-width
   for (( i = 0; i < inner; i = i + 1 )); do fill+=$BOXH; done
   printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXTL" "$fill" "$BOXTR" "$RESET"
   for (( i = 0; i < n; i = i + 1 )); do
+    if [[ ${kind[i]} == g ]]; then
+      # A group header: "* Name", underlined — and the underline is why the
+      # RESET lands before the padding (a coloured blank is a blank, an
+      # underlined one is a visible rule out to the border).
+      printf '  %s%s%s %s*%s %s%s%s%*s%s%s%s\n' \
+        "$C_SBOX" "$BOXV" "$RESET" "$C_SBUL" "$RESET" \
+        "$C_SGRP" "${keys[i]}" "$RESET" \
+        "$(( inner - 3 - ${#keys[i]} ))" "" "$C_SBOX" "$BOXV" "$RESET"
+      continue
+    fi
     v=$(fit_path "${vals[i]}" $(( inner - 4 - SUM_HDR_W )))
     printf '  %s%s%s %s+%s %s%-*s%s%s%*s%s%s%s\n' \
       "$C_SBOX" "$BOXV" "$RESET" "$C_SBUL" "$RESET" \
@@ -1838,6 +1941,9 @@ summary_box() {  # box banner-width
   printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXBL" "$fill" "$BOXBR" "$RESET"
   return 0
 }
+
+# The summary box's spelling of a 1/"" toggle.
+yn_word() { [[ -n $1 ]] && printf 'yes' || printf 'no'; }
 
 # The one-line consequence under the summary box: what the filesystem forced,
 # and which of the box's paths it applies to. Nothing is printed when the
@@ -1883,10 +1989,10 @@ ask_ladder() {
   banner "Build & Activation" bold
   section "Records & Startup"
   sub "Please indicate your selection for box preparation:"
-  opt_row w "" "Write definition(s) only (compose & ini)" 4 "$(isdef w "$letters")"
+  opt_row w "" "Write definition(s) only (ini)" 4 "$(isdef w "$letters")"
   opt_row p "" "Pull image(s) & write definition(s)" 4 "$(isdef p "$letters")"
   opt_row c "" "Pull, write, & create box(es)" 4 "$(isdef c "$letters")"
-  opt_row A "" "All of the above, and start server(s)" 4 "$(isdef A "$letters")"
+  opt_row A "" "All of the above, and start enabled server(s)" 4 "$(isdef A "$letters")"
   say ""
   ask_choice "Select box preparation option [w/p/c/A]" "$letters"
   RUNG=$ANS_CH
@@ -1894,102 +2000,27 @@ ask_ladder() {
 }
 
 # ── Emitters ─────────────────────────────────────────────────────────────────
-emit_compose() {  # box → writes <box>-halo-srv.cmp.yaml
-  local box=$1 f base pair label dest
-  f=$(compose_file "$box")
-  base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
-  {
-    printf '# %s — generated by droste-setup on %s\n' "$base" "$(date +%F)"
-    printf '# Recreate this box any time with:\n'
-    printf '#   %s compose -f %s up -d\n' "${RUNTIME:-podman}" "$f"
-    printf '# Contract source: targets/%s/build-spec (droste-ai-halo repo).\n' "$box"
-    printf 'services:\n'
-    printf '  %s:\n' "$box"
-    printf '    image: %s%s%s\n' "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX"
-    printf '    container_name: %s\n' "$(server_name "$box")"
-    # PID 1 must be an init, not the server. The entrypoint `exec`s python, and the
-    # kernel ignores default signal dispositions for PID 1 — so `podman stop`'s
-    # SIGTERM is a no-op, the 10s grace elapses, and the container is always SIGKILLed
-    # ("StopSignal SIGTERM failed to stop container ... resorting to SIGKILL",
-    # measured 10.55s on hardware 2026-08-08). An init forwards signals, so the server
-    # shuts down cleanly and stop returns promptly.
-    printf '    init: true\n'
-    printf '    ports:\n'
-    printf '      - "%s:%s"\n' "${CFG_PORT[$box]}" "${BOX_PORT[$box]}"
-    printf '    devices:\n'
-    printf '      - /dev/kfd\n'
-    printf '      - /dev/dri\n'
-    if [[ "${CFG_MODE[$box]:-}" == fuse ]]; then
-      printf '      - /dev/fuse   # fuse-overlayfs (overlay-hostile data fs)\n'
-    fi
-    printf '    cap_add:\n'
-    printf '      - SYS_ADMIN   # entrypoint mounts inside the container\n'
-    printf '    group_add:\n'
-    if [[ $GROUP_MODE == keep-groups ]]; then
-      printf '      - keep-groups   # rootless podman: carry render/video groups\n'
-    else
-      local gid
-      if [[ -n $GROUP_GIDS ]]; then
-        for gid in $GROUP_GIDS; do
-          printf '      - "%s"\n' "$gid"
-        done
-      else
-        printf '      # - "<render-gid>"   # getent group render/video failed\n'
-      fi
-    fi
-    printf '    volumes:\n'
-    printf '      - %s:/opt/data\n' "${PATHS["$box:data"]}"
-    for pair in ${BOX_EXTRA_BINDS[$box]}; do
-      label=${pair%%:*} dest=${pair#*:}
-      printf '      - %s:%s\n' "${PATHS["$box:$label"]}" "$dest"
-    done
-    printf '      - %s:/root/.cache/huggingface\n' "$HF_CACHE"
-    printf '      # shared compute cache (MIOpen/Triton/torch/vLLM kernels):\n'
-    printf '      - %s:/opt/caches\n' "$COMPUTE_CACHE"
-    if [[ ${BOX_HAS_MODELS[$box]} -eq 1 ]]; then
-      if [[ -n $MODELS_DIR ]]; then
-        # Opted in: the dir was confirmed-or-created at prompt time, so this
-        # :ro bind is safe. Native `podman compose` handles it fine (older
-        # podman-compose 1.0.6 may emit a non-fatal read-only-mount warning).
-        printf '      # read-only local model collection (scanner source #2):\n'
-        printf '      - %s:/opt/models:ro\n' "$MODELS_DIR"
-      else
-        # Not opted in: a :ro bind to a missing dir is fatal — uncomment (and
-        # create the dir) to enable a local model collection.
-        printf '      # Optional read-only local model collection — uncomment to enable:\n'
-        printf '      # - %s:/opt/models:ro\n' "$HOME/models"
-      fi
-    fi
-    case "${CFG_MODE[$box]:-}" in
-      fuse|copy)
-        printf '    environment:\n'
-        printf '      - DROSTE_OVERLAY_MODE=%s\n' "${CFG_MODE[$box]}"
-        ;;
-    esac
-    if [[ -n "${CFG_AS[$box]:-}" ]]; then
-      printf '    restart: unless-stopped\n'
-    fi
-    printf '    # security_opt: ["seccomp=unconfined"]  # uncomment if GPU fails\n'
-  } > "$f"
-  exec_file "$base"
-  return 0
-}
-
-emit_ini() {  # box → writes <box>-halo-dbox.ini (distrobox assemble record)
+emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
   local box=$1 f base pair label dest vols flags data
   f=$(ini_file "$box")
   base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
-  # Same /opt/data host path as the server lane (emit_compose) — shared.
   data=${PATHS["$box:data"]}
   {
     printf '# %s — generated by droste-setup on %s\n' "$base" "$(date +%F)"
     printf '# Create/recreate with:  distrobox assemble create --file %s\n' "$f"
     printf '# Modeled on targets/%s/distrobox.ini (droste-ai-halo repo).\n' "$box"
-    printf '# Unified lane: the init hook runs the same resolver as the\n'
-    printf '# server lane — overlays, surfaces, and caches are mounted\n'
-    printf '# in-box on /opt/data, so in-box installs survive recreation.\n'
+    printf '# ONE container, two doors: "distrobox enter %s" for an\n' "$(box_ctr "$box")"
+    printf '# interactive shell, "podman start %s" to bring the\n' "$(box_ctr "$box")"
+    printf '# service up (the init hook reads %s/server.env\n' "$(home_disp "$data")"
+    printf '# at every start and launches on the port recorded there).\n'
+    # The record of what this installer last answered — read back on the next
+    # run as the fallback for server.env (port, box start) and for the systemd
+    # user unit (host boot), both of which the user may have changed by hand.
+    printf '# droste-setup: port=%s box-start=%s host-boot=%s\n' \
+      "${CFG_PORT[$box]}" "$(yn_word "${CFG_BOXSV[$box]:-}")" \
+      "$(yn_word "${CFG_HSTSV[$box]:-}")"
     printf '\n'
-    printf '[%s]\n' "$(dbox_name "$box")"
+    printf '[%s]\n' "$(box_ctr "$box")"
     printf 'image=%s%s%s\n' "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX"
     printf 'init_hooks="%s"\n' "$INIT_HOOK"
     # additional_flags append to `podman|docker create` (--env is the
@@ -2000,6 +2031,22 @@ emit_ini() {  # box → writes <box>-halo-dbox.ini (distrobox assemble record)
     case "${CFG_MODE[$box]:-}" in
       fuse|copy) flags+=" --env DROSTE_OVERLAY_MODE=${CFG_MODE[$box]}" ;;
     esac
+    # Graceful-stop stance: podman still SIGKILLs the served process after this
+    # timeout (distrobox-init does not forward SIGTERM to it), so the number is
+    # a ceiling, not a promise — see NOTES.md.
+    flags+=" --stop-timeout $STOP_TIMEOUT"
+    # Supervision, unconditionally: the probe answers HEALTHY for a box that is
+    # not serving, so an interactive-only box is not restart-looped by it, and a
+    # box whose server.env is turned on later is supervised without a recreate.
+    flags+=" --health-cmd $HEALTH_CMD"
+    flags+=" --health-interval $HEALTH_INTERVAL"
+    flags+=" --health-retries $HEALTH_RETRIES"
+    flags+=" --health-start-period ${BOX_HEALTH_START[$box]}"
+    flags+=" --health-on-failure=restart"
+    printf '# Healthcheck: %s probes the service and\n' "$HEALTH_CMD"
+    printf '# podman restarts the container when it fails. The start period\n'
+    printf '# (%s) is the grace this box needs to load its model.\n' \
+      "${BOX_HEALTH_START[$box]}"
     printf 'additional_flags="%s"\n' "$flags"
     # CRITICAL: distrobox assemble reads only the LAST volume= key, so EVERY
     # bind must live in ONE space-separated volume= value. Accumulate them all
@@ -2033,13 +2080,87 @@ emit_ini() {  # box → writes <box>-halo-dbox.ini (distrobox assemble record)
         # Not opted in: a read-only /opt/models bind to a missing dir is fatal to
         # `distrobox assemble create`, so it is not added — enable it by hand.
         printf '# Optional read-only local model collection: to enable, APPEND\n'
-        printf '#   %s:/opt/models:ro\n' "$(home_disp "$HOME/models")"
+        printf '#   %s:/opt/models:ro\n' "$(home_disp "$EMIT_DIR/models")"
         printf '# (space-separated) INSIDE the single volume= value above — do NOT add a\n'
         printf '# second volume= line (distrobox reads only the LAST, dropping the rest).\n'
       fi
     fi
   } > "$f"
   exec_file "$base"
+  return 0
+}
+
+# The serve config, written into the box's DATA dir — the file P1's
+# droste-serve.sh reads at every container start (and droste-healthcheck.sh
+# reads for the port). It is deliberately NOT listed in the Executing section:
+# it is one line of answers the user already gave, not a definition to review.
+#
+# NEVER touched for a KEPT box (keep = "change nothing about settings", and this
+# file is a settings file the user may well have hand-edited); rewritten from
+# the current answers for every box that is (re)configured.
+emit_serve_env() {  # box
+  local box=$1 f
+  f=$(serve_env_file "$box") || return 0
+  [[ -n $f ]] || return 0
+  mkdir -p "$(dirname "$f")" 2>/dev/null || :
+  {
+    printf '# server.env — read by droste-init-hook.sh at every container start.\n'
+    printf '# Written by droste-setup on %s; safe to edit by hand:\n' "$(date +%F)"
+    printf '#   SERVE=1  start the service when the box starts (0 = interactive only)\n'
+    printf '#   PORT=    the port the service binds (host networking: no remap)\n'
+    printf '# Take a change live with:  %s restart %s\n' \
+      "${RUNTIME:-podman}" "$(box_ctr "$box")"
+    printf 'SERVE=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
+    printf 'PORT=%s\n' "${CFG_PORT[$box]}"
+  } > "$f" 2>/dev/null || warn "could not write $f — the box will not know its serve setting"
+  return 0
+}
+
+# ── Host-boot: a systemd USER unit per box ───────────────────────────────────
+# Fire-and-forget: `podman start` returns as soon as the container is up, so the
+# unit is a oneshot that stays "active" afterwards (RemainAfterExit) — that is
+# what makes `systemctl --user status droste-<box>` a truthful answer and what
+# lets the manager stop the box on the way down.
+write_host_unit() {  # box → 0 when the unit file is in place
+  local box=$1 f bin
+  f=$(unit_file "$box")
+  bin=${RUNTIME_BIN:-/usr/bin/podman}
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  {
+    printf '# %s — generated by droste-setup on %s\n' "$(unit_name "$box")" "$(date +%F)"
+    printf '[Unit]\n'
+    printf 'Description=droste %s halo box (%s)\n' "$box" "$(box_ctr "$box")"
+    printf 'Documentation=file://%s/NOTES.md\n' "$EMIT_DIR"
+    printf '\n[Service]\n'
+    printf 'Type=oneshot\n'
+    printf 'RemainAfterExit=yes\n'
+    printf 'ExecStart=%s start %s\n' "$bin" "$(box_ctr "$box")"
+    printf 'ExecStop=%s stop %s\n' "$bin" "$(box_ctr "$box")"
+    printf '\n[Install]\n'
+    printf 'WantedBy=default.target\n'
+  } > "$f" 2>/dev/null || return 1
+  return 0
+}
+
+# Lingering, attempted by the installer itself: polkit's
+# org.freedesktop.login1.set-self-linger defaults to allow_active=yes, so a
+# local session needs no sudo (verified on Raiju). </dev/null so a pure-SSH
+# session fails FAST instead of hanging on an authentication agent; the sudo
+# fallback is then printed for the user to run.
+enable_linger() {  # log → 0 when the user lingers
+  local log=$1
+  [[ $LINGER == yes ]] && return 0
+  command -v loginctl >/dev/null 2>&1 || return 1
+  if loginctl enable-linger </dev/null >>"$log" 2>&1; then
+    LINGER=yes
+    return 0
+  fi
+  return 1
+}
+
+linger_fallback_note() {
+  printf '    %sboot auto-start needs lingering. Run:%s %ssudo loginctl enable-linger %s%s\n' \
+    "$C_TEXT" "$RESET" "$C_PATHB" "${USER:-$(id -un)}" "$RESET"
   return 0
 }
 
@@ -2390,97 +2511,9 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
 }
 
 # ── Execution (the ladder rungs) ─────────────────────────────────────────────
-plain_create_args() {  # box → prints podman/docker create args (one per line)
-  local box=$1 pair label dest gid
-  printf -- '--name\n%s\n' "$(server_name "$box")"
-  # Run an init as PID 1 — the entrypoint `exec`s python, and PID 1 ignores default
-  # signal dispositions, so without this `podman stop` always falls through to SIGKILL
-  # after the grace period (compose emitter sets `init: true` for the same reason).
-  printf -- '--init\n'
-  printf -- '-p\n%s:%s\n' "${CFG_PORT[$box]}" "${BOX_PORT[$box]}"
-  printf -- '--device\n/dev/kfd\n--device\n/dev/dri\n'
-  [[ "${CFG_MODE[$box]:-}" == fuse ]] && printf -- '--device\n/dev/fuse\n'
-  printf -- '--cap-add\nsys_admin\n'
-  if [[ $GROUP_MODE == keep-groups ]]; then
-    printf -- '--group-add\nkeep-groups\n'
-  else
-    for gid in $GROUP_GIDS; do printf -- '--group-add\n%s\n' "$gid"; done
-  fi
-  printf -- '-v\n%s:/opt/data\n' "${PATHS["$box:data"]}"
-  for pair in ${BOX_EXTRA_BINDS[$box]}; do
-    label=${pair%%:*} dest=${pair#*:}
-    printf -- '-v\n%s:%s\n' "${PATHS["$box:$label"]}" "$dest"
-  done
-  printf -- '-v\n%s:/root/.cache/huggingface\n' "$HF_CACHE"
-  printf -- '-v\n%s:/opt/caches\n' "$COMPUTE_CACHE"
-  # The optional /opt/models bind is added when opted in (MODELS_DIR set); it is
-  # safe because the dir was confirmed-or-created at prompt time (a :ro bind to a
-  # missing dir would be fatal). Skipped entirely when not opted in.
-  [[ -n $MODELS_DIR && ${BOX_HAS_MODELS[$box]} -eq 1 ]] \
-    && printf -- '-v\n%s:/opt/models:ro\n' "$MODELS_DIR"
-  case "${CFG_MODE[$box]:-}" in
-    fuse|copy) printf -- '-e\nDROSTE_OVERLAY_MODE=%s\n' "${CFG_MODE[$box]}" ;;
-  esac
-  [[ -n "${CFG_AS[$box]:-}" ]] && printf -- '--restart\nunless-stopped\n'
-  printf '%s%s%s\n' "$IMAGE_PREFIX" "$box" "$IMAGE_SUFFIX"
-  return 0
-}
-
-create_server() {  # box
-  local box=$1 f name log args=() rc=0 src=0
-  name=$(server_name "$box")
-  f=$(compose_file "$box")
-  log=$(step_log create "$name")
-  : > "$log"
-  status_start "$name..."
-  # Container replacement belongs to the LADDER, not to K/m/r (Jei s34): if you
-  # asked for a box to be created, you get a FRESH one — kept settings included.
-  # `rm -f` on a name that is not there is a no-op with a message, so the log
-  # gets it and nothing else does. It is also the step most likely to take a
-  # while (a running container has to stop first), hence its own phase word.
-  run_step "removing old" "$log" "$RUNTIME" rm -f "$name" || :
-  # Everything the runtime says goes to the log, not the screen: one status
-  # line per container is the whole report (the log's tail speaks on failure).
-  # shellcheck disable=SC2086  # COMPOSE_CMD is "podman compose" — two words
-  if [[ -n $COMPOSE_CMD ]]; then
-    if [[ $RUNG == a ]]; then
-      # `up -d` creates AND starts, so on this rung the phase is the start.
-      if run_step "starting" "$log" $COMPOSE_CMD -f "$f" up -d; then
-        SESSION_STATE[$box]=ACTIVE
-      else
-        rc=1
-      fi
-    else
-      src=0
-      run_step "creating" "$log" $COMPOSE_CMD -f "$f" up --no-start || src=$?
-      if [[ $src -ne 0 ]]; then
-        src=0
-        run_step "creating" "$log" $COMPOSE_CMD -f "$f" create || src=$?
-      fi
-      if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=STOPPED; else rc=1; fi
-    fi
-  else
-    mapfile -t args < <(plain_create_args "$box")
-    src=0
-    run_step "creating" "$log" "$RUNTIME" create "${args[@]}" || src=$?
-    if [[ $src -eq 0 ]]; then
-      SESSION_STATE[$box]=STOPPED
-      if [[ $RUNG == a ]]; then
-        src=0
-        run_step "starting" "$log" "$RUNTIME" start "$name" || src=$?
-        if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=ACTIVE; else rc=1; fi
-      fi
-    else
-      rc=1
-    fi
-  fi
-  if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
-  return 0
-}
-
-create_distrobox() {  # box
-  local box=$1 name log rc=0
-  name=$(dbox_name "$box")
+create_box() {  # box
+  local box=$1 name log rc=0 src=0
+  name=$(box_ctr "$box")
   log=$(step_log create "$name")
   : > "$log"
   status_start "$name..."
@@ -2490,23 +2523,96 @@ create_distrobox() {  # box
     status_err "$name..." "$log"
     return 0
   fi
-  # Same rule as the server lane: the create rung always replaces. Tearing down
-  # a RUNNING box is the slow case Jei hit on hardware — it gets a phase word.
+  # Container replacement belongs to the LADDER, not to K/m/r (Jei s34): if you
+  # asked for a box to be created, you get a FRESH one — kept settings included.
+  # Only the merged name is touched; pre-merge -server/-box containers are the
+  # user's to clean up (Jei: "I'm the only one using 'em"). Tearing down a
+  # RUNNING box is the slow case Jei hit on hardware, hence its own phase word.
   run_step "removing old" "$log" distrobox rm -f "$name" || :
   # distrobox narrates its own creation ("Creating '<name>' using image ...",
   # "Distrobox '<name>' successfully created.", "To enter, run:") — three lines
-  # per box that say what our one status line already says. The former grep
-  # filter matched almost none of them (it wanted a " - Creating" prefix
-  # upstream never emitted, and had no pattern at all for "successfully
-  # created"), so the whole capture goes to the log instead.
+  # per box that say what our one status line already says, so the whole
+  # capture goes to the log instead.
   run_step "creating" "$log" \
     distrobox assemble create --file "$(ini_file "$box")" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    SESSION_STATE[$box]=STOPPED
+    # The [A] rung starts only the boxes whose server is meant to come up with
+    # the box (Jei's rev-2 semantics): starting a SERVE=0 box would just be an
+    # idle container. `podman start` is what replays the init line, which is
+    # what launches the service — there is no separate server container.
+    if [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" && -n $RUNTIME ]]; then
+      src=0
+      run_step "starting" "$log" "$RUNTIME" start "$name" || src=$?
+      if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=ACTIVE; else rc=1; fi
+    fi
+  fi
   if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
   return 0
 }
 
+# One box's host-boot enablement (or its removal). Returns non-zero when the
+# unit could not be put in the state the user asked for.
+host_unit_step() {  # box log → 0 ok
+  local box=$1 log=$2 unit rc=0
+  unit=$(unit_name "$box")
+  if [[ -n "${CFG_HSTSV[$box]:-}" ]]; then
+    write_host_unit "$box" || { printf 'could not write %s\n' "$(unit_file "$box")" >>"$log"; return 1; }
+    systemctl --user daemon-reload >>"$log" 2>&1 || rc=1
+    systemctl --user enable "$unit" >>"$log" 2>&1 || rc=1
+  else
+    # Reconfigured to "no": disable it and take the file away, so a stale unit
+    # cannot keep starting a box the user just told us not to start.
+    [[ -f $(unit_file "$box") ]] || return 0
+    systemctl --user disable "$unit" >>"$log" 2>&1 || rc=1
+    systemctl --user daemon-reload >>"$log" 2>&1 || rc=1
+    rm -f "$(unit_file "$box")" 2>>"$log" || rc=1
+  fi
+  return $rc
+}
+
+# The Executing group that owns boot auto-start: lingering first (nothing under
+# it survives a logout without it), then one status line per unit.
+host_boot_units() {  # box...
+  local box log rc=0 want=0
+  local -a boxes=("$@")
+  [[ ${#boxes[@]} -gt 0 ]] || return 0
+  for box in "${boxes[@]}"; do
+    [[ -n "${CFG_HSTSV[$box]:-}" ]] && want=1
+  done
+  exec_hdr "Host Boot Services"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf '  %ssystemctl not found — cannot manage boot auto-start.%s\n' "$C_TEXT" "$RESET"
+    return 0
+  fi
+  if [[ $want -eq 1 ]]; then
+    log=$(step_log linger user)
+    : > "$log"
+    status_start "loginctl enable-linger..."
+    if enable_linger "$log"; then
+      status_ok "loginctl enable-linger..."
+    else
+      status_err "loginctl enable-linger..." "$log"
+      linger_fallback_note
+    fi
+  fi
+  for box in "${boxes[@]}"; do
+    log=$(step_log unit "$box")
+    : > "$log"
+    status_start "$(unit_name "$box")..."
+    rc=0
+    host_unit_step "$box" "$log" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      status_ok "$(unit_name "$box")..."
+    else
+      status_err "$(unit_name "$box")..." "$log"
+    fi
+  done
+  return 0
+}
+
 execute() {
-  local box lane b ladder=() all_names=() svc_log rc=0
+  local box b ladder=() units=() all_names=() svc_log rc=0
   section "Executing"
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
   # start from their existing, un-rewritten definitions), in canonical order.
@@ -2516,26 +2622,37 @@ execute() {
     done
   done
   # Emit definitions ONLY for (re)configured boxes — kept boxes are never
-  # rewritten (never-clobber).
+  # rewritten (never-clobber). server.env rides along, unlisted (see
+  # emit_serve_env): it holds the same answers, in the box's own data dir.
   if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
     exec_hdr "Writing Configuration Files"
     for box in "${CONFIGURE[@]}"; do
-      lane=${CFG_LANE[$box]}
-      [[ $lane != distrobox ]] && emit_compose "$box"
-      [[ $lane != server ]] && emit_ini "$box"
+      emit_ini "$box"
+      emit_serve_env "$box"
     done
   fi
+  # Boot auto-start is settled at EVERY rung, not just create: it is an answer
+  # the user gave, the dashboard reports it as fact, and systemd is happy to
+  # enable a unit whose container does not exist yet (the box is created by a
+  # later run, or by hand from the ini). A (re)configured box needs a step when
+  # it asked for host boot — or when it has a unit from a previous run and just
+  # asked NOT to.
+  for box in "${CONFIGURE[@]}"; do
+    if [[ -n "${CFG_HSTSV[$box]:-}" || -f $(unit_file "$box") ]]; then
+      units+=("$box")
+    fi
+  done
   # ONE column for the whole section: every status line the run will print is
   # measured before the first of them is drawn.
   if [[ ${#ladder[@]} -gt 0 ]]; then
     for box in "${ladder[@]}"; do
-      lane=${CFG_LANE[$box]}
       [[ $RUNG != w ]] && all_names+=("${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}...")
-      if [[ $RUNG == c || $RUNG == a ]]; then
-        [[ $lane != distrobox ]] && all_names+=("$(server_name "$box")...")
-        [[ $lane != server ]] && all_names+=("$(dbox_name "$box")...")
-      fi
+      [[ $RUNG == c || $RUNG == a ]] && all_names+=("$(box_ctr "$box")...")
     done
+    for box in ${units[@]+"${units[@]}"}; do
+      all_names+=("$(unit_name "$box")...")
+    done
+    [[ ${#units[@]} -gt 0 ]] && all_names+=("loginctl enable-linger...")
     [[ ${#all_names[@]} -gt 0 ]] && status_width "${all_names[@]}"
   fi
   if [[ $RUNG != w && ${#ladder[@]} -gt 0 ]]; then
@@ -2567,31 +2684,46 @@ execute() {
   if [[ ( $RUNG == c || $RUNG == a ) && ${#ladder[@]} -gt 0 ]]; then
     exec_hdr "Creating Boxes"
     for box in "${ladder[@]}"; do
-      lane=${CFG_LANE[$box]}
-      [[ $lane != distrobox ]] && create_server "$box"
-      [[ $lane != server ]] && create_distrobox "$box"
+      create_box "$box"
     done
   fi
+  host_boot_units ${units[@]+"${units[@]}"}
   return 0
 }
 
 # ── NOTES.md ─────────────────────────────────────────────────────────────────
+# The whole function writes MARKDOWN: single-quoted printf formats full of
+# backticks (code spans) and literal $VARs the reader is meant to see. Not
+# expanding them is the point, so SC2016 is silenced for the block rather than
+# line by line.
+# shellcheck disable=SC2016
 write_notes() {
-  local f=$EMIT_DIR/NOTES.md box lane port asx data note
+  local f=$EMIT_DIR/NOTES.md box port bs hs data note
   {
     printf '# droste-halo setup notes\n\n'
     printf 'Generated by droste-setup on %s. Re-run droste-setup any time —\n' \
       "$(date +%F)"
     printf 'existing boxes are detected and never clobbered.\n\n'
-    printf '## Your installation\n\n'
-    printf '| Box | Lanes | Auto-start | Host port | Data dir |\n'
+    printf '## One container, two doors\n\n'
+    printf 'Each box is ONE podman container, `droste-<box>-halo`, created by\n'
+    printf '`distrobox assemble` from its `<box>-halo.ini`:\n\n'
+    printf -- '- **Interactive door** — `distrobox enter droste-<box>-halo`.\n'
+    printf '  A shell in your own $HOME, with the box%s toolchain.\n' "'s"
+    printf -- '- **Server door** — `podman start droste-<box>-halo`. Starting the\n'
+    printf '  container replays its init line, which reads `server.env` from the\n'
+    printf '  box%s data dir and launches the service on the port recorded there.\n' "'s"
+    printf '\nEntering a stopped box therefore starts it — and, if `SERVE=1`, its\n'
+    printf 'service with it. Both doors are the SAME environment: a `pip install`\n'
+    printf 'you do interactively is what the served process runs.\n'
+    printf '\n## Your installation\n\n'
+    printf '| Box | Start w Box | Start w Host | Port | Data dir |\n'
     printf '|---|---|---|---|---|\n'
     for box in "${SELECTED[@]}"; do
-      lane=$(box_lanes_disp "$box")
       port=$(box_port_disp "$box")
-      asx=no; [[ -n "$(box_as "$box")" ]] && asx=yes
+      bs=$(yn_word "$(box_boxsv "$box")")
+      hs=$(yn_word "$(box_hstsv "$box")")
       data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-?}}"
-      printf '| %s | %s | %s | %s | %s |\n' "$box" "$lane" "$asx" "$port" "$data"
+      printf '| %s | %s | %s | %s | %s |\n' "$box" "$bs" "$hs" "$port" "$data"
     done
     printf '\nShared HF cache: `%s` — bound into every box; the SINGLE model\n' \
       "$HF_CACHE"
@@ -2601,7 +2733,7 @@ write_notes() {
         "$MODELS_DIR"
       printf 'in every box that supports it (comfyui/llama/vllm/ds4). The dir was\n'
       printf 'confirmed-or-created at setup time, so the bind is safe and already\n'
-      printf 'present in the compose files and the single `volume=` value of each ini.\n'
+      printf 'present in the single `volume=` value of each ini.\n'
     else
       printf 'Local model collection: not configured (/opt/models unbound).\n'
     fi
@@ -2612,14 +2744,42 @@ write_notes() {
     printf 'first-run MIOpen tuning in two boxes at once; everything else\n'
     printf 'is conflict-free.\n'
     printf '\n## Day-to-day commands\n\n'
-    printf '    podman start <name>        # start a server box\n'
+    printf '    podman start <name>        # start the box (+ its server)\n'
     printf '    podman stop <name>         # stop it\n'
     printf '    podman logs -f <name>      # follow its log\n'
-    printf '    distrobox enter <name>     # enter an interactive box\n\n'
-    printf 'Names (server lane / distrobox lane):\n'
+    printf '    podman ps                  # STATUS shows the healthcheck\n'
+    printf '    distrobox enter <name>     # interactive shell in the box\n\n'
+    printf 'Names:\n'
     for box in "${SELECTED[@]}"; do
-      printf '  %s  |  %s\n' "$(server_name "$box")" "$(dbox_name "$box")"
+      printf '  %s\n' "$(box_ctr "$box")"
     done
+    printf '\n## The serve switch (server.env)\n\n'
+    printf 'Every box reads `<data dir>/server.env` at EVERY start:\n\n'
+    printf '    SERVE=1        # 0 = interactive only, nothing is launched\n'
+    printf '    PORT=8188      # the port the service binds (host networking)\n\n'
+    printf 'Edit it and `podman restart <name>` — no recreate needed, and the\n'
+    printf 'file survives image updates and box recreation. droste-setup writes\n'
+    printf 'it from your answers for every box it (re)configures, and leaves it\n'
+    printf 'alone for boxes you asked to KEEP.\n'
+    printf '\n## Supervision (podman healthcheck)\n\n'
+    printf 'Each box is created with a healthcheck that probes its service from\n'
+    printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'
+    printf 'restarts the container, which relaunches it. A box with `SERVE=0`\n'
+    printf 'always reports healthy — the probe knows it is not meant to serve.\n\n'
+    printf 'The START PERIOD is generous on purpose (these services answer\n'
+    printf 'nothing while they load multi-GB weights; llama even answers 503):\n\n'
+    for box in "${SELECTED[@]}"; do
+      printf '    %-12s %s\n' "$box" "${BOX_HEALTH_START[$box]}"
+    done
+    printf '\nInspect it with `podman inspect --format "{{json .State.Health}}"`.\n'
+    printf '\n## Stopping: what actually happens\n\n'
+    printf 'The box%s pid 1 is distrobox-init, which does NOT forward SIGTERM to\n' "'s"
+    printf 'the served process: on `podman stop`/`restart` the service is killed\n'
+    printf 'rather than asked to exit (a `--stop-timeout %s` is set as a ceiling).\n' \
+      "$STOP_TIMEOUT"
+    printf 'Nothing in these images buffers state that a clean shutdown would\n'
+    printf 'flush, but if you want a graceful exit, stop the service inside the\n'
+    printf 'box first (or edit `SERVE=0` and restart).\n'
     printf '\n## Per-box quickstart\n'
     for box in "${SELECTED[@]}"; do
       data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-<data-dir>}}"
@@ -2627,7 +2787,7 @@ write_notes() {
       printf '\n### %s — %s\n\n' "$box" "${BOX_PITCH[$box]}"
       case "$box" in
         comfyui)
-          printf -- '- Web UI: http://localhost:%s (server lane).\n' "$port"
+          printf -- '- Web UI: http://localhost:%s.\n' "$port"
           printf -- '- Models are scanned from the shared HF cache (+ /opt/models)\n'
           printf '  at every start; new downloads appear in the pickers.\n'
           printf -- '- Your work dirs: input `%s`, output `%s`.\n' \
@@ -2653,7 +2813,7 @@ write_notes() {
         finetuning)
           printf -- '- JupyterLab: http://localhost:%s — get the login token with\n' \
             "$port"
-          printf '    podman logs %s\n' "$(server_name finetuning)"
+          printf '    podman logs %s\n' "$(box_ctr finetuning)"
           printf -- '- Notebooks + trained adapters live in your workspace:\n'
           printf '  `%s`.\n' \
             "${PATHS["$box:workspace"]:-${EXD_PATH["$box:workspace"]:-?}}"
@@ -2662,30 +2822,24 @@ write_notes() {
     done
     printf '\n## Recreate one-liners\n\n'
     for box in "${SELECTED[@]}"; do
-      if [[ -f $(compose_file "$box") ]]; then
-        printf '    %s compose -f %s up -d\n' \
-          "${RUNTIME:-podman}" "$(compose_file "$box")"
-      fi
       if [[ -f $(ini_file "$box") ]]; then
         printf '    distrobox assemble create --file %s\n' "$(ini_file "$box")"
       fi
     done
-    printf '\n## Distrobox lane\n\n'
-    printf 'Distroboxes get the SAME in-box mounts as the server lane: the\n'
-    printf 'init hook mounts the overlays, surfaces, and caches from your\n'
-    printf 'data dir (/opt/data in-box), so in-box installs (pip packages,\n'
-    printf 'custom nodes) persist across box recreation. The overlay-hostile\n'
-    printf 'filesystem rule therefore applies to BOTH lanes. Boxes created\n'
-    printf 'by v0.1.0-era setups must be recreated (distrobox rm <name>,\n'
-    printf 'then the assemble one-liner above) to pick this up.\n'
-    printf '\n## Auto-start\n\n'
-    printf 'Boxes with auto-start use `restart: unless-stopped`. For rootless\n'
-    printf 'podman that policy is applied at boot by a user service — enable it\n'
-    printf 'once:\n\n'
-    printf '    systemctl --user enable --now podman-restart.service\n'
-    printf '    loginctl enable-linger %s   # start user services at boot\n\n' \
-      "${USER:-$(id -un)}"
-    printf '## Shared model store\n\n'
+    printf '\nRecreating replaces the container; your data dir, server.env and\n'
+    printf 'the in-box overlays under it are untouched — that is what makes\n'
+    printf 'in-box installs (pip packages, custom nodes) survive a recreate.\n'
+    printf '\n## Start at host boot\n\n'
+    printf 'Boxes you asked to start at host boot get a systemd USER unit:\n\n'
+    printf '    systemctl --user status droste-<box>      # is it enabled/active\n'
+    printf '    systemctl --user disable droste-<box>     # stop starting at boot\n\n'
+    printf 'The unit is a oneshot doing `podman start droste-<box>-halo`. Rootless\n'
+    printf 'user services (and podman%s healthcheck timers) need LINGERING, or the\n' "'s"
+    printf 'user manager exits at logout and takes both with it:\n\n'
+    printf '    loginctl enable-linger %s\n\n' "${USER:-$(id -un)}"
+    printf 'droste-setup enables it for you when a box asks for host boot (no\n'
+    printf 'sudo needed in a local session); prefix with `sudo` if it refused.\n'
+    printf '\n## Shared model store\n\n'
     printf 'Every box binds `%s`. Download once, use everywhere:\n\n' "$HF_CACHE"
     printf '    hf download <org>/<repo>       # or: huggingface-cli download\n\n'
     printf 'ComfyUI re-scans the cache at each start (symlink model tree).\n'
@@ -2693,9 +2847,6 @@ write_notes() {
     printf -- '- Date: %s; emit dir: `%s`; runtime: %s%s.\n' \
       "$(date +%F)" "$EMIT_DIR" "${RUNTIME:-none}" \
       "$([[ $ROOTLESS -eq 1 ]] && echo ' (rootless)')"
-    printf -- '- group_add mode: %s.\n' \
-      "$([[ $GROUP_MODE == keep-groups ]] && echo 'keep-groups (rootless podman)' \
-         || echo "numeric GIDs (${GROUP_GIDS:-none found})")"
     for box in "${CONFIGURE[@]}"; do
       note=""
       case "${CFG_MODE[$box]:-}" in
@@ -2704,8 +2855,9 @@ write_notes() {
         ignore) note="fs=${CFG_FS[$box]} → IGNORED (box will fail on start!)" ;;
         *) note="fs=${CFG_FS[$box]:-?} (kernel overlayfs OK)" ;;
       esac
-      printf -- '- %s: lane=%s, data=`%s`, %s.%s\n' \
-        "$box" "${CFG_LANE[$box]}" "${PATHS["$box:data"]}" "$note" \
+      printf -- '- %s: port=%s, box-start=%s, host-boot=%s, data=`%s`, %s.%s\n' \
+        "$box" "${CFG_PORT[$box]}" "$(yn_word "${CFG_BOXSV[$box]:-}")" \
+        "$(yn_word "${CFG_HSTSV[$box]:-}")" "${PATHS["$box:data"]}" "$note" \
         "$([[ -n ${BOX_CONFIG[$box]} ]] \
            && printf ' Seeded config: %s.' "${BOX_CONFIG[$box]}")"
     done
@@ -2723,25 +2875,21 @@ write_notes() {
 }
 
 # ── Status dashboard ─────────────────────────────────────────────────────────
-box_lanes_disp() {  # box → server|distrobox|both from config or detection
-  local box=$1
-  if [[ -n "${CFG_LANE[$box]:-}" ]]; then
-    printf '%s' "${CFG_LANE[$box]}"
-  else
-    printf '%s' "${EXD_LANE[$box]:-none}"
-  fi
-}
 box_port_disp() {
   local box=$1
   printf '%s' "${CFG_PORT[$box]:-${EXD_PORT[$box]:--}}"
 }
-box_as() {
+# The two toggles, from this run's answers when there are any (configured or
+# hydrated-keep boxes both have them) and from detection otherwise.
+box_boxsv() {
   local box=$1
-  if [[ -n "${CFG_LANE[$box]:-}" ]]; then
-    printf '%s' "${CFG_AS[$box]:-}"
-  else
-    printf '%s' "${EXD_AS[$box]:-}"
-  fi
+  if [[ -n "${CFG_PORT[$box]:-}" ]]; then printf '%s' "${CFG_BOXSV[$box]:-}"
+  else printf '%s' "${EXD_BOXSV[$box]:-}"; fi
+}
+box_hstsv() {
+  local box=$1
+  if [[ -n "${CFG_PORT[$box]:-}" ]]; then printf '%s' "${CFG_HSTSV[$box]:-}"
+  else printf '%s' "${EXD_HSTSV[$box]:-}"; fi
 }
 
 box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
@@ -2750,7 +2898,7 @@ box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
     # Distinguish "asked, nothing there" from "could not ask": with no runtime, or
     # a query that errored, `none` would claim the box does not exist when the
     # truth is we have no way to tell. Only a successful query earns `none`.
-    if state=$("$RUNTIME" ps -a --filter "name=^$(server_name "$box")\$" \
+    if state=$("$RUNTIME" ps -a --filter "name=^$(box_ctr "$box")\$" \
                --format '{{.State}}' 2>/dev/null | head -n1); then
       asked=1
     else
@@ -2762,8 +2910,6 @@ box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
       printf '%s' "${SESSION_STATE[$box]}"
     elif [[ -n "${EX_CTR[$box]:-}" ]]; then
       [[ ${EX_CTR[$box]} == running ]] && printf 'ACTIVE' || printf 'STOPPED'
-    elif [[ -n "${EX_DBX[$box]:-}" ]]; then
-      printf 'STOPPED'
     elif [[ $asked -eq 1 ]]; then
       printf 'none'
     else
@@ -2774,42 +2920,41 @@ box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
   fi
 }
 
-# The table geometry, verified against Jei's hand-tuned mockup:
+# The table geometry (Jei's rev-2 columns):
 #
-#   Service      On   Srv  Box  Auto  Port  Important Notes
-#   col 0        <--- four glyphs, pitch 5 --->  32    38
+#   Service     On  BoxSv  HstSv  Port  Important Notes
+#   col 0       12  16     23     30    36
 #
-# The four glyph cells are RIGHT-aligned to end at column 29, which is why the
-# 2-cell emoji starts one column right of the 3-cell ASCII glyph. Only the Notes
-# column is responsive; everything left of it is fixed so the columns line up
-# between runs. The header labels sit at 16/21/26 with `On` pulled left onto the
-# first glyph column — Jei's spacing, kept as drawn.
+# The three glyph cells sit at 12 / 17 / 24 — inside their headers for BOTH cell
+# widths (2-column emoji, 3-column ASCII), which is what lets one set of numbers
+# serve both. Only the Notes column is responsive; everything left of it is
+# fixed so the columns line up between runs.
+DASH_NOTES=36
 dashboard() {
-  local box lane st stg g note data row port budget oncol gap tokl tokr ind gp
-  budget=$(( $(term_width) - 38 ))
-  oncol=$(( 14 - W_STATE ))     # first glyph column: 12 emoji, 11 ASCII
-  gap=$(( 3 - W_STATE ))        # lead from the Service cell into that column
-  tokl=$GB_L$C_GLYPH tokr=$C_TEXT$GB_R
-  ind=$(( 12 - 5 - W_STATE - ${#GB_L} - ${#GB_R} ))   # "Value" → glyph, right-aligned
-  gp=$(( 4 - W_STATE - ${#GB_L} - ${#GB_R} ))         # ASCII glyph is a cell narrower
+  local box st stg g note data row port budget
+  budget=$(( $(term_width) - DASH_NOTES ))
   say ""
   hdr "Legend"
-  printf '%sKey     [%s%s%s] Running?   [%s%s%s] Server   [%s%s%s] Distrobox     [%s%s%s] Auto-Start%s%s\n' \
-    "$C_TEXT" "$C_SUBJ" "On" "$C_TEXT" "$C_SUBJ" "Srv" "$C_TEXT" \
-    "$C_SUBJ" "Box" "$C_TEXT" "$C_SUBJ" "Auto" "$C_TEXT" "$LEG_PAD" "$RESET"
-  printf '%sValue%*s%s%s%s yes%*s%s%s%s%*s no%*s%s%s%s%*s NA / unknown %s\n' \
-    "$C_TEXT" "$ind" "" "$tokl" "$GS_YES" "$tokr" \
-    9 "" "$tokl" "$GS_NO" "$tokr" "$gp" "" \
-    8 "" "$tokl" "$GS_NA" "$tokr" "$gp" "" "$RESET"
+  # Two lines for the keys (they do not fit one on a phone) and one for the
+  # values. --plain spells the values [Y]/[N]/[?]; the emoji bring their own
+  # colour, so the glyph cell resets to bare (C_GLYPH).
+  printf '%sServer  [%s%s%s] Running?  [%s%s%s] Start with Box%s\n' \
+    "$C_TEXT" "$C_SUBJ" "On" "$C_TEXT" "$C_SUBJ" "BoxSv" "$C_TEXT" "$RESET"
+  printf '%s        [%s%s%s] Start at Host Boot%s\n' \
+    "$C_TEXT" "$C_SUBJ" "HstSv" "$C_TEXT" "$RESET"
+  printf '%sValue   %s%s%s%s%s yes  %s%s%s%s%s no  %s%s%s%s%s NA / unknown%s\n' \
+    "$C_TEXT" \
+    "$GB_L" "$C_GLYPH" "$GS_YES" "$C_TEXT" "$GB_R" \
+    "$GB_L" "$C_GLYPH" "$GS_NO" "$C_TEXT" "$GB_R" \
+    "$GB_L" "$C_GLYPH" "$GS_NA" "$C_TEXT" "$GB_R" "$RESET"
   say ""
   # Underline the WORDS only — the column padding stays plain.
-  printf '%s%s%s%s%s%s%s%s%s\n' \
-    "$(pad_cell_u "Service" 7 "$oncol")" "$(pad_cell_u "On" 2 $(( 16 - oncol )))" \
-    "$(pad_cell_u "Srv" 3 5)" "$(pad_cell_u "Box" 3 5)" \
-    "$(pad_cell_u "Auto" 4 6)" "$(pad_cell_u "Port" 4 6)" \
+  printf '%s%s%s%s%s%s%s%s\n' \
+    "$(pad_cell_u "Service" 7 12)" "$(pad_cell_u "On" 2 4)" \
+    "$(pad_cell_u "BoxSv" 5 7)" "$(pad_cell_u "HstSv" 5 7)" \
+    "$(pad_cell_u "Port" 4 6)" \
     "$C_HDR" "Important Notes" "$RESET"
   for box in "${SELECTED[@]}"; do
-    lane=$(box_lanes_disp "$box")
     st=$(box_state "$box")
     case "$st" in
       ACTIVE)  stg=$GS_YES ;;
@@ -2818,15 +2963,12 @@ dashboard() {
       # the same to the reader, and box_state keeps the distinction internally.
       *)       stg=$GS_NA ;;
     esac
-    row=$C_SVC$(pad_cell "$box" ${#box} 11)$C_GLYPH
-    row+=$(printf '%*s' "$gap" "")
+    row=$C_SVC$(pad_cell "$box" ${#box} 12)$C_GLYPH
     row+=$(pad_cell "$stg" "$W_STATE" 5)
-    [[ $lane == server || $lane == both ]] && g=$GS_YES || g=$GS_NO
-    row+=$(pad_cell "$g" "$W_STATE" 5)
-    [[ $lane == distrobox || $lane == both ]] && g=$GS_YES || g=$GS_NO
-    row+=$(pad_cell "$g" "$W_STATE" 5)
-    [[ -n "$(box_as "$box")" ]] && g=$GS_YES || g=$GS_NO
-    row+=$(pad_cell "$g" "$W_STATE" $(( W_STATE + 3 )))
+    [[ -n "$(box_boxsv "$box")" ]] && g=$GS_YES || g=$GS_NO
+    row+=$(pad_cell "$g" "$W_STATE" 7)
+    [[ -n "$(box_hstsv "$box")" ]] && g=$GS_YES || g=$GS_NO
+    row+=$(pad_cell "$g" "$W_STATE" 6)
     port=$(box_port_disp "$box")
     row+=$C_PORT$(pad_cell "$port" ${#port} 6)
     data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-}}"
@@ -2837,24 +2979,22 @@ dashboard() {
   say ""
   hdr "Shortcuts"
   # Label in body text; the command is decorated executable / verb / target, with
-  # the <box> you substitute picked out in blue.
-  printf '%s%s%-20s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "Enter box:" \
-    "$C_EXE" "distrobox " "$C_CMD" "enter " \
-    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo-box" "$RESET"
-  printf '%s%s%-20s%s%s%s%s%s%s%s%s%s%s%s  (%s%s%s%s%s)\n' "$C_TEXT" "$BULLET" \
-    "Start/stop server:" "$C_EXE" "podman " "$C_CMD" "start " \
-    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo-server" "$RESET" \
-    "$C_SUBJ" "stop " "$C_SVC" "to stop" "$RESET"
+  # the <box> you substitute picked out in blue. ONE container per box, so the
+  # two doors take the SAME name.
+  printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" \
+    "Start/stop (background):" "$C_EXE" "podman " "$C_CMD" "start " \
+    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET"
+  printf '%s%*s(%s%s%s%s%s)%s\n' "$C_TEXT" 26 "" \
+    "$C_SUBJ" "stop " "$C_SVC" "to stop" "$C_TEXT" "$RESET"
+  printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" \
+    "Enter (interactive):" "$C_EXE" "distrobox " "$C_CMD" "enter " \
+    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET"
   say ""
   # Same shape as the Shortcuts block above.
   printf '%s%s%s\n' "$C_SUB" "Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
-  printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "server:" \
-    "$C_EXE" "podman " "$C_CMD" "compose " \
-    "$C_TGT" "-f " "$C_PH" "<box>" "$C_TGT" \
-    "-halo-srv.cmp.yaml up -d" "$RESET"
   printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "distrobox:" \
     "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
-    "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo-dbox.ini" "$RESET"
+    "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo.ini" "$RESET"
   say ""
   # The command at the end of the line is payload, so it wears the bold bright
   # blue of every other copy-me fragment rather than the footnote's italic.
@@ -2862,7 +3002,7 @@ dashboard() {
     "*ComfyUI models scanned at start; to add more run: " \
     "$C_PATHB" "hf download <shared cache>" "$RESET"
   printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
-    "Definitions + full guide: $(home_disp "$EMIT_DIR") (compose.yaml, ini, NOTES.md)" \
+    "Definitions + full guide: $(home_disp "$EMIT_DIR") (ini, NOTES.md)" \
     "$RESET"
   say ""
   return 0
@@ -2896,16 +3036,14 @@ main() {
   seed_globals
 
   if [[ ${#CONFIGURE[@]} -gt 0 || ${#KEEP[@]} -gt 0 ]]; then
-    local i n box
+    local box
     if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
-      network_storage
+      general_setup
       # Every writable path chosen so far is known now, so the filesystem
       # question can be asked once, for the most primary of them.
       global_mitigation
-      n=${#CONFIGURE[@]}
-      for (( i = 0; i < n; i = i + 1 )); do
-        box=${CONFIGURE[$i]}
-        configure_box "$box" $(( n - i - 1 ))
+      for box in "${CONFIGURE[@]}"; do
+        configure_box "$box"
       done
     fi
     # Kept boxes: reuse their recorded config so the ladder can pull/create/

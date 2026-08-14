@@ -13,7 +13,7 @@ pin reasoning, patch purposes, and known-issue workarounds.
 These notes repeated across multiple Containerfiles. They are stated once here
 and referenced from the per-image sections below.
 
-### The unified pin (`rocm-version.env`, formerly `rocm-pin.env`)
+### The unified pin (`base/rocm-version.env`, formerly root `rocm-version.env` / `rocm-pin.env`)
 - ONE pinned TheRock gfx1151 nightly feeds every image. A build wrapper sources
   the pin file and passes each key as `--build-arg`; the `ARG` names in every
   Containerfile **must** match the env keys the wrapper passes.
@@ -126,7 +126,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   **The server lane never reads server.env** — its ports are podman-published
   `HOST:CONTAINER` remaps, so rewriting the in-container bind would break them.
 - `droste-healthcheck.sh` — the container-side probe for
-  `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup at create
+  `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup.sh at create
   time; the images bake NO `HEALTHCHECK`). Reads the same server.env for PORT and
   the build-spec's `HEALTH_PATH`/`HEALTH_ACCEPT` rows: comfyui `/`, llama `/health`,
   vllm `/health`, finetuning `/` with `accept=any` (jupyter only ever answers 302/403
@@ -451,9 +451,9 @@ across all five ports; `/opt/data` stays strictly box-private.
 
 ---
 
-## Host adopt tooling — droste-hf-adopt / droste-civitai-adopt
+## Host adopt tooling — scripts/droste-hf-adopt.sh / scripts/droste-civitai-adopt.sh
 
-The two repo-root adopt tools move already-downloaded model files into the
+The two adopt tools under `scripts/` move already-downloaded model files into the
 shared stores the containers mount — the HF hub cache, and a webui-style
 CivitAI tree suited to the `/opt/models` bind. Both are host-side,
 stdlib-only, dry-run by default. The design rationale:
@@ -461,11 +461,11 @@ stdlib-only, dry-run by default. The design rationale:
 ### The hash-proof adoption gate
 - Content enters a shared store ONLY on cryptographic proof, NEVER on
   filename similarity — a shared cache poisoned by a name-guessed adoption
-  poisons every consumer at once. droste-hf-adopt matches the file's digest
+  poisons every consumer at once. scripts/droste-hf-adopt.sh matches the file's digest
   against the repo manifest from the HF API (`?blobs=true`, metadata only:
   the LFS content sha256 — the live API spells it `lfs.sha256`, older
   payloads `lfs.oid`, both accepted — for LFS files, git blob sha1
-  (`blobId`) for small ones; one streamed pass computes both). droste-civitai-adopt matches sha256 via the
+  (`blobId`) for small ones; one streamed pass computes both). scripts/droste-civitai-adopt.sh matches sha256 via the
   CivitAI batch by-hash API (one round trip per directory).
 - IDENTIFICATION is exactly as strict as a claimed identity. Without
   `--repo` (HF) the search API only proposes candidate repos — the published

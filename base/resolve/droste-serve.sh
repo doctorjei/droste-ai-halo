@@ -33,7 +33,7 @@
 # and nothing it assigns leaks into the hook's environment).
 #
 # Supervision is podman's (`--health-cmd` + `--health-on-failure=restart`, wired at
-# create time by droste-setup), probing droste-healthcheck.sh from inside the
+# create time by droste-setup.sh), probing droste-healthcheck.sh from inside the
 # container. A restart re-runs the init line, i.e. re-runs serve::maybe_launch —
 # which is why every step below is idempotent and why a leftover instance from a
 # previous container start is actively cleaned up (see serve::maybe_launch).
@@ -268,7 +268,7 @@ serve::_stop_stale() {
 # as the box user in the DISTROBOX lane; nothing in the server lane.
 #
 # WHO OWNS THE SERVED PROCESS:
-#   server lane   — root, exactly as today. No image sets USER, droste-setup passes
+#   server lane   — root, exactly as today. No image sets USER, droste-setup.sh passes
 #                   no --user, and the compose/plain create binds the HF cache to
 #                   /root/.cache/huggingface: the service has always been root there
 #                   and stays root. Nothing in this function fires for it.

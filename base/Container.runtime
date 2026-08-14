@@ -88,7 +88,7 @@ RUN printf '%s\n' \
 # so all 5 ports inherit ONE copy; the dir is on PATH so `droste-entrypoint.sh` is
 # invocable bare (ports set their own ENTRYPOINT). Base sets no ENTRYPOINT (ports opt
 # in) and deliberately NO `HEALTHCHECK`: the probe is opt-in per DEPLOYMENT
-# (droste-setup passes --health-cmd/--health-on-failure at create time), so the
+# (droste-setup.sh passes --health-cmd/--health-on-failure at create time), so the
 # existing server-lane containers keep their current, health-less `podman ps` shape.
 COPY resolve/droste-resolve.sh resolve/droste-entrypoint.sh \
      resolve/droste-init-hook.sh resolve/droste-serve.sh \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # droste-healthcheck.sh — the container-side probe for podman's healthcheck.
 #
-# Baked at /opt/resources/resolve/ (on PATH) in every port. droste-setup wires it
+# Baked at /opt/resources/resolve/ (on PATH) in every port. droste-setup.sh wires it
 # at container-create time in the MERGED shape:
 #
 #   --health-cmd /opt/resources/resolve/droste-healthcheck.sh

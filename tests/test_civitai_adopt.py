@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for droste-civitai-adopt using the DROSTE_CIVITAI_API_FIXTURE
+"""Tests for scripts/droste-civitai-adopt.sh using the DROSTE_CIVITAI_API_FIXTURE
 hook -- NO live network. A fixture dir stands in for the CivitAI API:
 
 - by-hash.json        batch by-hash endpoint: {sha256: version, ...} or
@@ -38,7 +38,7 @@ from collections import OrderedDict
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "droste-civitai-adopt"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "droste-civitai-adopt.sh"
 loader = importlib.machinery.SourceFileLoader("droste_civitai_adopt",
                                               str(SCRIPT))
 spec = importlib.util.spec_from_loader("droste_civitai_adopt", loader)

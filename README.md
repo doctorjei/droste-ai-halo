@@ -11,7 +11,7 @@ central branch) under the kento → gemet → * umbrella; consumes the same geme
 
 Everything builds against **one** pinned TheRock nightly, installed via pip `rocm-sdk-*`
 wheels from the gfx1151 per-arch index — **no apt ROCm repo, no S3 tarball**. The single
-source of truth is [`rocm-version.env`](rocm-version.env):
+source of truth is [`base/rocm-version.env`](base/rocm-version.env):
 
 | Piece | Pin |
 |---|---|
@@ -211,12 +211,13 @@ then `distrobox assemble create`) to pick up the unified mounts.
 
 ## Host tools
 
-Three helpers live at the repo root. They run on the **host** (plain bash /
+Three helpers ship with the repo — `droste-setup.sh` at the root,
+the two adopt tools under `scripts/`. They run on the **host** (plain bash /
 python3, stdlib only — no container, no pip installs) and feed the mount
-contract above: `droste-setup` writes the run records; the two `*-adopt` tools
+contract above: `droste-setup.sh` writes the run records; the two `*-adopt` tools
 populate the shared model stores the containers mount.
 
-### droste-setup — interactive installer
+### droste-setup.sh — interactive installer
 
 One self-contained bash script with zero repo-checkout dependencies (safe as
 `curl <url> | bash`). It guides lane choice (server container and/or
@@ -235,12 +236,12 @@ detected and listed; per box you choose keep / recreate / modify — nothing is
 silently clobbered.
 
 ```bash
-./droste-setup                  # interactive menu over all five boxes
-./droste-setup comfyui llama    # direct-to-box shortcut
-./droste-setup --plain          # ASCII output (no emoji / ANSI)
+./droste-setup.sh                  # interactive menu over all five boxes
+./droste-setup.sh comfyui llama    # direct-to-box shortcut
+./droste-setup.sh --plain          # ASCII output (no emoji / ANSI)
 ```
 
-### droste-hf-adopt — local downloads → the shared HF cache
+### scripts/droste-hf-adopt.sh — local downloads → the shared HF cache
 
 Adopts already-downloaded model files (browser, wget, rsync from another
 machine) into the shared HF hub cache — the SINGLE model store from the mount
@@ -257,27 +258,27 @@ locally are reported as GAP, filled cheaply by a later `hf download <repo>`.
 
 ```bash
 # Adopt a GGUF you fetched with wget into the shared cache (dry-run first):
-./droste-hf-adopt --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \
+./scripts/droste-hf-adopt.sh --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \
     ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
-./droste-hf-adopt --apply --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \
+./scripts/droste-hf-adopt.sh --apply --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \
     ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 # Don't know (or trust) the repo? Omit --repo: each file is IDENTIFIED
 # via the HF search API and adopted only on hash proof:
-./droste-hf-adopt ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
+./scripts/droste-hf-adopt.sh ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 # Adopt a whole diffusers checkout (nested dirs need --recursive),
 # reclaiming the disk space afterwards:
-./droste-hf-adopt --apply --move --recursive \
+./scripts/droste-hf-adopt.sh --apply --move --recursive \
     --repo stabilityai/stable-diffusion-xl-base-1.0 ~/sdxl-download/
 ```
 
 Anything adopted here is immediately visible to every container that binds the
 HF cache — including ComfyUI's pickers, via the model scanner.
 
-### droste-civitai-adopt — CivitAI downloads → a webui-style tree
+### scripts/droste-civitai-adopt.sh — CivitAI downloads → a webui-style tree
 
-Sibling to `droste-hf-adopt`, same invariant, for CivitAI content (checkpoints,
+Sibling to `scripts/droste-hf-adopt.sh`, same invariant, for CivitAI content (checkpoints,
 LoRAs, VAEs, embeddings, …): each file is identified by its **sha256** via the
 CivitAI API and adopted **only on hash proof**, into a cache dir laid out like
 a webui root (default `$DROSTE_CIVITAI_CACHE` or `~/.cache/civitai`). During
@@ -301,17 +302,17 @@ recorded in `.user.droste` and reused on later runs.
 
 ```bash
 # Dry-run first (default), then adopt — routed + normalized + sidecars:
-./droste-civitai-adopt ~/Downloads/juggernautXL_v9.safetensors
-./droste-civitai-adopt --apply ~/Downloads/juggernautXL_v9.safetensors
+./scripts/droste-civitai-adopt.sh ~/Downloads/juggernautXL_v9.safetensors
+./scripts/droste-civitai-adopt.sh --apply ~/Downloads/juggernautXL_v9.safetensors
 
 # A whole mixed downloads dir: one batch API call identifies everything,
 # files route per-file to different model/version dirs:
-./droste-civitai-adopt --apply --move ~/Downloads/mixed/
+./scripts/droste-civitai-adopt.sh --apply --move ~/Downloads/mixed/
 
 # A <Model>_<Version> name past the 255-byte limit is REFUSEd with a
 # "recommend: --rename '<stem>'" line; adopt under your own name instead
 # (recorded, and reused on re-runs):
-./droste-civitai-adopt --apply --rename 'Wan21-FLF2V-14B-720P' ~/dl/wan.safetensors
+./scripts/droste-civitai-adopt.sh --apply --rename 'Wan21-FLF2V-14B-720P' ~/dl/wan.safetensors
 ```
 
 The resulting tree is webui-shaped (`models/Stable-diffusion`, `models/Lora`,

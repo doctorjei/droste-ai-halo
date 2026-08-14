@@ -16,7 +16,6 @@ on:
       - '!scaffolding/check-rocm.sh'
       - '!scaffolding/_fedora-src/**'
       - 'targets/**'
-      - 'rocm-version.env'
       - '.github/workflows/build-halo.yml'
   workflow_dispatch:
 
@@ -45,7 +44,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load pin
         run: |
-          set -a; . ./rocm-version.env; set +a
+          set -a; . ./base/rocm-version.env; set +a
           for k in GFX_TARGET ROCM_INDEX_URL ROCM_PIN TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION ROCM_SDK_DEVEL_VERSION ROCM_SDK_LIBRARIES_VERSION; do
             printf '%s=%s\n' "$k" "${!k}" >> "$GITHUB_ENV"
           done
@@ -84,7 +83,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load pin
         run: |
-          set -a; . ./rocm-version.env; set +a
+          set -a; . ./base/rocm-version.env; set +a
           for k in GFX_TARGET ROCM_INDEX_URL ROCM_PIN TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION ROCM_SDK_DEVEL_VERSION ROCM_SDK_LIBRARIES_VERSION; do
             printf '%s=%s\n' "$k" "${!k}" >> "$GITHUB_ENV"
           done
@@ -122,7 +121,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load pin
         run: |
-          set -a; . ./rocm-version.env; set +a
+          set -a; . ./base/rocm-version.env; set +a
           for k in GFX_TARGET ROCM_INDEX_URL ROCM_PIN TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION ROCM_SDK_DEVEL_VERSION ROCM_SDK_LIBRARIES_VERSION; do
             printf '%s=%s\n' "$k" "${!k}" >> "$GITHUB_ENV"
           done
@@ -223,7 +222,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load pin
         run: |
-          set -a; . ./rocm-version.env; set +a
+          set -a; . ./base/rocm-version.env; set +a
           for k in GFX_TARGET ROCM_INDEX_URL ROCM_PIN TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION ROCM_SDK_DEVEL_VERSION ROCM_SDK_LIBRARIES_VERSION; do
             printf '%s=%s\n' "$k" "${!k}" >> "$GITHUB_ENV"
           done
@@ -285,7 +284,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load pin
         run: |
-          set -a; . ./rocm-version.env; set +a
+          set -a; . ./base/rocm-version.env; set +a
           for k in GFX_TARGET ROCM_INDEX_URL ROCM_PIN TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION ROCM_SDK_DEVEL_VERSION ROCM_SDK_LIBRARIES_VERSION; do
             printf '%s=%s\n' "$k" "${!k}" >> "$GITHUB_ENV"
           done

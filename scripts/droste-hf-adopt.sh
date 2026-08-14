@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""droste-hf-adopt: adopt already-downloaded model files into the HF hub cache.
+"""droste-hf-adopt.sh: adopt already-downloaded model files into the HF hub cache.
 
 WHY: droste boxes share a single HuggingFace hub cache; anything in it is
 cached content for every container (and for hf/huggingface_hub generally).
@@ -69,20 +69,20 @@ HASH_PROGRESS_STEP = 128 << 20  # progress update cadence while hashing
 EXAMPLES = """\
 examples:
   # Adopt a GGUF you fetched with wget into the shared cache (dry-run first):
-  droste-hf-adopt --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
+  droste-hf-adopt.sh --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
       ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
-  droste-hf-adopt --apply --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
+  droste-hf-adopt.sh --apply --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
       ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
   # Don't know (or trust) the repo? Omit --repo: each file is IDENTIFIED
   # (sibling config.json, ecosystem map, GGUF provenance, HF search) and
   # adopted only if a repo's published hashes prove it contains this
   # exact content:
-  droste-hf-adopt ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  droste-hf-adopt.sh ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
   # Adopt a whole diffusers checkout (nested dirs need --recursive),
   # reclaiming the disk space afterwards:
-  droste-hf-adopt --apply --move --recursive \\
+  droste-hf-adopt.sh --apply --move --recursive \\
       --repo stabilityai/stable-diffusion-xl-base-1.0 ~/sdxl-download/
 
 Only files byte-identical to the repo's content are adopted; everything
@@ -102,7 +102,7 @@ def log(args, level, msg):
 
 def die(msg, code=2):
     progress_clear()
-    print(f"droste-hf-adopt: error: {msg}", file=sys.stderr)
+    print(f"droste-hf-adopt.sh: error: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -825,7 +825,7 @@ def gather_files(args, paths):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="droste-hf-adopt",
+        prog="droste-hf-adopt.sh",
         description="Adopt already-downloaded model files into the "
                     "HuggingFace hub cache -- no re-download. Only files "
                     "byte-identical to the repo's published content are "

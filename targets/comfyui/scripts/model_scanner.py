@@ -899,7 +899,7 @@ def _restricted_unpickle(fileobj, max_objects: int = 1) -> tuple[set, set]:
     resolves anything: it records the module path (a strong classification signal in its
     own right -- ultralytics.nn.tasks.DetectionModel et al) and returns an inert stub.
     `persistent_load` (torch tensor storages) returns one too. Every REDUCE / NEWOBJ
-    therefore lands on the stub, never attacker code. Ported from droste-civitai-adopt's
+    therefore lands on the stub, never attacker code. Ported from scripts/droste-civitai-adopt.sh's
     `_restricted_unpickle_keys`, which has been in service on real CivitAI downloads.
 
     The stub is a dynamically-built TYPE, not an instance. `NEWOBJ`/`NEWOBJ_EX` -- what

@@ -289,10 +289,19 @@ serve::_stop_stale() {
 # and only adds the box user to `sudo` inside /etc/group — the host's render/video
 # gids (what opens /dev/kfd and /dev/dri) reach the container as the container
 # process's own group list, and `distrobox enter` (a podman exec) inherits that same
-# list rather than doing a group lookup. setpriv --reuid/--regid keeps the current
-# supplementary groups untouched, so the served process gets exactly the group set
-# an interactive session has. runuser/su would re-initgroups from /etc/group and
-# drop GPU access.
+# list rather than doing a group lookup. setpriv --reuid/--regid --keep-groups keeps
+# the current supplementary groups untouched, so the served process gets exactly the
+# group set an interactive session has. runuser/su would re-initgroups from
+# /etc/group and drop GPU access.
+#
+# --keep-groups IS MANDATORY, not decoration: setpriv refuses to run at all when
+# --regid arrives without one of --keep-groups/--clear-groups/--init-groups/--groups
+# ("--[re]gid requires --keep-groups, --clear-groups, --init-groups, or --groups") —
+# it insists the caller say out loud what happens to the supplementary list. Of the
+# four, --keep-groups is the one that spells the paragraph above: inherit the
+# container's list verbatim. Leaving it out did not merely change the group set, it
+# made setpriv exit before ever exec'ing the service, so the distrobox lane's server
+# door never opened in any box.
 serve::_privdrop_prefix() {
     local uid gid
     [ "${DROSTE_LANE:-server}" = distrobox ] || return 0
@@ -308,17 +317,36 @@ serve::_privdrop_prefix() {
         serve::warn "setpriv (util-linux) not found — the service will run as root; files it writes into your home and data dir will not be owned by you."
         return 0
     fi
-    printf 'setpriv\0--reuid=%s\0--regid=%s\0--\0' "$uid" "$gid"
+    printf 'setpriv\0--reuid=%s\0--regid=%s\0--keep-groups\0--\0' "$uid" "$gid"
 }
 
 # ── Launch ──────────────────────────────────────────────────────────────────
+# _log_tail — copy the last few lines of the service log to stderr, one prefixed
+# line each. WHY: the only thing a user ever sees of a failed start is `podman
+# logs <box>`, and the reason (a python traceback, a port already bound, setpriv
+# rejecting its own argv) is in the log file on the data volume — which they have
+# to be told to go and read. Putting the tail directly under the error message
+# makes the container log self-explanatory.
+# Silent unless the log is a readable regular file: the unwritable-data-dir path in
+# launch repoints DROSTE_SERVE_LOG at /dev/stderr, where the output has already
+# gone and which must never be read back.
+serve::_log_tail() {
+    local n=${1:-10} line
+    case "$DROSTE_SERVE_LOG" in /dev/*) return 0 ;; esac
+    [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 0
+    while IFS= read -r line; do
+        printf 'droste-serve:   | %s\n' "$line" >&2
+    done < <(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null)
+    return 0
+}
+
 # launch — start SERVICE in the background, record its identity, return.
 # Output goes to a log on the data volume (readable from either door and from the
 # host) with ONE generation kept, because a healthcheck-triggered restart would
 # otherwise erase the evidence of the crash that caused it. stdin is /dev/null:
 # nothing here is interactive, and the init hook's stdin is pid 1's.
 serve::launch() {
-    local token=$1 prefix=() pid fields start cmd0
+    local token=$1 prefix=() pid fields start cmd0 died=0
     if [ "${#SERVICE[@]}" -eq 0 ]; then
         serve::err "no SERVICE defined in the build-spec — nothing to serve."
         return 1
@@ -343,14 +371,30 @@ serve::launch() {
         >>"$DROSTE_SERVE_LOG" 2>&1 </dev/null &
     pid=$!
 
-    # Record identity IMMEDIATELY (setpriv execs, it does not fork, so this pid is
-    # the service). A service that dies instantly leaves no /proc entry — the start
-    # time then records blank, which _pid_is_ours treats as "not ours", so the next
-    # run relaunches instead of trusting a pid it cannot verify. argv[0] is written
-    # as the 4th field for humans reading the file; it is not part of the identity.
+    # Let the fork settle before believing in it. A child that is about to fail its
+    # very first exec (a missing interpreter, setpriv rejecting its own argv) is
+    # still a live pid for a few milliseconds, so probing /proc in the same breath
+    # as the `&` reports a healthy process for something that never ran — which is
+    # exactly how a dead server door got announced as "service started". A fifth of
+    # a second settles that and is invisible against a container start; if this
+    # sleep cannot do fractions the probe simply runs as early as it used to.
+    sleep 0.2 2>/dev/null || true
+
+    # Record identity (setpriv execs, it does not fork, so this pid is the service).
+    # A service that dies instantly leaves no /proc entry — the start time then
+    # records blank, which _pid_is_ours treats as "not ours", so the next run
+    # relaunches instead of trusting a pid it cannot verify. It may instead be a
+    # ZOMBIE, still listed but already exited (pid 1 here is distrobox-init's
+    # keepalive shell, not an eager reaper); that is just as dead, and _pid_is_ours
+    # rejects state Z for the same reason. Either shape means the launch failed.
+    # argv[0] is written as the 4th field for humans reading the file; it is not
+    # part of the identity.
     start=""
     if fields=$(serve::_proc_fields "$pid"); then
         start=${fields#* }
+        [ "${fields% *}" != Z ] || died=1
+    else
+        died=1
     fi
     cmd0=$(basename -- "${SERVICE[0]}")
     printf '%s %s %s %s\n' "$pid" "$start" "$token" "$cmd0" \
@@ -359,6 +403,19 @@ serve::launch() {
     # data dir; written here as root, which is a subuid on the host under keep-id).
     if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
         chown "$DROSTE_USER:" "$DROSTE_SERVE_PID" "$DROSTE_SERVE_LOG" 2>/dev/null || true
+    fi
+    # Report what actually happened. The old code announced "service started" from
+    # the mere fact that a fork had returned a pid, so a service that died on its
+    # first instruction left a container log claiming success and a port nobody was
+    # listening on — the failure only surfaced later as an unexplained UNHEALTHY.
+    # Returning non-zero here is safe for every caller: the sole one is
+    # maybe_launch, which runs this behind `||` and always returns 0 itself, and
+    # the init hook guards maybe_launch behind a second `||` for the same reason —
+    # a broken service must never make the box hard to enter.
+    if [ "$died" -eq 1 ]; then
+        serve::err "the service exited immediately (pid $pid) — nothing is serving port ${SERVE_PORT:-?}. Last lines of $DROSTE_SERVE_LOG:"
+        serve::_log_tail
+        return 1
     fi
     serve::info "service started (pid $pid) on port ${SERVE_PORT:-?}; output: $DROSTE_SERVE_LOG"
     return 0

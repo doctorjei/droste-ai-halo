@@ -2443,10 +2443,141 @@ pull_service_start() {   # log → 0 once the socket is live
   return 1
 }
 
+# Where the denominator comes from. A layer exists to the aggregator only once
+# its first "Downloading" event arrives, and podman pulls about six of them at a
+# time, so a total summed from what has been announced so far climbs every time
+# another layer starts — the percentage sags backwards while the bytes go
+# forwards. The stream never says how big the image is; the registry does. Ask
+# it first and the total is known before the first byte lands.
+#
+# This runs on stdlib urllib alone: preflight promises bash, curl and python3
+# and nothing else, so no skopeo, no jq, no second HTTP client. Every failure is
+# deliberately silent — empty output means "no manifest", which the aggregator
+# reads as "keep estimating" rather than as a reason to fail a pull that would
+# otherwise have worked. The whole errand is on an 8s budget for the same
+# reason: a registry that is slow to answer must not delay the download.
+_pull_manifest_py() {
+  cat <<'PY'
+import json, platform, re, sys, time
+import urllib.error, urllib.parse, urllib.request
+
+# Both index kinds first, so a multi-arch repo hands back the list rather than
+# whichever image the registry guesses we want, then both single-manifest kinds.
+ACCEPT = ", ".join((
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+))
+# uname's spelling of a machine is not the registry's spelling of a platform.
+ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64",
+        "arm64": "arm64", "armv7l": "arm", "ppc64le": "ppc64le",
+        "s390x": "s390x", "riscv64": "riscv64"}
+
+deadline = time.time() + 8.0
+
+
+def budget():
+    """Seconds left of the errand, or an exception once there are none."""
+    left = deadline - time.time()
+    if left <= 0.0:
+        raise RuntimeError("timed out")
+    return left
+
+
+def split(repo):
+    """registry host + repository name, by the same rule the runtimes use: a
+    first component with a dot, a port or the name localhost is a host, and
+    anything else is a Docker Hub shorthand. Ours is always ghcr.io; the Hub
+    cases are here only so this cannot mislead someone who repoints it."""
+    head, _, rest = repo.partition("/")
+    if rest and ("." in head or ":" in head or head == "localhost"):
+        # docker.io is the name of the Hub, not of the registry that serves it.
+        return ("registry-1.docker.io" if head == "docker.io" else head), rest
+    return "registry-1.docker.io", repo if "/" in repo else "library/" + repo
+
+
+def fetch(url, token):
+    req = urllib.request.Request(url, headers={
+        "Accept": ACCEPT, "User-Agent": "droste-setup"})
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    return urllib.request.urlopen(req, timeout=budget())
+
+
+def bearer(host, name, challenge):
+    """Anonymous pull token, from the realm the 401 itself named. Public repos
+    (ours included) still require this handshake — the answer is just always
+    yes — so an unauthenticated GET is expected to be refused exactly once."""
+    parts = dict(re.findall(r'([A-Za-z_]+)="([^"]*)"', challenge))
+    realm = parts.get("realm") or "https://%s/token" % host
+    query = {"scope": parts.get("scope") or "repository:%s:pull" % name}
+    if parts.get("service"):
+        query["service"] = parts["service"]
+    url = realm + "?" + urllib.parse.urlencode(query)
+    with urllib.request.urlopen(url, timeout=budget()) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return body.get("token") or body.get("access_token") or ""
+
+
+def manifest(host, name, ref, token):
+    """One manifest by tag or by digest, acquiring a token if asked to."""
+    url = "https://%s/v2/%s/manifests/%s" % (
+        host, name, urllib.parse.quote(ref, safe=":@"))
+    try:
+        with fetch(url, token) as resp:
+            return json.loads(resp.read().decode("utf-8")), token
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401 or token:
+            raise
+        token = bearer(host, name, exc.headers.get("WWW-Authenticate") or "")
+    with fetch(url, token) as resp:
+        return json.loads(resp.read().decode("utf-8")), token
+
+
+try:
+    host, name = split(sys.argv[1])
+    doc, token = manifest(host, name, sys.argv[2], "")
+    if doc.get("manifests"):
+        # An index: pick the entry for the machine doing the pulling. Signature
+        # and attestation entries live here too, and are filtered out by the
+        # same os/architecture test that finds the image.
+        want = ARCH.get(platform.machine().lower(), platform.machine().lower())
+        pick = ""
+        for child in doc["manifests"]:
+            plat = child.get("platform") or {}
+            if plat.get("os") == "linux" and plat.get("architecture") == want:
+                pick = child.get("digest") or ""
+                break
+        if not pick:
+            raise RuntimeError("no linux/%s entry in the index" % want)
+        doc, token = manifest(host, name, pick, token)
+    blobs = {}
+    for blob in (doc.get("layers") or []) + [doc.get("config") or {}]:
+        # The config blob is in here on purpose: it is a blob like any other and
+        # podman may well report progress for it, and an id the aggregator
+        # cannot match is what sends the whole pull back to estimating.
+        if blob.get("digest") and isinstance(blob.get("size"), int):
+            blobs[blob["digest"]] = blob["size"]
+    if not blobs:
+        raise RuntimeError("manifest carries no blob sizes")
+    sys.stdout.write(json.dumps(blobs))
+except Exception as exc:                       # never the reason a pull fails
+    sys.stderr.write("pull manifest: %s\n" % exc)
+sys.exit(0)
+PY
+}
+
 # The aggregator. Reads the /images/create JSON stream on stdin, sums every
 # layer's progressDetail, and repaints ONE line; cached ("Already exists")
 # layers count as complete and print nothing of their own. It leaves the cursor
 # on that line WITHOUT a newline — the caller's status line overwrites it.
+#
+# The blob map from _pull_manifest_py arrives as a seventh argument and decides
+# which of two modes it runs in: with one, the total is fixed for the life of
+# the pull and the percentage only ever climbs; without one (or after the map
+# turns out not to describe this stream), it falls back to the running sum and
+# says so by printing the total with a "~".
 _pull_progress_py() {
   cat <<'PY'
 import json, sys, time
@@ -2456,16 +2587,51 @@ width = int(width)
 quiet = plain == "1"
 out = sys.stdout
 
+raw = sys.argv[6] if len(sys.argv) > 6 else ""
+known = {}                                     # blob digest (bare hex) -> size
+try:
+    for digest, size in (json.loads(raw) if raw.strip() else {}).items():
+        known[digest.split(":")[-1].lower()] = int(size)
+except (AttributeError, TypeError, ValueError):
+    known = {}                                 # unreadable map is simply no map
+fixed_total = sum(known.values())
+
 layers = {}                                    # id -> [current, total]
-state = {"seen": False, "last": 0.0, "extract": set()}
+state = {"seen": False, "last": 0.0, "extract": set(),
+         "fixed": bool(known), "map": {}}
 dec = json.JSONDecoder()
 
 
-def sizes(cur, tot):
+def degrade():
+    """Stop trusting the manifest, for the rest of this pull.
+
+    A single id the map cannot account for means the map does not describe this
+    stream, and half-mapped arithmetic is worse than none. Every layer already
+    carries its own current/total, so the running sum simply resumes from what
+    has been collected — nothing is lost and nothing is counted twice."""
+    state["fixed"] = False
+
+
+def mapped(lid):
+    """The size of the blob a stream id names, or None if that is not certain.
+
+    The stream shortens digests to a prefix, so the match is by prefix; a
+    prefix that hits two blobs, or none, counts as no match rather than as
+    licence to charge bytes to the wrong layer."""
+    if lid not in state["map"]:
+        key = lid.lower().split(":")[-1]
+        hit = [h for h in known if h.startswith(key)]
+        state["map"][lid] = known[hit[0]] if len(hit) == 1 else None
+    return state["map"][lid]
+
+
+def sizes(cur, tot, guess):
+    mark = "~" if guess else ""
     for unit, div in (("GB", 1 << 30), ("MB", 1 << 20)):
         if tot >= div:
-            return "%.1f/%.1f %s" % (cur / float(div), tot / float(div), unit)
-    return "%.0f/%.0f KB" % (cur / 1024.0, tot / 1024.0)
+            return "%.1f/%s%.1f %s" % (
+                cur / float(div), mark, tot / float(div), unit)
+    return "%.0f/%s%.0f KB" % (cur / 1024.0, mark, tot / 1024.0)
 
 
 def paint(final=False):
@@ -2476,7 +2642,9 @@ def paint(final=False):
         return
     state["last"] = now
     cur = sum(v[0] for v in layers.values())
-    tot = sum(v[1] for v in layers.values())
+    # Fixed: the whole image, known before the first byte. Otherwise: only the
+    # layers that have announced themselves, which is why that total climbs.
+    tot = fixed_total if state["fixed"] else sum(v[1] for v in layers.values())
     if final:
         pct = 100
     elif tot:
@@ -2486,12 +2654,15 @@ def paint(final=False):
     if state["extract"] and (not tot or cur >= tot):
         tail = "  %3d%%  extracting" % pct
     elif tot:
-        tail = "  %3d%%  %s" % (pct, sizes(cur, tot))
+        tail = "  %3d%%  %s" % (pct, sizes(cur, tot, not state["fixed"]))
     else:
         tail = "  %3d%%" % pct           # every layer cached: no bytes to count
     # The tail is padded to a fixed width so the bar cannot change length
-    # mid-download (the size text grows by a digit as it climbs).
-    tail = tail.ljust(20)
+    # mid-download (the size text grows by a digit as it climbs). The pad is
+    # the widest either mode can print — "  100%  1234.5/~1234.5 GB" — and it
+    # is deliberately ONE number for both, because a pull that falls back to
+    # estimating mid-flight must not resize the bar as it does so.
+    tail = tail.ljust(25)
     room = width - 4 - len(label) - len(tail)
     if room >= 8:
         n = min(room, 40)
@@ -2515,9 +2686,25 @@ def handle(o):
         return
     pd = o.get("progressDetail") or {}
     if st.startswith("Already exists"):
-        layers.setdefault(lid, [0, 0])
+        # A cached layer is finished, not absent. With a manifest we know how
+        # many bytes it stands for, so the bar jumps FORWARD over it instead of
+        # the total quietly shrinking around a layer worth nothing.
+        size = mapped(lid) if state["fixed"] else None
+        if state["fixed"] and size is None:
+            degrade()
+        if size is None:
+            layers.setdefault(lid, [0, 0])
+        else:
+            layers[lid] = [size, size]
     elif st.startswith("Downloading"):
-        layers[lid] = [int(pd.get("current") or 0), int(pd.get("total") or 0)]
+        got, size = int(pd.get("current") or 0), int(pd.get("total") or 0)
+        if state["fixed"]:
+            mapped_size = mapped(lid)
+            if mapped_size is None:
+                degrade()
+            else:
+                size = mapped_size
+        layers[lid] = [got, size]
     elif st.startswith("Download complete") or st.startswith("Pull complete"):
         if lid in layers:
             layers[lid][0] = layers[lid][1]
@@ -2549,18 +2736,34 @@ PY
 }
 
 pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
-  local box=$1 img repo tag log rc=0
+  local box=$1 img repo tag short log manifest rc=0
   img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
   repo=${img%:*} tag=${img##*:}
+  # The bar is labelled with the image, not with the registry and owner that
+  # every one of these images shares: the tail reserves 25 columns now that it
+  # has to fit both a fixed total and an estimated one, and on an 80-column
+  # terminal the difference between the full ref and this is the difference
+  # between a bar and no bar. Stripping through the last slash keeps that true
+  # for any prefix. The ref in full is in the step log, which is where anyone
+  # asking WHICH registry is already looking.
+  short=${repo##*/}
   log=$(step_log pull "$box")
   : > "$log"
+  # Ask the registry how big this image is before asking podman to fetch it, so
+  # the bar has a denominator that does not move. It is allowed to come back
+  # empty (offline, private repo, a registry in a mood) — that is the estimating
+  # mode, not an error — so its complaint goes to the log and its exit status is
+  # ignored here as it is there.
+  manifest=$(python3 -c "$(_pull_manifest_py)" "$repo" "$tag" 2>>"$log") \
+    || manifest=""
   # -N (--no-buffer): without it curl hands the JSON stream over in ~16 KB
   # blocks, so the aggregator below repaints in lurches no matter how often the
   # API reports. It is the whole "the bar only moves every few seconds" fix.
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$img..." "$(disp_width)" "$BAR_F" "$BAR_E" "$PLAIN" 2>>"$log" \
+        "$short:$tag..." "$(disp_width)" "$BAR_F" "$BAR_E" "$PLAIN" "$manifest" \
+        2>>"$log" \
     || rc=$?
   return $rc
 }

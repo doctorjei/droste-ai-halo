@@ -59,17 +59,26 @@ RUN mkdir -p /artifacts/wheels \
     && python -c "import re; f=open('setup.py','r'); t=f.read(); f.close(); t=re.sub(r'subprocess\.run\([\s\S]*?third_party/aiter[\s\S]*?check=True,\s*\)', 'pass # patched', t); f=open('setup.py','w'); f.write(t)" \
     && python -m pip wheel --no-build-isolation --no-deps -w /artifacts/wheels -v .
 
+# vLLM
+RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
+      rustc cargo python3.13-dev libdrm-dev && rm -rf /var/lib/apt/lists/* && apt-get clean \
+      && pip install "setuptools-rust>=1.9.0"
+
 # Prebuild aiter's import-time JIT module for the RUNTIME image. `import aiter` evaluates
 # aiter/ops/enum.py at module scope, which JIT-compiles module_aiter_enum (a single CPU-only
 # pybind11 .cu) — and the runtime image ships NO compiler by design, so it must arrive
 # prebuilt. Only this module builds on a bare import (every other op is lazy, built on first
 # call), so the import IS the narrowest possible trigger: aiter's official PREBUILD_KERNELS
 # hook is coarser — even its smallest mode (3) also codegens module_fmha_v3* for gfx1151.
-# This stage has both compilers the build needs: g++ (aiter's cpp_extension probes `c++`) and
-# hipcc (the source is a .cu, so device bitcode is demanded even though the module is
-# host-only) — hence the same HIP_DEVICE_LIB_PATH derivation the vLLM compile below uses.
-# GPU_ARCHS is pinned because aiter's "native" default shells out to rocminfo, and no CI
-# runner has a GPU. The .so is staged into /artifacts for the runtime to drop into its venv.
+# Deliberately placed BELOW the vLLM apt layer, not up with aiter: it is the first thing in
+# this stage that compiles a pybind11 module, so it is the first to need `Python.h`, and
+# python3.13-dev arrives in that layer (nothing above it compiles against Python — aiter's
+# wheel is pure packaging and flash-attn skips its C++ extension under Triton). CI run
+# 31849687656 is the receipt: hipcc -isystem /usr/include/python3.13 -> file not found.
+# The other two compilers it needs are already here: g++ (aiter's cpp_extension probes `c++`)
+# and hipcc (the source is a .cu, so device bitcode is demanded even though the module is
+# host-only). GPU_ARCHS is pinned because aiter's "native" default shells out to rocminfo,
+# and no CI runner has a GPU. The .so is staged into /artifacts for the runtime to drop in.
 # NB `find -L`: /opt/rocm is a SYMLINK to the SDK root, and find(1) does not descend into a
 # symlinked start point unless told to — the bare `find` in the vLLM step below therefore
 # yields "" (harmless there: it compiles with /opt/rocm/lib/llvm/bin/clang, which self-locates
@@ -82,11 +91,6 @@ RUN export HIP_DEVICE_LIB_PATH="$(find -L /opt/rocm -type d -name bitcode -print
     && cp /opt/venv/lib*/python*/site-packages/aiter/jit/*.so /artifacts/aiter-jit/ \
     && test -f /artifacts/aiter-jit/module_aiter_enum.so \
     && ls -l /artifacts/aiter-jit
-
-# vLLM
-RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
-      rustc cargo python3.13-dev libdrm-dev && rm -rf /var/lib/apt/lists/* && apt-get clean \
-      && pip install "setuptools-rust>=1.9.0"
 
 COPY patch_strix.py       /opt/patch_strix.py
 COPY patch_fp8_kernels.py /opt/patch_fp8_kernels.py

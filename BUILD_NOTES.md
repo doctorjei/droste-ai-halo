@@ -842,8 +842,13 @@ Toolbox submodule provenance (droste-ai-halo):
   `rocminfo` and no CI runner has a GPU; and the bare import is the NARROWEST
   trigger — every other op builds lazily on first call, while aiter's official
   `PREBUILD_KERNELS` hook is coarser (even mode 3 also codegens
-  `module_fmha_v3*`). Placed right after the aiter/flash-attn layer, so it costs
-  one rebuild of the vLLM layer below it and then caches again.
+  `module_fmha_v3*`). Placed BELOW the vLLM apt layer rather than up with aiter:
+  it is the first step in this stage that compiles a pybind11 module, so the
+  first to need `Python.h`, and `python3.13-dev` arrives in that layer (nothing
+  above compiles against Python — aiter's wheel is pure packaging, flash-attn
+  skips its C++ extension under Triton). Learned the hard way in CI run
+  31849687656: `hipcc ... -isystem /usr/include/python3.13` -> not found. Costs
+  one rebuild of the vLLM layer below it, then caches again.
 - vLLM: Rust toolchain (`rustc`/`cargo`, Fedora `dnf install rust cargo` ->
   Debian) for vLLM's PyO3/`_rust_*.so` parser extensions (setuptools-rust
   backend). Kept after the flash-attn/aiter layers so those stay cacheable.

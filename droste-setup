@@ -222,7 +222,7 @@ if [[ $PLAIN -eq 1 ]]; then
   C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
   C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
   C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_MOPT="" C_MCAT=""
-  C_QEXIT="" C_QKEY="" C_DETN="" C_SELP="" C_IMGN="" C_PATHB="" C_PATHG=""
+  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETN="" C_SELP="" C_IMGN="" C_PATHB="" C_PATHG=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
@@ -280,7 +280,8 @@ else
   C_MOPT=$'\e[1;92m'    # mitigation line: the option applied (fuse/copy/ignore)
   C_MCAT=$'\e[1;94m'    # mitigation line: the path categories it applies to
   # Quit notice + the two detected/present listings + inline path emphasis.
-  C_QEXIT=$'\e[0;33m'   # the word "exit" in the quit notice
+  C_QTXT=$'\e[3;37m'    # quit notice body (light grey italic)
+  C_QEXIT=$'\e[1;93m'   # the word "exit" in the quit notice
   C_QKEY=$'\e[1;92m'    # the word "quit" (what the user actually types)
   C_DETN=$'\e[0;33m'    # box names in the detected-configurations listing
   C_SELP=$'\e[1;3;95m'  # "Select the boxes you wish to edit, modify, or rebuild."
@@ -667,10 +668,11 @@ quit_now() {
   exit 0
 }
 
-# The notice itself: "exit" in plain yellow, "quit" (what you type) bold green.
+# The notice itself: body light grey italic, "exit" bold bright yellow, "quit"
+# (the word you actually type) bold bright green.
 quit_notice() {
   printf '\n  %sTo %s%s%s at any time, enter %s%s%s at the prompt.%s\n' \
-    "$C_SUBJ" "$C_QEXIT" "exit" "$C_SUBJ" "$C_QKEY" "quit" "$C_SUBJ" "$RESET"
+    "$C_QTXT" "$C_QEXIT" "exit" "$C_QTXT" "$C_QKEY" "quit" "$C_QTXT" "$RESET"
   QUIT_ARMED=1
   return 0
 }
@@ -2072,12 +2074,44 @@ status_width() {   # name...
   return 0
 }
 
-# The two status lines. Both open with CR + close with erase-to-EOL so a line
-# can overwrite a progress bar of any width (both are empty in --plain, where
-# no bar was ever drawn).
+# A STATUS LINE HAS A LIFETIME, not just an ending: it opens the moment the
+# work starts (so a slow step can never be mistaken for a hang), is repainted
+# while the work runs, and is completed in place by the [OK]/[ERROR] tag.
+#
+#   status_start <name>          "  <name>...            "   (no newline)
+#   run_step <phase> <log> cmd…  "  <name>...   creating (7s)"  ~1/s
+#   status_ok/status_err <name>  "  <name>...            [OK]"
+#
+# In --plain there is no repaint plumbing (CR/EL are empty), so the line is
+# closed at each transition instead: one line per phase as it begins, then the
+# completion line. Never a per-second frame there — that would spam a log.
+STATUS_OPEN=0     # 1 = a partial (unterminated) status line is on screen
+STATUS_NAME=""    # what that line names, for the repaints
+
+status_start() {   # name
+  STATUS_NAME=$1
+  printf '  %s%-*s%s' "$C_TEXT" "$STATUS_W" "$1" "$RESET"
+  STATUS_OPEN=1
+  return 0
+}
+
+# The head of a completed line: repainted from column 0 when the terminal can
+# do that, otherwise emitted only if nothing already opened the line.
+status_head() {   # name
+  if [[ -n $CR ]]; then
+    printf '%s  %s%-*s%s' "$CR" "$C_TEXT" "$STATUS_W" "$1" "$RESET"
+  elif [[ $STATUS_OPEN -eq 0 ]]; then
+    printf '  %s%-*s%s' "$C_TEXT" "$STATUS_W" "$1" "$RESET"
+  fi
+  STATUS_OPEN=0
+  return 0
+}
+
+# Both endings close with erase-to-EOL, which is what wipes the widest ticker
+# frame (the elapsed count grows a digit) or a progress bar of any width.
 status_ok() {   # name
-  printf '%s  %s%-*s%s%s[%s%s%s]%s%s\n' \
-    "$CR" "$C_TEXT" "$STATUS_W" "$1" "$RESET" \
+  status_head "$1"
+  printf '%s[%s%s%s]%s%s\n' \
     "$C_OKB" "$C_OK" "OK" "$C_OKB" "$RESET" "$EL"
 }
 
@@ -2085,8 +2119,8 @@ status_ok() {   # name
 # cause), then where the whole capture lives. Raw tool output is never streamed.
 status_err() {   # name log-path
   local name=$1 log=$2 line
-  printf '%s  %s%-*s%s%s[%s%s%s]%s%s\n' \
-    "$CR" "$C_TEXT" "$STATUS_W" "$name" "$RESET" \
+  status_head "$name"
+  printf '%s[%s%s%s]%s%s\n' \
     "$C_BADB" "$C_ERR" "ERROR" "$C_BADB" "$RESET" "$EL"
   while IFS= read -r line; do
     [[ -z $line ]] && continue
@@ -2094,6 +2128,48 @@ status_err() {   # name log-path
   done < <(tail -n 3 "$log" 2>/dev/null)
   printf '  %sfull log: %s%s\n' "$C_FILE" "$(home_disp "$log")" "$RESET"
   return 0
+}
+
+# ONE slow child, run under a live "<phase> (Ns)" ticker.
+#   run_step <phase> <log> <command…>   → the command's exit status
+# The child's stdout AND stderr go to <log> exactly as they did when these
+# commands ran in the foreground; only the parent paints. Creation has no byte
+# stream to measure, so the ticker says what is happening and how long it has
+# been happening rather than pretending to know a percentage.
+#
+# Poll at 4 Hz, repaint at 1 Hz: the repaint rate is what the reader wants, the
+# poll rate is how quickly the [OK] lands once the child is done. A step that
+# finishes inside the first second never paints a frame at all — the completion
+# simply overwrites the line status_start opened.
+run_step() {   # phase log command...
+  local phase=$1 log=$2 pid rc=0 t0 el shown=-1
+  shift 2
+  if [[ -z $CR ]]; then
+    # --plain: announce the phase on its own line, no ticker.
+    if [[ $STATUS_OPEN -eq 1 ]]; then
+      printf '%s%s%s\n' "$C_SVC" "$phase" "$RESET"
+      STATUS_OPEN=0
+    else
+      printf '  %s%-*s%s%s%s%s\n' "$C_TEXT" "$STATUS_W" "$STATUS_NAME" "$RESET" \
+        "$C_SVC" "$phase" "$RESET"
+    fi
+    "$@" >>"$log" 2>&1 || rc=$?
+    return $rc
+  fi
+  "$@" >>"$log" 2>&1 &
+  pid=$!
+  t0=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    el=$(( SECONDS - t0 ))
+    if [[ $el -gt $shown ]]; then
+      shown=$el
+      printf '%s  %s%-*s%s%s%s (%ss)%s' "$CR" "$C_TEXT" "$STATUS_W" "$STATUS_NAME" \
+        "$RESET" "$C_SVC" "$phase" "$el" "$EL"
+    fi
+    sleep 0.25
+  done
+  wait "$pid" || rc=$?
+  return $rc
 }
 
 # Per-step capture file under the resource path (whose stated purpose is
@@ -2306,39 +2382,48 @@ plain_create_args() {  # box → prints podman/docker create args (one per line)
 }
 
 create_server() {  # box
-  local box=$1 f name log args=() rc=0
+  local box=$1 f name log args=() rc=0 src=0
   name=$(server_name "$box")
   f=$(compose_file "$box")
   log=$(step_log create "$name")
   : > "$log"
+  status_start "$name..."
   # Container replacement belongs to the LADDER, not to K/m/r (Jei s34): if you
   # asked for a box to be created, you get a FRESH one — kept settings included.
   # `rm -f` on a name that is not there is a no-op with a message, so the log
-  # gets it and nothing else does.
-  "$RUNTIME" rm -f "$name" >>"$log" 2>&1 || :
+  # gets it and nothing else does. It is also the step most likely to take a
+  # while (a running container has to stop first), hence its own phase word.
+  run_step "removing old" "$log" "$RUNTIME" rm -f "$name" || :
   # Everything the runtime says goes to the log, not the screen: one status
   # line per container is the whole report (the log's tail speaks on failure).
+  # shellcheck disable=SC2086  # COMPOSE_CMD is "podman compose" — two words
   if [[ -n $COMPOSE_CMD ]]; then
     if [[ $RUNG == a ]]; then
-      if $COMPOSE_CMD -f "$f" up -d >>"$log" 2>&1; then
+      # `up -d` creates AND starts, so on this rung the phase is the start.
+      if run_step "starting" "$log" $COMPOSE_CMD -f "$f" up -d; then
         SESSION_STATE[$box]=ACTIVE
       else
         rc=1
       fi
-    elif $COMPOSE_CMD -f "$f" up --no-start >>"$log" 2>&1 \
-         || $COMPOSE_CMD -f "$f" create >>"$log" 2>&1; then
-      SESSION_STATE[$box]=STOPPED
     else
-      rc=1
+      src=0
+      run_step "creating" "$log" $COMPOSE_CMD -f "$f" up --no-start || src=$?
+      if [[ $src -ne 0 ]]; then
+        src=0
+        run_step "creating" "$log" $COMPOSE_CMD -f "$f" create || src=$?
+      fi
+      if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=STOPPED; else rc=1; fi
     fi
   else
     mapfile -t args < <(plain_create_args "$box")
-    if "$RUNTIME" create "${args[@]}" >>"$log" 2>&1; then
+    src=0
+    run_step "creating" "$log" "$RUNTIME" create "${args[@]}" || src=$?
+    if [[ $src -eq 0 ]]; then
       SESSION_STATE[$box]=STOPPED
-      if [[ $RUNG == a ]] && ! "$RUNTIME" start "$name" >>"$log" 2>&1; then
-        rc=1
-      elif [[ $RUNG == a ]]; then
-        SESSION_STATE[$box]=ACTIVE
+      if [[ $RUNG == a ]]; then
+        src=0
+        run_step "starting" "$log" "$RUNTIME" start "$name" || src=$?
+        if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=ACTIVE; else rc=1; fi
       fi
     else
       rc=1
@@ -2353,21 +2438,24 @@ create_distrobox() {  # box
   name=$(dbox_name "$box")
   log=$(step_log create "$name")
   : > "$log"
+  status_start "$name..."
   if [[ $HAVE_DISTROBOX -eq 0 ]]; then
     printf 'distrobox is not installed, so %s cannot be created\n' "$name" >>"$log"
     printf 'install it (https://distrobox.it) and re-run droste-setup\n' >>"$log"
     status_err "$name..." "$log"
     return 0
   fi
-  # Same rule as the server lane: the create rung always replaces.
-  distrobox rm -f "$name" >>"$log" 2>&1 || :
+  # Same rule as the server lane: the create rung always replaces. Tearing down
+  # a RUNNING box is the slow case Jei hit on hardware — it gets a phase word.
+  run_step "removing old" "$log" distrobox rm -f "$name" || :
   # distrobox narrates its own creation ("Creating '<name>' using image ...",
   # "Distrobox '<name>' successfully created.", "To enter, run:") — three lines
   # per box that say what our one status line already says. The former grep
   # filter matched almost none of them (it wanted a " - Creating" prefix
   # upstream never emitted, and had no pattern at all for "successfully
   # created"), so the whole capture goes to the log instead.
-  distrobox assemble create --file "$(ini_file "$box")" >>"$log" 2>&1 || rc=$?
+  run_step "creating" "$log" \
+    distrobox assemble create --file "$(ini_file "$box")" || rc=$?
   if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
   return 0
 }
@@ -2415,6 +2503,9 @@ execute() {
     if pull_service_start "$svc_log"; then
       for box in "${ladder[@]}"; do
         rc=0
+        # The line opens BEFORE the request: the registry can take seconds to
+        # answer, and until it does the aggregator has nothing to paint.
+        status_start "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..."
         pull_image "$box" || rc=$?
         if [[ $rc -eq 0 ]]; then
           status_ok "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..."
@@ -2424,6 +2515,7 @@ execute() {
       done
       pull_service_stop
     else
+      status_start "${RUNTIME:-podman} system service..."
       status_err "${RUNTIME:-podman} system service..." "$svc_log"
     fi
   fi

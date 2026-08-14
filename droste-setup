@@ -17,9 +17,12 @@
 #   NOTES.md                         (full guide with YOUR real paths baked in)
 # and optionally pulls images / creates boxes / starts servers (build ladder).
 #
-# Re-runs are safe: existing compose/ini files, containers, and distroboxes are
-# detected and listed; per box you choose keep / recreate / modify — an
-# existing setup is NEVER silently clobbered.
+# Re-runs are safe: existing definition files are detected and listed, and you
+# choose keep / modify / recreate for them — SETTINGS FILES are never silently
+# clobbered. (Containers are the build ladder's business: its create rung
+# always replaces the container it is about to build.)
+#
+# "quit" at any prompt exits cleanly; "./quit" if you really do mean the path.
 #
 # Test hooks (deliberately undocumented in --help):
 #   DROSTE_SETUP_INPUT=<file>   read all prompt answers from <file> (one per
@@ -219,6 +222,7 @@ if [[ $PLAIN -eq 1 ]]; then
   C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
   C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
   C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_MOPT="" C_MCAT=""
+  C_QEXIT="" C_QKEY="" C_DETN="" C_SELP="" C_IMGN="" C_PATHB="" C_PATHG=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
@@ -275,6 +279,14 @@ else
   C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[1;94m' C_SVAL=$'\e[1;96m'
   C_MOPT=$'\e[1;92m'    # mitigation line: the option applied (fuse/copy/ignore)
   C_MCAT=$'\e[1;94m'    # mitigation line: the path categories it applies to
+  # Quit notice + the two detected/present listings + inline path emphasis.
+  C_QEXIT=$'\e[0;33m'   # the word "exit" in the quit notice
+  C_QKEY=$'\e[1;92m'    # the word "quit" (what the user actually types)
+  C_DETN=$'\e[0;33m'    # box names in the detected-configurations listing
+  C_SELP=$'\e[1;3;95m'  # "Select the boxes you wish to edit, modify, or rebuild."
+  C_IMGN=$'\e[1;92m'    # box names in the images-already-present listing
+  C_PATHB=$'\e[1;94m'   # inline emphasis, bold bright blue (paths / keywords)
+  C_PATHG=$'\e[1;92m'   # inline emphasis, bold bright green (paths)
   # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
   # (the bar can be wider than the status line that replaces it).
   CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
@@ -418,6 +430,38 @@ banner() {   # text [bold]
   printf '  %s%s%s\n' "$C_FRAME" "$mid" "$RESET"
   printf '  %s%s%s\n' "$C_FRAME" "$bot" "$RESET"
 }
+
+# Jei's coloured droste mark, the same art the in-box toolbox banners draw
+# (droste-ai-halo commit 198f3f9), re-indented to sit above the installer title.
+# It is ANSI + private-use box glyphs by construction, so --plain skips it.
+logo_header() {
+  [[ $PLAIN -eq 1 ]] && return 0
+  printf '\n'
+  printf '%s\n' \
+    $' \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
+    $' \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+    $' \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+    $' \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
+    $' \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
+  return 0
+}
+
+# "[a, b, c]" — light-grey brackets and separators, the names in $1's colour.
+name_list() {   # colour name...
+  local col=$1 n out="" first=1
+  shift
+  for n in "$@"; do
+    [[ $first -eq 1 ]] || out+="$C_TEXT, "
+    first=0
+    out+="$col$n"
+  done
+  printf '%s[%s%s]%s' "$C_TEXT" "$out" "$C_TEXT" "$RESET"
+}
+
+# Inline emphasis inside a prompt: the fragment takes the named colour and the
+# prompt's body colour is restored after it (ask_raw opened the line in C_TEXT).
+emph()  { printf '%s%s%s' "$C_PATHB" "$1" "$C_TEXT"; }
+emphg() { printf '%s%s%s' "$C_PATHG" "$1" "$C_TEXT"; }
 
 # Underlined subtitle printed under a section divider (blank line, then indent).
 # "intro" = the Resource Path subtitle, drawn a shade dimmer in the mockup.
@@ -610,6 +654,27 @@ init_input() {
   fi
 }
 
+# QUIT ANYWHERE. Every prompt in the installer goes through ask_raw, so ONE
+# check here covers ask_yn / ask_choice / ask_path_as / ask_port / the box
+# selection. It is armed by the notice printed after Preflight (nothing is
+# prompted before that), and it matches the RAW answer only — a user who really
+# does want a directory called "quit" writes "./quit", which expand_path
+# resolves and this test never sees.
+QUIT_ARMED=0
+quit_now() {
+  printf '\n  %sExiting droste-setup — no further changes made.%s\n\n' \
+    "$C_TEXT" "$RESET"
+  exit 0
+}
+
+# The notice itself: "exit" in plain yellow, "quit" (what you type) bold green.
+quit_notice() {
+  printf '\n  %sTo %s%s%s at any time, enter %s%s%s at the prompt.%s\n' \
+    "$C_SUBJ" "$C_QEXIT" "exit" "$C_SUBJ" "$C_QKEY" "quit" "$C_SUBJ" "$RESET"
+  QUIT_ARMED=1
+  return 0
+}
+
 ANS=""
 ask_raw() {  # $1 = prompt text (printed without newline)
   # ONE place owns the 2-space prompt indent and the body-text colour — call
@@ -633,6 +698,10 @@ ask_raw() {  # $1 = prompt text (printed without newline)
   else
     printf '%s' "$RESET"
   fi
+  if [[ $QUIT_ARMED -eq 1 && ${ANS,,} =~ ^[[:space:]]*quit[[:space:]]*$ ]]; then
+    quit_now
+  fi
+  return 0
 }
 
 ANS_YN=0
@@ -751,6 +820,7 @@ declare -A CFG_MODE          # box → ""|fuse|copy|ignore  (overlay mitigation)
 declare -A CFG_FS            # box → probed fstype of the data dir
 declare -A PATHS             # "box:label" → absolute host path
 declare -A EX_COMPOSE EX_INI EX_CTR EX_DBX     # detection (1/"" ; EX_CTR=state)
+declare -A EX_IMAGE          # box → 1 when its image is already pulled locally
 declare -A EXD_PATH          # "box:label" → parsed host path from old files
 declare -A EXD_PORT EXD_AS EXD_MODE EXD_LANE   # parsed defaults
 declare -A SESSION_STATE     # box → ACTIVE|STOPPED (what this run did)
@@ -916,7 +986,7 @@ parse_existing_ini() {  # box
 }
 
 detect_existing() {
-  local box any=0 items state
+  local box state
   for box in "${BOXES[@]}"; do
     [[ -f $(compose_file "$box") ]] && EX_COMPOSE[$box]=1
     [[ -f $(ini_file "$box") ]] && EX_INI[$box]=1
@@ -942,35 +1012,53 @@ detect_existing() {
       fi
     fi
   done
-  for box in "${BOXES[@]}"; do
-    [[ -n "${EX_COMPOSE[$box]:-}${EX_INI[$box]:-}${EX_CTR[$box]:-}${EX_DBX[$box]:-}" ]] \
-      && any=1
-  done
-  if [[ $any -eq 1 ]]; then
-    section "Existing setup detected"
-    say ""
-    for box in "${BOXES[@]}"; do
-      items=""
-      [[ -n "${EX_COMPOSE[$box]:-}" ]] && items="$items compose-file"
-      [[ -n "${EX_INI[$box]:-}" ]] && items="$items ini-file"
-      [[ -n "${EX_CTR[$box]:-}" ]] && items="$items container(${EX_CTR[$box]})"
-      [[ -n "${EX_DBX[$box]:-}" ]] && items="$items distrobox"
-      [[ -n $items ]] && say "  $box:$items"
-    done
-    printf '%sExisting boxes are never clobbered — you will choose keep/recreate/modify.%s\n' \
-      "$C_TEXT" "$RESET"
-  fi
   return 0
 }
 
-box_exists() {  # box → 0 if any trace exists
-  local box=$1
-  [[ -n "${EX_COMPOSE[$box]:-}${EX_INI[$box]:-}${EX_CTR[$box]:-}${EX_DBX[$box]:-}" ]]
+# Which selected boxes already have their image locally. `image inspect` works
+# on podman AND docker (`image exists` is podman-only) and is quiet either way.
+detect_images() {
+  local box img
+  EX_IMAGE=()
+  [[ -n $RUNTIME ]] || return 0
+  for box in "${SELECTED[@]}"; do
+    img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
+    "$RUNTIME" image inspect "$img" >/dev/null 2>&1 && EX_IMAGE[$box]=1
+  done
+  return 0
+}
+
+# The conditional block under the resource-path answer: which definition files
+# the just-named resource path already holds. Printed BEFORE the box table
+# because it is the reason a re-runner is about to pick a subset.
+detected_block() {
+  local box
+  local -a ini=() yaml=()
+  for box in "${BOXES[@]}"; do
+    [[ -n "${EX_INI[$box]:-}" ]] && ini+=("$box")
+    [[ -n "${EX_COMPOSE[$box]:-}" ]] && yaml+=("$box")
+  done
+  [[ ${#ini[@]} -eq 0 && ${#yaml[@]} -eq 0 ]] && return 0
+  say ""
+  printf '  %s%s%s %s%s%s\n' "$C_ARROW" "$ARROW_M" "$RESET" \
+    "$C_SUBJ" "Previous box setup configurations detected:" "$RESET"
+  [[ ${#ini[@]} -gt 0 ]] && \
+    printf '  %sDistrobox (ini):  %s\n' "$C_TEXT" "$(name_list "$C_DETN" "${ini[@]}")"
+  [[ ${#yaml[@]} -gt 0 ]] && \
+    printf '  %sServer (yaml):    %s\n' "$C_TEXT" "$(name_list "$C_DETN" "${yaml[@]}")"
+  say ""
+  printf '  %s%s%s\n' "$C_SELP" \
+    "Select the boxes you wish to edit, modify, or rebuild." "$RESET"
+  return 0
 }
 
 # ── Box selection ────────────────────────────────────────────────────────────
+# The answer is parsed ROBUSTLY: anything that is not an ASCII letter or digit
+# is a separator, so "1,2 3", "comfyui/llama" and "[1] [2]" all work. Tokens we
+# cannot place are named back rather than silently dropped, and the prompt
+# repeats.
 select_boxes() {
-  local box tok idx pick
+  local box tok idx pick clean bad
   declare -A want=()
   if [[ ${#ARG_BOXES[@]} -gt 0 ]]; then
     for tok in "${ARG_BOXES[@]}"; do
@@ -978,11 +1066,10 @@ select_boxes() {
       want[$tok]=1
     done
   else
-    section "Select Boxes"
     say ""
     # Columns land at 2 / 8 / 21 / 34 / 69. Each column carries its own colour
     # THROUGH its padding, so the row reads as four coloured fields, and the
-    # [all] row wears the whole default-option scheme of an option list.
+    # [All] row wears the whole default-option scheme of an option list.
     printf '  %s %-5s%-13s%-13s%-35s%-5s%s\n' \
       "$C_SUB" "#" "Container" "Service" "Description" "Port" "$RESET"
     idx=1
@@ -994,27 +1081,29 @@ select_boxes() {
       idx=$((idx+1))
     done
     printf '  %s[%s%s%s]%s%s%s\n' \
-      "$C_BRK" "$C_OPTD" "all" "$C_BRK" "$C_OPTD" " all of them" "$RESET"
+      "$C_BRK" "$C_OPTD" "All" "$C_BRK" "$C_OPTD" " All boxes" "$RESET"
     say ""
     while :; do
-      ask_raw "Which box(es)? (names or numbers, space-separated) $(dflt all): "
-      [[ -z $ANS ]] && ANS=all
+      ask_raw "Select boxes - names or numbers, space-separated $(dflt All): "
+      [[ -z $ANS ]] && ANS=All
       want=()
-      local ok=1
-      for tok in $ANS; do
-        case "$tok" in
+      bad=""
+      # Separators first, then one token per word.
+      clean=${ANS//[!a-zA-Z0-9]/ }
+      for tok in $clean; do
+        case "${tok,,}" in
           all|6) for box in "${BOXES[@]}"; do want[$box]=1; done ;;
           [1-5]) pick=${BOXES[$((tok-1))]}; want[$pick]=1 ;;
-          *) if [[ -n "${BOX_PORT[$tok]:-}" ]]; then want[$tok]=1
-             else say "  Unknown box: $tok"; ok=0; fi ;;
+          *) if [[ -n "${BOX_PORT[${tok,,}]:-}" ]]; then want[${tok,,}]=1
+             else bad="$bad $tok"; fi ;;
         esac
       done
-      [[ $ok -eq 1 && ${#want[@]} -gt 0 ]] && break
+      if [[ -n $bad ]]; then
+        subnote "Unrecognized:$bad — use the names or numbers above."
+        continue
+      fi
+      [[ ${#want[@]} -gt 0 ]] && break
     done
-    # One answer can settle every per-box port question: the table above just
-    # showed the defaults, so this is the moment they can be accepted wholesale.
-    ask_yn "Use default ports for all services" Y
-    [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
   fi
   SELECTED=()
   for box in "${BOXES[@]}"; do
@@ -1023,32 +1112,108 @@ select_boxes() {
   return 0
 }
 
-# For each selected box that already exists: keep / recreate / modify.
+# ── Existing Settings (K/m/r — SETTINGS FILES ONLY) ──────────────────────────
+# K/m/r decides what happens to a box's DEFINITION FILES and nothing else:
+#   keep     — its interview and its file write are both skipped
+#   modify   — full interview, defaults taken from the parsed existing values
+#   recreate — full interview, "factory" defaults
+# Containers are NOT its business: the build ladder's create rung always
+# replaces whatever is there (see create_server / create_distrobox).
 # CONFIGURE = boxes whose definitions are (re)generated (new/recreate/modify).
 # KEEP      = boxes left untouched, but STILL offered the build ladder so a
 #             prior "write only" run can later pull/create/start them.
-resolve_actions() {
-  local box letters="Krm"
+action_of()   { case "$1" in k) printf 'keep' ;; m) printf 'modify' ;; r) printf 'recreate' ;; esac; }
+action_verb() { case "$1" in keep) printf 'Keeping' ;; modify) printf 'Modifying' ;; *) printf 'Recreating' ;; esac; }
+action_tail() { case "$1" in keep) printf ' as-is' ;; *) printf '' ;; esac; }
+
+# The "[K/r/m]" cluster with the CURRENT default capitalised (opt_row and the
+# prompt hint follow the same rule everywhere else in the installer).
+kmr_cluster() {  # k|m|r
+  case "$1" in
+    m) printf 'k/r/M' ;;
+    r) printf 'k/R/m' ;;
+    *) printf 'K/r/m' ;;
+  esac
+}
+
+box_options() {  # box-with-settings...
+  local -a have=("$@")
+  local box letters="Krm" choice all=1 act pl
   CONFIGURE=()
   KEEP=()
-  for box in "${SELECTED[@]}"; do
-    if box_exists "$box"; then
-      say ""
-      printf '%sdroste-%s-halo already exists.%s\n' "$C_TEXT" "$box" "$RESET"
-      opt_row K "eep as-is (do not rewrite definitions)" "" 0 "$(isdef K "$letters")"
-      opt_row r "ecreate (fresh defaults; old container replaced at create step)" "" 0 "$(isdef r "$letters")"
-      opt_row m "odify (re-ask questions, defaulting to the current values)" "" 0 "$(isdef m "$letters")"
-      ask_choice "[K/r/m]" "$letters"
-      case "$ANS_CH" in
-        k) ACTION[$box]=keep; KEEP+=("$box") ;;
-        r) ACTION[$box]=recreate; CONFIGURE+=("$box") ;;
-        m) ACTION[$box]=modify;   CONFIGURE+=("$box") ;;
-      esac
-    else
-      ACTION[$box]=new
-      CONFIGURE+=("$box")
+  for box in "${SELECTED[@]}"; do ACTION[$box]=""; done
+  if [[ ${#have[@]} -gt 0 ]]; then
+    say ""
+    printf '  %s%s%s\n' "$C_HDR" "Box Options" "$RESET"
+    opt_row K "eep settings as-is (make no modifications)" "" 0 "$(isdef K "$letters")"
+    opt_row m "odify settings (set defaults to existing values)" "" 0 "$(isdef m "$letters")"
+    opt_row r "ecreate settings (start from \"factory\" settings)" "" 0 "$(isdef r "$letters")"
+    say ""
+    ask_choice "Please indicate how to proceed [$(kmr_cluster k)]" "$letters"
+    choice=$ANS_CH
+    if [[ ${#have[@]} -gt 1 ]]; then
+      ask_yn "Do the same for all boxes" Y
+      all=$ANS_YN
     fi
+    if [[ $all -eq 1 ]]; then
+      act=$(action_of "$choice")
+      for box in "${have[@]}"; do ACTION[$box]=$act; done
+      say ""
+      if [[ ${#have[@]} -eq 1 ]]; then
+        printf '  %s%s %s%s-halo%s settings%s.%s\n' "$C_TEXT" "$(action_verb "$act")" \
+          "$C_DETN" "${have[0]}" "$C_TEXT" "$(action_tail "$act")" "$RESET"
+      else
+        printf '  %s%s droste-halo settings%s: %s\n' "$C_TEXT" \
+          "$(action_verb "$act")" "$(action_tail "$act")" \
+          "$(name_list "$C_DETN" "${have[@]}")"
+      fi
+    else
+      # A1 + Jei's round-2 correction: the answer just given IS the first box's
+      # answer (it is not asked again); only the REMAINING selected boxes are
+      # prompted, each defaulting to that first answer.
+      pl="${choice^}${letters//[$choice${choice^}]/}"
+      ACTION[${have[0]}]=$(action_of "$choice")
+      for box in "${have[@]:1}"; do
+        ask_choice "Please indicate how to proceed for $box [$(kmr_cluster "$choice")]" "$pl"
+        ACTION[$box]=$(action_of "$ANS_CH")
+      done
+      say ""
+      for box in "${have[@]}"; do
+        act=${ACTION[$box]}
+        printf '  %s%s %s%s%s settings%s.%s\n' "$C_TEXT" "$(action_verb "$act")" \
+          "$C_DETN" "$box-halo" "$C_TEXT" "$(action_tail "$act")" "$RESET"
+      done
+    fi
+  fi
+  for box in "${SELECTED[@]}"; do
+    [[ -n "${ACTION[$box]}" ]] || ACTION[$box]=new
+    case "${ACTION[$box]}" in
+      keep) KEEP+=("$box") ;;
+      *)    CONFIGURE+=("$box") ;;
+    esac
   done
+  return 0
+}
+
+# The section itself (A6): each part renders only when it has something to say,
+# so a virgin system never sees it at all.
+existing_settings() {
+  local box
+  local -a present=() haveset=()
+  for box in "${SELECTED[@]}"; do
+    [[ -n "${EX_IMAGE[$box]:-}" ]] && present+=("$box")
+    [[ -n "${EX_COMPOSE[$box]:-}${EX_INI[$box]:-}" ]] && haveset+=("$box")
+  done
+  if [[ ${#present[@]} -gt 0 || ${#haveset[@]} -gt 0 ]]; then
+    section "Existing Settings"
+  fi
+  if [[ ${#present[@]} -gt 0 ]]; then
+    say ""
+    printf '  %s%s%s\n' "$C_HDR" \
+      "The following Droste images for halo are already present:" "$RESET"
+    printf '  %s\n' "$(name_list "$C_IMGN" "${present[@]}")"
+  fi
+  box_options ${haveset[@]+"${haveset[@]}"}
   return 0
 }
 
@@ -1073,38 +1238,166 @@ hydrate_keep() {  # box
   return 0
 }
 
-# ── Shared questions ─────────────────────────────────────────────────────────
-shared_questions() {
-  section "Shared Storage"
-  sub "Please provide paths for shared box data (caches, models, etc.)."
-  local def=$HOME/.cache/huggingface box
-  for box in "${BOXES[@]}"; do    # seed default from an existing setup
-    if [[ -n "${EXD_PATH["$box:hf"]:-}" ]]; then
-      def=${EXD_PATH["$box:hf"]}
-      break
-    fi
+# ── Global default seeding (K/m/r is known; the files are parsed) ────────────
+# EVERY question except the resource-path one (which has to come first — until
+# it is answered no file can be found) takes its default from what the old
+# definition files say, paths AND toggles, install-wide questions included.
+#
+# The SOURCE is strictly narrow (Jei s34): only boxes that are BOTH selected
+# this run AND marked MODIFY. Recreate means a clean slate, so a recreate box
+# contributes nothing and sees the factory value; a kept box is frozen and
+# skipped, so it contributes nothing either. A pure-recreate selection gets
+# factory defaults everywhere. That is why this runs AFTER Box Options.
+SEED_PORTS=Y                 # "use default ports for all services"
+SEED_DATA_Q1=Y SEED_DATA_Q2=N SEED_DATA_BASE=""     # service-data placement
+SEED_OTHER_Q1=Y SEED_OTHER_Q2=N SEED_OTHER_BASE=""  # input/output/workspace
+SEED_HF="" SEED_COMPUTE="" SEED_MODELS_Q=N SEED_MODELS=""
+SEED_SRC=()                  # the boxes whose files may seed anything at all
+
+# Selected AND modify — the only boxes a default may be read from.
+seed_sources() {
+  local box
+  SEED_SRC=()
+  for box in "${SELECTED[@]}"; do
+    [[ ${ACTION[$box]:-} == modify ]] && SEED_SRC+=("$box")
   done
-  ask_path_as "HuggingFace cache (models)" "$def"
-  HF_CACHE=$ANS_PATH
-  def=$HOME/droste/caches
-  for box in "${BOXES[@]}"; do
-    if [[ -n "${EXD_PATH["$box:caches"]:-}" ]]; then
-      def=${EXD_PATH["$box:caches"]}
-      break
-    fi
-  done
-  ask_path_as "Compute cache (MIOpen/Triton/torch/kernels)" "$def"
-  COMPUTE_CACHE=$ANS_PATH
-  ask_yn "Bind read-only model collection to /opt/models" N
-  if [[ $ANS_YN -eq 1 ]]; then
-    def=$HOME/models
-    for box in "${BOXES[@]}"; do
-      if [[ -n "${EXD_PATH["$box:models"]:-}" ]]; then
-        def=${EXD_PATH["$box:models"]}
-        break
+  return 0
+}
+
+# The common base of a family of recorded paths, or "" when they do not share
+# the <base>/<box>/<leaf> shape (or disagree about the base).
+family_base() {   # leaf...
+  local leaf box p base first="" seen=0
+  for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
+    for leaf in "$@"; do
+      p=${EXD_PATH["$box:$leaf"]:-}
+      [[ -n $p ]] || continue
+      if [[ $p == */"$box"/"$leaf" ]]; then base=${p%/"$box"/"$leaf"}; else base="-"; fi
+      if [[ $seen -eq 0 ]]; then first=$base seen=1
+      elif [[ $base != "$first" ]]; then printf '-'; return 0
       fi
     done
-    ask_path_as "Path for local model collections" "$def"
+  done
+  [[ $seen -eq 0 ]] && return 0     # nothing recorded: caller keeps its factory
+  printf '%s' "$first"
+  return 0
+}
+
+seed_globals() {
+  local box base first_leaf
+  seed_sources
+  # Factory values first: with no seed source (all-recreate, all-new, all-keep)
+  # these are exactly what every question below offers.
+  SEED_PORTS=Y
+  SEED_DATA_Q1=Y SEED_DATA_Q2=N
+  SEED_OTHER_Q1=Y SEED_OTHER_Q2=N
+  SEED_MODELS_Q=N
+  SEED_HF=$HOME/.cache/huggingface
+  SEED_COMPUTE=$EMIT_DIR/caches
+  SEED_MODELS=$HOME/models
+  SEED_DATA_BASE=$EMIT_DIR
+  SEED_OTHER_BASE=$EMIT_DIR
+  [[ ${#SEED_SRC[@]} -eq 0 ]] && return 0
+  for box in "${SEED_SRC[@]}"; do
+    [[ -n "${EXD_PATH["$box:hf"]:-}" ]] && { SEED_HF=${EXD_PATH["$box:hf"]}; break; }
+  done
+  for box in "${SEED_SRC[@]}"; do
+    [[ -n "${EXD_PATH["$box:caches"]:-}" ]] && { SEED_COMPUTE=${EXD_PATH["$box:caches"]}; break; }
+  done
+  # A recorded /opt/models bind is the answer to the toggle AND to the path.
+  for box in "${SEED_SRC[@]}"; do
+    if [[ -n "${EXD_PATH["$box:models"]:-}" ]]; then
+      SEED_MODELS_Q=Y
+      SEED_MODELS=${EXD_PATH["$box:models"]}
+      break
+    fi
+  done
+  # Ports: wholesale defaults only if nothing recorded moved off them.
+  for box in "${SEED_SRC[@]}"; do
+    if [[ -n "${EXD_PORT[$box]:-}" && ${EXD_PORT[$box]} != "${BOX_HOST_PORT[$box]}" ]]; then
+      SEED_PORTS=N
+      break
+    fi
+  done
+  # Service data: same base as the resource path → Y; a different single base →
+  # N + "different base" prefilled; anything else → both N (ask per box).
+  base=$(family_base data)
+  if [[ -n $base ]]; then
+    if [[ $base == "$EMIT_DIR" ]]; then
+      SEED_DATA_Q1=Y
+    elif [[ $base == "-" ]]; then
+      SEED_DATA_Q1=N SEED_DATA_Q2=N
+    else
+      SEED_DATA_Q1=N SEED_DATA_Q2=Y SEED_DATA_BASE=$base
+    fi
+  fi
+  # Other data (input/output/workspace) against the service-data base.
+  first_leaf=$(family_base input output workspace)
+  if [[ -n $first_leaf ]]; then
+    if [[ $first_leaf == "-" ]]; then
+      SEED_OTHER_Q1=N SEED_OTHER_Q2=N
+    elif [[ -n $base && $base != "-" && $first_leaf == "$base" ]]; then
+      SEED_OTHER_Q1=Y
+    elif [[ -z $base && $first_leaf == "$EMIT_DIR" ]]; then
+      SEED_OTHER_Q1=Y
+    else
+      SEED_OTHER_Q1=N SEED_OTHER_Q2=Y SEED_OTHER_BASE=$first_leaf
+    fi
+  fi
+  return 0
+}
+
+# ── Network & Storage ────────────────────────────────────────────────────────
+# Ports wholesale, where the two data families live, and the shared caches —
+# one section, because every one of them settles a question that would
+# otherwise be asked once per box.
+network_storage() {
+  local box wants_other=0
+  for box in "${CONFIGURE[@]}"; do
+    [[ -n "${BOX_EXTRA_BINDS[$box]}" ]] && wants_other=1
+  done
+  section "Network & Storage"
+  say ""
+  # One answer settles every per-box port question (the table above just showed
+  # the defaults, so this is the moment they can be accepted wholesale).
+  ask_yn "Use default ports for all services" "$SEED_PORTS"
+  [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
+  ask_yn "Store all service data in $(emph "$(home_disp "$EMIT_DIR")/<box>/data")" \
+    "$SEED_DATA_Q1"
+  if [[ $ANS_YN -eq 1 ]]; then
+    DATA_AUTO=1
+  else
+    ask_yn "Provide a different base path for service data" "$SEED_DATA_Q2"
+    if [[ $ANS_YN -eq 1 ]]; then
+      ask_path_as "Base path for service data" "$SEED_DATA_BASE"
+      DATA_ROOT=$ANS_PATH
+      DATA_AUTO=1
+    fi
+  fi
+  # The other CRITICAL binds (input/output/workspace). Answering this places
+  # them all; declining it hands them back to the per-box Program Paths (A2).
+  if [[ $wants_other -eq 1 ]]; then
+    ask_yn "Store other data $(emph "(input, output, workspace, etc.)") in $(emphg "$(home_disp "$(data_root)")/<box>")" \
+      "$SEED_OTHER_Q1"
+    if [[ $ANS_YN -eq 1 ]]; then
+      OTHER_AUTO=1
+    else
+      ask_yn "Provide a different base path for other box data" "$SEED_OTHER_Q2"
+      if [[ $ANS_YN -eq 1 ]]; then
+        ask_path_as "Base path for other box data" "$SEED_OTHER_BASE"
+        OTHER_ROOT=$ANS_PATH
+        OTHER_AUTO=1
+      fi
+    fi
+  fi
+  sub "Please provide paths for shared box data (caches, models)."
+  ask_path_as "HuggingFace cache (models)" "$SEED_HF"
+  HF_CACHE=$ANS_PATH
+  ask_path_as "Compute cache (MIOpen/Triton/torch)" "$SEED_COMPUTE"
+  COMPUTE_CACHE=$ANS_PATH
+  ask_yn "Bind read-only model collection to /opt/models" "$SEED_MODELS_Q"
+  if [[ $ANS_YN -eq 1 ]]; then
+    ask_path_as "Path for local model collections" "$SEED_MODELS"
     MODELS_DIR=$ANS_PATH
   fi
   return 0
@@ -1197,6 +1490,8 @@ mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
     rc)      printf '%s' "$EMIT_DIR" ;;
     base)    [[ -n $DATA_ROOT && $DATA_ROOT != "$EMIT_DIR" ]] \
                && printf '%s' "$DATA_ROOT" ;;
+    other)   [[ -n $OTHER_ROOT && $OTHER_ROOT != "$(data_root)" ]] \
+               && printf '%s' "$OTHER_ROOT" ;;
     compute) printf '%s' "$COMPUTE_CACHE" ;;
     hf)      printf '%s' "$HF_CACHE" ;;
   esac
@@ -1217,13 +1512,18 @@ reask_slot() {  # slot → 0 when re-asked
       EX_COMPOSE=() EX_INI=() EX_CTR=() EX_DBX=() EXD_PATH=()
       EXD_PORT=() EXD_AS=() EXD_MODE=() EXD_LANE=()
       detect_existing
-      resolve_actions
+      detect_images
+      existing_settings
+      seed_globals
       ;;
     base)
       ask_path_as "Base path for service data" "$(data_root)"
       DATA_ROOT=$ANS_PATH ;;
+    other)
+      ask_path_as "Base path for other box data" "$OTHER_ROOT"
+      OTHER_ROOT=$ANS_PATH ;;
     compute)
-      ask_path_as "Compute cache (MIOpen/Triton/torch/kernels)" "$COMPUTE_CACHE"
+      ask_path_as "Compute cache (MIOpen/Triton/torch)" "$COMPUTE_CACHE"
       COMPUTE_CACHE=$ANS_PATH ;;
     hf)
       ask_path_as "HuggingFace cache (models)" "$HF_CACHE"
@@ -1241,7 +1541,7 @@ global_mitigation() {
   local slot dir rc
   while :; do
     dir=""
-    for slot in rc base compute hf; do
+    for slot in rc base other compute hf; do
       dir=$(mitigation_slot_path "$slot")
       [[ -n $dir ]] || continue
       probe_fstype "$dir"
@@ -1261,68 +1561,36 @@ global_mitigation() {
   done
 }
 
-# ── Pattern propagation for the path family ──────────────────────────────────
-PATTERN_ROOT=""      # user-approved root for auto-filled paths
-PATTERN_ASKED=0
-DEFAULT_ROOT=""      # emit dir (default ~/droste)
+# ── Where the two path families live ─────────────────────────────────────────
+# Both are settled up front in Network & Storage; the old "would you like this
+# pattern applied to everything?" follow-up (PATTERN_ROOT) is retired with it.
+DEFAULT_ROOT=""  # emit dir (default ~/droste)
 
-# Base path for the DATA family (data/input/output/workspace) — the Resource
-# Path section can point it somewhere other than the resource dir. Caches are
-# deliberately NOT part of the family: they were asked separately.
+# Base path for the SERVICE DATA family (/opt/data) and for the OTHER data
+# family (input/output/workspace). Caches are deliberately in neither: they
+# were asked separately.
 DATA_ROOT=""     # "" = the resource path itself
 DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>/data, never asked
+OTHER_ROOT=""    # "" = wherever the service data family lives
+OTHER_AUTO=0     # 1 = every box's other binds are <base>/<box>/<label>
 PORTS_DEFAULT=0  # 1 = every box takes the default host port, never asked
 
-data_root() { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT}"; }
+data_root()  { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT}"; }
+other_root() { printf '%s' "${OTHER_ROOT:-$(data_root)}"; }
 
-# The two questions that follow the resource path. Answering the first settles
-# every later per-box DATA question in one go; the second moves the whole data
-# family (data/input/output/workspace — NOT the caches) to a base of its own,
-# which then supplies the defaults for all of them.
-resource_path_policy() {
-  ask_yn "Store all service data here ($(home_disp "$EMIT_DIR")/<box>/data)" Y
-  [[ $ANS_YN -eq 1 ]] && DATA_AUTO=1
-  ask_yn "Provide a different base path for data" N
-  if [[ $ANS_YN -eq 1 ]]; then
-    ask_path_as "Base path for service data" "$EMIT_DIR"
-    DATA_ROOT=$ANS_PATH
-  fi
-  return 0
+# 1 when this label needs no question (Network & Storage already placed it).
+auto_label() {  # label
+  if [[ $1 == data ]]; then [[ $DATA_AUTO -eq 1 ]]; else [[ $OTHER_AUTO -eq 1 ]]; fi
 }
 
-path_default() {  # box label → default path (existing > pattern > data base)
-  local box=$1 label=$2
+path_default() {  # box label → default path (existing value > family base)
+  local box=$1 label=$2 root
   if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
     printf '%s' "${EXD_PATH["$box:$label"]}"
-  elif [[ -n $PATTERN_ROOT ]]; then
-    printf '%s/%s/%s' "$PATTERN_ROOT" "$box" "$label"
   else
-    printf '%s/%s/%s' "$(data_root)" "$box" "$label"
+    [[ $label == data ]] && root=$(data_root) || root=$(other_root)
+    printf '%s/%s/%s' "$root" "$box" "$label"
   fi
-}
-
-maybe_offer_pattern() {  # box label answered-path
-  local box=$1 label=$2 got=$3 root example
-  [[ $PATTERN_ASKED -eq 1 ]] && return 0
-  [[ ${ACTION[$box]} == modify ]] && return 0
-  PATTERN_ASKED=1
-  # Nothing to propagate when the answer WAS the offered default — including the
-  # case where that default already came from a chosen base data path.
-  [[ $got == "$(path_default "$box" "$label")" ]] && return 0
-  if [[ $got == */"$box"/"$label" ]]; then
-    root=${got%/"$box"/"$label"}
-  elif [[ $got == */"$label" ]]; then
-    root=${got%/"$label"}
-    root=$(dirname "$root")
-  else
-    root=$(dirname "$got")
-  fi
-  [[ -z $root || $root == / ]] && return 0
-  example="$root/comfyui/input"
-  printf '  %s%s%s\n' "$C_TEXT" "Apply this pattern to all shared resource bindings" "$RESET"
-  ask_yn "(e.g. $(home_disp "$example"))" Y
-  [[ $ANS_YN -eq 1 ]] && PATTERN_ROOT=$root
-  return 0
 }
 
 # Which labels of a box ended up on an overlay-hostile filesystem, and the
@@ -1337,20 +1605,14 @@ set_bind_path() {  # box label
   local box=$1 label=$2 def rc force=0
   while :; do
     def=$(path_default "$box" "$label")
-    if [[ $force -eq 0 && $label == data && $DATA_AUTO -eq 1 \
-          && ${ACTION[$box]} != modify ]]; then
+    if [[ $force -eq 0 ]] && auto_label "$label"; then
+      # Network & Storage placed this family; a modify box's recorded path is
+      # its own default, so an auto-placed run leaves it exactly where it was.
       ANS_PATH=$def
       ensure_dir "$ANS_PATH" || :
-    elif [[ $force -eq 0 && -n $PATTERN_ROOT && ${ACTION[$box]} != modify \
-            && $PATTERN_ASKED -eq 1 ]]; then
-      ANS_PATH=$def
-      ensure_dir "$ANS_PATH" || :
-      printf '  %s%s %s: %s (pattern)%s\n' \
-        "$C_TEXT" "$box" "$label" "$(home_disp "$ANS_PATH")" "$RESET"
     else
       # No per-bind header: the prompt itself names the box + bind family.
       ask_path_as "Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}" "$def"
-      maybe_offer_pattern "$box" "$label" "$ANS_PATH"
     fi
     PATHS["$box:$label"]=$ANS_PATH
     # Modify with the SAME path keeps the mitigation already recorded for it
@@ -1370,7 +1632,6 @@ set_bind_path() {  # box label
     mitigate_path "$ANS_PATH" nested || rc=$?
     if [[ $rc -eq 2 ]]; then
       # "new path": this one gets asked explicitly, whatever settled it before.
-      PATTERN_ROOT=""
       force=1
       continue
     fi
@@ -1388,25 +1649,35 @@ set_bind_path() {  # box label
 }
 
 # ── Per-box configuration ────────────────────────────────────────────────────
+# The two apply-to-all shortcuts are INDEPENDENT (Jei s34): one settles the
+# variants for every box, the other the autostart. Neither is immune to a
+# box's K/m/r any more — every box flows through both; only its DEFAULTS differ
+# (modify → the recorded values, recreate/new → the factory ones).
 LANE_ALL=""      # propagated lane
 AS_ALL=""        # propagated autostart (only meaningful with a server lane)
 LANE_ASKED=0
+AS_ASKED=0
+AS_ALL_SET=0     # AS_ALL is "" for "no", so its own flag says whether it is set
 
 configure_box() {  # box remaining-after-this (count)
   local box=$1 remaining=$2 pair label dest lane_def lane_letters lane_hint
-  local asked=0 bw
+  local asked=0 bw need_lane=0 need_as=0 as_def=N
   banner "${BOX_BANNER[$box]}" bold
   bw=$BANNER_W
 
-  # Lane (Db/Sv/both) + AutoStart — propagatable after the first box. When an
-  # earlier box already settled it there is nothing to show: the box falls
-  # straight through to its summary.
-  if [[ -n $LANE_ALL && ${ACTION[$box]} != modify ]]; then
+  # What is left to ask about the lanes? An earlier box may have settled the
+  # variants, the autostart, or both.
+  [[ -z $LANE_ALL ]] && need_lane=1
+  if [[ $need_lane -eq 0 ]]; then
     CFG_LANE[$box]=$LANE_ALL
-    CFG_AS[$box]=$AS_ALL
-  else
+    [[ ${CFG_LANE[$box]} != distrobox && $AS_ALL_SET -eq 0 ]] && need_as=1
+  fi
+  if [[ $need_lane -eq 1 || $need_as -eq 1 ]]; then
     asked=1
     section "Installation Variant(s)"
+  fi
+
+  if [[ $need_lane -eq 1 ]]; then
     # The default lane must be settled BEFORE the options are drawn, so the
     # green option and the capitalised letter in the hint always agree.
     lane_def="b"   # default = BOTH lanes (server + distrobox)
@@ -1435,38 +1706,47 @@ configure_box() {  # box remaining-after-this (count)
       d) CFG_LANE[$box]=distrobox ;;
       b) CFG_LANE[$box]=both ;;
     esac
-    CFG_AS[$box]=""
-    if [[ ${CFG_LANE[$box]} != distrobox ]]; then
-      if [[ ${ACTION[$box]} == modify && -n "${EXD_AS[$box]:-}" ]]; then
-        ask_yn "Auto-start the $box server at boot" Y
-      else
-        ask_yn "Auto-start the $box server at boot" N
-      fi
-      [[ $ANS_YN -eq 1 ]] && CFG_AS[$box]=1
-    fi
     if [[ $LANE_ASKED -eq 0 && $remaining -gt 0 ]]; then
       LANE_ASKED=1
-      ask_yn "Apply this choice to all boxes" Y
-      if [[ $ANS_YN -eq 1 ]]; then
-        LANE_ALL=${CFG_LANE[$box]}
-        AS_ALL=${CFG_AS[$box]}
+      ask_yn "Install the same variants for all boxes" Y
+      [[ $ANS_YN -eq 1 ]] && LANE_ALL=${CFG_LANE[$box]}
+    fi
+    [[ ${CFG_LANE[$box]} != distrobox && $AS_ALL_SET -eq 0 ]] && need_as=1
+  fi
+
+  # Autostart: server lane only, and its own apply-to-all question.
+  CFG_AS[$box]=""
+  if [[ ${CFG_LANE[$box]} != distrobox ]]; then
+    if [[ $need_as -eq 1 ]]; then
+      [[ ${ACTION[$box]} == modify && -n "${EXD_AS[$box]:-}" ]] && as_def=Y
+      ask_yn "Auto-start the $box server at boot" "$as_def"
+      [[ $ANS_YN -eq 1 ]] && CFG_AS[$box]=1
+      if [[ $AS_ASKED -eq 0 && $remaining -gt 0 ]]; then
+        AS_ASKED=1
+        ask_yn "Apply autostart setting to all boxes" Y
+        if [[ $ANS_YN -eq 1 ]]; then
+          AS_ALL=${CFG_AS[$box]}
+          AS_ALL_SET=1
+        fi
       fi
+    else
+      CFG_AS[$box]=$AS_ALL
     fi
   fi
 
-  # Which of this box's binds still have a question to answer? The data dir is
-  # skipped when the Resource Path section already placed every box's data; the
+  # Which of this box's binds still have a question to answer? Data and the
+  # other binds are skipped when Network & Storage placed their family; the
   # port when the box table's defaults were accepted wholesale. What remains
   # decides whether the Program Paths section is drawn at all.
   local -a todo=()
   local want_port=0
-  if [[ $DATA_AUTO -eq 0 || ${ACTION[$box]} == modify ]]; then todo+=(data); fi
-  for pair in ${BOX_EXTRA_BINDS[$box]}; do
-    todo+=("${pair%%:*}")
-  done
-  if [[ ${CFG_LANE[$box]} != distrobox ]]; then
-    if [[ $PORTS_DEFAULT -eq 0 || ${ACTION[$box]} == modify ]]; then want_port=1; fi
+  [[ $DATA_AUTO -eq 0 ]] && todo+=(data)
+  if [[ $OTHER_AUTO -eq 0 ]]; then
+    for pair in ${BOX_EXTRA_BINDS[$box]}; do
+      todo+=("${pair%%:*}")
+    done
   fi
+  if [[ ${CFG_LANE[$box]} != distrobox && $PORTS_DEFAULT -eq 0 ]]; then want_port=1; fi
   if [[ ${#todo[@]} -gt 0 || $want_port -eq 1 ]]; then
     asked=1
     section "Program Paths"
@@ -1774,14 +2054,17 @@ exec_hdr() { printf '\n  %s%s%s\n' "$C_EXH" "$1" "$RESET"; }
 # One emitted file name, italic light grey.
 exec_file() { printf '  %s%s%s\n' "$C_FILE" "$1" "$RESET"; }
 
-# Width of the name column in [OK]/[ERROR] status lines: the longest name in
-# the group plus the mockup's five-space gap, clamped so the tag still lands
-# inside the terminal (a name longer than that simply pushes the tag right).
+# Width of the name column in [OK]/[ERROR] status lines: the longest name of
+# the WHOLE Executing section plus a three-space gap, clamped so the tag still
+# lands inside the terminal (a name longer than that simply pushes the tag
+# right). Three, not five: it pulls the image lines back under 60 columns
+# (Jei s34), and one width for every group aligns Creating Boxes with Pulling
+# Images instead of letting each group find its own column.
 STATUS_W=0
 status_width() {   # name...
   local n max=0 w avail
   for n in "$@"; do [[ ${#n} -gt $max ]] && max=${#n}; done
-  w=$(( max + 5 ))
+  w=$(( max + 3 ))
   avail=$(( $(term_width) - 2 - 7 ))    # indent + "[ERROR]"
   [[ $w -gt $avail ]] && w=$avail
   [[ $w -lt 1 ]] && w=1
@@ -1974,7 +2257,10 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   repo=${img%:*} tag=${img##*:}
   log=$(step_log pull "$box")
   : > "$log"
-  curl -fsS --unix-socket "$PULL_SOCK" -X POST \
+  # -N (--no-buffer): without it curl hands the JSON stream over in ~16 KB
+  # blocks, so the aggregator below repaints in lurches no matter how often the
+  # API reports. It is the whole "the bar only moves every few seconds" fix.
+  curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
         "$img..." "$(term_width)" "$BAR_F" "$BAR_E" "$PLAIN" 2>>"$log" \
@@ -2025,10 +2311,11 @@ create_server() {  # box
   f=$(compose_file "$box")
   log=$(step_log create "$name")
   : > "$log"
-  if [[ ${ACTION[$box]:-} == recreate && -n "${EX_CTR[$box]:-}" ]]; then
-    "$RUNTIME" rm -f "$name" >>"$log" 2>&1 \
-      || printf 'could not remove the old container %s\n' "$name" >>"$log"
-  fi
+  # Container replacement belongs to the LADDER, not to K/m/r (Jei s34): if you
+  # asked for a box to be created, you get a FRESH one — kept settings included.
+  # `rm -f` on a name that is not there is a no-op with a message, so the log
+  # gets it and nothing else does.
+  "$RUNTIME" rm -f "$name" >>"$log" 2>&1 || :
   # Everything the runtime says goes to the log, not the screen: one status
   # line per container is the whole report (the log's tail speaks on failure).
   if [[ -n $COMPOSE_CMD ]]; then
@@ -2072,10 +2359,8 @@ create_distrobox() {  # box
     status_err "$name..." "$log"
     return 0
   fi
-  if [[ ${ACTION[$box]:-} == recreate && -n "${EX_DBX[$box]:-}" ]]; then
-    distrobox rm -f "$name" >>"$log" 2>&1 \
-      || printf 'could not remove the old distrobox %s\n' "$name" >>"$log"
-  fi
+  # Same rule as the server lane: the create rung always replaces.
+  distrobox rm -f "$name" >>"$log" 2>&1 || :
   # distrobox narrates its own creation ("Creating '<name>' using image ...",
   # "Distrobox '<name>' successfully created.", "To enter, run:") — three lines
   # per box that say what our one status line already says. The former grep
@@ -2088,7 +2373,7 @@ create_distrobox() {  # box
 }
 
 execute() {
-  local box lane b ladder=() names=() svc_log rc=0
+  local box lane b ladder=() all_names=() svc_log rc=0
   section "Executing"
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
   # start from their existing, un-rewritten definitions), in canonical order.
@@ -2107,13 +2392,21 @@ execute() {
       [[ $lane != server ]] && emit_ini "$box"
     done
   fi
+  # ONE column for the whole section: every status line the run will print is
+  # measured before the first of them is drawn.
+  if [[ ${#ladder[@]} -gt 0 ]]; then
+    for box in "${ladder[@]}"; do
+      lane=${CFG_LANE[$box]}
+      [[ $RUNG != w ]] && all_names+=("${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}...")
+      if [[ $RUNG == c || $RUNG == a ]]; then
+        [[ $lane != distrobox ]] && all_names+=("$(server_name "$box")...")
+        [[ $lane != server ]] && all_names+=("$(dbox_name "$box")...")
+      fi
+    done
+    [[ ${#all_names[@]} -gt 0 ]] && status_width "${all_names[@]}"
+  fi
   if [[ $RUNG != w && ${#ladder[@]} -gt 0 ]]; then
     exec_hdr "Pulling Images"
-    names=()
-    for box in "${ladder[@]}"; do
-      names+=("${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}...")
-    done
-    status_width "${names[@]}"
     svc_log=$(step_log pull service)
     : > "$svc_log"
     # The API service is the pull mechanism, not an optimisation: if it will not
@@ -2136,13 +2429,6 @@ execute() {
   fi
   if [[ ( $RUNG == c || $RUNG == a ) && ${#ladder[@]} -gt 0 ]]; then
     exec_hdr "Creating Boxes"
-    names=()
-    for box in "${ladder[@]}"; do
-      lane=${CFG_LANE[$box]}
-      [[ $lane != distrobox ]] && names+=("$(server_name "$box")...")
-      [[ $lane != server ]] && names+=("$(dbox_name "$box")...")
-    done
-    status_width "${names[@]}"
     for box in "${ladder[@]}"; do
       lane=${CFG_LANE[$box]}
       [[ $lane != distrobox ]] && create_server "$box"
@@ -2433,8 +2719,11 @@ dashboard() {
     "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
     "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo-dbox.ini" "$RESET"
   say ""
-  printf '%s%s%s\n' "$C_STAR" \
-    "*ComfyUI models scanned at start; to add more run: hf download <shared cache>" "$RESET"
+  # The command at the end of the line is payload, so it wears the bold bright
+  # blue of every other copy-me fragment rather than the footnote's italic.
+  printf '%s%s%s%s%s\n' "$C_STAR" \
+    "*ComfyUI models scanned at start; to add more run: " \
+    "$C_PATHB" "hf download <shared cache>" "$RESET"
   printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
     "Definitions + full guide: $(home_disp "$EMIT_DIR") (compose.yaml, ini, NOTES.md)" \
     "$RESET"
@@ -2445,26 +2734,34 @@ dashboard() {
 # ── Main flow ────────────────────────────────────────────────────────────────
 main() {
   init_input
+  logo_header
   banner "Droste Installer for Halo Architectures"
   preflight
+  quit_notice
 
-  section "Resource Path" intro
-  sub "(Re)Creation (compose.yaml/distrobox ini), logs, & data" intro
+  section "Box Selection & Setup" intro
+  sub "Box configuration, settings, logs, & other resources" intro
   # A typo here fans out into every emitted file — ask_path_as confirms before
   # creating (and re-asks if the user declines or the create fails).
   ask_path_as "Identify a path for droste resource storage" "$HOME/droste"
   EMIT_DIR=$ANS_PATH
   DEFAULT_ROOT=$EMIT_DIR
-  resource_path_policy
-
+  # The resource path is what makes the old definition files findable, so this
+  # is the first moment they can be parsed at all.
   detect_existing
+  detected_block
   select_boxes
-  resolve_actions
+
+  detect_images
+  existing_settings
+  # Which files may seed a default is a K/m/r question, so the seeding runs
+  # here — after Box Options, before the first question it feeds.
+  seed_globals
 
   if [[ ${#CONFIGURE[@]} -gt 0 || ${#KEEP[@]} -gt 0 ]]; then
     local i n box
     if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
-      shared_questions
+      network_storage
       # Every writable path chosen so far is known now, so the filesystem
       # question can be asked once, for the most primary of them.
       global_mitigation

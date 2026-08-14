@@ -983,13 +983,16 @@ preflight() {
   else
     pf_bad "GPU devices missing (/dev/kfd, /dev/dri) — fine on a non-GPU host"
   fi
+  # ONE list, used twice: the prose names the groups exactly as the usermod
+  # argument spells them (bare commas), which is also what brings the row to 79
+  # columns — the width the whole report is drawn to.
   local g missing=""
   for g in render video; do
     id -nG 2>/dev/null | tr ' ' '\n' | grep -qx "$g" || missing="$missing,$g"
   done
   missing=${missing#,}
   if [[ -n $missing ]]; then
-    pf_bad "not in group(s) $missing (fix: sudo usermod -aG $missing \$USER; re-login)"
+    pf_bad "not in $missing (fix: sudo usermod -aG $missing \$USER; re-login)"
   else
     pf_ok "user is in the render + video groups"
   fi
@@ -2033,7 +2036,7 @@ ask_ladder() {
   sub "Please indicate your selection for box preparation:"
   opt_row w "" "Write definition(s) only (ini)" 4 "$(isdef w "$letters")"
   opt_row p "" "Write definition(s) & pull image(s)" 4 "$(isdef p "$letters")"
-  opt_row c "" "Pull, write, & create box(es)" 4 "$(isdef c "$letters")"
+  opt_row c "" "Write, pull, & create box(es)" 4 "$(isdef c "$letters")"
   opt_row A "" "All of the above, and start enabled server(s)" 4 "$(isdef A "$letters")"
   say ""
   ask_choice "Select box preparation option [w/p/c/A]" "$letters"

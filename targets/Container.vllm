@@ -21,22 +21,38 @@ LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 ARG GFX_TARGET=gfx1151
 ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
 ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
+ARG TORCHVISION_VERSION=0.24.0+rocm7.13.0a20260501
 
-# Runtime libraries
+# Runtime libraries. `git` is not a build tool here: aiter shells out to
+# `git rev-parse --short HEAD` at MODULE level in csrc/cpp_itfs/utils.py, on EVERY
+# `import aiter` (not just when it JIT-builds), and it catches only CalledProcessError —
+# so a missing binary is a hard FileNotFoundError at import, while git-present-but-no-repo
+# (our case: site-packages is not a checkout) is handled. Kept in this port alone: no other
+# droste-*-halo image installs aiter.
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
-      libnuma1 numactl libgomp1 && rm -rf /var/lib/apt/lists/* && apt-get clean
+      libnuma1 numactl libgomp1 git && rm -rf /var/lib/apt/lists/* && apt-get clean
 
 # Copy artifacts. patch_aiter_headers.py is parked under /opt/resources/scripts/ (it is
 # used at BUILD to re-patch the installed aiter; it need not sit at /opt root forever).
-COPY --from=artifacts /artifacts/wheels /tmp/wheels
-COPY --from=artifacts /artifacts/fp8    /opt/fp8
+COPY --from=artifacts /artifacts/wheels    /tmp/wheels
+COPY --from=artifacts /artifacts/fp8       /opt/fp8
+COPY --from=artifacts /artifacts/aiter-jit /tmp/aiter-jit
 COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.py
 
 # Install order matters:
 #  1. aiter + flash-attn wheels (--no-deps: their deps are torch/triton, already present).
 #  2. re-apply patch_aiter_headers.py to the freshly-installed aiter — its ck_tile headers are
 #     used by aiter's RUNTIME JIT on gfx1151 (the artifacts stage patched its own copy; the
-#     shipped wheel is pre-patch, so patch it again here).
+#     shipped wheel is pre-patch, so patch it again here) — then drop the aiter JIT module
+#     PREBUILT in the artifacts stage into the same package dir. `import aiter` JIT-compiles
+#     module_aiter_enum at module scope, and vLLM does exactly that while inspecting a model's
+#     architecture (registry -> flash_attn -> aiter). This image ships no compiler, so the lazy
+#     build died on `shutil.which("c++")` -> None -> TypeError -> `RuntimeError: [aiter] build
+#     [module_aiter_enum] ... failed` -> "Model architectures ['Qwen2ForCausalLM'] failed to be
+#     inspected" and `vllm serve` exited (hardware 2026-08-14). With the .so already in
+#     site-packages/aiter/jit/, aiter's get_module imports it and never reaches the compiler
+#     probe. It lands in the BAKED venv, i.e. the overlay lower layer, so a user's venv
+#     copy-up cannot shadow it away.
 #  3. vLLM wheel WITH deps so pip resolves transformers/etc. from PyPI (torch already satisfied).
 #     Use the legacy resolver for this RUN: vLLM pins `torch==2.9.1` while the installed wheel is
 #     `2.9.1+rocm7.13.0a20260501`, and the new resolvelib backtracker explores an exploding search
@@ -63,26 +79,51 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     pybind11: the amd-aiter nightly began declaring it as a RUNTIME dep (AITER JIT-compiles
 #     kernels at run time) between 2026-08-12 and -13 — the gate caught the drift (run
 #     31654555755); installed rather than allowlisted because it is satisfiable.
-#  6. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
+#     pycountry: mistral_common's transcription path imports pydantic-extra-types'
+#     `language_code`, which imports pycountry unconditionally — but upstream ships it only as
+#     an extra, so pip never pulled it and `vllm serve` died with `RuntimeError: The
+#     language_code module requires "pycountry"` (hardware 2026-08-14). Chain: vllm ->
+#     gguf_utils -> gguf -> mistral_common. Satisfiable, so installed, not allowlisted — the
+#     same disposition as pybind11 (a missing package is never allowlist material anyway).
+#  6. RE-PIN torchvision to the ROCm-nightly wheel off the SAME index + date as torch. Nothing
+#     here asks for torchvision by name: vLLM's rocm.txt pulls `timm`, whose dep is a bare
+#     `torchvision`, so step 3 satisfies it from PyPI — and a PyPI torchvision is compiled
+#     against a PyPI torch (0.28.0 → torch 2.13.0), so its C++ ops never register against our
+#     2.9.1+rocm and `vllm serve` dies at startup with `RuntimeError: operator torchvision::nms
+#     does not exist` (hardware 2026-08-14 — another build-green, import-broken image, exactly
+#     the step-5 lesson). Must run AFTER every install that can resolve torchvision. --no-deps
+#     keeps the reinstall off torch/numpy/pillow; --force-reinstall evicts whatever step 3 left.
+#  7. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
 RUN export PIP_USE_DEPRECATED=legacy-resolver \
     && pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
     && python /opt/resources/scripts/patch_aiter_headers.py \
+    && cp /tmp/aiter-jit/*.so /opt/venv/lib*/python*/site-packages/aiter/jit/ \
     && pip install /tmp/wheels/vllm*.whl \
     && pip install ray \
     && pip install 'tokenizers>=0.22.0,<=0.23.0' \
-    && pip install pybind11 \
-    && rm -rf /tmp/wheels /root/.cache/pip \
+    && pip install pybind11 pycountry \
+    && pip install --no-deps --force-reinstall --index-url ${ROCM_INDEX_URL} \
+         "torchvision==${TORCHVISION_VERSION}" \
+    && rm -rf /tmp/wheels /tmp/aiter-jit /root/.cache/pip \
     && rm -rf /opt/fp8/bench /opt/fp8/docs /opt/fp8/README.md /opt/fp8/serve_*.sh /opt/fp8/.gitignore
 
+# Import smoke test — the compiler-free half of step 2. Nothing else in CI imports any of
+# this, which is precisely how two build-green/import-broken images shipped. `import aiter`
+# is the exact call vLLM makes during model inspection: it succeeds ONLY if the prebuilt
+# module_aiter_enum.so is importable, since this image has no compiler to fall back on. Runs
+# GPU-less on purpose (aiter degrades to arch "cpu" when rocminfo is absent) — it proves the
+# import path, not the kernels.
+RUN python -c "import aiter; print('aiter import OK:', aiter.ActivationType)"
+
 # Dependency-consistency gate — the durable half of step 5 above. `pip check` audits the WHOLE
-# environment and exits nonzero on ANY conflict, but this env carries six KNOWN pre-existing
-# conflicts, one of them unsatisfiable by construction (no PyPI torchvision declares
-# compatibility with a ROCm-nightly torch), so a bare `pip check` is a permanent build break
-# (CI run 31644372153). Instead: print the FULL raw output first (so debugging never needs a
-# rebuild), filter out ONLY the six known conflict lines, and fail iff anything else survives —
-# a NEW conflict of the tokenizers kind still kills the build. Each allowlist pattern anchors
+# environment and exits nonzero on ANY conflict, but this env carries five KNOWN pre-existing
+# conflicts (upstream pins the wheel set outruns; none of them ours to fix), so a bare
+# `pip check` is a permanent build break (CI run 31644372153). Instead: print the FULL raw
+# output first (so debugging never needs a rebuild), filter out ONLY the five known conflict
+# lines, and fail iff anything else survives — a NEW conflict of the tokenizers kind (or of
+# the torchvision kind, see below) still kills the build. Each allowlist pattern anchors
 # the offending package, the requirement subject, and the DIRECTION of the bound, never the
 # installed versions (those drift every rebuild); a new conflict between the same two packages
 # in the other direction is NOT silently eaten. NB: quoted heredoc delimiter is load-bearing —
@@ -99,13 +140,15 @@ echo "=== pip check: end of raw output ==="
 # Known-conflict allowlist. pip check line shapes covered (both wordings pip has used):
 #   "<pkg> <ver> has requirement <req>, but you have <pkg> <ver>."
 #   "<pkg> <ver> requires <req>, but you have <pkg> <ver>."
-# ("<req>, which is not installed." lines are deliberately NOT allowlisted: none of the six
+# ("<req>, which is not installed." lines are deliberately NOT allowlisted: none of the five
 # is a missing package, and a formerly-present package going missing must fail the build.)
 #
-# torchvision pins torch==<exact stable>; we ship the pinned ROCm-nightly torch and no PyPI
-# torchvision ever declares compatibility with a +rocm local version — unsatisfiable by
-# construction, the reason this gate cannot be a bare `pip check`.
-ALLOW_TORCHVISION_TORCH='^torchvision [0-9][^ ]* (has requirement|requires) torch==.*, but you have torch '
+# NO torchvision entry, deliberately. It used to carry one (a PyPI torchvision pins
+# torch==<exact stable>, which our +rocm local version can never satisfy); step 6 above now
+# installs the ROCm-nightly torchvision instead, whose metadata asks only for a bare `torch`,
+# and nothing in the wheel set bounds torchvision from below (timm/peft/transformers all
+# depend on it unpinned). So torchvision is expected to be SILENT here: any torchvision line
+# means the re-pin regressed to a PyPI wheel — fail, do not re-add a pattern.
 # vllm pins grpcio==<exact>; the wheel set resolves a newer grpcio — pre-existing skew.
 ALLOW_VLLM_GRPCIO='^vllm [0-9][^ ]* (has requirement|requires) grpcio==.*, but you have grpcio '
 # vllm pins grpcio-reflection==<exact>; same newer-than-pinned skew as grpcio above.
@@ -125,7 +168,6 @@ ALLOW_VLLM_SETUPTOOLS='^vllm [0-9][^ ]* (has requirement|requires) setuptools[^ 
 grep -v -E \
     -e '^[[:space:]]*$' \
     -e '^No broken requirements found' \
-    -e "$ALLOW_TORCHVISION_TORCH" \
     -e "$ALLOW_VLLM_GRPCIO" \
     -e "$ALLOW_VLLM_GRPCIO_REFLECTION" \
     -e "$ALLOW_GRPCIO_TOOLS_PROTOBUF" \

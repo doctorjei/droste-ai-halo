@@ -647,9 +647,9 @@ stay torch-free on the runtime base and do NOT go through here.
   cross-image dedup — one stored copy instead of three (~2 GiB saved in the
   registry / on a host with all three) — plus the three stop rebuilding and
   re-pulling torch on changes unrelated to the torch pin.
-- **Scope = torch only.** torchvision/torchaudio are comfyui-only (vllm/finetuning
-  don't want them) so they stay in comfyui, NOT here. gguf/transformers likewise
-  stay in comfyui.
+- **Scope = torch only.** torchvision/torchaudio stay with the ports that need them,
+  NOT here: comfyui installs both, vllm re-pins torchvision alone (2026-08-14, see
+  its section), finetuning wants neither. gguf/transformers likewise stay in comfyui.
 - Pins are declared after `FROM` (in-stage), so no ARG-scope import needed.
 - No `CMD`: intermediate base, never run directly.
 
@@ -826,6 +826,24 @@ Toolbox submodule provenance (droste-ai-halo):
   neutralize flash-attn `setup.py`'s aiter-submodule build subprocess (aiter
   already built) -> build the flash-attn wheel (upstream pip-installs; we ship
   the wheel).
+- aiter JIT prebuild (2026-08-14): `import aiter` runs `aiter/ops/enum.py` at
+  module scope, which JIT-compiles `module_aiter_enum` — so merely importing
+  aiter needs a COMPILER, which the runtime image deliberately lacks. Built here
+  (`python -c "import aiter"`) and staged to `/artifacts/aiter-jit`; the runtime
+  drops the `.so` into its own `site-packages/aiter/jit/`. Three details: the
+  source is a `.cu`, so hipcc wants device bitcode -> set
+  `HIP_DEVICE_LIB_PATH="$(find -L /opt/rocm ... -name bitcode ...)"` (the pip SDK
+  does not put it where clang looks by default). **`-L` is load-bearing**:
+  `/opt/rocm` is a symlink and find(1) will not descend into a symlinked start
+  point, so the vLLM step's bare `find` below actually yields `""` — harmless
+  there only because it compiles with `/opt/rocm/lib/llvm/bin/clang`, which
+  self-locates its bitcode, while plain `hipcc` does not. `GPU_ARCHS` must
+  be pinned to `${GFX_TARGET}` because aiter's `native` default shells out to
+  `rocminfo` and no CI runner has a GPU; and the bare import is the NARROWEST
+  trigger — every other op builds lazily on first call, while aiter's official
+  `PREBUILD_KERNELS` hook is coarser (even mode 3 also codegens
+  `module_fmha_v3*`). Placed right after the aiter/flash-attn layer, so it costs
+  one rebuild of the vLLM layer below it and then caches again.
 - vLLM: Rust toolchain (`rustc`/`cargo`, Fedora `dnf install rust cargo` ->
   Debian) for vLLM's PyO3/`_rust_*.so` parser extensions (setuptools-rust
   backend). Kept after the flash-attn/aiter layers so those stay cacheable.
@@ -1035,20 +1053,76 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   ever run). CI never caught it because **build success is not import success**
   and no job imports vllm. Hence the explicit `tokenizers` range install plus a
   `pip check` gate that fails the BUILD on any NEW inconsistent set. The gate is
-  ALLOWLIST-BASED, not bare: this env carries six known pre-existing conflicts,
-  one unsatisfiable by construction (no PyPI torchvision declares compatibility
-  with a ROCm-nightly torch), so a bare `pip check` is a permanent break. The
-  gate prints the full raw output, filters exactly the six known lines (matched
-  on package pair + bound direction, never installed versions), and fails on
-  anything that survives. It has caught real drift already: the amd-aiter
-  nightly grew a runtime `pybind11` dependency overnight (2026-08-13) — fixed by
-  installing it, since satisfiable conflicts get pinned/installed and ONLY
+  ALLOWLIST-BASED, not bare: this env carries five known pre-existing conflicts
+  (upstream pins the wheel set outruns — grpcio/grpcio-reflection/protobuf/
+  numpy/setuptools), so a bare `pip check` is a permanent break. The gate prints
+  the full raw output, filters exactly the five known lines (matched on package
+  pair + bound direction, never installed versions), and fails on anything that
+  survives. It has caught real drift already: the amd-aiter nightly grew a
+  runtime `pybind11` dependency overnight (2026-08-13) — fixed by installing it,
+  since satisfiable conflicts get pinned/installed and ONLY
   unsatisfiable-by-construction ones get allowlisted with a rationale. FLAG:
   when the gate goes red, read what it names; do not remove the check.
+- Explicitly-installed runtime deps upstream leaves out (all satisfiable, so
+  INSTALLED, never allowlisted): `pybind11` (aiter's JIT, gate-caught 2026-08-13)
+  and `pycountry` (hardware 2026-08-14: vllm -> gguf_utils -> gguf ->
+  mistral_common -> pydantic-extra-types' `language_code`, which imports
+  pycountry unconditionally while upstream ships it only as an extra —
+  `RuntimeError: The language_code module requires "pycountry"` at serve time).
+  Note the gate CANNOT catch the pycountry class: `pip check` audits declared
+  metadata, and an extras-gated import declares nothing. Only running the thing
+  finds those.
+- torchvision re-pin (the sixth allowlist entry, RETIRED 2026-08-14): the vLLM
+  wheel's deps pull `timm`, whose bare `torchvision` dep resolved from PyPI to
+  0.28.0 — built against torch 2.13.0, so its C++ ops never registered against
+  our 2.9.1+rocm and `vllm serve` died at startup with `RuntimeError: operator
+  torchvision::nms does not exist` (hardware 2026-08-14; the second build-green,
+  import-broken image, same lesson as tokenizers). Fix: after every pip install
+  in that RUN, `pip install --no-deps --force-reinstall --index-url
+  ${ROCM_INDEX_URL} "torchvision==${TORCHVISION_VERSION}"` — same index + `+rocm`
+  date as torch, so the pair is ABI-matched by construction (the pin file has
+  owned `TORCHVISION_VERSION` all along; the port job now passes it through).
+  The ROCm torchvision wheel requires only a bare `torch`, and nothing bounds
+  torchvision from below, so the old `torchvision … requires torch==…` allowlist
+  line is gone with NO replacement: torchvision must now be silent in `pip
+  check`, and any line naming it means the re-pin regressed.
+- Prebuilt aiter JIT module + import smoke test (2026-08-14, the third layer of
+  the same onion): vLLM inspects a model's architecture -> `import flash_attn`
+  -> `import aiter` -> `aiter/ops/enum.py` JIT-compiles `module_aiter_enum`.
+  This image ships NO compiler by design, so `shutil.which("c++")` returned None
+  and blew up in `check_compiler_ok_for_platform` (`TypeError: expected str,
+  bytes or os.PathLike object, not NoneType`) -> `RuntimeError: [aiter] build
+  [module_aiter_enum] ... failed` -> pydantic `Model architectures
+  ['Qwen2ForCausalLM'] failed to be inspected` -> server exits. Fix: the
+  artifacts stage prebuilds the `.so` (see vllm-build above) and this image
+  `cp`s it into `site-packages/aiter/jit/` right after the aiter wheel install,
+  where aiter's `get_module` imports it as `aiter.jit.module_aiter_enum` and
+  never reaches the compiler probe. It lands in the BAKED venv — the overlay
+  lower layer — so a user's venv copy-up cannot shadow it. Deliberately NOT
+  fixed by adding a compiler to the runtime: the toolchain belongs to the build
+  images (comfyui is the sole exception, for Triton JIT). The new
+  `RUN python -c "import aiter"` is the durable half: it is the first thing in
+  CI that imports any of this stack, it needs no GPU (aiter falls back to arch
+  "cpu" when `rocminfo` finds nothing), and it fails the build if the prebuilt
+  module is missing — the gap that let three import-broken images ship green.
 - Runtime libs: `libnuma` (vLLM numa lookup on `import vllm`) + `libgomp1` —
   torch links `libgomp.so.1` (OpenMP), which the lean runtime base does NOT
   carry, so `import torch` (and thus `import vllm`) fails without it. Verified on
-  gfx1151 hardware 2026-07-06.
+  gfx1151 hardware 2026-07-06. Plus `git` (2026-08-14): aiter's
+  `csrc/cpp_itfs/utils.py` runs `git rev-parse --short HEAD` at MODULE level on
+  every `import aiter` and catches only `CalledProcessError`, so a missing binary
+  is a hard `FileNotFoundError` (git present but no repo — our case — is fine).
+  This port only: no other image installs aiter. NB finetuning's flash-attn does
+  `from aiter.ops.triton... import ...` when `FLASH_ATTENTION_TRITON_AMD_ENABLE`
+  is TRUE (it is), but its install_requires for the triton backend is only
+  einops+triton, so no aiter is installed there — worth a look on hardware, but
+  not this batch.
+- The full kit a RUNTIME aiter JIT would need, measured in the box while
+  debugging: g++, python3-dev, `HIP_DEVICE_LIB_PATH` pointing into the pip SDK's
+  `lib/llvm/amdgcn/bitcode`, `LIBRARY_PATH` plus a hand-made
+  `libamdhip64.so -> libamdhip64.so.7` symlink (the pip SDK ships only the
+  versioned lib), and git. That is a build image, not a runtime — which is the
+  argument for prebuilding the one module the import path needs.
 - Prebuilt wheels + the pure-python FP8 kernel tree come from vllm-artifacts.
 - Runtime shell env + banner (upstream ships in `/etc/profile.d`):
   `01-rocm-env-for-triton.sh` sets the gfx1151/Triton/vLLM serve-time env;

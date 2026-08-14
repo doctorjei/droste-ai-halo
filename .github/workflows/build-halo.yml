@@ -257,6 +257,7 @@ jobs:
             ARTIFACTS_IMAGE=${{ env.NS }}/droste-${{ matrix.name }}-build-halo:${{ github.sha }}
             ROCM_INDEX_URL=${{ env.ROCM_INDEX_URL }}
             TORCH_VERSION=${{ env.TORCH_VERSION }}
+            TORCHVISION_VERSION=${{ env.TORCHVISION_VERSION }}
             GFX_TARGET=${{ env.GFX_TARGET }}
           cache-from: type=registry,ref=${{ env.NS }}/droste-${{ matrix.name }}-halo:buildcache
           cache-to: type=registry,ref=${{ env.NS }}/droste-${{ matrix.name }}-halo:buildcache,mode=max

@@ -2074,6 +2074,37 @@ status_width() {   # name...
   return 0
 }
 
+# WHERE THE IN-PROGRESS TEXT SITS. It used to start in the tag column, so a
+# frame like "removing old (999s)" ran 15 columns PAST the end of [OK] (Jei,
+# live test). It now starts TICK_BACK columns left of the tag, which keeps the
+# widest realistic frame inside the tag's own right edge:
+#   tag column      = 2 + STATUS_W          ("  " indent + the name column)
+#   [OK] ends at      2 + STATUS_W + 4      ([ERROR] is 3 wider)
+#   widest frame    = "removing old (999s)" = 19
+#   22 back         ⇒ ends 2 + STATUS_W - 3, i.e. 7 short of [OK]'s end.
+# Two guards keep that true for every real name and terminal:
+#   FLOOR — never left of the name + one space (the pad would stop working and
+#           the frame would push RIGHT instead). Of the real names only
+#           "droste-finetuning-halo-server..." (32) reaches it, and only by 2
+#           columns: that one line ticks 20 back rather than 22.
+#   CAP   — never so far right that the frame could pass [OK]'s end anyway (a
+#           narrow terminal clamps STATUS_W, which moves the tag left).
+# The column is the same for every phase (only the CAP looks at the text), so
+# the phase words line up with each other as well as under the tag.
+TICK_BACK=22
+TICK_PHASE="removing old"    # the widest phase word: it sizes the shared column
+tick_col() {   # phase elapsed → column, relative to the two-space indent
+  local need col room floor
+  need=$(( ${#1} + ${#2} + 4 ))          # "<phase> (<el>s)"
+  col=$(( STATUS_W - TICK_BACK ))
+  room=$(( STATUS_W + 4 - need ))        # right edge of the [OK] tag
+  [[ $col -gt $room ]] && col=$room
+  floor=$(( ${#STATUS_NAME} + 1 ))
+  [[ $col -lt $floor ]] && col=$floor
+  [[ $col -lt 0 ]] && col=0
+  printf '%s' "$col"
+}
+
 # A STATUS LINE HAS A LIFETIME, not just an ending: it opens the moment the
 # work starts (so a slow step can never be mistaken for a hang), is repainted
 # while the work runs, and is completed in place by the [OK]/[ERROR] tag.
@@ -2087,20 +2118,30 @@ status_width() {   # name...
 # completion line. Never a per-second frame there — that would spam a log.
 STATUS_OPEN=0     # 1 = a partial (unterminated) status line is on screen
 STATUS_NAME=""    # what that line names, for the repaints
+STATUS_COL=0      # how far that partial line was padded (the ticker column)
 
+# The open line stops at the TICKER column, not the tag column: in --plain
+# there is no way back, so whatever prints next (a phase word, or the padding
+# up to the tag) has to start from a column that leaves room for it.
 status_start() {   # name
   STATUS_NAME=$1
-  printf '  %s%-*s%s' "$C_TEXT" "$STATUS_W" "$1" "$RESET"
+  STATUS_COL=$(tick_col "$TICK_PHASE" "")
+  printf '  %s%-*s%s' "$C_TEXT" "$STATUS_COL" "$1" "$RESET"
   STATUS_OPEN=1
   return 0
 }
 
 # The head of a completed line: repainted from column 0 when the terminal can
-# do that, otherwise emitted only if nothing already opened the line.
+# do that; otherwise the open line is simply padded the rest of the way to the
+# tag column (or drawn whole, when nothing opened it).
 status_head() {   # name
+  local n
   if [[ -n $CR ]]; then
     printf '%s  %s%-*s%s' "$CR" "$C_TEXT" "$STATUS_W" "$1" "$RESET"
-  elif [[ $STATUS_OPEN -eq 0 ]]; then
+  elif [[ $STATUS_OPEN -eq 1 ]]; then
+    n=$(( STATUS_W - STATUS_COL )); [[ $n -lt 1 ]] && n=1
+    printf '%*s' "$n" ""
+  else
     printf '  %s%-*s%s' "$C_TEXT" "$STATUS_W" "$1" "$RESET"
   fi
   STATUS_OPEN=0
@@ -2142,15 +2183,18 @@ status_err() {   # name log-path
 # finishes inside the first second never paints a frame at all — the completion
 # simply overwrites the line status_start opened.
 run_step() {   # phase log command...
-  local phase=$1 log=$2 pid rc=0 t0 el shown=-1
+  local phase=$1 log=$2 pid rc=0 t0 el shown=-1 col
   shift 2
   if [[ -z $CR ]]; then
-    # --plain: announce the phase on its own line, no ticker.
+    # --plain: announce the phase on its own line, no ticker. Same column as
+    # the repainting mode uses, so the two read alike.
+    col=$(tick_col "$phase" "")
     if [[ $STATUS_OPEN -eq 1 ]]; then
+      # status_start already padded to that column: the phase lands on it.
       printf '%s%s%s\n' "$C_SVC" "$phase" "$RESET"
       STATUS_OPEN=0
     else
-      printf '  %s%-*s%s%s%s%s\n' "$C_TEXT" "$STATUS_W" "$STATUS_NAME" "$RESET" \
+      printf '  %s%-*s%s%s%s%s\n' "$C_TEXT" "$col" "$STATUS_NAME" "$RESET" \
         "$C_SVC" "$phase" "$RESET"
     fi
     "$@" >>"$log" 2>&1 || rc=$?
@@ -2163,7 +2207,8 @@ run_step() {   # phase log command...
     el=$(( SECONDS - t0 ))
     if [[ $el -gt $shown ]]; then
       shown=$el
-      printf '%s  %s%-*s%s%s%s (%ss)%s' "$CR" "$C_TEXT" "$STATUS_W" "$STATUS_NAME" \
+      col=$(tick_col "$phase" "$el")
+      printf '%s  %s%-*s%s%s%s (%ss)%s' "$CR" "$C_TEXT" "$col" "$STATUS_NAME" \
         "$RESET" "$C_SVC" "$phase" "$el" "$EL"
     fi
     sleep 0.25

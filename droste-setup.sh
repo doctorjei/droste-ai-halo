@@ -256,17 +256,17 @@ if [[ $PLAIN -eq 1 ]]; then
   C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
-  C_EXH="" C_FILE="" C_ERR=""
+  C_EXH="" C_FILE="" C_ERR="" C_STOPW="" C_STOPT=""
   C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
   C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
   C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_SGRP="" C_MOPT="" C_MCAT=""
-  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP="" C_IMGN=""
+  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP=""
   C_PATHB="" C_PATHG=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
   CR="" EL="" BAR_F="#" BAR_E="-"
-  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HstSv.
+  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
   # The ASCII glyph already carries its own brackets, so the Legend adds none
   # (GB_L/GB_R empty). Jei's rev-2 spelling is [Y]/[N]/[?] (it supersedes the
   # earlier [+]/[-]/[?], and only here — no other ASCII fallback changed).
@@ -303,6 +303,13 @@ else
   C_EXH=$'\e[1;4;97m'   # Executing-section headers (same SGR as C_HDR)
   C_FILE=$'\e[3;37m'    # emitted file names + the closing "Wrote NOTES.md."
   C_ERR=$'\e[1;91m'     # the [ERROR] tag of a failed pull/create status line
+  # The word "stop" inside the Shortcuts parenthetical — the one word in it the
+  # reader has to TYPE. Its own entry rather than a borrowed one: C_BAD is
+  # 0;91 (not bold), and C_ERR/C_ARROW mean "this failed" / "aside follows"
+  # everywhere else. Deliberately NOT italic: 3;37 renders bold-bright on Jei's
+  # terminal, which is why the parenthetical is coloured instead of slanted.
+  C_STOPW=$'\e[1;91m'   # ...and its tail, italic grey. Reset-prefixed on purpose:
+  C_STOPT=$'\e[0;3;37m'  # it follows the bold red above and must not inherit it.
   # Answer PROMPTS (the "<text> [options] {:|?} " line). Deliberately a
   # different bracket colour from the option LISTS above them: in a prompt the
   # bracket is punctuation around the choice, in a list it indexes the row.
@@ -315,19 +322,26 @@ else
   C_OPTD=$'\e[1;92m' C_OPTN=$'\e[1;94m'
   C_CTR=$'\e[0;33m'     # box table: Container column
   C_SVCN=$'\e[1;95m'    # box table: Service column
-  # Per-box summary box (C_SGRP = its "* Paths" / "* Server" group headers).
-  C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[1;94m' C_SVAL=$'\e[1;96m'
-  C_SGRP=$'\e[1;4;95m'
+  # Per-box summary box: C_SGRP = its "* Paths" / "* Server" group headers,
+  # C_SHDR = the "+ Data Path:" row labels (body-text grey — the label says what
+  # the row is, the VALUE is what the eye is looking for).
+  C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[0;37m' C_SVAL=$'\e[1;96m'
+  C_SGRP=$'\e[1;4;94m'
   C_MOPT=$'\e[1;92m'    # mitigation line: the option applied (fuse/copy/ignore)
   C_MCAT=$'\e[1;94m'    # mitigation line: the path categories it applies to
-  # Quit notice + the two detected/present listings + inline path emphasis.
-  C_QTXT=$'\e[3;37m'    # quit notice body (light grey italic)
+  # Quit notice + the detected-configurations listing + inline path emphasis.
+  # LEAK-PRONE BY CONSTRUCTION (fixed): "3;37" adds italic and sets the
+  # foreground but clears NO weight, so re-entering it after a bold fragment on
+  # the same line inherits the bold. This one re-enters twice (after "exit" and
+  # after "quit"), hence the explicit leading reset. Its siblings C_SVC / C_FILE
+  # are the same shape but only ever open a line or follow a RESET, so they are
+  # left exactly as they are.
+  C_QTXT=$'\e[0;3;37m'  # quit notice body (light grey italic)
   C_QEXIT=$'\e[1;93m'   # the word "exit" in the quit notice
   C_QKEY=$'\e[1;92m'    # the word "quit" (what the user actually types)
   C_DETH=$'\e[1;3;4;95m'  # "Previous box setup configurations detected:"
   C_DETN=$'\e[0;33m'    # box names in the detected-configurations listing
   C_SELP=$'\e[1;3;95m'  # "Select the boxes you wish to edit, modify, or rebuild."
-  C_IMGN=$'\e[1;92m'    # box names in the images-already-present listing
   C_PATHB=$'\e[1;94m'   # inline emphasis, bold bright blue (paths / keywords)
   C_PATHG=$'\e[1;92m'   # inline emphasis, bold bright green (paths)
   # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
@@ -335,7 +349,7 @@ else
   CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
   # The emoji glyphs bring their own color, so the state cell resets to bare.
   C_GLYPH=$RESET
-  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HstSv.
+  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
   # ⚫ covers NA *and* unknown, so there is no separate "unknown" glyph. The
   # Legend wraps the emoji in its own brackets (GB_L/GB_R).
   GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
@@ -348,9 +362,9 @@ else
 fi
 
 say()  { printf '%s\n' "$*"; }
-warn() { printf 'WARNING: %s\n' "$*" | fold -s -w 79; }
+warn() { printf 'WARNING: %s\n' "$*" | fold -s -w "$(disp_width)"; }
 die()  { printf 'droste-setup.sh: %s\n' "$*" >&2; exit 1; }
-wrap() { printf '%s\n' "$*" | fold -s -w 79; }
+wrap() { printf '%s\n' "$*" | fold -s -w "$(disp_width)"; }
 
 section() {   # ── Name ──────... divider, 78 cols.  name [intro]
   # "intro" = the opening sections (Preflight, Resource Path), which Jei drew
@@ -359,7 +373,7 @@ section() {   # ── Name ──────... divider, 78 cols.  name [intro
   # rather than wrapping onto a second line of stray divider characters.
   local name=$1 style=${2:-} line fill i n w lcol=$C_LABEL
   [[ $style == intro ]] && lcol=$C_LABEL2
-  w=$(term_width); [[ $w -gt 78 ]] && w=78
+  w=$(disp_width)
   n=$(( w - ${#name} - 5 ))
   [[ $n -lt 1 ]] && n=1
   fill=""
@@ -553,6 +567,30 @@ term_width() {
   case "$w" in ''|*[!0-9]*) w=80 ;; esac
   w=$(( w - 1 )); [[ $w -lt 59 ]] && w=59
   printf '%s' "$w"
+}
+
+# THE DRAWN WIDTH of everything this script prints: the design is 78 columns
+# and it does NOT stretch — a wide terminal shows the same shape as an 80-column
+# one, because these blocks are read as a fixed layout, not as flowed text. A
+# NARROW terminal clamps down to it, which is what keeps a 60-column phone from
+# ragged-wrapping every table row. Every budget, pad and elision below measures
+# against this, never against the raw terminal.
+DESIGN_W=78
+disp_width() {
+  local w
+  w=$(term_width)
+  [[ $w -gt $DESIGN_W ]] && w=$DESIGN_W
+  printf '%s' "$w"
+}
+
+# Clip a plain (non-path) string to a column budget, marking the cut with the
+# same three literal dots fit_path uses. Paths keep their own shrinker, which
+# protects their shape; this is for prose cells like the box-table description.
+clip() {   # text width
+  local t=$1 w=$2
+  if [[ ${#t} -le $w ]]; then printf '%s' "$t"; return 0; fi
+  if [[ $w -lt 4 ]]; then printf '%.*s' "$w" "$t"; return 0; fi
+  _fp_cut "$t" $(( w - 3 ))
 }
 
 home_disp() {  # compress $HOME → ~ for display
@@ -909,7 +947,6 @@ declare -A CFG_MODE          # box → ""|fuse|copy|ignore  (overlay mitigation)
 declare -A CFG_FS            # box → probed fstype of the data dir
 declare -A PATHS             # "box:label" → absolute host path
 declare -A EX_INI EX_CTR     # detection (1/"" ; EX_CTR = container state)
-declare -A EX_IMAGE          # box → 1 when its image is already pulled locally
 declare -A EXD_PATH          # "box:label" → parsed host path from the old ini
 declare -A EXD_PORT EXD_BOXSV EXD_HSTSV EXD_MODE   # parsed defaults
 declare -A SESSION_STATE     # box → ACTIVE|STOPPED (what this run did)
@@ -1119,19 +1156,6 @@ detect_existing() {
   return 0
 }
 
-# Which selected boxes already have their image locally. `image inspect` works
-# on podman AND docker (`image exists` is podman-only) and is quiet either way.
-detect_images() {
-  local box img
-  EX_IMAGE=()
-  [[ -n $RUNTIME ]] || return 0
-  for box in "${SELECTED[@]}"; do
-    img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
-    "$RUNTIME" image inspect "$img" >/dev/null 2>&1 && EX_IMAGE[$box]=1
-  done
-  return 0
-}
-
 # The conditional block under the resource-path answer: which definition files
 # the just-named resource path already holds. Printed BEFORE the box table
 # because it is the reason a re-runner is about to pick a subset.
@@ -1160,7 +1184,7 @@ detected_block() {
 # cannot place are named back rather than silently dropped, and the prompt
 # repeats.
 select_boxes() {
-  local box tok idx pick clean bad
+  local box tok idx pick clean bad dw
   declare -A want=()
   if [[ ${#ARG_BOXES[@]} -gt 0 ]]; then
     for tok in "${ARG_BOXES[@]}"; do
@@ -1172,14 +1196,21 @@ select_boxes() {
     # Columns land at 2 / 8 / 21 / 34 / 69. Each column carries its own colour
     # THROUGH its padding, so the row reads as four coloured fields, and the
     # [All] row wears the whole default-option scheme of an option list.
-    printf '  %s %-5s%-13s%-13s%-35s%-5s%s\n' \
-      "$C_SUB" "#" "Container" "Service" "Description" "Port" "$RESET"
+    # DESCRIPTION IS THE ELASTIC COLUMN: it is the only prose here, so a narrow
+    # terminal takes its width out of that cell (clipped, not wrapped) and every
+    # other column keeps its place. It never grows past its drawn 35.
+    dw=$(( $(disp_width) - 39 ))
+    [[ $dw -gt 35 ]] && dw=35
+    [[ $dw -lt 8 ]] && dw=8
+    printf '  %s %-5s%-13s%-13s%-*s%-5s%s\n' \
+      "$C_SUB" "#" "Container" "Service" "$dw" "Description" "Port" "$RESET"
     idx=1
     for box in "${BOXES[@]}"; do
-      printf '  %s[%s%d%s]%s   %s%-13s%s%-13s%s%-35s%s%s%s\n' \
+      printf '  %s[%s%d%s]%s   %s%-13s%s%-13s%s%-*s%s%s%s\n' \
         "$C_TBRK" "$C_TIDX" "$idx" "$C_TBRK" "$RESET" \
         "$C_CTR" "$box" "$C_SVCN" "${BOX_SERVICE[$box]}" \
-        "$C_TEXT" "${BOX_DESC[$box]}" "$C_PORT" "${BOX_HOST_PORT[$box]}" "$RESET"
+        "$C_TEXT" "$dw" "$(clip "${BOX_DESC[$box]}" "$dw")" \
+        "$C_PORT" "${BOX_HOST_PORT[$box]}" "$RESET"
       idx=$((idx+1))
     done
     printf '  %s[%s%s%s]%s%s%s\n' \
@@ -1297,24 +1328,22 @@ box_options() {  # box-with-settings...
   return 0
 }
 
-# The section itself (A6): each part renders only when it has something to say,
-# so a virgin system never sees it at all.
+# The section itself (A6): it exists to ask K/m/r about SETTINGS, so it renders
+# only when a selected box actually has settings to keep/modify/recreate —
+# banner included. A virgin system never sees it, and neither does a system
+# whose images are pulled but whose settings files are gone (Jei, live test:
+# the images listing was cut entirely — nothing here reports on images).
 existing_settings() {
   local box
-  local -a present=() haveset=()
+  local -a haveset=()
   for box in "${SELECTED[@]}"; do
-    [[ -n "${EX_IMAGE[$box]:-}" ]] && present+=("$box")
     [[ -n "${EX_INI[$box]:-}" ]] && haveset+=("$box")
   done
-  if [[ ${#present[@]} -gt 0 || ${#haveset[@]} -gt 0 ]]; then
-    section "Existing Settings"
-  fi
-  if [[ ${#present[@]} -gt 0 ]]; then
-    say ""
-    printf '  %s%s%s\n' "$C_HDR" \
-      "The following Droste images for halo are already present:" "$RESET"
-    printf '  %s\n' "$(name_list "$C_IMGN" "${present[@]}")"
-  fi
+  # The SECTION is drawn only when a selected box has settings to ask about.
+  # box_options runs EITHER WAY: besides the K/m/r question it is what sorts
+  # every selected box into CONFIGURE/KEEP (a box with no settings is "new",
+  # and nobody is asked anything about it).
+  [[ ${#haveset[@]} -gt 0 ]] && section "Existing Settings"
   box_options ${haveset[@]+"${haveset[@]}"}
   return 0
 }
@@ -1506,7 +1535,10 @@ general_setup() {
     *) HOST_MODE=n ;;
   esac
   subhdr "Storage Paths"
-  ask_yn "Store all service data in $(emph "$(home_disp "$EMIT_DIR")/<box>/data")" \
+  # The prompts name the BASE, not the templated leaf (Jei, live test): the
+  # per-box "<base>/<box>/data" shape is the installer's business, and spelling
+  # it out here read as though the literal string were the answer.
+  ask_yn "Store all service data in $(emph "$(home_disp "$EMIT_DIR")")" \
     "$SEED_DATA_Q1"
   if [[ $ANS_YN -eq 1 ]]; then
     DATA_AUTO=1
@@ -1521,7 +1553,9 @@ general_setup() {
   # The other CRITICAL binds (input/output/workspace). Answering this places
   # them all; declining it hands them back to the per-box "<Box> Paths" questions (A2).
   if [[ $wants_other -eq 1 ]]; then
-    ask_yn "Store other data $(emph "(input, output, workspace, etc.)") in $(emphg "$(home_disp "$(data_root)")/<box>")" \
+    # Same rule, and the base shown is the SERVICE-DATA one — so a different
+    # base just chosen above is what this question offers to share.
+    ask_yn "Store other data $(emph "(input, output, workspace, etc.)") in $(emphg "$(home_disp "$(data_root)")")" \
       "$SEED_OTHER_Q1"
     if [[ $ANS_YN -eq 1 ]]; then
       OTHER_AUTO=1
@@ -1569,7 +1603,7 @@ MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
 # One continuous block of prose, word-wrapped to the screen and indented two.
 prose() {   # text
   local w line
-  w=$(( $(term_width) - 2 ))
+  w=$(( $(disp_width) - 2 ))
   while IFS= read -r line; do
     printf '  %s%s%s\n' "$C_TEXT" "$line" "$RESET"
   done < <(printf '%s\n' "$1" | fold -s -w "$w" | sed 's/[[:space:]]*$//')
@@ -1656,7 +1690,6 @@ reask_slot() {  # slot → 0 when re-asked
       EX_INI=() EX_CTR=() EXD_PATH=()
       EXD_PORT=() EXD_BOXSV=() EXD_HSTSV=() EXD_MODE=()
       detect_existing
-      detect_images
       existing_settings
       seed_globals
       ;;
@@ -1901,6 +1934,9 @@ summary_box() {  # box banner-width
     label=${pair%%:*}
     keys+=("${BIND_ROW[$label]}:") vals+=("$(home_disp "${PATHS["$box:$label"]}")") kind+=(v)
   done
+  # One blank line between the groups (Jei) — pushed only when the Paths group
+  # actually produced rows, so a box with nothing above it grows no leading gap.
+  [[ ${#kind[@]} -gt 0 ]] && { keys+=("") vals+=("") kind+=(s); }
   keys+=("Server") vals+=("") kind+=(g)
   keys+=("Port:") vals+=("${CFG_PORT[$box]}") kind+=(v)
   keys+=("Start w Box:") vals+=("$(yn_word "${CFG_BOXSV[$box]:-}")") kind+=(v)
@@ -1915,13 +1951,19 @@ summary_box() {  # box banner-width
     w=$(( 4 + SUM_HDR_W + ${#vals[i]} ))
     [[ $w -gt $inner ]] && inner=$w
   done
-  avail=$(( $(term_width) - 4 ))
+  avail=$(( $(disp_width) - 4 ))
   [[ $inner -gt $avail ]] && inner=$avail
   local fill="" v
   # shellcheck disable=SC2324  # string append of the border char, not math
   for (( i = 0; i < inner; i = i + 1 )); do fill+=$BOXH; done
   printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXTL" "$fill" "$BOXTR" "$RESET"
   for (( i = 0; i < n; i = i + 1 )); do
+    if [[ ${kind[i]} == s ]]; then
+      # The spacer: borders and nothing else.
+      printf '  %s%s%*s%s%s\n' \
+        "$C_SBOX" "$BOXV" "$inner" "" "$BOXV" "$RESET"
+      continue
+    fi
     if [[ ${kind[i]} == g ]]; then
       # A group header: "* Name", underlined — and the underline is why the
       # RESET lands before the padding (a coloured blank is a blank, an
@@ -1990,7 +2032,7 @@ ask_ladder() {
   section "Records & Startup"
   sub "Please indicate your selection for box preparation:"
   opt_row w "" "Write definition(s) only (ini)" 4 "$(isdef w "$letters")"
-  opt_row p "" "Pull image(s) & write definition(s)" 4 "$(isdef p "$letters")"
+  opt_row p "" "Write definition(s) & pull image(s)" 4 "$(isdef p "$letters")"
   opt_row c "" "Pull, write, & create box(es)" 4 "$(isdef c "$letters")"
   opt_row A "" "All of the above, and start enabled server(s)" 4 "$(isdef A "$letters")"
   say ""
@@ -2191,7 +2233,7 @@ status_width() {   # name...
   local n max=0 w avail
   for n in "$@"; do [[ ${#n} -gt $max ]] && max=${#n}; done
   w=$(( max + 3 ))
-  avail=$(( $(term_width) - 2 - 7 ))    # indent + "[ERROR]"
+  avail=$(( $(disp_width) - 2 - 7 ))    # indent + "[ERROR]"
   [[ $w -gt $avail ]] && w=$avail
   [[ $w -lt 1 ]] && w=1
   STATUS_W=$w
@@ -2508,7 +2550,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$img..." "$(term_width)" "$BAR_F" "$BAR_E" "$PLAIN" 2>>"$log" \
+        "$img..." "$(disp_width)" "$BAR_F" "$BAR_E" "$PLAIN" 2>>"$log" \
     || rc=$?
   return $rc
 }
@@ -2923,91 +2965,249 @@ box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
   fi
 }
 
-# The table geometry (Jei's rev-2 columns):
+# The table geometry:
 #
 #   Service     On  BoxSv  HstSv  Port  Important Notes
 #   col 0       12  16     23     30    36
 #
-# The three glyph cells sit at 12 / 17 / 24 — inside their headers for BOTH cell
-# widths (2-column emoji, 3-column ASCII), which is what lets one set of numbers
-# serve both. Only the Notes column is responsive; everything left of it is
-# fixed so the columns line up between runs.
-DASH_NOTES=36
-dashboard() {
-  local box st stg g note data row port budget
-  budget=$(( $(term_width) - DASH_NOTES ))
-  say ""
+# The host key is HstSv in BOTH tails (Jei): at five characters it leaves the
+# header field's two trailing spaces intact, so Port is never crowded — the
+# six-character spelling ate one of them and read as a collision.
+#
+# A pull-and-write run drops the [On] cell (no container exists to report on).
+# Its remaining columns are NOT the full layout minus a constant: the glyph
+# columns of each layout are hand-tuned (see dash_table) because "centred under
+# that header" is an eye judgement about double-width glyphs, not arithmetic.
+# Only the Notes column is responsive; everything left of it is fixed so the
+# columns line up between runs.
+DASH_HOST_KEY="HstSv"
+
+# ── Final-report blocks (shared by the pull-and-write tail and the full one) ─
+# NOTHING here breaks a line by hand. The two hard breaks that used to live in
+# this section (the Legend's host-boot key and the Shortcuts'
+# "(stop to stop)") were transcription artifacts of a 60-column mockup, and they
+# broke every terminal wide enough not to need it — the rows below all fit 80.
+#
+# dash_legend / dash_table — ONE code path each, for both tails. A
+# pull-and-write run has no [On] cell (no container exists whose state it could
+# report); that is a single optional segment in each, plus the layout's own
+# column table. The CODE is shared; only the numbers differ.
+dash_legend() {   # with-on(0|1)
+  local on=$1 hl=$DASH_HOST_KEY onkey="" plain
   hdr "Legend"
-  # Two lines for the keys (they do not fit one on a phone) and one for the
-  # values. --plain spells the values [Y]/[N]/[?]; the emoji bring their own
-  # colour, so the glyph cell resets to bare (C_GLYPH).
-  printf '%sServer  [%s%s%s] Running?  [%s%s%s] Start with Box%s\n' \
-    "$C_TEXT" "$C_SUBJ" "On" "$C_TEXT" "$C_SUBJ" "BoxSv" "$C_TEXT" "$RESET"
-  printf '%s        [%s%s%s] Start at Host Boot%s\n' \
-    "$C_TEXT" "$C_SUBJ" "HstSv" "$C_TEXT" "$RESET"
-  printf '%sValue   %s%s%s%s%s yes  %s%s%s%s%s no  %s%s%s%s%s NA / unknown%s\n' \
-    "$C_TEXT" \
-    "$GB_L" "$C_GLYPH" "$GS_YES" "$C_TEXT" "$GB_R" \
-    "$GB_L" "$C_GLYPH" "$GS_NO" "$C_TEXT" "$GB_R" \
-    "$GB_L" "$C_GLYPH" "$GS_NA" "$C_TEXT" "$GB_R" "$RESET"
-  say ""
+  [[ $on -eq 1 ]] && onkey="[$C_SUBJ""On$C_TEXT] Running?  "
+  # The keys ride ONE line when the drawn width can hold them, and stack onto a
+  # second when it cannot — the layout Jei's phone-narrow mockup showed. The
+  # measurement is of the PLAIN text: escape bytes occupy no columns.
+  plain="Server  "
+  [[ $on -eq 1 ]] && plain+="[On] Running?  "
+  plain+="[BoxSv] Start with Box  [$hl] Start at Host Boot"
+  if [[ ${#plain} -gt $(disp_width) ]]; then
+    printf '%sServer  %s[%s%s%s] Start with Box%s\n' \
+      "$C_TEXT" "$onkey" "$C_SUBJ" "BoxSv" "$C_TEXT" "$RESET"
+    printf '%s        [%s%s%s] Start at Host Boot%s\n' \
+      "$C_TEXT" "$C_SUBJ" "$hl" "$C_TEXT" "$RESET"
+  else
+    printf '%sServer  %s[%s%s%s] Start with Box  [%s%s%s] Start at Host Boot%s\n' \
+      "$C_TEXT" "$onkey" "$C_SUBJ" "BoxSv" "$C_TEXT" "$C_SUBJ" "$hl" "$C_TEXT" "$RESET"
+  fi
+  # The values ride their own column table (below): tokens on one set of
+  # columns, words on another.
+  if [[ $on -eq 1 ]]; then
+    dash_values "8 25 49" "13 31 55"
+  else
+    dash_values "10 34 60" "16 40 65"
+  fi
+  return 0
+}
+
+# The Legend's value row. ONE builder, a column table per layout — hand-tuned
+# from Jei's drawings, because where a double-width glyph "looks right" under a
+# word is an eye judgement. Padding to ABSOLUTE columns is what lets the same
+# table serve both cell widths: the 3-column [Y] of --plain eats one column of
+# the gap that follows it, so every WORD still lands where the emoji put it.
+dash_values() {   # "tok tok tok" "word word word"
+  local -a vtok=() vlab=() vg=("$GS_YES" "$GS_NO" "$GS_NA")
+  local -a vw=("yes" "no" "NA / unknown")
+  local i n row dw=5
+  read -r -a vtok <<<"$1"
+  read -r -a vlab <<<"$2"
+  row=$C_TEXT"Value"
+  for (( i = 0; i < 3; i = i + 1 )); do
+    n=$(( vtok[i] - dw )); [[ $n -lt 0 ]] && n=0
+    row+=$(printf '%*s' "$n" "")$GB_L$C_GLYPH${vg[i]}$C_TEXT$GB_R
+    dw=$(( vtok[i] + ${#GB_L} + W_STATE + ${#GB_R} ))
+    n=$(( vlab[i] - dw )); [[ $n -lt 0 ]] && n=0
+    row+=$(printf '%*s' "$n" "")${vw[i]}
+    dw=$(( vlab[i] + ${#vw[i]} ))
+  done
+  printf '%s%s\n' "$row" "$RESET"
+  return 0
+}
+
+dash_table() {   # with-on(0|1)
+  local on=$1 hl=$DASH_HOST_KEY box st stg g note data row port budget head
+  local -a gcol=() glyph=()
+  local pcol ncol i n dw
+  # HAND-TUNED GLYPH COLUMNS, one set per layout (Jei): a centering FORMULA
+  # cannot be right here — the glyphs are double-width, the ASCII fallback is
+  # not, and "looks centred under that header" is an eye judgement, not an
+  # arithmetic one. These are the columns from his two drawings; the row builder
+  # below pads to them absolutely, so both cell widths land in the same place.
+  if [[ $on -eq 1 ]]; then
+    # ...and per MODE for the middle column: [N] is a column wider than the
+    # glyph, and at 18 it reads as crowding BoxSv's right edge.
+    if [[ $PLAIN -eq 1 ]]; then gcol=(12 17 24); else gcol=(12 18 24); fi
+    pcol=30; ncol=36
+  else
+    gcol=(13 20);    pcol=26; ncol=32
+  fi
+  budget=$(( $(disp_width) - ncol ))
   # Underline the WORDS only — the column padding stays plain.
-  printf '%s%s%s%s%s%s%s%s\n' \
-    "$(pad_cell_u "Service" 7 12)" "$(pad_cell_u "On" 2 4)" \
-    "$(pad_cell_u "BoxSv" 5 7)" "$(pad_cell_u "HstSv" 5 7)" \
-    "$(pad_cell_u "Port" 4 6)" \
-    "$C_HDR" "Important Notes" "$RESET"
+  head=$(pad_cell_u "Service" 7 12)
+  [[ $on -eq 1 ]] && head+=$(pad_cell_u "On" 2 4)
+  head+=$(pad_cell_u "BoxSv" 5 7)$(pad_cell_u "$hl" ${#hl} 7)$(pad_cell_u "Port" 4 6)
+  printf '%s%s%s%s\n' "$head" "$C_HDR" "Important Notes" "$RESET"
   for box in "${SELECTED[@]}"; do
-    st=$(box_state "$box")
-    case "$st" in
-      ACTIVE)  stg=$GS_YES ;;
-      STOPPED) stg=$GS_NO ;;
-      # `none` and UNKNOWN both render ⚫: "not there" and "could not ask" look
-      # the same to the reader, and box_state keeps the distinction internally.
-      *)       stg=$GS_NA ;;
-    esac
-    row=$C_SVC$(pad_cell "$box" ${#box} 12)$C_GLYPH
-    row+=$(pad_cell "$stg" "$W_STATE" 5)
+    glyph=()
+    if [[ $on -eq 1 ]]; then
+      st=$(box_state "$box")
+      case "$st" in
+        ACTIVE)  stg=$GS_YES ;;
+        STOPPED) stg=$GS_NO ;;
+        # `none` and UNKNOWN both render ⚫: "not there" and "could not ask" look
+        # the same to the reader, and box_state keeps the distinction internally.
+        *)       stg=$GS_NA ;;
+      esac
+      glyph+=("$stg")
+    fi
     [[ -n "$(box_boxsv "$box")" ]] && g=$GS_YES || g=$GS_NO
-    row+=$(pad_cell "$g" "$W_STATE" 7)
+    glyph+=("$g")
     [[ -n "$(box_hstsv "$box")" ]] && g=$GS_YES || g=$GS_NO
-    row+=$(pad_cell "$g" "$W_STATE" 6)
+    glyph+=("$g")
+    # Pad to each column ABSOLUTELY, tracking the display width written so far —
+    # which is the only way one set of columns can serve a 2-column glyph and a
+    # 3-column [Y] alike.
+    row=$C_SVC$(pad_cell "$box" ${#box} 12)$C_GLYPH
+    dw=12
+    for (( i = 0; i < ${#gcol[@]}; i = i + 1 )); do
+      n=$(( gcol[i] - dw )); [[ $n -lt 0 ]] && n=0
+      row+=$(printf '%*s' "$n" "")${glyph[i]}
+      dw=$(( gcol[i] + W_STATE ))
+    done
     port=$(box_port_disp "$box")
-    row+=$C_PORT$(pad_cell "$port" ${#port} 6)
+    n=$(( pcol - dw )); [[ $n -lt 0 ]] && n=0
+    row+=$(printf '%*s' "$n" "")$C_PORT$port
+    dw=$(( pcol + ${#port} ))
+    n=$(( ncol - dw )); [[ $n -lt 0 ]] && n=0
+    row+=$(printf '%*s' "$n" "")
     data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-}}"
     note=${BOX_NOTE[$box]//@DATA@/$(home_disp "${data:-~/droste/$box/data}")}
     [[ -n $note ]] && row+=$C_TEXT$(fit_note "$note" "$budget")
     printf '%s%s\n' "$row" "$RESET"
   done
-  say ""
+  return 0
+}
+
+# dash_shortcuts — the two doors. Label in body text; the command is decorated
+# executable / verb / target, with the <box> you substitute picked out in blue.
+# ONE container per box, so both doors take the SAME name.
+dash_shortcuts() {
   hdr "Shortcuts"
-  # Label in body text; the command is decorated executable / verb / target, with
-  # the <box> you substitute picked out in blue. ONE container per box, so the
-  # two doors take the SAME name.
-  printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" \
-    "Start/stop (background):" "$C_EXE" "podman " "$C_CMD" "start " \
-    "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET"
-  printf '%s%*s(%s%s%s%s%s)%s\n' "$C_TEXT" 26 "" \
-    "$C_SUBJ" "stop " "$C_SVC" "to stop" "$C_TEXT" "$RESET"
+  # "·<label:26><command>" plus the aside is 71 columns; when the drawn width
+  # cannot hold that, the ASIDE (not the command — that is copy-paste payload)
+  # moves under it, indented to the command column.
+  if [[ 71 -gt $(disp_width) ]]; then
+    printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" \
+      "Start/stop (background):" "$C_EXE" "podman " "$C_CMD" "start " \
+      "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET"
+    printf '%s%*s(%s%s%s%s%s)%s\n' "$C_TEXT" 26 "" \
+      "$C_STOPW" "stop" "$C_STOPT" " to stop" "$C_TEXT" "$RESET"
+  else
+    printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s %s(%s%s%s%s%s)%s\n' "$C_TEXT" "$BULLET" \
+      "Start/stop (background):" "$C_EXE" "podman " "$C_CMD" "start " \
+      "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET" \
+      "$C_TEXT" "$C_STOPW" "stop" "$C_STOPT" " to stop" "$C_TEXT" "$RESET"
+  fi
   printf '%s%s%-25s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" \
     "Enter (interactive):" "$C_EXE" "distrobox " "$C_CMD" "enter " \
     "$C_TGT" "droste-" "$C_PH" "<box>" "$C_TGT" "-halo" "$RESET"
-  say ""
-  # Same shape as the Shortcuts block above.
-  printf '%s%s%s\n' "$C_SUB" "Recreate (files in $(home_disp "$EMIT_DIR"))" "$RESET"
+  return 0
+}
+
+# The footnote every reporting tail ends on, above the pointer.
+dash_footnote() {
+  # The command at the end of the line is payload, so it wears the bold bright
+  # blue of every other copy-me fragment rather than the footnote's italic.
+  printf '%s%s%s%s%s%s\n' "$C_STAR" \
+    "*ComfyUI models scanned at start; to add more run: " \
+    "$RESET" "$C_PATHB" "hf download <shared cache>" "$RESET"
+  return 0
+}
+
+# The one-liner that rebuilds a box from what this run wrote. TITLED BY THE
+# CALLER: after a pull-and-write run the containers do not exist yet, so the
+# command CREATES ("Create / Recreate"); in the full report it is the recovery
+# move for containers that already exist ("Recreate"). Same block either way.
+dash_recreate() {   # title
+  printf '%s%s%s\n' "$C_SUB" "$1 (files in $(home_disp "$EMIT_DIR"))" "$RESET"
   printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "distrobox:" \
     "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
     "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo.ini" "$RESET"
-  say ""
-  # The command at the end of the line is payload, so it wears the bold bright
-  # blue of every other copy-me fragment rather than the footnote's italic.
-  printf '%s%s%s%s%s\n' "$C_STAR" \
-    "*ComfyUI models scanned at start; to add more run: " \
-    "$C_PATHB" "hf download <shared cache>" "$RESET"
+  return 0
+}
+
+# The final pointer, the one line every run ends on.
+dash_pointer() {
   printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
     "Definitions + full guide: $(home_disp "$EMIT_DIR") (ini, NOTES.md)" \
     "$RESET"
   say ""
+  return 0
+}
+
+dashboard() {
+  # WRITE-ONLY RUNS GET THE POINTER AND NOTHING ELSE (Jei, live test). Every
+  # block below — Legend, the status table, Shortcuts, Recreate, the ComfyUI
+  # footnote — reports on RUNTIME state: containers that exist, run, and serve.
+  # Rung w created none of that, so all of it would be noise or, worse, a table
+  # of dashes. The closing rule and "Wrote NOTES.md." are write_notes's, and
+  # NOTES.md itself is still written in full — it is what the pointer points at.
+  if [[ $RUNG == w ]]; then
+    dash_pointer
+    return 0
+  fi
+  # A PULL-AND-WRITE RUN gets an ADAPTED report (Jei's rev 2): images and
+  # definitions exist, containers do not — so the [On] column goes (there is no
+  # container whose state it could report) and the create one-liner comes BEFORE
+  # the Shortcuts, because you must create a box before you can start it. The
+  # BoxSv/HostSv glyphs are the settings this run just wrote.
+  if [[ $RUNG == p ]]; then
+    say ""
+    dash_legend 0
+    say ""
+    dash_table 0
+    say ""
+    dash_recreate "Create / Recreate"
+    say ""
+    dash_shortcuts
+    say ""
+    dash_footnote
+    dash_pointer
+    return 0
+  fi
+  say ""
+  dash_legend 1
+  say ""
+  dash_table 1
+  say ""
+  dash_shortcuts
+  say ""
+  # Here the containers DO exist, so the block keeps its original title.
+  dash_recreate "Recreate"
+  say ""
+  dash_footnote
+  dash_pointer
   return 0
 }
 
@@ -3032,7 +3232,6 @@ main() {
   detected_block
   select_boxes
 
-  detect_images
   existing_settings
   # Which files may seed a default is a K/m/r question, so the seeding runs
   # here — after Box Options, before the first question it feeds.

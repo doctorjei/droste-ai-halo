@@ -10,6 +10,13 @@
 # SERVICE would otherwise be expanded at spec-source time, before the env file.
 SERVICE=( llama-server )
 
+# ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
+# llama-server's native /health: 200 once the model is loaded, 503 while loading.
+# The 503 is deliberately NOT accepted (loading is not serving) — the podman
+# --health-start-period must cover the load, or the box restart-loops.
+HEALTH_PATH="/health"
+HEALTH_ACCEPT="ok"
+
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
 # LLAMA_ARG_* lines (llama-server reads them natively) + LLAMA_EXTRA_ARGS.

@@ -12,11 +12,21 @@
 # CRITICAL binds (checked AFTER the mounts; declare them as volume= lines in
 # distrobox.ini — the HF cache is satisfied by the auto-bound real home) →
 # OPTIONAL marker → templates.yaml seeding → ENV_FILE source → PRE_LAUNCH.
-# No exec — the service is started by the user (or not at all; distrobox is
-# the interactive lane). In-box mounting needs CAP_SYS_ADMIN + /dev/fuse:
-# additional_flags="--cap-add sys_admin --device /dev/fuse" in the ini.
+# No exec — pid1 is distrobox-init, which `eval`s this hook once per container
+# start and then goes into its keepalive loop. In-box mounting needs
+# CAP_SYS_ADMIN + /dev/fuse: additional_flags="--cap-add sys_admin --device
+# /dev/fuse" in the ini.
 # Idempotent: init_hooks run on every container start; every resolver mount
 # skips when its exact target is already a mountpoint.
+#
+# THE SERVER DOOR (merged-container shape): after the spec is applied, the hook
+# asks droste-serve.sh whether this start should also bring the box's SERVICE up
+# — the answer lives in server.env on the per-box data volume (SERVE=1, PORT=…),
+# not in this file and not in the container's baked env, so it is editable and
+# survives recreates. Nothing happens without that file, so an interactive-only
+# box behaves exactly as it did before. `podman start` replaying the init line is
+# what makes this the "server door"; podman's healthcheck restarting the
+# container is what supervises it (see droste-healthcheck.sh).
 set -euo pipefail
 
 export DROSTE_LANE=distrobox
@@ -61,6 +71,8 @@ fi
 RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
 # shellcheck source=/dev/null
 source "$RESOLVE_DIR/droste-resolve.sh"
+# shellcheck source=/dev/null
+source "$RESOLVE_DIR/droste-serve.sh"
 
 SPEC=${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}
 if [ ! -f "$SPEC" ]; then
@@ -99,3 +111,13 @@ trap 'ec=$?; if [ "$ec" -ne 0 ]; then { printf "droste-init-hook: resolver FAILE
 resolve::apply_spec 2>"$RESOLVE_LOG"
 # Success path: surface the resolver's own INFO/WARN lines (fuse fallback, etc.) too.
 cat "$RESOLVE_LOG" >&2
+
+# ── Server door ─────────────────────────────────────────────────────────────
+# MUST come after apply_spec: SERVICE is only final once ENV_FILE is sourced and
+# PRE_LAUNCH has run (llama/ds4/vllm rebuild the argv there). Deliberately NOT
+# guarded by the resolver's log/trap plumbing and deliberately `|| true`: a serve
+# problem must never fail the init hook — distrobox reports a failed hook as a
+# generic error and the box would become hard to enter, which is the opposite of
+# what we want when the service is the broken part. maybe_launch says nothing at
+# all unless server.env turns serving on.
+serve::maybe_launch || serve::warn "serve step failed (exit $?) — the box is still usable interactively."

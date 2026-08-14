@@ -9,6 +9,16 @@
 # translating the DS4_DROSTE_* vars (ds4 has no native per-flag env) into flags.
 SERVICE=( ds4-server )
 
+# ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
+# ds4-server has NO /health and NO / route. Source-verified against the pinned
+# kyuz0/ds4 @00e64ea (ds4_server.c, client_main): the complete route table is
+# GET /v1/models, GET /v1/models/<alias>, POST /v1/{messages,chat/completions,
+# responses,completions}, OPTIONS -> 204; everything else returns 404 "unknown
+# endpoint". GET /v1/models is the only unauthenticated 200 GET, so it is the
+# health endpoint. (A / probe would 404 forever and restart-loop the box.)
+HEALTH_PATH="/v1/models"
+HEALTH_ACCEPT="ok"
+
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/ds4.env (templates.yaml if_missing); carries active
 # DS4_DROSTE_* values + the commented full flag list + native DS4_* passthroughs.

@@ -83,15 +83,20 @@ RUN printf '%s\n' \
     'export LD_LIBRARY_PATH="$ROCM_PATH/lib:$ROCM_PATH/lib64:$LD_LIBRARY_PATH"' \
     > /etc/profile.d/rocm.sh
 
-# Shared runtime resolver + entrypoint + template applier. Baked under the
-# /opt/resources umbrella (with build-spec/templates/scripts) so all 5 ports inherit
-# ONE copy; the dir is on PATH so `droste-entrypoint.sh` is invocable bare (ports set
-# their own ENTRYPOINT). Base sets no ENTRYPOINT (ports opt in).
+# Shared runtime resolver + entrypoint + launch library + healthcheck + template
+# applier. Baked under the /opt/resources umbrella (with build-spec/templates/scripts)
+# so all 5 ports inherit ONE copy; the dir is on PATH so `droste-entrypoint.sh` is
+# invocable bare (ports set their own ENTRYPOINT). Base sets no ENTRYPOINT (ports opt
+# in) and deliberately NO `HEALTHCHECK`: the probe is opt-in per DEPLOYMENT
+# (droste-setup passes --health-cmd/--health-on-failure at create time), so the
+# existing server-lane containers keep their current, health-less `podman ps` shape.
 COPY resolve/droste-resolve.sh resolve/droste-entrypoint.sh \
-     resolve/droste-init-hook.sh resolve/apply_templates.py \
+     resolve/droste-init-hook.sh resolve/droste-serve.sh \
+     resolve/droste-healthcheck.sh resolve/apply_templates.py \
      /opt/resources/resolve/
 RUN chmod +x /opt/resources/resolve/droste-entrypoint.sh \
              /opt/resources/resolve/droste-init-hook.sh \
+             /opt/resources/resolve/droste-healthcheck.sh \
              /opt/resources/resolve/apply_templates.py
 ENV PATH=/opt/resources/resolve:$PATH
 

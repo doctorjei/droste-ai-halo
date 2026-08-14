@@ -110,6 +110,29 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   init_hooks run as root (HOME=/root), so it re-derives the distrobox USER's home
   (first uid >= 1000 in /etc/passwd; `DROSTE_USER_HOME` overrides) before applying
   the spec — that is what lets `$HOME`-relative CRITICALs see the host-home bind.
+  Since the merged-container work it ends by calling `serve::maybe_launch` (below).
+- `droste-serve.sh` — the shared SERVICE-launch library both doors run through:
+  `serve::exec_service` (server lane: the same foreground `exec "${SERVICE[@]}"`
+  as always) and `serve::maybe_launch` (distrobox lane: the "server door" of the
+  merged one-container shape). maybe_launch reads `/opt/data/server.env`
+  (`SERVE=1`, `PORT=<host port>`; shell-sourceable, read in a subshell so a bad
+  file can never fail the box), rewrites the port into the SERVICE argv
+  (replace-or-append `--port` — all five services take it), and starts the service
+  in the background as the BOX USER via `setpriv --reuid/--regid` (supplementary
+  groups inherited, so the GPU device groups survive; runuser/su would not).
+  Re-entrant by construction: a pid file on the data volume records
+  pid + process start time + a per-container-start token, so a re-run of the init
+  line adopts, skips or replaces the previous instance instead of double-starting.
+  **The server lane never reads server.env** — its ports are podman-published
+  `HOST:CONTAINER` remaps, so rewriting the in-container bind would break them.
+- `droste-healthcheck.sh` — the container-side probe for
+  `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup at create
+  time; the images bake NO `HEALTHCHECK`). Reads the same server.env for PORT and
+  the build-spec's `HEALTH_PATH`/`HEALTH_ACCEPT` rows: comfyui `/`, llama `/health`,
+  vllm `/health`, finetuning `/` with `accept=any` (jupyter only ever answers 302/403
+  unauthenticated), ds4 `/v1/models` (source-verified: ds4-server has no `/health`
+  and 404s `/`). A box with serving off is healthy by definition. `--health-start-period`
+  MUST cover model load or the box restart-loops.
 - **`is_bound` is an ancestor-walk**, not an exact mountinfo match: the longest
   component-aware mount-point prefix of the target decides (rootfs `/` → unbound;
   anything deeper → bound). Needed because distrobox binds the whole `$HOME` —

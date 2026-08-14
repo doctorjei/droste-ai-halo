@@ -17,6 +17,11 @@
 #     -> PRE_LAUNCH function            (if declared)
 #     -> exec SERVICE                   (or the user's `run IMAGE <cmd>`, which wins)
 #
+# The distrobox-lane init hook runs the SAME order and then hands SERVICE to
+# droste-serve.sh, which starts it in the background only when the box's
+# /opt/data/server.env says SERVE=1 (merged one-container shape; see
+# base/resolve/droste-serve.sh). The server lane never reads that file.
+#
 # All content SEEDING (default files/dirs) is owned by templates.yaml, NOT this file.
 # There is deliberately no DEFAULTS row. Every path below is EXPLICIT and ABSOLUTE.
 
@@ -29,6 +34,22 @@
 # use the SERVICE-REBUILD pattern instead: declare a placeholder argv, then have
 # PRE_LAUNCH (which runs AFTER ENV_FILE) rebuild it — see PRE_LAUNCH below.
 SERVICE=( python /opt/ComfyUI/main.py --listen 0.0.0.0 --port 8188 )
+
+# ── HEALTH_PATH / HEALTH_ACCEPT (optional) ───────────────────────────────────
+# The container-side probe endpoint used by droste-healthcheck.sh (podman
+# healthcheck in the merged one-container shape). The probe curls
+# http://127.0.0.1:$PORT$HEALTH_PATH, where PORT comes from the box's
+# /opt/data/server.env — never from this file.
+#   HEALTH_PATH   request path. Default "/".
+#   HEALTH_ACCEPT "ok"  (default) = healthy on 2xx/3xx;
+#                 "any"           = healthy on ANY HTTP response, for servers whose
+#                                   only unauthenticated answer is a redirect or a
+#                                   403 (jupyter). Connection refused/timeout is
+#                                   ALWAYS unhealthy.
+# Pick a route that means "ready to serve", not merely "process alive": with
+# --health-on-failure=restart, a wrong path (a 404 route) restart-loops the box.
+HEALTH_PATH="/"
+HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE (optional) ──────────────────────────────────────────────────────
 # Absolute path to a file sourced right before PRE_LAUNCH. Used by llama/ds4 whose

@@ -12,6 +12,13 @@
 SERVICE=( jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
           --no-browser --allow-root )
 
+# ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
+# JupyterLab has no unauthenticated health route: / redirects to /login (302) and
+# the API paths answer 403 without the token. ANY HTTP response therefore proves
+# the server is up, which is exactly what HEALTH_ACCEPT="any" means.
+HEALTH_PATH="/"
+HEALTH_ACCEPT="any"
+
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # None: finetuning has no env-file style config (jupyter takes flags).
 ENV_FILE=""

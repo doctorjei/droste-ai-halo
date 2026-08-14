@@ -17,6 +17,13 @@ set -euo pipefail
 RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
 # shellcheck source=/dev/null
 source "$RESOLVE_DIR/droste-resolve.sh"
+# The shared launch path (serve::exec_service below). Sourcing it is inert: the
+# library only defines functions + defaults, reads no config, and NOTHING in the
+# server lane consults server.env — this lane keeps its podman-published
+# HOST:CONTAINER port remaps, so rewriting the in-container bind port would break
+# exactly the deployments this image still has to serve.
+# shellcheck source=/dev/null
+source "$RESOLVE_DIR/droste-serve.sh"
 
 SPEC=${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}
 if [ ! -f "$SPEC" ]; then
@@ -50,4 +57,7 @@ if [ ${#SERVICE[@]} -eq 0 ]; then
     exit 1
 fi
 
-exec "${SERVICE[@]}"
+# Same argv, same lane semantics as the inline `exec "${SERVICE[@]}"` this
+# replaced — routed through the shared launch path so both doors (this
+# foreground exec and the init hook's background launch) run the service one way.
+serve::exec_service

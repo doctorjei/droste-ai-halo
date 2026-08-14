@@ -18,6 +18,11 @@ SERVICE=(
     --extra-model-paths-config /opt/data/extra_model_paths.yaml
 )
 
+# ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
+# ComfyUI serves its web UI at / (200) and has no dedicated health route.
+HEALTH_PATH="/"
+HEALTH_ACCEPT="ok"
+
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 ENV_FILE=""
 

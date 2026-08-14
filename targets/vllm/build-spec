@@ -17,6 +17,13 @@
 export VLLM_CONFIG
 SERVICE=( vllm serve --config "$VLLM_CONFIG" )
 
+# ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
+# vLLM's OpenAI server exposes /health (200 when the engine is ready). Weight
+# load + graph work happens before it answers, so the podman
+# --health-start-period must cover it.
+HEALTH_PATH="/health"
+HEALTH_ACCEPT="ok"
+
 # ── ENV_FILE (optional) ──────────────────────────────────────────────────────
 # vLLM's config is a YAML consumed via --config, not a sourced env file.
 ENV_FILE=""

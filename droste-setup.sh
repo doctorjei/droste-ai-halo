@@ -712,6 +712,13 @@ fit_note() {   # note budget → note
   fit_path "$note" "$(( budget - ${#label} ))"
 }
 
+# A BARE WORD IS A HOME-RELATIVE PATH, NEVER A CWD-RELATIVE ONE. The installer
+# is documented as `curl … | bash`, so its cwd is wherever the user happened to
+# be standing — a repo checkout, /tmp, anywhere. Resolving "droste2" against
+# that quietly created (and mkdir -p'd) a directory in a stranger's working
+# directory; resolving it against $HOME puts it where every default the
+# installer offers already lives. `./foo` lands there too: the leading ./ is the
+# quit-escape marker (see quit_notice), not a request for the cwd.
 expand_path() {  # ~ expansion + absolutize + normalize (realpath -m style)
   local p=$1
   # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
@@ -719,7 +726,7 @@ expand_path() {  # ~ expansion + absolutize + normalize (realpath -m style)
     "~") p=$HOME ;;
     "~/"*) p=$HOME/${p#\~/} ;;
     /*) : ;;
-    *) p=$PWD/$p ;;
+    *) p=$HOME/$p ;;
   esac
   # Collapse ., .., //  without requiring the path to exist.
   p=$(realpath -m -- "$p" 2>/dev/null) || :
@@ -746,7 +753,7 @@ init_input() {
 # selection. It is armed by the notice printed after Preflight (nothing is
 # prompted before that), and it matches the RAW answer only — a user who really
 # does want a directory called "quit" writes "./quit", which expand_path
-# resolves and this test never sees.
+# resolves (to $HOME/quit — never to the cwd) and this test never sees.
 QUIT_ARMED=0
 quit_now() {
   printf '\n  %sExiting droste-setup.sh — no further changes made.%s\n\n' \

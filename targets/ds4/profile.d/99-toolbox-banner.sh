@@ -132,9 +132,36 @@ except Exception:
 PY
 }
 
+# The port this box's service ACTUALLY listens on. In the merged (distrobox)
+# lane the init hook launches ds4-server with PORT from /opt/data/server.env, so
+# a baked-in number in the text below would be wrong for every box that changed
+# it (this box's installer default is 8001, not 8000). Parsed the way
+# droste-serve.sh's serve::read_config does it — sourced in a SUBSHELL with
+# errexit/nounset off, its output discarded and its stdin closed, then validated
+# — so a missing, unreadable or hand-mangled file quietly falls back to the
+# in-container default (8000: ds4-server's own) instead of printing garbage or
+# failing the login shell. Last assignment wins, as in any sourced shell file.
+serve_port() {
+  local def=8000 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  if [[ -f "$file" && -r "$file" ]]; then
+    pv=$(
+      set +e +u +o pipefail
+      # shellcheck disable=SC1090
+      . "$file" >/dev/null 2>&1 </dev/null
+      printf '%s' "${PORT-}"
+    ) 2>/dev/null || pv=""
+  fi
+  if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
+    printf '%s\n' "$pv"
+  else
+    printf '%s\n' "$def"
+  fi
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
+SERVE_PORT="$(serve_port)"
 
 echo
 printf '%s\n' \
@@ -156,14 +183,14 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-ds4-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
-printf '  - %-18s → %s\n' "ds4-server" "runs by default via the image entrypoint (port 8000)"
+printf '  - %-18s → %s\n' "ds4-server" "runs by default via the image entrypoint (port $SERVE_PORT)"
 printf '  - %-18s → %s\n' "config" "/opt/data/ds4.env (DS4_DROSTE_* + native DS4_* vars)"
 printf '  - %-18s → %s\n' "get a model" "download_model.sh q2-imatrix  (easy way; prints the path for DS4_DROSTE_MODEL)"
 printf '  - %-18s → %s\n' "ds4-cockpit" "TUI: model manager + server runner"
 printf '  - %-18s → %s\n' "ds4 / ds4-bench" "interactive CLI / benchmark"
-printf '  - %-18s → %s\n' "API test" "curl localhost:8000/v1/chat/completions"
+printf '  - %-18s → %s\n' "API test" "curl localhost:$SERVE_PORT/v1/chat/completions"
 echo
-printf 'SSH tip: ssh -L 8000:localhost:8000 user@host\n\n'
+printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 
 unset PROMPT_COMMAND
 PS1='\u@\h:\w\$ '

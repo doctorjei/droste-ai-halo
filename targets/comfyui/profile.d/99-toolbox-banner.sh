@@ -131,9 +131,36 @@ except Exception:
 PY
 }
 
+# The port this box's service ACTUALLY listens on. In the merged (distrobox)
+# lane the init hook launches ComfyUI with PORT from /opt/data/server.env, so a
+# baked-in number in the text below (and in start_comfy_ui) would be wrong for
+# every box that changed it. Parsed the way droste-serve.sh's serve::read_config
+# does it — sourced in a SUBSHELL with errexit/nounset off, its output discarded
+# and its stdin closed, then validated — so a missing, unreadable or hand-mangled
+# file quietly falls back to the in-container default (8188: the SERVICE line's)
+# instead of printing garbage or failing the login shell. Last assignment wins,
+# as in any sourced shell file.
+serve_port() {
+  local def=8188 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  if [[ -f "$file" && -r "$file" ]]; then
+    pv=$(
+      set +e +u +o pipefail
+      # shellcheck disable=SC1090
+      . "$file" >/dev/null 2>&1 </dev/null
+      printf '%s' "${PORT-}"
+    ) 2>/dev/null || pv=""
+  fi
+  if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
+    printf '%s\n' "$pv"
+  else
+    printf '%s\n' "$def"
+  fi
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
+SERVE_PORT="$(serve_port)"
 
 echo
 printf '%s\n' \
@@ -154,23 +181,25 @@ printf 'Machine: %s\n' "$MACHINE"
 printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-comfyui-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
-printf 'ComfyUI server: http://localhost:8188\n'
+printf 'ComfyUI server: http://localhost:%s\n' "$SERVE_PORT"
 printf '  - Run as a container → the server starts automatically (image entrypoint).\n'
 printf '  - In a distrobox/toolbox shell nothing autostarts → use: start_comfy_ui\n'
 echo
 printf 'Model downloaders (shared HF cache; scanner links them in at start):\n'
 printf '  get_wan22.sh · get_qwen_image.sh · get_hunyuan15.sh · get_ltx2.sh\n\n'
-printf 'SSH tip: ssh -L 8188:localhost:8188 user@host\n\n'
+printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 
 # Launcher (flags match the container SERVICE line). A function, not an alias:
 # the extra-model-paths config is only seeded where an init hook ran (distrobox);
 # plain toolbox has no /opt/data/extra_model_paths.yaml, and ComfyUI's unguarded
 # open() would crash on the missing file — pass the flag only if the file exists.
+# serve_port is re-read here rather than reusing $SERVE_PORT from banner time, so
+# a server.env edited during the session takes effect on the next launch.
 start_comfy_ui() {
   local extra=()
   [[ -f /opt/data/extra_model_paths.yaml ]] \
     && extra=( --extra-model-paths-config /opt/data/extra_model_paths.yaml )
-  cd /opt/ComfyUI && python main.py --listen 0.0.0.0 --port 8188 \
+  cd /opt/ComfyUI && python main.py --listen 0.0.0.0 --port "$(serve_port)" \
     --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae \
     "${extra[@]}"
 }

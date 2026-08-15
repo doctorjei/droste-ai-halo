@@ -131,9 +131,36 @@ except Exception:
 PY
 }
 
+# The port this box's service ACTUALLY listens on. In the merged (distrobox)
+# lane the init hook launches JupyterLab with PORT from /opt/data/server.env, so
+# a baked-in number in the text below would be wrong for every box that changed
+# it. Parsed the way droste-serve.sh's serve::read_config does it — sourced in a
+# SUBSHELL with errexit/nounset off, its output discarded and its stdin closed,
+# then validated — so a missing, unreadable or hand-mangled file quietly falls
+# back to the in-container default (8888: the SERVICE line's) instead of printing
+# garbage or failing the login shell. Last assignment wins, as in any sourced
+# shell file.
+serve_port() {
+  local def=8888 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  if [[ -f "$file" && -r "$file" ]]; then
+    pv=$(
+      set +e +u +o pipefail
+      # shellcheck disable=SC1090
+      . "$file" >/dev/null 2>&1 </dev/null
+      printf '%s' "${PORT-}"
+    ) 2>/dev/null || pv=""
+  fi
+  if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
+    printf '%s\n' "$pv"
+  else
+    printf '%s\n' "$def"
+  fi
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
+SERVE_PORT="$(serve_port)"
 
 echo
 printf '%s\n' \
@@ -155,12 +182,12 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image    : ghcr.io/doctorjei/droste-finetuning-halo\n'
 printf 'Repo     : https://github.com/doctorjei/droste-ai-halo\n'
 printf 'Based on : github.com/kyuz0/amd-strix-halo-llm-finetuning\n\n'
-printf 'Server mode (default): entrypoint starts JupyterLab on http://localhost:8888\n'
+printf 'Server mode (default): entrypoint starts JupyterLab on http://localhost:%s\n' "$SERVE_PORT"
 printf '  (auth token in the container log; set JUPYTER_TOKEN to choose your own)\n'
 printf 'In this shell (distrobox/toolbox lane), start it yourself:\n'
-printf '  jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace\n\n'
+printf '  jupyter lab --ip 0.0.0.0 --port %s --notebook-dir=/opt/workspace\n\n' "$SERVE_PORT"
 printf 'Workspace  : /opt/workspace — your bind; starter notebooks seed if empty\n'
 printf '             (pristine copies live in /opt/resources/templates/workspace)\n'
 printf 'Helpers    : train.py · start-finetuning-cluster.py · benchmark_configs.py ·\n'
 printf '             measure_unsloth_memory.py — read-only in /opt/resources/scripts\n\n'
-printf 'SSH tip: ssh -L 8888:localhost:8888 user@host\n\n'
+printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"

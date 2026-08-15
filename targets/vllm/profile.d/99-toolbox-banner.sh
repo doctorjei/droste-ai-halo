@@ -141,9 +141,36 @@ except Exception:
 PY
 }
 
+# The port this box's service ACTUALLY listens on. In the merged (distrobox)
+# lane the init hook launches `vllm serve` with PORT from /opt/data/server.env,
+# so a baked-in number in the text below would be wrong for every box that
+# changed it. Parsed the way droste-serve.sh's serve::read_config does it —
+# sourced in a SUBSHELL with errexit/nounset off, its output discarded and its
+# stdin closed, then validated — so a missing, unreadable or hand-mangled file
+# quietly falls back to the in-container default (8000: vllm's own) instead of
+# printing garbage or failing the login shell. Last assignment wins, as in any
+# sourced shell file.
+serve_port() {
+  local def=8000 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  if [[ -f "$file" && -r "$file" ]]; then
+    pv=$(
+      set +e +u +o pipefail
+      # shellcheck disable=SC1090
+      . "$file" >/dev/null 2>&1 </dev/null
+      printf '%s' "${PORT-}"
+    ) 2>/dev/null || pv=""
+  fi
+  if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
+    printf '%s\n' "$pv"
+  else
+    printf '%s\n' "$def"
+  fi
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
+SERVE_PORT="$(serve_port)"
 
 echo
 printf '%s\n' \
@@ -165,14 +192,14 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-vllm-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'This image runs an OpenAI-compatible vLLM server by DEFAULT (entrypoint) on\n'
-printf 'port 8000. Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n\n'
+printf 'port %s. Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n\n' "$SERVE_PORT"
 printf 'Usage:\n'
 printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config.yaml (REQUIRED to start)"
 printf '  - %-18s → %s\n' "vLLM server"  "starts automatically; commented MODEL_TABLE stanzas in the config"
-printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host 0.0.0.0 --port 8000"
-printf '  - %-18s → %s\n' "API test"     "curl localhost:8000/v1/chat/completions"
+printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host 0.0.0.0 --port $SERVE_PORT"
+printf '  - %-18s → %s\n' "API test"     "curl localhost:$SERVE_PORT/v1/chat/completions"
 echo
-printf 'SSH tip: ssh -L 8000:localhost:8000 user@host\n\n'
+printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 
 unset PROMPT_COMMAND
 PS1='\u@\h:\w\$ '

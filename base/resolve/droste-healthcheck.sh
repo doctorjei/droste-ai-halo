@@ -15,9 +15,35 @@
 # start period the container restarts itself forever and never finishes loading.
 #
 # What it does: read the SAME serve config the init hook reads (server.env: SERVE,
-# PORT), then curl the box's endpoint (build-spec rows HEALTH_PATH/HEALTH_ACCEPT)
-# on 127.0.0.1 — the container shares the host network namespace, so the service's
-# real port is reachable from inside. Exit 0 = healthy, non-zero = unhealthy.
+# PORT), then require BOTH halves of "this box is serving":
+#
+#   1. OUR SERVICE IS RUNNING — the state record droste-serve.sh writes at every
+#      container start says the launch succeeded, and that exact process (pid +
+#      process start time) is still alive. serve::state_ok.
+#   2. IT ANSWERS — curl the box's endpoint (build-spec rows HEALTH_PATH /
+#      HEALTH_ACCEPT) on 127.0.0.1; the container shares the host network
+#      namespace, so the service's real port is reachable from inside.
+#
+# Exit 0 = healthy, non-zero = unhealthy.
+#
+# ⚠️ GATE 1 IS NOT REDUNDANT. These boxes use HOST networking, so the port is not
+# ours by construction: when the server door finds the port already taken it
+# refuses to start a second listener, and the SQUATTER's reply satisfied gate 2 on
+# its own. The box then reported HEALTHY while serving nothing — a worse failure
+# than being unhealthy, because the user believed their server was up. The state
+# record is what makes the difference between "something answered" and "our
+# service answered". Refusal, an instant crash, or a service that has since died
+# are all UNHEALTHY no matter what holds the port.
+#
+# Gate 2's semantics are untouched by gate 1 (per-box endpoint/accept tuning and
+# the generous start periods are deliberate, and llama's 503-while-loading is
+# still what it always was).
+#
+# The state record is the DISTROBOX-lane server door's (serve::maybe_launch): the
+# foreground server lane execs its service as pid 1 and writes no record — but it
+# also never reads server.env, so SERVE stays 0 there and this script exits at the
+# gate below without ever consulting the record. (droste-setup.sh wires these
+# health flags for the merged/distrobox shape only.)
 #
 # A box that is NOT configured to serve is HEALTHY BY DEFINITION (exit 0): the
 # healthcheck flags may be baked into a container the user later turns serving off
@@ -39,6 +65,15 @@ if [ "${SERVE_ENABLED:-0}" -ne 1 ]; then
     exit 0
 fi
 
+# Gate 1 — is OUR launch alive? Checked BEFORE the probe: it is a file read plus a
+# /proc read (no network, no timeout), and it is the gate that can tell a refusal
+# apart from a healthy server. Note that a box with SERVE=0 exited above, so a
+# missing state record here means the door was asked to serve and did not.
+if ! serve::state_ok; then
+    printf 'droste-healthcheck: UNHEALTHY — %s\n' "$SERVE_STATE_MSG"
+    exit 1
+fi
+
 serve::read_health_spec
 
 url="http://127.0.0.1:${SERVE_PORT}${HEALTH_PATH}"
@@ -55,12 +90,12 @@ case "$HEALTH_ACCEPT" in
     any)
         # "any HTTP response proves the server is up" (jupyter: / redirects to
         # /login, and API paths 403 without the token — all of them mean alive).
-        printf 'droste-healthcheck: healthy — %s answered %s.\n' "$url" "$code"
+        printf 'droste-healthcheck: healthy — our service (pid %s) answered %s with %s.\n' "$SERVE_REC_PID" "$url" "$code"
         exit 0
         ;;
     *)
         if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
-            printf 'droste-healthcheck: healthy — %s answered %s.\n' "$url" "$code"
+            printf 'droste-healthcheck: healthy — our service (pid %s) answered %s with %s.\n' "$SERVE_REC_PID" "$url" "$code"
             exit 0
         fi
         printf 'droste-healthcheck: UNHEALTHY — %s answered %s.\n' "$url" "$code"

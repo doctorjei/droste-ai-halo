@@ -38,13 +38,32 @@
 # which is why every step below is idempotent and why a leftover instance from a
 # previous container start is actively cleaned up (see serve::maybe_launch).
 #
+# THE STATE RECORD (proof of ownership). Every decision this library makes about
+# the service is written to ONE line in $DROSTE_SERVE_PID on the data volume:
+#
+#       <pid> <starttime> <token> <argv0> <status>
+#       12345 998877 4242:112233 llama-server running
+#       -     -      4242:112233 -        refused
+#
+# with "-" for any field that does not apply. `status` is running | refused |
+# failed, and it is what makes the healthcheck honest: these boxes use HOST
+# networking, so a probe of the port alone proves only that SOMETHING answers it.
+# When the door refuses to start a second listener on a port another process
+# already holds, the squatter's reply used to satisfy the probe and the box
+# reported HEALTHY while serving nothing at all. droste-healthcheck.sh therefore
+# requires BOTH halves: this record says OUR launch succeeded and that exact
+# process is still alive (serve::state_ok), AND the endpoint answers.
+# Every path through maybe_launch that ends in "we are not serving" rewrites the
+# record (refused/failed) — it lives on the data volume and outlives both the
+# process and the container, so it is never trusted just for being there.
+#
 # Sourced by a caller that has already set `set -euo pipefail`; kept in effect here.
 set -euo pipefail
 
 # ── Config (override via env before sourcing) ───────────────────────────────
 : "${DROSTE_DATA_DIR:=/opt/data}"
 : "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"      # the serve config file
-: "${DROSTE_SERVE_PID:=$DROSTE_DATA_DIR/.droste-serve.pid}"
+: "${DROSTE_SERVE_PID:=$DROSTE_DATA_DIR/.droste-serve.pid}"   # the state record
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # The flag every one of the five services takes for its listen port (comfyui
 # main.py, jupyter lab, vllm serve, llama-server, ds4-server all spell it
@@ -228,16 +247,104 @@ serve::_pid_is_ours() {
     return 0
 }
 
-# _read_pidfile — load SERVE_REC_PID / _START / _TOKEN / _CMD from the pid file.
-# (_CMD is read back purely so the field is documented and never mis-parsed; the
-# identity check deliberately ignores it — see _pid_is_ours.)
+# _read_pidfile — load SERVE_REC_PID / _START / _TOKEN / _CMD / _STATUS from the
+# state record. (_CMD is read back purely so the field is documented and never
+# mis-parsed; the identity check deliberately ignores it — see _pid_is_ours.)
+# A record written by an OLDER image has four fields and no status; the data
+# volume outlives the image, so an empty status reads as "running" and such a
+# record is judged exactly as it was before, on pid identity alone.
 # shellcheck disable=SC2034
 serve::_read_pidfile() {
-    SERVE_REC_PID="" SERVE_REC_START="" SERVE_REC_TOKEN="" SERVE_REC_CMD=""
+    SERVE_REC_PID="" SERVE_REC_START="" SERVE_REC_TOKEN="" SERVE_REC_CMD="" SERVE_REC_STATUS=""
     [ -f "$DROSTE_SERVE_PID" ] || return 1
-    read -r SERVE_REC_PID SERVE_REC_START SERVE_REC_TOKEN SERVE_REC_CMD \
+    read -r SERVE_REC_PID SERVE_REC_START SERVE_REC_TOKEN SERVE_REC_CMD SERVE_REC_STATUS \
         < "$DROSTE_SERVE_PID" 2>/dev/null || return 1
     [ -n "${SERVE_REC_PID:-}" ] || return 1
+    [ -n "${SERVE_REC_STATUS:-}" ] || SERVE_REC_STATUS=running
+    return 0
+}
+
+# _write_state — write THE state record (one line, see the header). Every field is
+# written as "-" when it does not apply, so the line always has five fields and
+# `read` can never shift them: a blank start time used to collapse two separators
+# into one and slide the token into the start column.
+# Chowned to the box user for the same reason the log is: it is written as root in
+# the distrobox lane (a subuid on the host under keep-id) onto the user's data dir.
+serve::_write_state() {
+    local status=$1 pid=${2:--} start=${3:--} token=${4:--} cmd=${5:--}
+    mkdir -p "$(dirname "$DROSTE_SERVE_PID")" 2>/dev/null || true
+    printf '%s %s %s %s %s\n' "$pid" "$start" "$token" "$cmd" "$status" \
+        > "$DROSTE_SERVE_PID" 2>/dev/null || {
+        serve::warn "could not write $DROSTE_SERVE_PID"
+        return 1
+    }
+    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_PID" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# _log_note — append one header line to the service log, in the log's own
+# "=== droste-serve: <ts> — <what>" style. WHY it exists beyond launch's own
+# header: the log is created AT LAUNCH, so a start that never launched (the
+# port-in-use refusal) left no log at all — and the log on the data volume is the
+# first place a user looks. "No log" reads as "nothing ran"; it must instead say
+# what the door decided and why. No /dev/* guard: writing to the /dev/stderr
+# fallback is fine (only _log_tail must never READ it back).
+serve::_log_note() {
+    local msg=$1
+    case "$DROSTE_SERVE_LOG" in
+        /dev/*) ;;
+        *)      mkdir -p "$(dirname "$DROSTE_SERVE_LOG")" 2>/dev/null || true ;;
+    esac
+    printf '=== droste-serve: %s — %s\n' "$(date -Is 2>/dev/null || true)" "$msg" \
+        >>"$DROSTE_SERVE_LOG" 2>/dev/null || return 0
+    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_LOG" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# _not_serving — the ONE way this library says "this container start is not
+# serving": warn into the container log (what `podman logs` shows), append the
+# same sentence to the service log (what the user reads first), and stamp the
+# state record so the healthcheck cannot be fooled by whatever else answers the
+# port. Every early return from maybe_launch that is not "our service is up"
+# goes through here.
+serve::_not_serving() {
+    local status=$1 token=$2 pid=$3 start=$4 msg=$5
+    serve::warn "$msg"
+    serve::_log_note "${status^^}: $msg"
+    serve::_write_state "$status" "$pid" "$start" "$token" "-"
+    return 0
+}
+
+# state_ok — did OUR launch succeed, and is that exact process still alive?
+# The healthcheck's first gate (see droste-healthcheck.sh); sets SERVE_STATE_MSG
+# with the reason on failure. Deliberately says nothing about the port: the probe
+# is the second, independent gate.
+# shellcheck disable=SC2034   # SERVE_STATE_MSG is consumed by droste-healthcheck.sh
+serve::state_ok() {
+    SERVE_STATE_MSG=""
+    if ! serve::_read_pidfile; then
+        SERVE_STATE_MSG="no launch record at $DROSTE_SERVE_PID — the server door has not started a service in this container. See $DROSTE_SERVE_LOG (and the container log) for what it decided instead."
+        return 1
+    fi
+    case "$SERVE_REC_STATUS" in
+        running) ;;
+        refused)
+            SERVE_STATE_MSG="the server door REFUSED to launch (port ${SERVE_PORT:-?} was already in use when the container started) — whatever answers that port is not this box's service. See $DROSTE_SERVE_LOG."
+            return 1
+            ;;
+        *)
+            SERVE_STATE_MSG="the last launch attempt recorded status '$SERVE_REC_STATUS' — nothing of ours is serving. See $DROSTE_SERVE_LOG."
+            return 1
+            ;;
+    esac
+    if ! serve::_pid_is_ours "$SERVE_REC_PID" "$SERVE_REC_START"; then
+        SERVE_STATE_MSG="the service we launched (pid $SERVE_REC_PID) is gone — anything still answering port ${SERVE_PORT:-?} is not it. See $DROSTE_SERVE_LOG."
+        return 1
+    fi
     return 0
 }
 
@@ -362,9 +469,7 @@ serve::launch() {
         serve::warn "cannot write $DROSTE_SERVE_LOG — service output goes to the container log instead."
         DROSTE_SERVE_LOG=/dev/stderr
     fi
-    {
-        printf '=== droste-serve: %s — launching: %s\n' "$(date -Is 2>/dev/null || true)" "${SERVICE[*]}"
-    } >>"$DROSTE_SERVE_LOG" 2>/dev/null || true
+    serve::_log_note "launching: ${SERVICE[*]}"
 
     HOME="${HOME:-/root}" \
     USER="${DROSTE_USER:-${USER:-root}}" \
@@ -390,7 +495,8 @@ serve::launch() {
     # keepalive shell, not an eager reaper); that is just as dead, and _pid_is_ours
     # rejects state Z for the same reason. Either shape means the launch failed.
     # argv[0] is written as the 4th field for humans reading the file; it is not
-    # part of the identity.
+    # part of the identity. The status field is the healthcheck's gate: only a
+    # launch we watched survive its first fifth of a second is written `running`.
     start=""
     if fields=$(serve::_proc_fields "$pid"); then
         start=${fields#* }
@@ -399,12 +505,16 @@ serve::launch() {
         died=1
     fi
     cmd0=$(basename -- "${SERVICE[0]}")
-    printf '%s %s %s %s\n' "$pid" "$start" "$token" "$cmd0" \
-        > "$DROSTE_SERVE_PID" 2>/dev/null || serve::warn "could not write $DROSTE_SERVE_PID"
-    # Keep the bookkeeping files deletable by the box user (they are on the host's
-    # data dir; written here as root, which is a subuid on the host under keep-id).
+    if [ "$died" -eq 1 ]; then
+        serve::_write_state failed "$pid" "${start:--}" "$token" "$cmd0"
+    else
+        serve::_write_state running "$pid" "${start:--}" "$token" "$cmd0"
+    fi
+    # Keep the log deletable by the box user too (it is on the host's data dir;
+    # written here as root, which is a subuid on the host under keep-id — the
+    # state record is chowned by _write_state for the same reason).
     if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_PID" "$DROSTE_SERVE_LOG" 2>/dev/null || true
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_LOG" 2>/dev/null || true
     fi
     # Report what actually happened. The old code announced "service started" from
     # the mere fact that a fork had returned a pid, so a service that died on its
@@ -416,7 +526,9 @@ serve::launch() {
     # a broken service must never make the box hard to enter.
     if [ "$died" -eq 1 ]; then
         serve::err "the service exited immediately (pid $pid) — nothing is serving port ${SERVE_PORT:-?}. Last lines of $DROSTE_SERVE_LOG:"
-        serve::_log_tail
+        serve::_log_tail   # BEFORE the note below, so the tail shows the service's
+                           # own last words rather than our summary of them.
+        serve::_log_note "FAILED: the service exited immediately (pid $pid) — nothing is serving port ${SERVE_PORT:-?}."
         return 1
     fi
     serve::info "service started (pid $pid) on port ${SERVE_PORT:-?}; output: $DROSTE_SERVE_LOG"
@@ -435,7 +547,10 @@ serve::maybe_launch() {
     fi
     if [ "${SERVE_ENABLED:-0}" -ne 1 ]; then
         # Silent by design: interactive-only boxes are the common case, and this
-        # runs on every single container start.
+        # runs on every single container start. No state record either — an
+        # interactive-only box writes nothing into its data dir, and the
+        # healthcheck answers "healthy, nothing to probe" from this same config
+        # before it ever looks at the record.
         return 0
     fi
     token=$(serve::_instance_token)
@@ -450,12 +565,20 @@ serve::maybe_launch() {
                 serve::warn "a service from a previous container start (pid $SERVE_REC_PID) is still answering on port $SERVE_PORT — leaving it alone."
                 return 0
             fi
-            serve::_stop_stale "$SERVE_REC_PID" "$SERVE_REC_START" || return 0
+            if ! serve::_stop_stale "$SERVE_REC_PID" "$SERVE_REC_START"; then
+                # The wedged process is still alive and still not serving. Its
+                # record would otherwise read `running` + a live pid, so a
+                # squatter answering the port would make the box look healthy.
+                serve::_not_serving failed "$token" "$SERVE_REC_PID" "$SERVE_REC_START" \
+                    "a wedged service from a previous container start (pid $SERVE_REC_PID) could not be stopped — this box is not serving port $SERVE_PORT."
+                return 0
+            fi
         fi
     fi
 
     if serve::_port_busy "$SERVE_PORT"; then
-        serve::warn "port $SERVE_PORT is already in use (host networking: another droste box or a host process?) — not starting a second listener. Change PORT in $DROSTE_SERVE_ENV or free the port, then restart the container."
+        serve::_not_serving refused "$token" - - \
+            "port $SERVE_PORT is already in use (host networking: another droste box or a host process?) — not starting a second listener. Change PORT in $DROSTE_SERVE_ENV or free the port, then restart the container."
         return 0
     fi
 

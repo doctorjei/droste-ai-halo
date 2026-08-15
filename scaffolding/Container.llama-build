@@ -15,8 +15,8 @@ FROM ${BASE_IMAGE} AS builder
 ARG SERIES_NAME TARGET_NAME ARCH_NAME BUILDER_DESC
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${BUILDER_DESC}"
 
-# ROCm Pin
-ARG GFX_TARGET=gfx1151
+# ROCm Pin: inherited from the build base as /etc/droste/rocm-version.env; the HIP
+# build RUN below sources it for GFX_TARGET (no ARG, no --build-arg).
 
 # llama pin
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
@@ -67,7 +67,8 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 # So: install npm above to build the UI from the pinned tree, and turn the bucket
 # off so an unpinned `latest` can never be substituted again. If the UI build ever
 # breaks, this now fails loudly instead of shipping a mismatched UI.
-RUN cmake -S . -B build \
+RUN . /etc/droste/rocm-version.env \
+    && cmake -S . -B build \
        -DGGML_HIP=ON \
        -DAMDGPU_TARGETS=${GFX_TARGET} \
        -DCMAKE_BUILD_TYPE=Release \

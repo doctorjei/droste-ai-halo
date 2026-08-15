@@ -24,11 +24,6 @@ RUN apt-get -qq update \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# ROCm libraries
-ARG GFX_TARGET=gfx1151
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
-ARG ROCM_SDK_LIBRARIES_VERSION=7.13.0a20260501
-
 # Re-add exactly what canopy purges, plus the venv toolchain and the resolver's
 # userspace-overlay fallback (fuse-overlayfs).
 RUN apt-get -qq update \
@@ -46,10 +41,22 @@ RUN apt-get -qq update \
 # free gid if 1024 is ever taken on a future base (membership is by name, not gid).
 RUN groupadd -f -g 1024 droste
 
+# The unified ROCm/torch pin, baked at the ROOT of the FROM tree. This is the ONE
+# place the version truth lives: every downstream image (build-base, torch-base,
+# the carriers, the ports) inherits this exact file through FROM, so a port can
+# never outrun its base's pin. Every version-consuming RUN — here and downstream —
+# opens with `. /etc/droste/rocm-version.env` and reads the values from the shell,
+# so there are no version ARGs and no --build-arg plumbing to keep in sync.
+# Placed BELOW the apt layers on purpose: a pin bump then rebuilds only from the
+# ROCm install down. It also ships in every runtime image, where the resolver /
+# banners can read the pin the image was actually built from.
+COPY rocm-version.env /etc/droste/rocm-version.env
+
 # Python venv with the TheRock gfx1151 RUNTIME kernels, with venv
 RUN python3 -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
-RUN pip install --upgrade pip setuptools wheel \
+RUN . /etc/droste/rocm-version.env \
+    && pip install --upgrade pip setuptools wheel \
     && pip install --index-url ${ROCM_INDEX_URL} \
        "rocm[libraries]==${ROCM_SDK_LIBRARIES_VERSION}"
 

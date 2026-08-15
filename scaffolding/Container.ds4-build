@@ -21,8 +21,10 @@ ARG ROCWMMA_REF=48b7db12a9ade97f0b7ab2ff9321ba0cbb4e5b77
 ARG DS4_REPO=https://github.com/kyuz0/ds4.git
 ARG ROCWMMA_REPO=https://github.com/ROCm/rocWMMA.git
 
-# rocWMMA
-RUN mkdir -p /tmp/rocWMMA && cd /tmp/rocWMMA \
+# rocWMMA. GFX_TARGET comes from the pin file the runtime base baked in and the
+# build base inherited (/etc/droste/rocm-version.env) — sourced per RUN, no ARG.
+RUN . /etc/droste/rocm-version.env \
+    && mkdir -p /tmp/rocWMMA && cd /tmp/rocWMMA \
     && git init -q && git remote add origin ${ROCWMMA_REPO} \
     && git fetch --depth 1 origin ${ROCWMMA_REF} && git checkout -q FETCH_HEAD \
     && CC=amdclang CXX=amdclang++ \
@@ -42,7 +44,8 @@ RUN mkdir -p /tmp/rocWMMA && cd /tmp/rocWMMA \
 
 # Clone & build DS4
 WORKDIR /opt/ds4
-RUN git clone ${DS4_REPO} . \
+RUN . /etc/droste/rocm-version.env \
+    && git clone ${DS4_REPO} . \
     && git checkout ${DS4_REF} \
     && git clean -xdf \
     && make rocm ROCM_ARCH=${GFX_TARGET} ROCM_PATH=${ROCM_PATH}

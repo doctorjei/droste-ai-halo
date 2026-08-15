@@ -17,10 +17,8 @@ FROM ${BASE_IMAGE} AS builder
 ARG SERIES_NAME TARGET_NAME ARCH_NAME BUILDER_DESC
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${BUILDER_DESC}"
 
-# ROCm Pin
-ARG GFX_TARGET=gfx1151
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
+# ROCm Pin: inherited from the build base as /etc/droste/rocm-version.env; every RUN
+# below that needs a version or the gfx target sources it (no ARG, no --build-arg).
 
 # Pinned dependencies
 ARG BITSANDBYTES_REPO=https://github.com/bitsandbytes-foundation/bitsandbytes.git
@@ -29,7 +27,8 @@ ARG RCCL_REPO=https://github.com/kyuz0/rocm-systems.git
 ARG RCCL_REF=a2686c9f41e44a75459e4771b7f380358432b294
 
 # Install torch & upgraded dependencies
-RUN pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
+RUN . /etc/droste/rocm-version.env && \
+      pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
       pip install --upgrade scikit-build-core setuptools wheel
 
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
@@ -38,7 +37,8 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 # bitsandbytes
 RUN mkdir -p /artifacts/wheels /artifacts/lib64
 WORKDIR /opt
-RUN git clone "${BITSANDBYTES_REPO}" bitsandbytes \
+RUN . /etc/droste/rocm-version.env \
+    && git clone "${BITSANDBYTES_REPO}" bitsandbytes \
     && cd bitsandbytes \
     && git checkout "${BITSANDBYTES_REF}" \
     && cmake -S . -DGPU_TARGETS="${GFX_TARGET}" \
@@ -49,7 +49,8 @@ RUN git clone "${BITSANDBYTES_REPO}" bitsandbytes \
 
 # Custom RCCL
 WORKDIR /opt
-RUN mkdir -p rocm-systems && cd rocm-systems \
+RUN . /etc/droste/rocm-version.env \
+    && mkdir -p rocm-systems && cd rocm-systems \
     && git init -q && git remote add origin "${RCCL_REPO}" \
     && git fetch --depth 1 origin "${RCCL_REF}" && git checkout -q FETCH_HEAD \
     && cd projects/rccl \

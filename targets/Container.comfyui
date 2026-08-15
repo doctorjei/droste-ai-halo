@@ -8,11 +8,8 @@ ARG TARGET_NAME=comfyui
 ARG DESCRIPTION="ComfyUI (server, Triton JIT)"
 ARG BASE_IMAGE=localhost/${SERIES_NAME}-torch-base-${ARCH_NAME}
 
-# Overrideable Arguemnts - ROCM / TORCH
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/gfx1151/
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
-ARG TORCHVISION_VERSION=
-ARG TORCHAUDIO_VERSION=
+# Overrideable Arguemnts - non-ROCm pins. The ROCm/torch versions are NOT ARGs: they
+# come from /etc/droste/rocm-version.env, inherited from the torch base.
 ARG TRANSFORMERS_VERSION=4.56.2
 
 ## ComfyUI & Custom Nodes (Pinned 2026-07-05)
@@ -26,7 +23,7 @@ ARG GGUF_REF=6ea2651e7df66d7585f6ffee804b20e92fb38b8a
 # --- IMAGE BUILD BEGINS HERE ---
 FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
-ARG ROCM_INDEX_URL TORCH_VERSION TORCHVISION_VERSION TORCHAUDIO_VERSION TRANSFORMERS_VERSION
+ARG TRANSFORMERS_VERSION
 ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
@@ -37,7 +34,8 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/* && apt-get clean
 
 ## PIP: Torch Stack, GGUF, & Transformers (pinned if set)
-RUN pip install --pre --index-url ${ROCM_INDEX_URL} \
+RUN . /etc/droste/rocm-version.env && \
+    pip install --pre --index-url ${ROCM_INDEX_URL} \
        "torchvision${TORCHVISION_VERSION:+==${TORCHVISION_VERSION}}" \
        "torchaudio${TORCHAUDIO_VERSION:+==${TORCHAUDIO_VERSION}}" && \
     pip install gguf "transformers==${TRANSFORMERS_VERSION}"

@@ -11,10 +11,8 @@ ARG DESCRIPTION="LLM-Finetuning (${ARCH_NAME}): interactive, torch + HF/unsloth,
 ARG BASE_IMAGE=localhost/${SERIES_NAME}-torch-base-${ARCH_NAME}
 ARG ARTIFACTS_IMAGE=localhost/${SERIES_NAME}-${TARGET_NAME}-build-${ARCH_NAME}
 
-# Pinned (Torch version)
-ARG GFX_TARGET=gfx1151
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
+# The ROCm/torch pin is inherited from the torch base as /etc/droste/rocm-version.env
+# (nothing in this image installs from the ROCm index — torch arrives with the base).
 
 # Pinned Dependencies
 ARG FLASH_ATTENTION_REPO=https://github.com/ROCm/flash-attention.git
@@ -25,7 +23,7 @@ ARG UNSLOTH_REF=07a7ff47b1b2b37c088b8e0d7ed7bf8710d9aa22
 FROM ${ARTIFACTS_IMAGE} AS artifacts
 FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
-ARG ROCM_INDEX_URL TORCH_VERSION FLASH_ATTENTION_REPO FLASH_ATTENTION_REF UNSLOTH_REPO UNSLOTH_REF
+ARG FLASH_ATTENTION_REPO FLASH_ATTENTION_REF UNSLOTH_REPO UNSLOTH_REF
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
 # Dependency installation (tools, libgomp1, torch)

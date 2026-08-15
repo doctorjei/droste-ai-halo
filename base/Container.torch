@@ -12,9 +12,7 @@ FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
-# ROCM / Torch pin
-ARG GFX_TARGET=gfx1151
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
-
-RUN pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
+# ROCM / Torch pin: read from the file the runtime base baked in, so this layer is
+# pinned by its own base and can never drift from it.
+RUN . /etc/droste/rocm-version.env \
+    && pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"

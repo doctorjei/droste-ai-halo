@@ -17,11 +17,9 @@ FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
-# ROCM / Torch Pin
-ARG GFX_TARGET=gfx1151
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
-ARG TORCHVISION_VERSION=0.24.0+rocm7.13.0a20260501
+# ROCM / Torch Pin: inherited from the torch base as /etc/droste/rocm-version.env. The
+# torchvision re-pin RUN below sources it, so this image cannot ask for a torchvision
+# date its own torch layer was not built from.
 
 # Runtime libraries. `git` is not a build tool here: aiter shells out to
 # `git rev-parse --short HEAD` at MODULE level in csrc/cpp_itfs/utils.py, on EVERY
@@ -104,7 +102,8 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #  7. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
-RUN export PIP_USE_DEPRECATED=legacy-resolver \
+RUN . /etc/droste/rocm-version.env \
+    && export PIP_USE_DEPRECATED=legacy-resolver \
     && pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
     && python /opt/resources/scripts/patch_aiter_headers.py \
     && AITER_JIT_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/aiter/jit" \

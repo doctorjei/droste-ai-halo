@@ -15,10 +15,8 @@ FROM ${BASE_IMAGE} AS builder
 ARG SERIES_NAME TARGET_NAME ARCH_NAME BUILDER_DESC
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${BUILDER_DESC}"
 
-# ROCm Pin
-ARG GFX_TARGET=gfx1151
-ARG ROCM_INDEX_URL=https://rocm.nightlies.amd.com/v2/${GFX_TARGET}/
-ARG TORCH_VERSION=2.9.1+rocm7.13.0a20260501
+# ROCm Pin: inherited from the build base as /etc/droste/rocm-version.env; every RUN
+# below that needs a version or the gfx target sources it (no ARG, no --build-arg).
 
 # Pinned Dependencies
 ARG FLASH_ATTENTION_REPO=https://github.com/ROCm/flash-attention.git
@@ -30,7 +28,8 @@ ARG FP8_KERNELS_REPO=https://github.com/leonyurko/vllm-fp8-strix-halo-kernel-sup
 ARG FP8_KERNELS_REF=50424f5525b8382353551e3301d0da56eca0be2b
 
 # Install Torch
-RUN pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
+RUN . /etc/droste/rocm-version.env \
+    && pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
 
 # Python build backends
 RUN pip install --upgrade \
@@ -84,7 +83,8 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 # yields "" (harmless there: it compiles with /opt/rocm/lib/llvm/bin/clang, which self-locates
 # its bitcode). Plain `hipcc` does not, so here the path must actually resolve; `test -n`
 # keeps an empty result from silently reaching hipcc as the ROCm-device-library error.
-RUN export HIP_DEVICE_LIB_PATH="$(find -L /opt/rocm -type d -name bitcode -print -quit)" \
+RUN . /etc/droste/rocm-version.env \
+    && export HIP_DEVICE_LIB_PATH="$(find -L /opt/rocm -type d -name bitcode -print -quit)" \
     && test -n "${HIP_DEVICE_LIB_PATH}" \
     && GPU_ARCHS="${GFX_TARGET}" python -c "import aiter" \
     && mkdir -p /artifacts/aiter-jit \

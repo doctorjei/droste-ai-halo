@@ -11,7 +11,14 @@ central branch) under the kento → gemet → * umbrella; consumes the same geme
 
 Everything builds against **one** pinned TheRock nightly, installed via pip `rocm-sdk-*`
 wheels from the gfx1151 per-arch index — **no apt ROCm repo, no S3 tarball**. The single
-source of truth is [`base/rocm-version.env`](base/rocm-version.env):
+source of truth is [`base/rocm-version.env`](base/rocm-version.env), and it is the *only*
+place these versions are written: `base/Container.runtime` (the root of the FROM tree)
+`COPY`s it to **`/etc/droste/rocm-version.env`**, every other image inherits that exact
+file through `FROM`, and each version-consuming `RUN` opens with
+`. /etc/droste/rocm-version.env`. No version `ARG`s, no `--build-arg` plumbing, and no way
+for a port to outrun the pin its base was built from. Bump the pin by editing this one
+file; the baked copy also ships in every runtime image, so you can read the pin an image
+was actually built from with `cat /etc/droste/rocm-version.env`.
 
 | Piece | Pin |
 |---|---|

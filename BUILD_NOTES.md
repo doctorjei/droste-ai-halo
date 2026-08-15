@@ -14,9 +14,23 @@ These notes repeated across multiple Containerfiles. They are stated once here
 and referenced from the per-image sections below.
 
 ### The unified pin (`base/rocm-version.env`, formerly root `rocm-version.env` / `rocm-pin.env`)
-- ONE pinned TheRock gfx1151 nightly feeds every image. A build wrapper sources
-  the pin file and passes each key as `--build-arg`; the `ARG` names in every
-  Containerfile **must** match the env keys the wrapper passes.
+- ONE pinned TheRock gfx1151 nightly feeds every image, and the pin file is the
+  ONLY place those versions are written. `base/Container.runtime` — the single
+  root of the FROM tree (everything else builds FROM a droste image) — `COPY`s
+  it to `/etc/droste/rocm-version.env`; every downstream image inherits that
+  exact file through `FROM`, and every version-consuming `RUN` opens with
+  `. /etc/droste/rocm-version.env` and reads the values from the shell.
+- Consequences worth stating: there are NO version `ARG`s (and no version
+  `--build-arg`s in CI) — an image cannot be handed a pin that disagrees with
+  its base, so a port can never outrun the base it was built on. The old scheme
+  (a wrapper/CI step sourcing the file and passing each key as `--build-arg`,
+  with matching `ARG` defaults per Containerfile) duplicated the truth three
+  ways and is gone. The `RUN` shell — not the Dockerfile parser — expands
+  `${VAR}` in shell-form `RUN`, which is what makes the sourced values visible.
+- Cache/placement: the `COPY` sits BELOW the runtime base's apt layers, so a pin
+  bump rebuilds from the ROCm install down rather than from apt down. The file
+  also ships in every runtime image (`cat /etc/droste/rocm-version.env` reports
+  the pin an image was actually built from).
 - Nothing uses an apt ROCm repo or an S3 `therock-dist` tarball — the runtime
   kernels and the SDK are both pip-installed from the same nightly index, so the
   whole set is ABI-matched from one source. This replaced both the apt ROCm
@@ -421,6 +435,17 @@ assumed.
 - **Acceptance test** (the founding requirement, made executable): pip-install
   a package inside a box → destroy the box → recreate it → the change
   survived.
+- **Poisoned upper (2026-08-14), the one failure mode this design can hand
+  you:** a data dir written before the lanes merged holds a COMPLETE venv, not
+  a delta — as the overlay upper it SHADOWS the baked stack, and the symptoms
+  never name it (vLLM: a numpy metadata error; Jupyter: `/lab` 404s). Detected
+  by the venv ROOT in the upper (`pyvenv.cfg` + `bin/python*`): warned at every
+  box start (`resolve::_report_env_upper`) and offered as a wipe by the
+  installer (`venv_upper_review` — a hand-kept mirror). Cure, with the box
+  stopped: `rm -rf ~/droste/<box>/data/venv`; opt-out per box with
+  `KEEP_OLD_VENV=1` in its `server.env` (silences the report, changes nothing
+  about the mount). The warning text itself is the user-facing documentation;
+  this bullet only records that it exists.
 
 ### 2026-07-09 — shared compute-cache volume (`/opt/caches`, folded into v0.2.0)
 
@@ -641,12 +666,16 @@ compiled here ABI-matches the runtime libs it ships against.
   `make ROCM_PATH=` resolve the pip-installed compiler + device libs.
   hipcc/amdclang++ are on `/opt/venv/bin` (PATH). The device-lib + clang paths
   are best-effort under the SDK root (validate on-host — see notes).
-- `GFX_TARGET` is gfx1151-only. Ports read it to pass `-DAMDGPU_TARGETS` /
-  `--offload-arch=${GFX_TARGET}`.
+- `GFX_TARGET` is gfx1151-only. It is NOT re-exported as an image `ENV` here
+  (that would be a second copy of the pin's truth, and the old `ENV
+  GFX_TARGET=${GFX_TARGET}` needed an `ARG` to feed it): it lives in the
+  inherited `/etc/droste/rocm-version.env`, and each carrier `RUN` sources that
+  file to pass `-DAMDGPU_TARGETS` / `--offload-arch=${GFX_TARGET}`.
 - No `CMD`: builder stage only.
 
 ### base/Container.torch
-Shared torch layer. `FROM` the runtime base + one `pip install torch==$TORCH_VERSION`
+Shared torch layer. `FROM` the runtime base + one
+`. /etc/droste/rocm-version.env && pip install torch==$TORCH_VERSION`
 from the gfx1151 index — nothing else. The three Python targets (comfyui, vllm,
 finetuning) build FROM this instead of installing torch themselves; llama and ds4
 stay torch-free on the runtime base and do NOT go through here.
@@ -664,7 +693,8 @@ stay torch-free on the runtime base and do NOT go through here.
 - **Scope = torch only.** torchvision/torchaudio stay with the ports that need them,
   NOT here: comfyui installs both, vllm re-pins torchvision alone (2026-08-14, see
   its section), finetuning wants neither. gguf/transformers likewise stay in comfyui.
-- Pins are declared after `FROM` (in-stage), so no ARG-scope import needed.
+- No pin `ARG`s at all: the version comes from the file the runtime base baked
+  in, sourced inside the `RUN`, so this layer is pinned by its own base.
 - No `CMD`: intermediate base, never run directly.
 
 ---
@@ -1100,7 +1130,9 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   in that RUN, `pip install --no-deps --force-reinstall --index-url
   ${ROCM_INDEX_URL} "torchvision==${TORCHVISION_VERSION}"` — same index + `+rocm`
   date as torch, so the pair is ABI-matched by construction (the pin file has
-  owned `TORCHVISION_VERSION` all along; the port job now passes it through).
+  owned `TORCHVISION_VERSION` all along; that `RUN` sources
+  `/etc/droste/rocm-version.env`, so it reads the same date its own torch base
+  was built from — no build-arg to forget).
   The ROCm torchvision wheel requires only a bare `torch`, and nothing bounds
   torchvision from below, so the old `torchvision … requires torch==…` allowlist
   line is gone with NO replacement: torchvision must now be silent in `pip

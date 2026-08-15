@@ -7,7 +7,7 @@ the image) and writes /opt/resources/templates/vllm_config.yaml — the template
 templates.yaml seeds to /opt/data/vllm_config.yaml on first run (if_missing).
 
 The generated YAML mirrors `vllm serve` CLI args (each key = a long flag without the
-leading `--`). Everything is COMMENTED except the active serving defaults (host/port):
+leading `--`). Everything is COMMENTED except the active serving default (host):
 the user uncomments a MODEL_TABLE stanza (or writes their own) to choose a model.
 vLLM refuses to start without a model, so leaving it commented is a self-explanatory
 "you must pick a model" gate rather than a silent wrong default.
@@ -27,7 +27,9 @@ DEFAULT_OUT = "/opt/resources/templates/vllm_config.yaml"
 
 # Serving defaults that are ACTIVE (uncommented) in the emitted config.
 ACTIVE_HOST = "0.0.0.0"
-ACTIVE_PORT = 8000
+# NOT emitted as a `port:` key — the launcher owns the listen port (see emit_header).
+# Kept only to name the default in the explanatory comment block.
+DEFAULT_PORT = 8000
 
 
 def load_model_table(models_path):
@@ -89,7 +91,11 @@ def emit_header(out):
     out.append("")
     out.append("# ── Active serving defaults (uncommented = in effect) ────────────────────────")
     out.append(f'host: "{ACTIVE_HOST}"')
-    out.append(f"port: {ACTIVE_PORT}")
+    out.append("")
+    out.append("# NO `port:` key here ON PURPOSE — the container owns the listen port and appends")
+    out.append("# `--port` to the `vllm serve` command line (PORT in /opt/data/server.env, default")
+    out.append(f"# {DEFAULT_PORT}). Setting it here too would be overridden anyway AND makes vLLM log")
+    out.append('# "Found duplicate keys --port" at every start. Change the port in server.env.')
     out.append("")
     out.append("# Suggested global defaults (uncomment to apply; from the upstream toolbox):")
     out.append("# gpu-memory-utilization: 0.90")

@@ -135,10 +135,12 @@ serve::read_health_spec() {
 # ── Port plumbing ───────────────────────────────────────────────────────────
 # apply_port — put the configured port into the SERVICE argv, in place. Replace
 # the value after every existing $SERVE_PORT_FLAG (comfyui/jupyter carry one in
-# the spec; ds4's PRE_LAUNCH builds one from DS4_DROSTE_PORT), else append the
-# flag (llama/vllm take their port from an env file / config file — a trailing
-# CLI flag wins over both in llama.cpp and vLLM, which is what "installer-owned
-# ports" requires).
+# the spec; ds4's PRE_LAUNCH emits one only if a user re-adds DS4_DROSTE_PORT,
+# which templates/ds4.env now deliberately omits), else append the flag
+# (llama/vllm/ds4 otherwise take their port from an env file / config file /
+# their own built-in default — a trailing CLI flag wins over all of those in
+# llama.cpp, vLLM and ds4-server, which is what "installer-owned ports"
+# requires).
 serve::apply_port() {
     local port=$1 i=0 n=${#SERVICE[@]} found=0
     while [ "$i" -lt "$n" ]; do

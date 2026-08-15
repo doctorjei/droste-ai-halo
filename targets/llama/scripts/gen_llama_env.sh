@@ -13,8 +13,10 @@
 #      its output carries no env annotations): string-scan the llama-server binary
 #      (+ its local libs) for LLAMA_ARG_[A-Z0-9_]+ literals — the arg table stores
 #      the env names as plain strings. Names only; defaults left empty.
-# Either way the ACTIVE vars are VERIFIED against the enumerated table — a rename
-# upstream fails the IMAGE BUILD loudly (verify-at-build by design).
+# Either way the REQUIRED vars (REQUIRED_VARS below — the ones this image's
+# runtime contract depends on, whether emitted active, commented or passed as a
+# flag) are VERIFIED against the enumerated table: a rename upstream fails the
+# IMAGE BUILD loudly (verify-at-build by design).
 #
 # Usage: gen_llama_env.sh [output-path]   (env override: LLAMA_SERVER_BIN)
 set -euo pipefail
@@ -25,16 +27,24 @@ SERVER=${LLAMA_SERVER_BIN:-llama-server}
 die() { printf 'gen_llama_env: ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf 'gen_llama_env: %s\n' "$*" >&2; }
 
-# Our active (uncommented) values. Expressed as env lines, NOT hardcoded flags,
-# because CLI flags override env in llama.cpp — env lines keep user edits winning.
+# Our one active (uncommented) value. Expressed as an env LINE, not a hardcoded
+# flag, because CLI flags override env in llama.cpp — an env line keeps user edits
+# winning (which is also exactly why the port below is NOT emitted active).
 ACTIVE_HOST=0.0.0.0
-ACTIVE_PORT=8080
+# The port is NOT emitted active — the launcher owns it (see the emitted comment
+# block below). This value only names llama-server's own default in that comment
+# and on the commented LLAMA_ARG_PORT line.
+DEFAULT_PORT=8080
 # Slot save/restore: the pinned fork ships --slot-save-path with NO env
 # annotation, so there is no LLAMA_ARG_SLOT_SAVE_PATH to set here — the flag is
 # added by the entrypoint's launch line instead (targets/llama/build-spec,
 # llama_pre_launch). This path only feeds the explanatory comment block below.
 SLOTS_DIR=/opt/data/slots
 # Vars that MUST exist in the pinned llama-server's arg table (build fails if not).
+# LLAMA_ARG_PORT stays on this list even though it is emitted COMMENTED: the port
+# knob has to keep existing in the pinned binary for the commented line (and the
+# server lane, which reads the env var) to mean anything, so the drift gate still
+# covers it — the gate checks the BINARY's arg table, not what we emit active.
 REQUIRED_VARS=(LLAMA_ARG_HOST LLAMA_ARG_PORT LLAMA_ARG_MODEL)
 # Vars excluded from the generic commented list (they get dedicated blocks above
 # it). LLAMA_ARG_SLOT_SAVE_PATH is deliberately NOT excluded: absent from the
@@ -88,9 +98,9 @@ note "enumerated $count env-having flags from '$SERVER' (mode: $mode)"
 names=$(printf '%s\n' "$table" | cut -f1)
 for v in "${REQUIRED_VARS[@]}"; do
     grep -qx "$v" <<<"$names" \
-        || die "required env var '$v' NOT in the pinned llama-server's arg table — upstream rename? Fix the active lines (or the launch flags) before shipping."
+        || die "required env var '$v' NOT in the pinned llama-server's arg table — upstream rename? Fix the emitted lines (or the launch flags) before shipping."
 done
-note "verified active vars: ${REQUIRED_VARS[*]}"
+note "verified required vars: ${REQUIRED_VARS[*]}"
 
 # ── 3) emit the template ──────────────────────────────────────────────────────
 mkdir -p "$(dirname "$OUT")"
@@ -114,7 +124,15 @@ mkdir -p "$(dirname "$OUT")"
     printf '%s\n' \
         "# ── active defaults (droste) ─────────────────────────────────────────────────" \
         "LLAMA_ARG_HOST=$ACTIVE_HOST" \
-        "LLAMA_ARG_PORT=$ACTIVE_PORT" \
+        "" \
+        "# NO active LLAMA_ARG_PORT line ON PURPOSE — the listen port is the CONTAINER's," \
+        "# not this file's. The launcher appends '--port' to the llama-server command line" \
+        "# from PORT in /opt/data/server.env (default $DEFAULT_PORT), and llama.cpp resolves a CLI" \
+        "# flag OVER the env var without saying so — uncommenting the line below would look" \
+        "# authoritative and do nothing. Change the port in server.env, then restart the box." \
+        "# (It does still apply where nothing appends '--port': the two-container server lane," \
+        "# which reads no server.env, and a llama-server you start by hand in the box.)" \
+        "# LLAMA_ARG_PORT=$DEFAULT_PORT" \
         "" \
         "# ── slot save/restore ────────────────────────────────────────────────────────" \
         "# Slot save/restore is enabled via the launch flag --slot-save-path $SLOTS_DIR," \

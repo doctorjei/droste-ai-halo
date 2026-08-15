@@ -269,7 +269,11 @@ keys reuse the safetensors classifier rather than growing parallel prefix rules.
   `6446b9595273f289e11586c3c7d3e1e6f2945888` (`targets/vllm/upstream/models.py`)
   and `vllm_config.yaml` is GENERATED AT IMAGE BUILD from it
   (`scripts/gen_vllm_config.py`) — hermetic, and upstream drift is visible as a
-  vendored-file diff, not a silent build change. `VLLM_NO_USAGE_STATS=1` is baked
+  vendored-file diff, not a silent build change. The generated config carries
+  `host:` but deliberately NO `port:` key (2026-08-14): the launcher owns the
+  listen port (`droste-serve.sh::serve::apply_port` appends `--port $PORT` from
+  server.env), and setting it in both places made vLLM log `Found duplicate keys
+  --port` at every start. `VLLM_NO_USAGE_STATS=1` is baked
   instead of persisting `~/.config/vllm` (do-not-track > carrying state). The
   `cache/vllm` bind IS present (owner decision 2026-07-09, resolving the old
   VERIFY-at-test note that had it omitted): `~/.cache/vllm` — vLLM's
@@ -281,6 +285,12 @@ keys reuse the safetensors classifier rather than growing parallel prefix rules.
   arg table (`scripts/gen_llama_env.sh`: `--help` parse with a binary-string-scan
   fallback), so the commented flag list can't drift from the pinned binary; the
   build FAILS LOUDLY if `LLAMA_ARG_{HOST,PORT,MODEL}` vanish upstream.
+  `LLAMA_ARG_PORT` is emitted COMMENTED, not active (2026-08-14, same rule as
+  vllm's missing `port:` key): the launcher appends `--port $PORT` from
+  server.env and llama.cpp silently resolves the CLI flag over the env var, so
+  an active line here would look authoritative and do nothing. It stays in the
+  generator's `REQUIRED_VARS` drift gate regardless — that gate checks the
+  PINNED BINARY's arg table, not what the template emits active.
   `LLAMA_CACHE` is deliberately UNSET — it is first in llama.cpp's
   cache-path resolution and setting it would re-separate the shared HF cache.
   Slot save/restore: the pinned fork ships `--slot-save-path` with NO env
@@ -291,9 +301,13 @@ keys reuse the safetensors classifier rather than growing parallel prefix rules.
 - **ds4** — ds4 has no native per-flag env vars, so PRE_LAUNCH translates
   `DS4_DROSTE_*` → argv (arity source-verified against pinned kyuz0/ds4
   `@00e64ea`); NATIVE `DS4_*` vars (DS4_THREADS, …) pass through untouched — the
-  binary reads them itself. Backend shorthands (`--rocm`/`--cpu`/…) and the
-  distributed/multi-node flags are left to `DS4_DROSTE_EXTRA_ARGS`. The whole
-  `~/.ds4` (kvcache sessions + browser profile) is surfaced from `/opt/data/ds4`
+  binary reads them itself. `DS4_DROSTE_PORT` is deliberately NOT among the
+  seeded active lines (2026-08-14, same rule as vllm/llama): `apply_port` would
+  overwrite the `--port` it produces with server.env's `PORT` anyway, so the
+  template carries only a comment pointing at server.env. Backend shorthands
+  (`--rocm`/`--cpu`/…) and the distributed/multi-node flags are left to
+  `DS4_DROSTE_EXTRA_ARGS`. The whole `~/.ds4` (kvcache sessions + browser
+  profile) is surfaced from `/opt/data/ds4`
   (sessions are user WORK, top-level, not cache/); the cockpit conf is a FILE, so
   it persists via symlink `~/.ds4-cockpit.conf → /opt/data/cockpit/…`.
   `download_model.sh` was reworked cache-native (`hf download` into the shared HF
@@ -1138,3 +1152,19 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   mirror the Triton/vLLM env into the image env (`PYTHONPATH=/opt/fp8`, etc.) so
   non-login shells (podman exec, distrobox) get it without sourcing
   `/etc/profile.d`.
+- Startup-log noise, known and COSMETIC — `Op 'sparse_attn_indexer' not present
+  in model, enabling with '+sparse_attn_indexer' has no effect` is UPSTREAM's
+  own ROCm default, not ours (2026-08-14; nothing in this repo touches
+  `custom_ops` except `patch_strix.py`'s gfx1x `+rms_norm` bypass). vLLM's
+  `RocmPlatform.apply_config_platform_defaults` appends `+sparse_attn_indexer`
+  to `compilation_config.custom_ops` UNCONDITIONALLY — at our `VLLM_REF=v0.16.0`
+  pin that is `vllm/platforms/rocm.py:566-567` ("Default dispatch to rocm's
+  sparse_attn_indexer implementation"), still unconditional on `main` — and
+  `CompilationConfig.custom_op_log_check` (`vllm/config/compilation.py:1092` at
+  the same pin) then warns for every listed op the LOADED model does not define.
+  The op is part of the DeepSeek V3.2 sparse-attention path, so every other model
+  logs it. It is `warning_once` with zero functional effect; do NOT try to strip
+  it via config (a user `-sparse_attn_indexer` does not suppress the append —
+  unlike `grouped_topk` just above, the sparse line is not guarded), and do not
+  add a `patch_strix.py` patch for a log line. Revisit only if upstream makes it
+  conditional.

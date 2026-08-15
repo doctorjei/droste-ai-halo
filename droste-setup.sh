@@ -161,6 +161,10 @@ INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 # configured to serve — so these flags are unconditional, interactive-only boxes
 # included. With --health-on-failure=restart a failing probe restarts the
 # container, which re-runs the init line and therefore relaunches the service.
+# The probe also requires the box's OWN service to be the thing that is up (the
+# state record droste-serve.sh writes at every start): under host networking a
+# port these boxes did not open can answer the probe, and a box that refused to
+# start a second listener on someone else's port used to report HEALTHY.
 HEALTH_CMD="/opt/resources/resolve/droste-healthcheck.sh"
 HEALTH_INTERVAL="30s"
 HEALTH_RETRIES=3
@@ -209,8 +213,11 @@ overlay_hostile_fs() {
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────
+# The delimiter is UNQUOTED so the typography atoms below expand; the block has
+# no other $, backtick or escaped character, so nothing else expands with them
+# (its \t / \n / \r are literal two-character spellings, not escapes).
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage: droste-setup.sh [OPTIONS] [BOX ...]
 
 Interactive setup for the droste *-halo AI boxes (Strix Halo / gfx1151).
@@ -223,7 +230,10 @@ images, create boxes, and start servers.
 BOX      comfyui llama vllm ds4 finetuning   (default: interactive menu)
 
 Options:
-  --plain    ASCII output (no emoji / ANSI) — auto-detected on dumb terminals
+  --ascii    output limited to printable ASCII characters and tab (\t),
+             linefeed (\n), and carriage return (\r) $EMD no escape
+             sequences, no line editing. For pipes, captures, and dumb
+             terminals (TERM=dumb auto-detects).
   -h, --help show this help
 
 Safe to re-run: existing setups are detected and never clobbered.
@@ -231,26 +241,25 @@ EOF
 }
 
 # ── Output / display helpers ─────────────────────────────────────────────────
-PLAIN=0
-ARG_BOXES=()
-for arg in "$@"; do
-  case "$arg" in
-    --plain) PLAIN=1 ;;
-    -h|--help) usage; exit 0 ;;
-    -*) printf 'droste-setup.sh: unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
-    *) ARG_BOXES+=("$arg") ;;
-  esac
-done
-case "${TERM:-dumb}" in dumb|unknown) PLAIN=1 ;; esac
+# The mode is settled BEFORE the option loop proper, because usage() and the
+# unknown-option error are themselves output: they have to be able to print
+# through the atoms below. So --ascii is read from argv in a pass of its own,
+# and the loop that consumes the arguments runs after the atoms exist.
+ASCII=0
+for arg in "$@"; do case "$arg" in --ascii) ASCII=1 ;; esac; done
+case "${TERM:-dumb}" in dumb|unknown) ASCII=1 ;; esac
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   *[Uu][Tt][Ff]*8*|*[Uu][Tt][Ff]*) : ;;
-  *) PLAIN=1 ;;
+  *) ASCII=1 ;;
 esac
 
-if [[ $PLAIN -eq 1 ]]; then
+if [[ $ASCII -eq 1 ]]; then
   RESET="" DIVCH="-"
+  # Prose typography, transliterated at the mode boundary so the sentences
+  # themselves are written once: em-dash -> "--", ellipsis -> "...".
+  EMD="--" ELL="..."
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
-  # these variables so --plain / dumb terminals stay byte-for-byte colorless.
+  # these variables so --ascii / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
   C_BRK="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD="" C_NOTB="" C_NOT=""
   C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
@@ -262,7 +271,7 @@ if [[ $PLAIN -eq 1 ]]; then
   C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_SGRP="" C_MOPT="" C_MCAT=""
   C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP=""
   C_PATHB="" C_PATHG=""
-  # Repaint plumbing for the pull progress bar. Empty here on purpose: --plain
+  # Repaint plumbing for the pull progress bar. Empty here on purpose: --ascii
   # (and any dumb terminal) gets ONE static status line per image instead, so
   # the section stays byte-for-byte free of control sequences.
   CR="" EL="" BAR_F="#" BAR_E="-"
@@ -273,11 +282,12 @@ if [[ $PLAIN -eq 1 ]]; then
   GS_YES="[Y]" GS_NO="[N]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R=""
   BULLET="-" ARROW_G=" ---> " ARROW_M="-->"
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
-  # The two banner weights collapse onto the same ASCII drawing in --plain.
+  # The two banner weights collapse onto the same ASCII drawing in --ascii.
   BANTL="." BANTR="." BANBL="'" BANBR="'" BANH="-" BANV="|"
   BANTL2="." BANTR2="." BANBL2="'" BANBR2="'" BANH2="-" BANV2="|"
 else
   RESET=$'\e[0m' DIVCH="─"
+  EMD="—" ELL="…"
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
   C_TITLE=$'\e[1;96m'   # installer title (top banner only)
   C_BTITLE=$'\e[0;96m'  # per-box banner title
@@ -364,6 +374,18 @@ else
   BANTL="╔" BANTR="╗" BANBL="╚" BANBR="╝" BANH="═" BANV="║"
   BANTL2="┏" BANTR2="┓" BANBL2="┗" BANBR2="┛" BANH2="━" BANV2="┃"
 fi
+
+# The options themselves. --ascii was already read above; it is matched again
+# here only so it does not fall through to the box list.
+ARG_BOXES=()
+for arg in "$@"; do
+  case "$arg" in
+    --ascii) ;;
+    -h|--help) usage; exit 0 ;;
+    -*) printf 'droste-setup.sh: unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+    *) ARG_BOXES+=("$arg") ;;
+  esac
+done
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" | fold -s -w "$(disp_width)"; }
@@ -457,10 +479,11 @@ hint_yn() {   # Y|N
 # set off from the next prompt by a blank line.
 subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
 
-# Preflight rows: cyan [ok] / red [!!] / yellow [!!]. Preflight never blocks, so
-# a problem is reported here rather than through warn(). The yellow row is the
-# same marker in the informational shade: the state is not what the installer
-# wants, but the installer offers to change it before the run ends.
+# Preflight rows: cyan [ok] / red [!!] / yellow [!!]. A preflight problem is
+# reported here rather than through warn(), and only one of them ends the run
+# (pf_session). The yellow row is the same marker in the informational shade:
+# the state is not what the installer wants, but the installer offers to change
+# it before the run ends.
 pf_ok()   { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
 pf_bad()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
 pf_note() { printf '  %s[%s%s%s]%s %s%s\n' "$C_NOTB" "$C_NOT" "!!" "$C_NOTB" "$C_NOTB" "$1" "$RESET"; }
@@ -469,7 +492,7 @@ pf_note() { printf '  %s[%s%s%s]%s %s%s\n' "$C_NOTB" "$C_NOT" "!!" "$C_NOTB" "$C
 # grey of linger_fallback_note(), with any command emph()'d inside the string.
 pf_hint() { printf '    %s%s%s\n' "$C_TEXT" "$1" "$RESET"; }
 
-# A titled box drawn with the banner glyphs (ASCII in --plain mode).
+# A titled box drawn with the banner glyphs (ASCII in --ascii mode).
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
 # Two weights: the ONE installer title is DOUBLE-ruled, each per-box title HEAVY.
 BANNER_W=0                       # outer width of the last banner drawn
@@ -491,7 +514,7 @@ banner() {   # text [bold]
   bot="$bl$fill$br"
   mid="$v $tcol$text$C_FRAME $v"
   printf '\n'
-  # Wrap each line separately so it renders even when RESET is empty (--plain).
+  # Wrap each line separately so it renders even when RESET is empty (--ascii).
   printf '  %s%s%s\n' "$C_FRAME" "$top" "$RESET"
   printf '  %s%s%s\n' "$C_FRAME" "$mid" "$RESET"
   printf '  %s%s%s\n' "$C_FRAME" "$bot" "$RESET"
@@ -499,9 +522,9 @@ banner() {   # text [bold]
 
 # Jei's coloured droste mark, the same art the in-box toolbox banners draw
 # (droste-ai-halo commit 198f3f9), re-indented to sit above the installer title.
-# It is ANSI + private-use box glyphs by construction, so --plain skips it.
+# It is ANSI + private-use box glyphs by construction, so --ascii skips it.
 logo_header() {
-  [[ $PLAIN -eq 1 ]] && return 0
+  [[ $ASCII -eq 1 ]] && return 0
   printf '\n'
   printf '%s\n' \
     $' \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
@@ -730,8 +753,19 @@ fit_note() {   # note budget → note
 # directory; resolving it against $HOME puts it where every default the
 # installer offers already lives. `./foo` lands there too: the leading ./ is the
 # quit-escape marker (see quit_notice), not a request for the cwd.
-expand_path() {  # ~ expansion + absolutize + normalize (realpath -m style)
-  local p=$1
+#
+# A SYMLINK IS AN ANSWER, NOT A DETOUR. `realpath -m` used to resolve the whole
+# spelling down to its physical target, so answering ~/models (a link to
+# /mnt/fast/models today, /mnt/bigger/models next month) stored the target and
+# froze the choice into every ini, unit and NOTES line. The link is a level of
+# indirection the user is keeping deliberately, so what they typed is what is
+# stored — -s (--no-symlinks) keeps the tidy-up LEXICAL. Anything needing
+# the physical path resolves it for itself, transiently: findmnt --target in
+# probe_fstype follows the link at probe time, and the kernel follows it at
+# mkdir / mount time (so a re-pointed link takes effect at the next box start,
+# which is the whole point of keeping it).
+expand_path() {  # ~ expansion + absolutize + lexical normalize (no symlinks)
+  local p=$1 q
   # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
   case "$p" in
     "~") p=$HOME ;;
@@ -739,14 +773,17 @@ expand_path() {  # ~ expansion + absolutize + normalize (realpath -m style)
     /*) : ;;
     *) p=$HOME/$p ;;
   esac
-  # Collapse ., .., //  without requiring the path to exist.
-  p=$(realpath -m -- "$p" 2>/dev/null) || :
+  # Collapse ., .., //  without requiring the path to exist AND without walking
+  # any link. Assigned only on success: a host with no realpath(1) would
+  # otherwise get an EMPTY path out of a substitution that failed.
+  if q=$(realpath -m -s -- "$p" 2>/dev/null); then p=$q; fi
   printf '%s' "$p"
 }
 
 # ── Prompt plumbing (curl|bash-safe: /dev/tty, or the scripted-input hook) ───
 ASK_FD=""
 SCRIPTED=0
+READLINE=0        # 1 = prompts are read through readline (line editing works)
 init_input() {
   if [[ -n "${DROSTE_SETUP_INPUT:-}" ]]; then
     [[ -r "$DROSTE_SETUP_INPUT" ]] || die "cannot read DROSTE_SETUP_INPUT=$DROSTE_SETUP_INPUT"
@@ -756,7 +793,43 @@ init_input() {
     if ! exec {ASK_FD}</dev/tty; then
       die "no controlling terminal for prompts (this installer is interactive)"
     fi
+    # A bare `read` leaves the terminal in canonical mode, where the LINE
+    # DISCIPLINE echoes an arrow key as the literal bytes it sent: pressing ←
+    # printed "^[[D" and put ESC [ D in the answer. `read -e` hands the line to
+    # readline instead, which is what turns those keys back into editing (and
+    # brings TAB path completion + bracketed paste along). Scripted input never
+    # takes this door: `read -p` prints nothing when stdin is not a terminal,
+    # which would silently swallow every prompt in the transcript.
+    #
+    # Probed rather than assumed — a bash built without readline rejects -e,
+    # and this script runs on whatever the host has. The here-string feeds the
+    # probe one empty line: reading EOF would fail for want of INPUT (status 1)
+    # and say nothing about the option.
+    #
+    # Not under --ascii: that mode is the BYTE-STREAM tier (TERM=dumb, pipes,
+    # captures) — zero escape bytes on the wire, and readline would break the
+    # contract all by itself (bracketed-paste toggles ESC[?2004h/l around
+    # every prompt). Line editing is a terminal feature; --ascii's consumers
+    # are not terminals, so nothing of value is given up.
+    if [[ $ASCII -eq 0 ]] && (IFS= read -e -r _rl_probe <<<"") >/dev/null 2>&1; then
+      READLINE=1
+    fi
   fi
+}
+
+# Readline places the cursor by counting the prompt it was GIVEN, so every
+# non-printing SGR sequence inside it has to be fenced with \001..\002 or the
+# escape bytes are counted as width. Unfenced, the first redraw that goes back
+# to the start of the line (Ctrl-A, then type) reprints the answer OVER the
+# prompt — which is how this was found.
+rl_prompt() {   # painted prompt → the same prompt, its colours fenced
+  local s=$1 out="" esc=$'\e' re
+  re="^([^$esc]*)($esc\[[0-9;]*[a-zA-Z])(.*)$"
+  while [[ $s =~ $re ]]; do
+    out+="${BASH_REMATCH[1]}"$'\001'"${BASH_REMATCH[2]}"$'\002'
+    s=${BASH_REMATCH[3]}
+  done
+  printf '%s%s' "$out" "$s"
 }
 
 # QUIT ANYWHERE. Every prompt in the installer goes through ask_raw, so ONE
@@ -767,8 +840,8 @@ init_input() {
 # resolves (to $HOME/quit — never to the cwd) and this test never sees.
 QUIT_ARMED=0
 quit_now() {
-  printf '\n  %sExiting droste-setup.sh — no further changes made.%s\n\n' \
-    "$C_TEXT" "$RESET"
+  printf '\n  %sExiting droste-setup.sh %s no further changes made.%s\n\n' \
+    "$C_TEXT" "$EMD" "$RESET"
   exit 0
 }
 
@@ -792,9 +865,22 @@ ask_raw() {  # $1 = prompt text (printed without newline)
   # input there is no echo, so the answer is printed here already dressed —
   # which is also what makes a scripted transcript byte-comparable to the
   # approved runthrough.
-  printf '  %s%s' "$C_TEXT" "$1"
-  [[ $SCRIPTED -eq 1 ]] || printf '%s' "$C_IN"
-  if ! IFS= read -r ANS <&"$ASK_FD"; then
+  #
+  # With readline (see init_input) the SAME painted string is handed over as
+  # readline's own prompt instead of being printed here: readline has to own
+  # the prompt to know where the answer starts. One visible consequence —
+  # readline writes it to stderr, as bash does for `read -p` and for PS1 — so a
+  # run whose STDOUT is redirected keeps showing its prompts on the terminal.
+  local ok=1 p
+  if [[ $READLINE -eq 1 ]]; then
+    p=$(rl_prompt "  $C_TEXT$1$C_IN")
+    IFS= read -e -r -p "$p" ANS <&"$ASK_FD" || ok=0
+  else
+    printf '  %s%s' "$C_TEXT" "$1"
+    [[ $SCRIPTED -eq 1 ]] || printf '%s' "$C_IN"
+    IFS= read -r ANS <&"$ASK_FD" || ok=0
+  fi
+  if [[ $ok -eq 0 ]]; then
     printf '%s\n' "$RESET"
     die "prompt input exhausted"
   fi
@@ -919,7 +1005,7 @@ ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
   fi
   if [[ $yn -eq 1 ]]; then
     mkdir -p "$p" 2>/dev/null && return 0
-    warn "could not create $p — pick another location"
+    warn "could not create $p $EMD pick another location"
   fi
   return 1
 }
@@ -948,7 +1034,7 @@ ask_port() {  # box default → ANS_PORT
       [[ "${CFG_PORT[$b]:-}" == "$ANS" ]] && other=$b
     done
     if [[ -n $other ]]; then
-      subnote "Port $ANS is already assigned to $other — pick another."
+      subnote "Port $ANS is already assigned to $other $EMD pick another."
       continue
     fi
     ANS_PORT=$ANS
@@ -979,11 +1065,118 @@ RUNG="w"                     # w|p|c|a
 
 RUNTIME="" RUNTIME_BIN="" ROOTLESS=0 HAVE_DISTROBOX=0
 LINGER=""                    # yes|no|"" (unknown) — user-manager lingering
+PF_ME="" PF_UID=""           # this user's name + uid (subordinate-id lookups)
+PF_STOP=0                    # 1 = preflight found something it must block on
 
-# ── Preflight (warn, never block) ────────────────────────────────────────────
+# WHOSE SESSION IS THIS? `sudo -iu droste` / `su - droste` gives a shell that
+# looks right and works for everything the installer does — until
+# distrobox-assemble, which hard-refuses ("Running distrobox-assemble via
+# SUDO/DOAS is not supported"). On a first run that refusal lands AFTER tens of
+# GB of image have been pulled, so the check belongs here, at the top — and it
+# is the one preflight row that stops the run.
+pf_session() {
+  local via="" who=""
+  if [[ -n "${SUDO_USER:-}" ]]; then via=SUDO_USER who=$SUDO_USER
+  elif [[ -n "${DOAS_USER:-}" ]]; then via=DOAS_USER who=$DOAS_USER
+  fi
+  if [[ -z $via ]]; then
+    pf_ok "session belongs to $PF_ME (not sudo/su-derived)"
+    return 0
+  fi
+  # $who is who reached for sudo; $PF_ME is who the boxes would belong to, and
+  # therefore who has to be logged in for distrobox to accept the run.
+  pf_bad "sudo/su-derived shell ($via=$who) $EMD distrobox will refuse it"
+  pf_hint "and it refuses AFTER the pulls, so this run stops here instead"
+  pf_hint "systemd: $(emph "machinectl shell $PF_ME@") (pkg systemd-container)"
+  pf_hint "or $(emph "ssh $PF_ME@localhost") $EMD anything that is a real login"
+  PF_STOP=1
+  return 0
+}
+
+# ── Subordinate id ranges (the lchown EINVAL lesson) ─────────────────────────
+# Rootless podman maps container uids/gids through the ranges /etc/subuid and
+# /etc/subgid grant this user, and it caches that map in its storage the FIRST
+# time it runs. Ranges added afterwards never reach a storage that is already
+# initialised: the pull then dies mid-download with "lchown …: invalid
+# argument" (an unmapped gid), GBs in. So BOTH halves are checked, before the
+# build ladder can pull anything — the grant on paper, and the map podman
+# actually holds.
+SUBID_MIN=65536
+subid_count() {   # subuid|subgid → largest count granted to this user (0=none)
+  local db=$1 out="" n best=0
+  # getent knows the databases on hosts with libsubid NSS; everywhere else the
+  # file IS the database. Entries may be keyed by name or by uid.
+  out=$(getent "$db" "$PF_ME" 2>/dev/null) || out=""
+  if [[ -z $out && -r /etc/$db ]]; then
+    out=$(grep -E "^($PF_ME|$PF_UID):" "/etc/$db" 2>/dev/null) || out=""
+  fi
+  while IFS=: read -r _ _ n; do   # <name>:<first id>:<count>, count is ours
+    [[ $n =~ ^[0-9]+$ ]] || continue
+    [[ $n -gt $best ]] && best=$n
+  done <<<"$out"
+  printf '%s' "$best"
+}
+
+idmap_rows() {   # uid_map|gid_map → rows podman really maps (0 = no probe)
+  local out
+  out=$("$RUNTIME_BIN" unshare cat "/proc/self/$1" 2>/dev/null) \
+    || { printf 0; return 0; }
+  # One row = the user's own id and nothing else, which is exactly the state a
+  # storage initialised before the grant is stuck in.
+  awk 'NF {c = c + 1} END {print c + 0}' <<<"$out"
+}
+
+pf_idmap() {
+  local u g ru rg
+  # Rootful podman (and docker) map container ids directly and grant no
+  # subordinate ranges; `podman unshare` refuses to run there at all.
+  [[ $RUNTIME == podman && $ROOTLESS -eq 1 ]] || return 0
+  u=$(subid_count subuid)
+  g=$(subid_count subgid)
+  if [[ $u -lt $SUBID_MIN || $g -lt $SUBID_MIN ]]; then
+    if [[ $u -eq 0 || $g -eq 0 ]]; then
+      pf_bad "no subuid/subgid range for $PF_ME $EMD rootless pulls cannot map ids"
+    else
+      pf_bad "subuid/subgid range for $PF_ME is short ($u/$g < $SUBID_MIN ids)"
+    fi
+    pf_hint "grant one: $(emph "sudo usermod --add-subuids 100000-165535 \\")"
+    pf_hint "$(emph "                        --add-subgids 100000-165535 $PF_ME")"
+    pf_hint "then $(emph 'podman system migrate') $EMD podman caches the old map"
+    # Returning HERE, before the unshare probe, is the point: `podman unshare`
+    # initialises the storage it is asked about, and a storage first
+    # initialised without the grant is exactly the stale map above.
+    return 0
+  fi
+  ru=$(idmap_rows uid_map)
+  rg=$(idmap_rows gid_map)
+  # 0 rows is not a short map, it is no answer at all (podman unshare could not
+  # run — no newuidmap, a locked-down host, a broken runtime dir). Say so
+  # instead of diagnosing a map that was never read.
+  if [[ $ru -eq 0 || $rg -eq 0 ]]; then
+    pf_note "subuid/subgid granted ($u ids); podman's own map went unread"
+    pf_hint "$(emph "$RUNTIME unshare") would not run here $EMD if a pull then dies"
+    pf_hint "on \"lchown $ELL: invalid argument\", $(emph "$RUNTIME system migrate")"
+    return 0
+  fi
+  if [[ $ru -lt 2 || $rg -lt 2 ]]; then
+    pf_bad "podman maps only your own id ($ru/$rg rows) $EMD pulls die mid-layer"
+    pf_hint "the ranges above were granted after podman first ran, so its"
+    pf_hint "storage never saw them: $(emph 'podman system migrate'), then re-run"
+    return 0
+  fi
+  pf_ok "subuid/subgid mapping live ($u ids; $ru/$rg map rows)"
+  return 0
+}
+
+# ── Preflight (warns; one hard stop) ─────────────────────────────────────────
 preflight() {
   section "Preflight" intro
   say ""
+  PF_ME=$(id -un)
+  PF_UID=$(id -u)
+  # First row, because it is the only one that ends the run — a reader who has
+  # to act on it should not have to find it halfway down the report.
+  pf_session
   if command -v podman >/dev/null 2>&1; then
     RUNTIME=podman
     RUNTIME_BIN=$(command -v podman)
@@ -996,13 +1189,16 @@ preflight() {
     pf_hint "docker satisfies distrobox's dependency, so no podman comes in;"
     pf_hint "the image pulls need it: $(emph 'sudo apt install podman') (apt distros)"
   else
-    pf_bad "neither podman nor docker found — definitions will still be written"
-    pf_hint "apt distros: $(emph 'sudo apt install podman') — else your package manager"
+    pf_bad "neither podman nor docker found $EMD definitions will still be written"
+    pf_hint "apt distros: $(emph 'sudo apt install podman') $EMD else your package manager"
   fi
+  # Ordered after the runtime row on purpose: it has nothing to say until it
+  # knows there is a rootless podman to ask (it returns silently otherwise).
+  pf_idmap
   if [[ -e /dev/kfd && -e /dev/dri ]]; then
     pf_ok "GPU devices present: /dev/kfd /dev/dri"
   else
-    pf_bad "GPU devices missing (/dev/kfd, /dev/dri) — fine on a non-GPU host"
+    pf_bad "GPU devices missing (/dev/kfd, /dev/dri) $EMD fine on a non-GPU host"
   fi
   # ONE list, used twice: the prose names the groups exactly as the usermod
   # argument spells them (bare commas), which is also what brings the row to 79
@@ -1020,7 +1216,7 @@ preflight() {
   if [[ -e /dev/fuse ]]; then
     pf_ok "/dev/fuse present (fuse-overlayfs fallback option)"
   else
-    pf_bad "/dev/fuse missing — fuse-overlayfs fallback unavailable"
+    pf_bad "/dev/fuse missing $EMD fuse-overlayfs fallback unavailable"
   fi
   # The pull path is curl (POST to the podman REST API) piped into python3
   # (which aggregates the per-layer byte counts into one bar). Both are hard
@@ -1028,12 +1224,12 @@ preflight() {
   if command -v python3 >/dev/null 2>&1; then
     pf_ok "python3 found (image-pull progress)"
   else
-    pf_bad "python3 not found — image pulls will fail (definitions still written)"
+    pf_bad "python3 not found $EMD image pulls will fail (definitions still written)"
   fi
   if command -v curl >/dev/null 2>&1; then
     pf_ok "curl found (image-pull transport)"
   else
-    pf_bad "curl not found — image pulls will fail (definitions still written)"
+    pf_bad "curl not found $EMD image pulls will fail (definitions still written)"
   fi
   # Lingering: a rootless user manager exits at logout unless the user lingers,
   # which would take BOTH the boot auto-start units and podman's own healthcheck
@@ -1043,13 +1239,20 @@ preflight() {
   probe_linger
   case "$LINGER" in
     yes) pf_ok "user lingering enabled (boot auto-start + healthcheck timers)" ;;
-    no)  pf_note "user lingering off — needed to start boxes at host boot (offered later)" ;;
+    no)  pf_note "user lingering off $EMD needed to start boxes at host boot (offered later)" ;;
     *)   pf_bad "cannot read user lingering state (loginctl missing?)" ;;
   esac
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
   if [[ $HAVE_DISTROBOX -eq 0 ]]; then
     pf_bad "distrobox not found (it creates every box)"
-    pf_hint "apt distros: $(emph 'sudo apt install distrobox') — else your package manager"
+    pf_hint "apt distros: $(emph 'sudo apt install distrobox') $EMD else your package manager"
+  fi
+  # The whole report is printed first, THEN the run ends: a session that has to
+  # be replaced is worth reporting alongside everything else the new one will
+  # find. This is the one thing preflight blocks on (see pf_session).
+  if [[ $PF_STOP -eq 1 ]]; then
+    say ""
+    die "log in as $PF_ME itself, then re-run (see the [!!] row above)"
   fi
   return 0
 }
@@ -1283,7 +1486,7 @@ select_boxes() {
         esac
       done
       if [[ -n $bad ]]; then
-        subnote "Unrecognized:$bad — use the names or numbers above."
+        subnote "Unrecognized:$bad $EMD use the names or numbers above."
         continue
       fi
       [[ ${#want[@]} -gt 0 ]] && break
@@ -2070,8 +2273,8 @@ mitigation_line() {  # box
       cats+="$C_TEXT, $C_MCAT${labels[i]}"
     fi
   done
-  printf '    %s%s%s %s%s detected%s — using %s%s%s for %s%s.%s\n' \
-    "$C_ARROW" "$ARROW_M" "$RESET" "$C_SUBJ" "$fs" "$C_TEXT" \
+  printf '    %s%s%s %s%s detected%s %s using %s%s%s for %s%s.%s\n' \
+    "$C_ARROW" "$ARROW_M" "$RESET" "$C_SUBJ" "$fs" "$C_TEXT" "$EMD" \
     "$C_MOPT" "$mode" "$C_TEXT" "$cats" "$C_TEXT" "$RESET"
   return 0
 }
@@ -2159,16 +2362,16 @@ venv_upper_review() {
       "$C_ARROW" "$ARROW_M" "$RESET" "$C_DETN" "$box" "$C_TEXT" \
       "$C_SVAL" "$n" "$C_TEXT" "$RESET"
     if serve_env_keep_venv "$dir"; then
-      subnote "Kept: server.env sets KEEP_OLD_VENV=1 — not offered, not reported."
+      subnote "Kept: server.env sets KEEP_OLD_VENV=1 $EMD not offered, not reported."
       continue
     fi
     if [[ $(box_state "$box") == ACTIVE ]]; then
-      subnote "$(box_ctr "$box") is running — stop it, then re-run to empty it."
+      subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to empty it."
       continue
     fi
     ask_yn "Empty $(home_disp "$dir/venv")" N
     if [[ $ANS_YN -eq 0 ]]; then
-      subnote "Left as-is — reported at every start; KEEP_OLD_VENV=1 stops that."
+      subnote "Left as-is $EMD reported at every start; KEEP_OLD_VENV=1 stops that."
       continue
     fi
     # THE OVERLAY WORK DIR GOES WITH IT, under the same consent and without a
@@ -2182,9 +2385,9 @@ venv_upper_review() {
     # path. Absent is normal and silent — copy mode never creates one, and the
     # resolver re-creates whatever it needs at the next start.
     if rm -rf "$dir/venv" "$dir/.work/venv"; then
-      subnote "Emptied with its overlay work dir — the image's environment wins."
+      subnote "Emptied with its overlay work dir $EMD the image's environment wins."
     else
-      warn "could not empty $dir/venv and $dir/.work/venv — remove them by hand, then re-run"
+      warn "could not empty $dir/venv and $dir/.work/venv $EMD remove them by hand, then re-run"
     fi
   done
   return 0
@@ -2335,7 +2538,7 @@ emit_serve_env() {  # box
       printf '# to hear about it again at every start.\n'
       printf 'KEEP_OLD_VENV=1\n'
     fi
-  } > "$f" 2>/dev/null || warn "could not write $f — the box will not know its serve setting"
+  } > "$f" 2>/dev/null || warn "could not write $f $EMD the box will not know its serve setting"
   return 0
 }
 
@@ -2457,14 +2660,14 @@ tick_col() {   # phase elapsed → column, relative to the two-space indent
 #   run_step <phase> <log> cmd…  "  <name>...   creating (7s)"  ~1/s
 #   status_ok/status_err <name>  "  <name>...            [OK]"
 #
-# In --plain there is no repaint plumbing (CR/EL are empty), so the line is
+# In --ascii there is no repaint plumbing (CR/EL are empty), so the line is
 # closed at each transition instead: one line per phase as it begins, then the
 # completion line. Never a per-second frame there — that would spam a log.
 STATUS_OPEN=0     # 1 = a partial (unterminated) status line is on screen
 STATUS_NAME=""    # what that line names, for the repaints
 STATUS_COL=0      # how far that partial line was padded (the ticker column)
 
-# The open line stops at the TICKER column, not the tag column: in --plain
+# The open line stops at the TICKER column, not the tag column: in --ascii
 # there is no way back, so whatever prints next (a phase word, or the padding
 # up to the tag) has to start from a column that leaves room for it.
 status_start() {   # name
@@ -2530,7 +2733,7 @@ run_step() {   # phase log command...
   local phase=$1 log=$2 pid rc=0 t0 el shown=-1 col
   shift 2
   if [[ -z $CR ]]; then
-    # --plain: announce the phase on its own line, no ticker. Same column as
+    # --ascii: announce the phase on its own line, no ticker. Same column as
     # the repainting mode uses, so the two read alike.
     col=$(tick_col "$phase" "")
     if [[ $STATUS_OPEN -eq 1 ]]; then
@@ -2930,7 +3133,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$short:$tag..." "$(disp_width)" "$BAR_F" "$BAR_E" "$PLAIN" "$manifest" \
+        "$short:$tag..." "$(disp_width)" "$BAR_F" "$BAR_E" "$ASCII" "$manifest" \
         2>>"$log" \
     || rc=$?
   return $rc
@@ -3008,7 +3211,8 @@ host_boot_units() {  # box...
   done
   exec_hdr "Host Boot Services"
   if ! command -v systemctl >/dev/null 2>&1; then
-    printf '  %ssystemctl not found — cannot manage boot auto-start.%s\n' "$C_TEXT" "$RESET"
+    printf '  %ssystemctl not found %s cannot manage boot auto-start.%s\n' \
+      "$C_TEXT" "$EMD" "$RESET"
     return 0
   fi
   if [[ $want -eq 1 ]]; then
@@ -3201,6 +3405,13 @@ write_notes() {
     printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'
     printf 'restarts the container, which relaunches it. A box with `SERVE=0`\n'
     printf 'always reports healthy — the probe knows it is not meant to serve.\n\n'
+    printf 'The probe checks TWO things: that the service THIS box started is\n'
+    printf 'still running, and that it answers. Both are needed because the boxes\n'
+    printf 'share the host network: if the port in `server.env` is already taken\n'
+    printf 'when the box starts, the box does NOT start a second listener (it\n'
+    printf 'says so in `<data dir>/.droste-serve.log`) and reports UNHEALTHY —\n'
+    printf 'the stranger on that port is not your server. Give the box its own\n'
+    printf 'port or free that one; each restart retries.\n\n'
     printf 'The START PERIOD is generous on purpose (these services answer\n'
     printf 'nothing while they load multi-GB weights; llama even answers 503):\n\n'
     for box in "${SELECTED[@]}"; do
@@ -3414,7 +3625,7 @@ dash_legend() {   # with-on(0|1)
 # The Legend's value row. ONE builder, a column table per layout — hand-tuned
 # from Jei's drawings, because where a double-width glyph "looks right" under a
 # word is an eye judgement. Padding to ABSOLUTE columns is what lets the same
-# table serve both cell widths: the 3-column [Y] of --plain eats one column of
+# table serve both cell widths: the 3-column [Y] of --ascii eats one column of
 # the gap that follows it, so every WORD still lands where the emoji put it.
 dash_values() {   # "tok tok tok" "word word word"
   local -a vtok=() vlab=() vg=("$GS_YES" "$GS_NO" "$GS_NA")
@@ -3447,7 +3658,7 @@ dash_table() {   # with-on(0|1)
   if [[ $on -eq 1 ]]; then
     # ...and per MODE for the middle column: [N] is a column wider than the
     # glyph, and at 18 it reads as crowding BoxSv's right edge.
-    if [[ $PLAIN -eq 1 ]]; then gcol=(12 17 24); else gcol=(12 18 24); fi
+    if [[ $ASCII -eq 1 ]]; then gcol=(12 17 24); else gcol=(12 18 24); fi
     pcol=30; ncol=36
   else
     gcol=(13 20);    pcol=26; ncol=32
@@ -3643,7 +3854,8 @@ main() {
     for box in "${KEEP[@]}"; do hydrate_keep "$box"; done
     if [[ ${#CONFIGURE[@]} -eq 0 ]]; then
       say ""
-      printf '%sAll selected boxes kept as-is — definitions unchanged.%s\n' "$C_TEXT" "$RESET"
+      printf '%sAll selected boxes kept as-is %s definitions unchanged.%s\n' \
+        "$C_TEXT" "$EMD" "$RESET"
       printf '%sYou can still pull images / create / start them below.%s\n' "$C_TEXT" "$RESET"
     fi
     # Every data dir in play is known now (configured AND kept), and nothing has

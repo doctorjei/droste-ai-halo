@@ -12,6 +12,34 @@ FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
+# `gcc` + `python3.13-dev` are a C toolchain in a RUNTIME image on purpose, and they live
+# HERE rather than in a port because the trap is THIS layer's: triton rides the torch stack,
+# so every image built FROM this one inherits both the trigger and the cure. Triton's AMD
+# backend (triton/backends/amd/driver.py, HIPUtils) runtime-compiles a small C helper module,
+# `hip_utils`, via `compile_module_from_src` on the FIRST GPU-driver init — i.e. at SERVE/run
+# time on a GPU host, never at import — so it needs a C compiler (triton probes `gcc` then
+# `clang`; neither present -> `RuntimeError: Failed to find C compiler`) and `Python.h` (with
+# gcc alone the next failure is `fatal error: Python.h: No such file or directory`).
+# Both triton-carrying children hit that IDENTICAL two-step bill on hardware 2026-08-15:
+# vllm (cure verified through `vllm serve` coming up) and finetuning (cure verified through a
+# full triton JIT kernel launch, which printed True). In each case those two packages are the
+# WHOLE bill — no HIP headers beyond what these images already carry, nothing else missing.
+# The third child, comfyui, was never bitten only because it installs its own FULL toolchain
+# (gcc/g++/make/binutils) at runtime for the same Triton JIT; llama/ds4 are torch-free, do not
+# build FROM here, and carry no triton at all. CI cannot see this class: every import gate we
+# own runs compiler-less AND GPU-less and passes green while serve dies — build != import !=
+# serve, and anything that fires on GPU-driver init is hardware-only by construction.
+# `python3.13-dev`, not the `python3-dev` metapackage: the baked venv is Debian 13's system
+# python3.13 (sysconfig sends triton at /usr/include/python3.13), and the exact package is the
+# convention the build stages already use (scaffolding/Container.vllm-build); the metapackage
+# would silently follow a future Debian python3 default away from the venv's interpreter.
+# NB gcc, NOT g++ — and this base deliberately ships NO `c++` at all. aiter (installed only by
+# the vllm port) probes `shutil.which("c++")` and must keep finding nothing, so vllm's prebuilt
+# module_aiter_enum.so stays load-bearing; a g++ here would silently re-arm that lazy JIT path
+# in a child image. The C++/hipcc toolchain belongs to the build images.
+RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
+      gcc python3.13-dev && rm -rf /var/lib/apt/lists/* && apt-get clean
+
 # ROCM / Torch pin: read from the file the runtime base baked in, so this layer is
 # pinned by its own base and can never drift from it.
 RUN . /etc/droste/rocm-version.env \

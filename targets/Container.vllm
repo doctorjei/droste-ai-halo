@@ -27,6 +27,12 @@ LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 # so a missing binary is a hard FileNotFoundError at import, while git-present-but-no-repo
 # (our case: site-packages is not a checkout) is handled. Kept in this port alone: no other
 # droste-*-halo image installs aiter.
+#
+# A C compiler + `Python.h` are NOT listed here: `gcc` + `python3.13-dev` now come from the
+# torch base (see base/Container.torch), added there for triton's GPU-init-time `hip_utils`
+# compile, which bites this port and finetuning alike. `g++` is still deliberately absent all
+# the way down, so aiter's `shutil.which("c++")` probe finds nothing and the prebuilt
+# module_aiter_enum.so of step 2 below stays load-bearing.
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
       libnuma1 numactl libgomp1 git && rm -rf /var/lib/apt/lists/* && apt-get clean
 

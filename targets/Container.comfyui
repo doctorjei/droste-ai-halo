@@ -28,6 +28,11 @@ ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
 ## Dependencies: General / Media & Triton JIT (required at runtime)
+# NB the torch base now ships `gcc` + `python3.13-dev` of its own (triton's GPU-init-time
+# hip_utils compile — see base/Container.torch), so `gcc`/`python3-dev` here are partly a
+# duplicate of the base. Kept verbatim on purpose: this port needs the FULL toolchain
+# (g++/make/binutils) for ComfyUI's runtime Triton JIT, apt is a no-op on what is already
+# installed, and this list is the self-contained statement of what comfyui requires.
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
             ffmpeg dialog git curl rsync libdrm2 pkg-config python3-pip \
             gcc g++ make binutils python3-dev && \

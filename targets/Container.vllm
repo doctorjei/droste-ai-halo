@@ -52,7 +52,15 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     inspected" and `vllm serve` exited (hardware 2026-08-14). With the .so already in
 #     site-packages/aiter/jit/, aiter's get_module imports it and never reaches the compiler
 #     probe. It lands in the BAKED venv, i.e. the overlay lower layer, so a user's venv
-#     copy-up cannot shadow it away.
+#     copy-up cannot shadow it away. The destination is resolved by the venv's OWN python
+#     (sysconfig purelib) rather than a `lib*/python*` glob: the venv carries both `lib/` and
+#     a `lib64 -> lib` symlink, so that glob expands to TWO paths and cp reads the first as a
+#     source directory -> "omitting directory" -> exit 1, killing this && chain (CI run
+#     31850892660). A glob is harmless as a cp SOURCE (build stage, line ~91: cp merely warns
+#     "specified more than once"), never as its destination. sysconfig, not `import aiter`:
+#     importing aiter here would fire the very JIT this copy exists to avoid. The `test -f`
+#     then proves module_aiter_enum.so actually landed, so a silent misplacement cannot go
+#     green (same idiom as the build stage's staging check).
 #  3. vLLM wheel WITH deps so pip resolves transformers/etc. from PyPI (torch already satisfied).
 #     Use the legacy resolver for this RUN: vLLM pins `torch==2.9.1` while the installed wheel is
 #     `2.9.1+rocm7.13.0a20260501`, and the new resolvelib backtracker explores an exploding search
@@ -99,7 +107,9 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 RUN export PIP_USE_DEPRECATED=legacy-resolver \
     && pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
     && python /opt/resources/scripts/patch_aiter_headers.py \
-    && cp /tmp/aiter-jit/*.so /opt/venv/lib*/python*/site-packages/aiter/jit/ \
+    && AITER_JIT_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/aiter/jit" \
+    && cp /tmp/aiter-jit/*.so "${AITER_JIT_DIR}/" \
+    && test -f "${AITER_JIT_DIR}/module_aiter_enum.so" \
     && pip install /tmp/wheels/vllm*.whl \
     && pip install ray \
     && pip install 'tokenizers>=0.22.0,<=0.23.0' \

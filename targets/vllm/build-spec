@@ -31,9 +31,10 @@ ENV_FILE=""
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Overlay the persisted upper over the WHOLE baked venv (captures bin/ console
 # scripts too and avoids pinning a pythonX.Y path) so user pip installs persist
-# without shadowing the baked torch/vllm stack.
+# without shadowing the baked torch/vllm stack. The upper is CACHE class (a pip
+# install is re-runnable) → /opt/program-cache, which the installer may empty.
 OVERLAYS=(
-    "/opt/data/venv:/opt/venv"
+    "/opt/program-cache/venv:/opt/venv"
 )
 
 # ── SURFACES (optional) — <src>:<dest> ───────────────────────────────────────
@@ -41,18 +42,20 @@ OVERLAYS=(
 SURFACES=()
 
 # ── CACHES (optional) — <src>:<dest> ─────────────────────────────────────────
-# Persist the torch-stack compute/kernel caches with zero env vars ($HOME-relative so
-# both lanes resolve correctly). Triton default cache is ~/.triton/cache (01-rocm-env-
+# Persist the torch-stack compute/kernel caches under /opt/program-cache/compute/ with
+# zero env vars ($HOME-relative dests so both lanes resolve correctly). THE compute/
+# PREFIX IS LOAD-BEARING: it is what the resolver rewrites to the shared /opt/caches
+# store when that volume is bound. Triton default cache is ~/.triton/cache (01-rocm-env-
 # for-triton.sh sets no TRITON_CACHE_DIR, so the default holds). MIOpen's miopen-db
 # row is its machine-written tuning DB (~/.config/miopen is MIOpen's default userdb
 # path) in addition to the ~/.cache/miopen kernel cache. The vllm row is vLLM's own
 # compile/artifact cache (~/.cache/vllm) — it consciously joins the shared
 # /opt/caches store under the v0.2.0 cache policy (owner decision 2026-07-09).
 CACHES=(
-    "/opt/data/cache/miopen:$HOME/.cache/miopen"
-    "/opt/data/cache/miopen-db:$HOME/.config/miopen"
-    "/opt/data/cache/triton:$HOME/.triton/cache"
-    "/opt/data/cache/vllm:$HOME/.cache/vllm"
+    "/opt/program-cache/compute/miopen:$HOME/.cache/miopen"
+    "/opt/program-cache/compute/miopen-db:$HOME/.config/miopen"
+    "/opt/program-cache/compute/triton:$HOME/.triton/cache"
+    "/opt/program-cache/compute/vllm:$HOME/.cache/vllm"
 )
 
 # ── CRITICAL (optional) — <label>:<path> ─────────────────────────────────────

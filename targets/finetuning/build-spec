@@ -24,11 +24,12 @@ HEALTH_ACCEPT="any"
 ENV_FILE=""
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
-# venv overlay (universal): user pip installs land on /opt/data, the baked
-# torch/unsloth/flash-attn stack stays pristine underneath. This (plus the
-# workspace user bind) is what retires the old `chmod -R a+rwX /opt` hack.
+# venv overlay (universal): user pip installs land on /opt/program-cache (CACHE
+# class — a pip install is re-runnable, so the installer may empty that root),
+# the baked torch/unsloth/flash-attn stack stays pristine underneath. This (plus
+# the workspace user bind) is what retires the old `chmod -R a+rwX /opt` hack.
 OVERLAYS=(
-    "/opt/data/venv:/opt/venv"
+    "/opt/program-cache/venv:/opt/venv"
 )
 
 # ── SURFACES — <src>:<dest> ──────────────────────────────────────────────────
@@ -37,15 +38,17 @@ OVERLAYS=(
 SURFACES=()
 
 # ── CACHES — <src>:<dest> ────────────────────────────────────────────────────
-# Compute/kernel caches at the tools' DEFAULT paths, zero env vars. Triton is
-# the hot one here (flash-attn Triton backend + unsloth kernels; default
-# ~/.triton/cache — 01-rocm-env-for-triton.sh sets toolchain paths only, no
-# cache dir). MIOpen keeps both its cache and its .config db side.
+# Compute/kernel caches at the tools' DEFAULT paths, zero env vars, sourced from
+# /opt/program-cache/compute/ — THE compute/ PREFIX IS LOAD-BEARING: it is what
+# the resolver rewrites to the shared /opt/caches store when that volume is
+# bound. Triton is the hot one here (flash-attn Triton backend + unsloth kernels;
+# default ~/.triton/cache — 01-rocm-env-for-triton.sh sets toolchain paths only,
+# no cache dir). MIOpen keeps both its cache and its .config db side.
 CACHES=(
-    "/opt/data/cache/miopen:$HOME/.cache/miopen"
-    "/opt/data/cache/miopen-db:$HOME/.config/miopen"
-    "/opt/data/cache/triton:$HOME/.triton/cache"
-    "/opt/data/cache/torch:$HOME/.cache/torch"
+    "/opt/program-cache/compute/miopen:$HOME/.cache/miopen"
+    "/opt/program-cache/compute/miopen-db:$HOME/.config/miopen"
+    "/opt/program-cache/compute/triton:$HOME/.triton/cache"
+    "/opt/program-cache/compute/torch:$HOME/.cache/torch"
 )
 
 # ── CRITICAL — <label>:<path> ────────────────────────────────────────────────

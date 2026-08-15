@@ -1,8 +1,11 @@
 # extra_model_paths.yaml — extra model directories for ComfyUI.
 #
-# ComfyUI is launched with `--extra-model-paths-config /opt/data/extra_model_paths.yaml`.
+# ComfyUI is launched with
+# `--extra-model-paths-config /opt/program-cache/extra_model_paths.yaml`.
 # This file was seeded from the image ONCE (only because it was missing) — it is yours:
-# edits persist on /opt/data and are never overwritten.
+# edits persist on /opt/program-cache and are never overwritten. That volume is the
+# box's PROGRAM CACHE, though, so emptying it (the installer offers to) drops this
+# file with everything else there, and the default is re-seeded at the next start.
 #
 # Format: each top-level stanza names a model store; keys are ComfyUI model categories,
 # values are directories (relative to the stanza's base_path if one is set). Reference:

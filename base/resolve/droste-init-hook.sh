@@ -6,9 +6,10 @@
 # wrapper is the distrobox counterpart: it sources the same shared resolver +
 # per-port build-spec and runs resolve::apply_spec with DROSTE_LANE=distrobox.
 # Since lane unification the hook performs the SAME mounts as the server lane —
-# overlays (venv/custom-node uppers on /opt/data), surfaces, cache binds — so
-# container-lifecycle events never destroy in-box state (the founding
-# requirement). Order is apply_spec's: ensure_data → surfaces/overlays/caches →
+# overlays (the venv upper on /opt/program-cache, the custom-node upper on
+# /opt/data), surfaces, cache binds — so container-lifecycle events never destroy
+# in-box state (the founding requirement). Order is apply_spec's:
+# ensure_data + ensure_pcache → surfaces/overlays/caches →
 # CRITICAL binds (checked AFTER the mounts; declare them as volume= lines in
 # distrobox.ini — the HF cache is satisfied by the auto-bound real home) →
 # OPTIONAL marker → templates.yaml seeding → ENV_FILE source → PRE_LAUNCH.
@@ -99,6 +100,9 @@ source "$SPEC"
 # runs in THIS shell), so we catch it with an EXIT trap — not `|| rc=$?`, which the
 # direct exit bypasses — and write stderr to a log SYNCHRONOUSLY (a backgrounded
 # tee could be killed mid-flush by that exit, truncating the log).
+# DATA class, deliberately, and beside .droste-serve.log: it is small, and it is
+# wanted exactly when a start went wrong — which is not a moment to have thrown it
+# away with the program caches.
 RESOLVE_LOG="${DROSTE_DATA_DIR:-/opt/data}/.droste-resolve.log"
 # Fall back to /tmp if the data dir isn't writable (ro bind, missing, etc.) so the
 # redirect itself can never abort the hook.

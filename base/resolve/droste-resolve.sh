@@ -7,12 +7,13 @@
 #
 # Two lanes (DROSTE_LANE):
 #   server    (default) — image ENTRYPOINT runs as root; overlays/surfaces/caches are
-#                         mounted to redirect app writes onto the /opt/data volume.
+#                         mounted to redirect app writes onto the host volumes.
 #   distrobox           — distrobox init_hooks source this lib, set DROSTE_LANE=distrobox,
 #                         and call the SAME primitives. Since lane unification the mounts
 #                         run in-box too: container-lifecycle events must never destroy
-#                         user state (venv/custom-node installs land on /opt/data, not in
-#                         the container layer). Needs CAP_SYS_ADMIN in the box — ini:
+#                         user state (custom-node installs land on /opt/data, venv installs
+#                         on /opt/program-cache, neither in the container layer). Needs
+#                         CAP_SYS_ADMIN in the box — ini:
 #                         additional_flags="--cap-add sys_admin --device /dev/fuse".
 #                         Deliberate lane DEVIATIONS, each commented at its site:
 #                           - /root/-prefixed SURFACE/CACHE dests remap to the box user's
@@ -29,17 +30,36 @@
 # failing primitive aborts container startup loudly.
 set -euo pipefail
 
+# ── THREE ROOTS (storage taxonomy) ──────────────────────────────────────────
+# Mount points are CLASS boundaries — what a thing IS decides where it lives, so
+# neither the installer nor a wipe has to guess from a path's contents:
+#   /opt/data          PER-BOX PERSISTENT DATA. Irreplaceable-if-lost: configs
+#                      (server.env, *.env, vllm_config.yaml), comfyui user/ +
+#                      custom_nodes upper + model-tree, ds4 sessions/ + cockpit/,
+#                      finetuning workspace, the .droste-*.log files. Backed up.
+#   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
+#                      venv upper, overlay .work dirs, copy-mode materializations,
+#                      per-box compute-cache fallback, tmp, llama slots, ds4
+#                      kv-disk, the .droste-serve.pid record. The installer may
+#                      empty this whole root with the user's consent; nothing here
+#                      is ever backed up, and NOTHING outside it is ever wiped.
+#   /opt/caches        OPTIONAL SHARED compute caches ACROSS boxes (MIOpen /
+#                      Triton / torch / vLLM kernels) — see cache_bind below.
+# Host defaults are ~/droste/data/<box>, ~/droste/caches/<box> and
+# ~/droste/compute-caches respectively; any host path works, the container-side
+# names above are what the specs are written against.
+#
 # ── Config (override via env before sourcing) ───────────────────────────────
 : "${DROSTE_LANE:=server}"
 : "${DROSTE_DATA_DIR:=/opt/data}"
+: "${DROSTE_PCACHE_DIR:=/opt/program-cache}"   # per-box PROGRAM-CACHE volume (see above)
 : "${DROSTE_CACHES_DIR:=/opt/caches}"   # optional SHARED compute-cache volume (see cache_bind)
 : "${RESOLVE_TEMPLATES_DIR:=/opt/resources/templates}"
 : "${RESOLVE_APPLY_TEMPLATES:=/opt/resources/resolve/apply_templates.py}"
 : "${DROSTE_OVERLAY_MODE:=auto}"   # auto (kernel→fuse→copy) | kernel | fuse | copy (non-auto = forced, no fallback)
 # The per-box settings file on the DATA volume — droste-serve.sh's SERVE/PORT live
-# in it, and so does KEEP_OLD_VENV (see _keep_old_venv). Same name and default as
-# DROSTE_SERVE_ENV there on purpose: it is ONE file, and a test can point both
-# libraries at one fixture by exporting this.
+# in it. Same name and default as DROSTE_SERVE_ENV there on purpose: it is ONE
+# file, and a test can point both libraries at one fixture by exporting this.
 : "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"
 # DROSTE_RESOLVE_DRYRUN (bare name) — echo mount commands instead of running them.
 # ALLOW_EPHEMERAL     (bare name) — downgrade a CRITICAL unbound hard-error to a warning.
@@ -85,8 +105,9 @@ resolve::_mount_err_is_eperm() {
     return 1
 }
 # FEATURE shape: kernel overlayfs requires the upperdir fs to support O_TMPFILE +
-# RENAME_WHITEOUT; ecryptfs/NFS/virtiofs-class filesystems under /opt/data don't,
-# and mount reports the generic "wrong fs type, bad option, bad superblock" line.
+# RENAME_WHITEOUT; ecryptfs/NFS/virtiofs-class filesystems under either upper-bearing
+# root (/opt/program-cache for the venv, /opt/data for custom_nodes) don't, and mount
+# reports the generic "wrong fs type, bad option, bad superblock" line.
 resolve::_mount_err_is_feature() {
     local e=${RESOLVE_MOUNT_ERR,,}
     case "$e" in
@@ -269,14 +290,23 @@ resolve::_own_dirs() {
     return 0
 }
 
-# ── Whole-environment upper detection (the pre-merge data-dir trap) ─────────
+# ── Whole-environment upper detection (two stats, one WARN) ─────────────────
 # An overlay upper is meant to be a DELTA over the baked lower: the files the box
-# user's own installs wrote, and nothing else. A data dir written by the
-# PRE-MERGE generation instead holds a COMPLETE python environment at
-# $DROSTE_DATA_DIR/venv, and mounting that as the upper shadows the image's stack
-# with the older one — measured on hardware as a transformers import error naming
-# a numpy that is installed, and as a JupyterLab /lab 404 from stale lab assets.
-# Both cured by emptying the upper, neither traceable to it from the symptom.
+# user's own installs wrote, and nothing else. An upper that is instead a
+# COMPLETE python environment shadows the image's stack with an older one —
+# measured on hardware as a transformers import error naming a numpy that is
+# installed, and as a JupyterLab /lab 404 from stale lab assets. Both cured by
+# emptying the upper, neither traceable to it from the symptom.
+#
+# WHAT IS LEFT TO CATCH is a HAND-MADE one. The generation that produced this
+# wholesale — a pre-merge data dir holding an entire environment at
+# $DROSTE_DATA_DIR/venv — is out of reach now that the venv upper lives on
+# $DROSTE_PCACHE_DIR, a root the installer offers to clear whenever it finds
+# stale caches in it. So this is no longer a trap with a cure to explain: it is
+# a cheap sanity check on a directory someone put an environment into by hand.
+# ONE warning line, ungated (there is no opt-out key and no report gate), fired
+# before the mount is attempted and therefore in every overlay mode — the dir is
+# the wrong shape whether it ends up layered, fused or copied past.
 #
 # THE SIGNAL IS STRUCTURAL, not a collision count: pip installing into the box —
 # `--force-reinstall` of a baked package included — is exactly what the writable
@@ -288,12 +318,12 @@ resolve::_own_dirs() {
 # `python -m venv` made. Their presence means the upper IS an environment rather
 # than a layer over one, which only a copied/created-in-place venv produces.
 #
-# MIRRORED, by hand, in droste-setup.sh (venv_upper_full / venv_upper_records /
-# serve_env_keep_venv, which offer the same cure from the host before anything
-# starts). The two cannot share code — the installer is standalone by contract
-# (curl | bash, no checkout) and this file is baked into the image — so change
-# one, change the other; the KEEP_OLD_VENV key below is shared between them.
-# WHEN each side speaks is deliberately NOT mirrored — see _report_env_upper.
+# NOT MIRRORED ANYWHERE, and nothing here is a shared contract with the host:
+# the installer's half of the old pair (its own copy of this detector, the
+# review-and-empty offer, and the KEEP_OLD_VENV key both sides read) retired
+# with the pre-merge trap. What replaced it — droste-setup.sh's stale-cache
+# consent question — decides by LOCATION, on the host, before anything starts,
+# and has no counterpart in this file to keep in step.
 resolve::_upper_is_env() {
     local upper=$1 p
     [ -f "$upper/pyvenv.cfg" ] || return 1
@@ -305,92 +335,22 @@ resolve::_upper_is_env() {
     return 1
 }
 
-# _upper_records — how many package records the upper carries, to size the
-# problem in the warning. GLOB ONLY (no find walk): this runs on every container
-# start. Never a signal in its own right — see the block above.
-resolve::_upper_records() {
-    local upper=$1 p n=0
-    for p in "$upper"/lib/python*/site-packages/*.dist-info; do
-        [ -d "$p" ] && n=$((n + 1))
-    done
-    printf '%d' "$n"
-}
-
-# _keep_old_venv — has the user said, in this box's server.env, that the old
-# environment is there ON PURPOSE? Reporting it at every start is the DEFAULT
-# (the symptoms it explains are obscure enough to be worth repeating), so the
-# opt-out is manual and per box: KEEP_OLD_VENV=1 means "I know, keep it, stop
-# telling me" — it changes nothing about the mount, only the report.
-# Read exactly the way droste-serve.sh reads the same file: sourced in a
-# SUBSHELL with errexit/nounset off and all output discarded, so a hand-edited
-# typo can neither abort the start nor leak assignments into it, and only the
-# one key is printed back. Absent/unreadable file => unset => report as usual.
-resolve::_keep_old_venv() {
-    local file=${DROSTE_SERVE_ENV:-$DROSTE_DATA_DIR/server.env} v=""
-    [ -f "$file" ] && [ -r "$file" ] || return 1
-    v=$(
-        set +e +u +o pipefail
-        # shellcheck disable=SC1090
-        . "$file" >/dev/null 2>&1
-        printf '%s' "${KEEP_OLD_VENV-}"
-    ) 2>/dev/null || v=""
-    case "${v,,}" in
-        1|true|yes|on) return 0 ;;
-    esac
-    return 1
-}
-
-# The warning itself: loud, and naming the cure rather than the diagnosis. NOT
-# fatal — only resolve::critical refuses to start (an unbound volume loses data;
-# this one degrades a stack the box may still partly run), and aborting here
-# would stand the interactive door up as well, which is where the cure is read.
-resolve::_warn_env_upper() {
-    local upper=$1 lower=$2 n
-    n=$(resolve::_upper_records "$upper")
-    resolve::warn "STALE STACK: the overlay upper $upper is a COMPLETE python environment, not a layer over $lower."
-    resolve::warn "  - it is what a PRE-MERGE data dir holds; its $n package records take precedence over the ones baked into this image;"
-    resolve::warn "  - symptoms are obscure and do not name it: import errors about packages that ARE installed, missing web assets, version mismatches;"
-    resolve::warn "  - CURE, from the host, with this box stopped:  rm -rf <data dir>/venv  — then start the box again;"
-    resolve::warn "  - <data dir> is the host directory bound to $DROSTE_DATA_DIR (the 'volume=' line of the box's .ini). Packages YOU installed in the box go with it; the image's own stack is used from then on."
-    resolve::warn "  - to KEEP this environment instead and stop this warning, add KEEP_OLD_VENV=1 to <data dir>/server.env (the file the box's SERVE/PORT settings live in) and restart the box."
-}
-
-# _report_env_upper — the gate around that warning, called from overlay()'s
-# SUCCESS sites and nowhere else. WHY POST-MOUNT: the warning's claim (the
-# upper's records "take precedence over the ones baked into this image") is true
-# exactly when the upper is really layered over the lower — i.e. when the kernel
-# or the fuse mount succeeded. COPY MODE NEVER MOUNTS THE UPPER: _overlay_copy
-# clones the lower alone and bind-mounts the clone, and says so itself ("overlay
-# upper ... is non-empty — deltas ... NOT visible"), so a stale-stack warning
-# there would name a cure for a problem that run does not have. Still once per
-# start per row: the re-entrancy guard at the top of overlay() returns before any
-# mount attempt, and each success site returns immediately after.
-# The warning names $upper and $lower in its first line, so it stays attributable
-# to its own row when it lands after the mount lines of several overlays.
-# DETECTION always runs; server.env's KEEP_OLD_VENV only silences the report (a
-# user who has decided to keep the old environment still gets the same mount, and
-# dropping the key restores the report).
-# ASYMMETRY WITH THE INSTALLER, deliberate on both sides: droste-setup.sh offers
-# to empty an affected data dir whatever overlay mode the box will run in. It
-# works host-side, before anything is mounted, and emptying a stale pre-merge
-# venv is right in copy mode too — dead weight there instead of a shadowing
-# layer. The same note sits above venv_upper_review in droste-setup.sh: neither
-# side is a bug to be "fixed" into agreement with the other.
-resolve::_report_env_upper() {
-    local upper=$1 lower=$2
-    if resolve::_upper_is_env "$upper" && ! resolve::_keep_old_venv; then
-        resolve::_warn_env_upper "$upper" "$lower"
-    fi
-}
-
 # ── Primitive: overlay (BOTH lanes since lane unification) ──────────────────
-# entry form: <upper>:<lower>  (upper = /opt/data side, lower = baked app dir)
+# entry form: <upper>:<lower>  (upper = the CLASS-appropriate root, lower = baked app dir)
+# The upper's ROOT is the spec's class declaration: the venv upper lives on
+# $DROSTE_PCACHE_DIR (re-obtainable), comfyui's custom_nodes upper on
+# $DROSTE_DATA_DIR (the user's own node picks and edits).
 # Mounts a writable layer OVER the baked lower. Strategy = DROSTE_OVERLAY_MODE:
 #   kernel — mount -t overlay: lowerdir=<lower>, upperdir=<upper>,
-#            workdir=<dirname upper>/.work/<basename upper> (sibling of upper, same FS).
+#            workdir=<dirname upper>/.work/<basename upper>.
+#            THE WORK DIR IS ALWAYS A SIBLING OF ITS OWN UPPER — a kernel
+#            requirement (workdir and upperdir must be on the SAME filesystem),
+#            not a taste call, and it is why .work follows the upper's root
+#            rather than the class table's "all .work is cache" line: the two
+#            roots may well be different filesystems.
 #   fuse   — fuse-overlayfs, same dirs. Works without overlay-upper fs features AND
 #            without CAP_SYS_ADMIN (FUSE mounts are userns-permitted); slower I/O.
-#   copy   — LAST RESORT: cp -a the baked lower to $DROSTE_DATA_DIR/copy/<name> once,
+#   copy   — LAST RESORT: cp -a the baked lower to $DROSTE_PCACHE_DIR/copy/<name> once,
 #            then bind that copy over the lower. Content frozen at first-copy time.
 #   auto   — kernel → fuse → copy, falling back on FEATURE failures only. EPERM
 #            ("permission denied") means the container lacks CAP_SYS_ADMIN — fuse would
@@ -411,9 +371,12 @@ resolve::overlay() {
         resolve::info "overlay $lower: already mounted — skipping (re-entrant init hook)"
         return 0
     fi
-    # (The stale-upper report is NOT here: it belongs to a mount that actually
-    # layered this upper over the lower, so it fires from the kernel/fuse success
-    # sites below — see _report_env_upper.)
+    # Sanity check on the upper's SHAPE, once per row per start (the re-entrancy
+    # guard above returns before it), and before any mount is attempted — see the
+    # block above _upper_is_env for why it is one ungated line.
+    if resolve::_upper_is_env "$upper"; then
+        resolve::warn "overlay upper $upper is a COMPLETE python environment, not a layer over $lower — that shadows the stack baked into this image with an older one, in ways the failures never name; empty it from the host with the box stopped."
+    fi
     local mode=$DROSTE_OVERLAY_MODE
     case "$mode" in
         auto|kernel|fuse|copy) ;;
@@ -438,9 +401,6 @@ resolve::overlay() {
     if [ "$mode" = auto ] || [ "$mode" = kernel ]; then
         if resolve::_try_mount mount -t overlay overlay \
                -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
-            # Mounted: the upper IS in play over the lower, so report it if it is
-            # a whole environment rather than a delta.
-            resolve::_report_env_upper "$upper" "$lower"
             resolve::_own_dirs "$lower"
             return 0
         fi
@@ -453,7 +413,7 @@ resolve::overlay() {
             return 1
         fi
         if resolve::_mount_err_is_feature; then
-            resolve::warn "kernel overlay for $lower rejected: the $DROSTE_DATA_DIR filesystem lacks the overlay-upper features O_TMPFILE/RENAME_WHITEOUT (common on ecryptfs, NFS, virtiofs) — trying fuse-overlayfs."
+            resolve::warn "kernel overlay for $lower rejected: the filesystem holding the upper $upper lacks the overlay-upper features O_TMPFILE/RENAME_WHITEOUT (common on ecryptfs, NFS, virtiofs) — trying fuse-overlayfs."
         else
             resolve::warn "kernel overlay for $lower failed (${RESOLVE_MOUNT_ERR:-unknown error}) — trying fuse-overlayfs."
         fi
@@ -470,9 +430,7 @@ resolve::overlay() {
         if [ -n "$fuse_ok" ]; then
             if resolve::_try_mount fuse-overlayfs \
                    -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
-                resolve::warn "using fuse-overlayfs for $lower (userspace overlay; slower I/O; kernel overlay unavailable on this $DROSTE_DATA_DIR filesystem)."
-                # Mounted (same as the kernel site above): the upper is in play.
-                resolve::_report_env_upper "$upper" "$lower"
+                resolve::warn "using fuse-overlayfs for $lower (userspace overlay; slower I/O; kernel overlay unavailable on the filesystem holding $upper)."
                 resolve::_own_dirs "$lower"
                 return 0
             fi
@@ -495,14 +453,18 @@ resolve::overlay() {
 }
 
 # _overlay_copy — overlay substitute of last resort: materialize a one-time writable
-# copy of the baked lower under $DROSTE_DATA_DIR/copy/<name>, bind it over the lower.
+# copy of the baked lower under $DROSTE_PCACHE_DIR/copy/<name>, bind it over the lower.
+# CACHE CLASS by nature (a frozen clone of baked image content, multi-GB, and
+# re-obtainable by deleting it), so it lands on the program-cache root regardless of
+# which root the row's own upper uses — copy mode's disk cost belongs where the user
+# was told the disposables live.
 # The copy is made only when the dir is ABSENT — deleting it forces a fresh copy.
 # ATOMIC: staged into a "$copydir.tmp" sibling and mv'd into place last, so an
 # interrupted cp leaves only a .tmp dir (removed and redone on the next run) and
 # an existing $copydir is always a reliable COMPLETED-copy marker.
 resolve::_overlay_copy() {
     local name=$1 lower=$2 upper=$3
-    local copydir="$DROSTE_DATA_DIR/copy/$name" tmpdir
+    local copydir="$DROSTE_PCACHE_DIR/copy/$name" tmpdir
     tmpdir="$copydir.tmp"
     if [ ! -d "$copydir" ]; then
         resolve::_domount rm -rf "$tmpdir"
@@ -529,8 +491,11 @@ resolve::_overlay_copy() {
 }
 
 # ── Primitive: surface (plain bind, BOTH lanes since lane unification) ──────
-# entry form: <src>:<dest>  (src = /opt/data side, dest = app-side path)
-# Binds a /opt/data subpath onto the path the tool expects; creates src if absent.
+# entry form: <src>:<dest>  (src = volume side, dest = app-side path)
+# Binds a volume subpath onto the path the tool expects; creates src if absent. The
+# src's ROOT carries the class, as everywhere else: state surfaces (comfyui user/,
+# model-tree, ds4 ~/.ds4) come off $DROSTE_DATA_DIR, scratch ones (a tmp dir) off
+# $DROSTE_PCACHE_DIR. The primitive itself never rewrites a src — see cache_bind.
 # Distrobox deviations: /root/ dest remap (_lane_dest), box-user chown (_mkuserdir),
 # exact-mountpoint re-entry skip (_is_mountpoint) — rationale at each helper.
 resolve::surface() {
@@ -551,11 +516,11 @@ resolve::surface() {
 
 # ── Shared compute-cache volume ($DROSTE_CACHES_DIR, both lanes) ────────────
 # OPTIONAL cross-container cache store: bind ONE host dir (default host path
-# ~/droste/caches — a default only, any path works) onto /opt/caches and every
-# CACHES row whose src lives under $DROSTE_DATA_DIR/cache/ is rewritten to source
+# ~/droste/compute-caches — a default only, any path works) onto /opt/caches and every
+# CACHES row whose src lives under $DROSTE_PCACHE_DIR/compute/ is rewritten to source
 # from the shared dir instead, so all droste boxes share one MIOpen/Triton/torch/vLLM
-# kernel-cache store. Unbound => graceful degrade to today's per-box
-# $DROSTE_DATA_DIR/cache/ sources, announced ONCE per start (below). Deliberately
+# kernel-cache store. Unbound => graceful degrade to per-box
+# $DROSTE_PCACHE_DIR/compute/ sources, announced ONCE per start (below). Deliberately
 # NO `VOLUME /opt/caches` directive in any Containerfile: unbound must NOT spawn
 # an anonymous volume. Dests are never touched — only the src side moves.
 # Detection = is_bound on $DROSTE_CACHES_DIR ITSELF (a user bind exactly there, or
@@ -574,7 +539,7 @@ resolve::_shared_caches() {
             RESOLVE_SHARED_CACHES=y
         else
             RESOLVE_SHARED_CACHES=n
-            resolve::info "$DROSTE_CACHES_DIR is not bound — compute caches stay per-box under $DROSTE_DATA_DIR/cache/. Bind one shared host dir (e.g. server: -v ~/droste/caches:$DROSTE_CACHES_DIR; distrobox ini: volume=\"~/droste/caches:$DROSTE_CACHES_DIR\") to share kernel caches across all droste boxes."
+            resolve::info "$DROSTE_CACHES_DIR is not bound — compute caches stay per-box under $DROSTE_PCACHE_DIR/compute/. Bind one shared host dir (e.g. server: -v ~/droste/compute-caches:$DROSTE_CACHES_DIR; distrobox ini: volume=\"~/droste/compute-caches:$DROSTE_CACHES_DIR\") to share kernel caches across all droste boxes."
         fi
     fi
     [ "$RESOLVE_SHARED_CACHES" = y ]
@@ -591,12 +556,15 @@ resolve::cache_bind() {
     local src=$1 dest
     dest=$(resolve::_lane_dest "$2")
     # Shared-cache src rewrite (policy + MIOpen caveat: block above). Only srcs
-    # under $DROSTE_DATA_DIR/cache/ qualify — session state elsewhere on the data
-    # volume (llama slots, ds4 kv-disk) is not a CACHES row and never rewrites.
+    # under $DROSTE_PCACHE_DIR/compute/ qualify: those are the CROSS-BOX-shareable
+    # compute/kernel caches. Everything else on the program-cache root (llama slots,
+    # ds4 kv-disk, tmp, the venv upper) is cache CLASS but never SHARED — one box's
+    # KV/session state means nothing to another — and never rewrites; neither does
+    # anything on the data volume.
     case "$src" in
-        "$DROSTE_DATA_DIR/cache/"*)
+        "$DROSTE_PCACHE_DIR/compute/"*)
             if resolve::_shared_caches; then
-                src="$DROSTE_CACHES_DIR/${src#"$DROSTE_DATA_DIR/cache/"}"
+                src="$DROSTE_CACHES_DIR/${src#"$DROSTE_PCACHE_DIR/compute/"}"
             fi
             ;;
     esac
@@ -709,6 +677,28 @@ resolve::ensure_data() {
     fi
 }
 
+# ── /opt/program-cache handling (both lanes) ────────────────────────────────
+# The per-box PROGRAM-CACHE root, and since the taxonomy split it is where the venv
+# overlay upper lives — so an unbound one is worth saying out loud even though nothing
+# on it is irreplaceable. Deliberately NO `VOLUME /opt/program-cache` directive in any
+# Containerfile (same stance as the shared /opt/caches): an auto-created anonymous
+# volume would silently hoard multi-GB venv uppers under a name nobody goes looking
+# for. Unbound therefore means a plain directory in the CONTAINER's writable layer —
+# in-box installs still work, but they die with the container and fatten that layer
+# until they do.
+# WARN ONLY, never fatal, and never ALLOW_EPHEMERAL's business: everything on this
+# root is re-obtainable by construction (resolve::critical is for the paths that are
+# not). The anonymous-volume branch stays for the user who binds one by hand.
+resolve::ensure_pcache() {
+    local dir=${1:-$DROSTE_PCACHE_DIR}
+    mkdir -p "$dir"
+    if ! resolve::is_bound "$dir"; then
+        resolve::warn "$dir is not a bound volume — the venv overlay upper and the box's other program caches will live in the container's writable layer, so in-box installs are LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/caches/<box>:$dir\")."
+    elif resolve::_anon_volume "$dir"; then
+        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so in-box installs go with it. Bind a host dir (-v ~/droste/caches/<box>:$dir) or a NAMED volume (-v mycache:$dir) instead."
+    fi
+}
+
 # ── Template seeding (both lanes) ───────────────────────────────────────────
 # Runs AFTER mounts so seeds land on the mounted destinations. No-op if no manifest.
 resolve::apply_templates() {
@@ -725,8 +715,10 @@ resolve::apply_templates() {
 resolve::apply_spec() {
     local entry rest label path marker
 
-    # 1) ensure /opt/data (auto-vol + warn)
+    # 1) ensure the two per-box roots: /opt/data (auto-vol + warn) and
+    #    /opt/program-cache (warn if unbound — it holds the venv upper)
     resolve::ensure_data "$DROSTE_DATA_DIR"
+    resolve::ensure_pcache "$DROSTE_PCACHE_DIR"
 
     # 2) SURFACES + OVERLAYS + CACHES (BOTH lanes since lane unification —
     #    distrobox mounts in-box via init_hooks; lane deviations live in the

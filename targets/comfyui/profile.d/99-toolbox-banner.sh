@@ -191,14 +191,15 @@ printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_POR
 
 # Launcher (flags match the container SERVICE line). A function, not an alias:
 # the extra-model-paths config is only seeded where an init hook ran (distrobox);
-# plain toolbox has no /opt/data/extra_model_paths.yaml, and ComfyUI's unguarded
-# open() would crash on the missing file — pass the flag only if the file exists.
+# plain toolbox has no /opt/program-cache/extra_model_paths.yaml, and ComfyUI's
+# unguarded open() would crash on the missing file — pass the flag only if the
+# file exists.
 # serve_port is re-read here rather than reusing $SERVE_PORT from banner time, so
 # a server.env edited during the session takes effect on the next launch.
 start_comfy_ui() {
   local extra=()
-  [[ -f /opt/data/extra_model_paths.yaml ]] \
-    && extra=( --extra-model-paths-config /opt/data/extra_model_paths.yaml )
+  [[ -f /opt/program-cache/extra_model_paths.yaml ]] \
+    && extra=( --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml )
   cd /opt/ComfyUI && python main.py --listen 0.0.0.0 --port "$(serve_port)" \
     --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae \
     "${extra[@]}"

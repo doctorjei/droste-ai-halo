@@ -27,22 +27,26 @@ ENV_FILE="/opt/data/ds4.env"
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). ds4-server is a compiled HIP binary;
 # the overlay serves cockpit/hf-CLI/user pip installs (whole venv, so console
-# scripts in bin/ persist too).
+# scripts in bin/ persist too). The upper is CACHE class (a pip install is
+# re-runnable) → /opt/program-cache, which the installer may empty.
 OVERLAYS=(
-    "/opt/data/venv:/opt/venv"
+    "/opt/program-cache/venv:/opt/venv"
 )
 
 # ── SURFACES ─────────────────────────────────────────────────────────────────
 # Whole ~/.ds4 from /opt/data/ds4 (saved sessions kvcache/ + browser/ profile +
-# anything future). Top-level /opt/data/ds4, not cache/ — sessions are user WORK.
+# anything future). On the DATA root, not the program-cache one — sessions are
+# user WORK, and this dir is never in the installer's wipe.
 SURFACES=(
     "/opt/data/ds4:$HOME/.ds4"
 )
 
 # ── CACHES ───────────────────────────────────────────────────────────────────
 # None. The KV disk cache is CONSUMED in place: DS4_DROSTE_KV_DISK_DIR points
-# INTO /opt/data directly (dir pre-created in ds4_pre_launch). No Triton/MIOpen
-# (hipBLASLt-only compiled engine).
+# INTO /opt/program-cache directly (dir pre-created in ds4_pre_launch). It stays
+# OUT of this array on purpose — a CACHES row is what offers a src to the
+# cross-box shared store, and one box's KV cache means nothing to another: cache
+# CLASS, but never SHARED. No Triton/MIOpen (hipBLASLt-only compiled engine).
 CACHES=()
 
 # ── CRITICAL ─────────────────────────────────────────────────────────────────
@@ -111,9 +115,10 @@ ds4_pre_launch() {
         export "${v?}"
     done
 
-    # Pre-create the KV disk dir (active default /opt/data/kv-disk — session
-    # STATE, kept out of the cache/ pathname and deliberately per-box; follows
-    # the var if the user re-pointed or blanked it).
+    # Pre-create the KV disk dir (active default /opt/program-cache/kv-disk —
+    # CACHE class, regenerable session state, and outside compute/ because it is
+    # deliberately per-box, see CACHES above; follows the var if the user
+    # re-pointed or blanked it).
     if [ -n "${DS4_DROSTE_KV_DISK_DIR:-}" ]; then
         mkdir -p "$DS4_DROSTE_KV_DISK_DIR"
     fi

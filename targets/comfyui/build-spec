@@ -7,15 +7,16 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # ComfyUI web UI on 8188 with the upstream Strix Halo perf flags. The extra
-# model-paths config lives on /opt/data (seeded if_missing by templates.yaml)
-# and registers the baked /opt/resources/model_configs. main.py is absolute:
-# ComfyUI derives every path from base_path = main.py's directory, not CWD
-# (PRE_LAUNCH still cd's there for any relative writes).
+# model-paths config lives on /opt/program-cache (seeded if_missing by
+# templates.yaml) and registers the baked /opt/resources/model_configs — CACHE
+# class per the taxonomy: a re-seeded pointer file, never user work. main.py is
+# absolute: ComfyUI derives every path from base_path = main.py's directory, not
+# CWD (PRE_LAUNCH still cd's there for any relative writes).
 SERVICE=(
     python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
     --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae
-    --extra-model-paths-config /opt/data/extra_model_paths.yaml
+    --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml
 )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
@@ -28,30 +29,40 @@ ENV_FILE=""
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # Baked lowers are load-bearing (venv, the 3 baked custom nodes); user writes
-# (pip installs incl. bin/ entry points, node installs) land on /opt/data.
+# land in the uppers. Each upper's ROOT is its class: pip installs (incl. bin/
+# entry points) are re-runnable → /opt/program-cache, which the installer may
+# empty; the user's own node picks and edits are not → /opt/data. (Each .work
+# sibling follows its own upper — kernel: workdir and upperdir share a fs.)
 OVERLAYS=(
-    "/opt/data/venv:/opt/venv"
+    "/opt/program-cache/venv:/opt/venv"
     "/opt/data/custom_nodes:/opt/ComfyUI/custom_nodes"
 )
 
 # ── SURFACES — <src>:<dest> ──────────────────────────────────────────────────
 # model-tree = the scanner's symlink tree (+ user drop-ins), surfaced over the
 # marker-only baked models/. user/ = ComfyUI state (db/settings/workflows),
-# seeded if_empty by templates.yaml after the mount.
+# seeded if_empty by templates.yaml after the mount. Both are DATA. temp/ is the
+# one SCRATCH surface — preview/intermediate files ComfyUI writes and never
+# re-reads across starts — so it comes off /opt/program-cache (see PRE_LAUNCH,
+# which makes the mounted dir sticky world-writable for both lanes).
 SURFACES=(
     "/opt/data/model-tree:/opt/ComfyUI/models"
     "/opt/data/user:/opt/ComfyUI/user"
+    "/opt/program-cache/tmp:/opt/ComfyUI/temp"
 )
 
 # ── CACHES — <src>:<dest> ────────────────────────────────────────────────────
-# Compute/kernel caches persisted on /opt/data with zero env vars. MIOpen uses
-# BOTH ~/.cache/miopen (binary caches) and ~/.config/miopen (its machine-written
+# Compute/kernel caches persisted under /opt/program-cache/compute/ with zero env
+# vars. THE compute/ PREFIX IS LOAD-BEARING: it is exactly what the resolver
+# rewrites to the shared /opt/caches store when that volume is bound, so these
+# rows — and only these — are cross-box shareable. MIOpen uses BOTH
+# ~/.cache/miopen (binary caches) and ~/.config/miopen (its machine-written
 # tuning DB — MIOpen's default userdb path, config-ish location notwithstanding).
 CACHES=(
-    "/opt/data/cache/miopen:$HOME/.cache/miopen"
-    "/opt/data/cache/miopen-db:$HOME/.config/miopen"
-    "/opt/data/cache/triton:$HOME/.triton/cache"
-    "/opt/data/cache/torch:$HOME/.cache/torch"
+    "/opt/program-cache/compute/miopen:$HOME/.cache/miopen"
+    "/opt/program-cache/compute/miopen-db:$HOME/.config/miopen"
+    "/opt/program-cache/compute/triton:$HOME/.triton/cache"
+    "/opt/program-cache/compute/torch:$HOME/.cache/torch"
 )
 
 # ── CRITICAL — <label>:<path> ────────────────────────────────────────────────
@@ -86,9 +97,12 @@ PRE_LAUNCH="comfyui_pre_launch"
 comfyui_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-envs.sh
-    # ComfyUI writes preview/scratch files under <base>/temp; the baked dir is
-    # not user-writable in the distrobox lane. Create it sticky world-writable
-    # (like /tmp) at start so both lanes can write regardless of the running uid.
+    # ComfyUI writes preview/scratch files under <base>/temp, which the SURFACES
+    # row above binds from /opt/program-cache/tmp. Neither the baked dir nor a
+    # freshly created src is user-writable in the distrobox lane, so make it
+    # sticky world-writable (like /tmp) here — PRE_LAUNCH runs after the mounts,
+    # so this lands on the mounted dir and both lanes can write to it whatever
+    # uid they run as.
     mkdir -p /opt/ComfyUI/temp && chmod 1777 /opt/ComfyUI/temp
     python3 /opt/resources/scripts/model_scanner.py sync \
         || resolve::warn "model_scanner sync failed (exit $?) — model tree may be stale"

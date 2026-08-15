@@ -38,8 +38,10 @@ DEFAULT_PORT=8080
 # Slot save/restore: the pinned fork ships --slot-save-path with NO env
 # annotation, so there is no LLAMA_ARG_SLOT_SAVE_PATH to set here — the flag is
 # added by the entrypoint's launch line instead (targets/llama/build-spec,
-# llama_pre_launch). This path only feeds the explanatory comment block below.
-SLOTS_DIR=/opt/data/slots
+# llama_pre_launch). This path only feeds the explanatory comment block below —
+# keep it in step with the build-spec's flag (saved slots are cache class, so
+# they live on the program-cache root, not /opt/data).
+SLOTS_DIR=/opt/program-cache/slots
 # Vars that MUST exist in the pinned llama-server's arg table (build fails if not).
 # LLAMA_ARG_PORT stays on this list even though it is emitted COMMENTED: the port
 # knob has to keep existing in the pinned binary for the commented line (and the

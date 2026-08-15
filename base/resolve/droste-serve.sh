@@ -39,7 +39,10 @@
 # previous container start is actively cleaned up (see serve::maybe_launch).
 #
 # THE STATE RECORD (proof of ownership). Every decision this library makes about
-# the service is written to ONE line in $DROSTE_SERVE_PID on the data volume:
+# the service is written to ONE line in $DROSTE_SERVE_PID on the PROGRAM-CACHE
+# volume (a pid record is re-obtainable bookkeeping — cache class by ruling; the
+# service LOG beside it stays on the data volume, because it is what a user reads
+# when things broke):
 #
 #       <pid> <starttime> <token> <argv0> <status>
 #       12345 998877 4242:112233 llama-server running
@@ -54,16 +57,23 @@
 # requires BOTH halves: this record says OUR launch succeeded and that exact
 # process is still alive (serve::state_ok), AND the endpoint answers.
 # Every path through maybe_launch that ends in "we are not serving" rewrites the
-# record (refused/failed) — it lives on the data volume and outlives both the
+# record (refused/failed) — it lives on a host volume and outlives both the
 # process and the container, so it is never trusted just for being there.
 #
 # Sourced by a caller that has already set `set -euo pipefail`; kept in effect here.
 set -euo pipefail
 
 # ── Config (override via env before sourcing) ───────────────────────────────
+# Two per-box roots, same names and defaults as droste-resolve.sh (this library is
+# sourced on its own by droste-healthcheck.sh, so it cannot rely on that one having
+# set them). Class split, per the storage taxonomy: the settings file and the
+# service log are DATA (user-edited / read exactly when something broke), the pid
+# record is PROGRAM CACHE (bookkeeping about a process that no longer exists once
+# the box is recreated).
 : "${DROSTE_DATA_DIR:=/opt/data}"
+: "${DROSTE_PCACHE_DIR:=/opt/program-cache}"
 : "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"      # the serve config file
-: "${DROSTE_SERVE_PID:=$DROSTE_DATA_DIR/.droste-serve.pid}"   # the state record
+: "${DROSTE_SERVE_PID:=$DROSTE_PCACHE_DIR/.droste-serve.pid}"   # the state record
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # The flag every one of the five services takes for its listen port (comfyui
 # main.py, jupyter lab, vllm serve, llama-server, ds4-server all spell it
@@ -207,7 +217,7 @@ serve::_proc_fields() {
 
 # _instance_token — an id that is unique to THIS container start and stable within
 # it: pid + starttime of our parent (distrobox-init's shell, which `eval`s the init
-# hook once per start). WHY: the pid file lives on the DATA volume, so it outlives
+# hook once per start). WHY: the pid file lives on a HOST volume, so it outlives
 # both the process and the container; distrobox boxes also default to `--pid host`,
 # so a recorded pid can still be alive — and can even still be OUR service — after a
 # `podman restart`. Comparing tokens is what lets maybe_launch tell "already
@@ -226,7 +236,7 @@ serve::_instance_token() {
 # recorded at launch? Identity = pid AND process START TIME: a bare "is the pid
 # alive" test would happily match an unrelated process that inherited the number
 # (pids come from the HOST namespace here — distrobox defaults to `--pid host` —
-# and the pid file lives on the data volume, so both outlive the container), while
+# and the pid file lives on a host volume, so both outlive the container), while
 # the start-time tick pins it to the exact process we forked. Zombies count as
 # dead: our service can exit and sit unreaped for a while, because pid 1 is
 # distrobox-init's keepalive shell, not an eager reaper.
@@ -250,9 +260,11 @@ serve::_pid_is_ours() {
 # _read_pidfile — load SERVE_REC_PID / _START / _TOKEN / _CMD / _STATUS from the
 # state record. (_CMD is read back purely so the field is documented and never
 # mis-parsed; the identity check deliberately ignores it — see _pid_is_ours.)
-# A record written by an OLDER image has four fields and no status; the data
-# volume outlives the image, so an empty status reads as "running" and such a
-# record is judged exactly as it was before, on pid identity alone.
+# A record written by an OLDER image has four fields and no status; the volume
+# outlives the image, so an empty status reads as "running" and such a record is
+# judged exactly as it was before, on pid identity alone. (An image OLDER than the
+# storage split wrote its record onto the data volume instead; nothing reads that
+# one any more — a start with no record simply relaunches, which is correct.)
 # shellcheck disable=SC2034
 serve::_read_pidfile() {
     SERVE_REC_PID="" SERVE_REC_START="" SERVE_REC_TOKEN="" SERVE_REC_CMD="" SERVE_REC_STATUS=""
@@ -269,7 +281,8 @@ serve::_read_pidfile() {
 # `read` can never shift them: a blank start time used to collapse two separators
 # into one and slide the token into the start column.
 # Chowned to the box user for the same reason the log is: it is written as root in
-# the distrobox lane (a subuid on the host under keep-id) onto the user's data dir.
+# the distrobox lane (a subuid on the host under keep-id) onto a host dir of the
+# user's (the program-cache root).
 serve::_write_state() {
     local status=$1 pid=${2:--} start=${3:--} token=${4:--} cmd=${5:--}
     mkdir -p "$(dirname "$DROSTE_SERVE_PID")" 2>/dev/null || true
@@ -548,7 +561,7 @@ serve::maybe_launch() {
     if [ "${SERVE_ENABLED:-0}" -ne 1 ]; then
         # Silent by design: interactive-only boxes are the common case, and this
         # runs on every single container start. No state record either — an
-        # interactive-only box writes nothing into its data dir, and the
+        # interactive-only box writes nothing into its host dirs, and the
         # healthcheck answers "healthy, nothing to probe" from this same config
         # before it ever looks at the record.
         return 0

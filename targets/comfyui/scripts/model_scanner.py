@@ -17,11 +17,22 @@ recorded with links:[] and never linked. `unclassified` is reserved STRICTLY for
 genuinely unknown files, so the UNCLASSIFIED report is a true heuristics-gap list.
 
 Usage:
-    model_scanner.py sync   [-n|--dry-run] [--no-prune] [--hardlink] [path overrides]
-    model_scanner.py status [path overrides]
+    model_scanner.py sync    [-n|--dry-run] [--no-prune] [--hardlink] [path overrides]
+    model_scanner.py status  [path overrides]
+    model_scanner.py inspect [pattern ...] [-u|--unclassified] [path overrides]
+    model_scanner.py rename  <current-name> <new-name> [-f|--force] [path overrides]
+    model_scanner.py rename  --list [path overrides]
     (no verb defaults to `sync`)
 
 Path overrides: --cache-dir, --models-dir, --tree, --registry.
+
+TREE AWARENESS -- the tree is a LINK tree, but it is bind-mounted onto
+/opt/ComfyUI/models and in-box downloaders (ComfyUI-Manager and friends) write REAL
+FILES straight into it. Those are INVENTORIED by every sync (census component "N real
+files in tree", one REALFILE line each) and otherwise left completely alone: never
+linked over, never moved, never pruned, never claimed in the registry. Report-only is
+the whole policy -- a real file in the link tree is somebody else's decision, and the
+only thing the scanner owes it is visibility.
 
 DESIGN NOTES / REGISTRY SCHEMA
 ==============================
@@ -44,9 +55,19 @@ One YAML store (default /opt/data/model-registry.yaml) plays TWO roles:
        never pruned. Registry lost => worst case orphaned symlinks, never destroyed
        user files.
 
-Schema (version 2):
+3. Rename ledger -- the USER'S chosen link names (`renames`, see cmd_rename). Renaming a
+   link is the user's call; remembering and DEFENDING it is the scanner's. A recorded
+   rename is applied by plan_links on every sync, so a census re-asserts the user's name
+   instead of steamrolling it back to the derived one, and prune never sees the renamed
+   link as an orphan (it is in `desired`, under the new name). Keyed by the name the
+   scanner DERIVES for the source (link_name), not by tree path: category is the
+   scanner's business and may change, the name is the user's and may not.
 
-    version: 2            # registry format version (2: repo units, members, sharded)
+Schema (version 3):
+
+    version: 3            # registry format version (2: repo units, members, sharded;
+                          #   3: the top-level `renames` ledger below. `entries` are
+                          #   unchanged -- a v2 store is a v3 store with no renames.)
     heuristics: 2         # classification-heuristics version; mismatch => reclassify all
                           #   (also migrates v1 trees: old links are still owned, so the
                           #    prune/relink pass renames them cleanly)
@@ -73,6 +94,11 @@ Schema (version 2):
         links: []                          # NEVER dir-linked (DiffusersLoader is niche)
         members:                           # identities of its component weight files
           - "hf:<sha256>"                  #   (repo <-> component relationship)
+    renames:                               # OPTIONAL; absent when nothing was renamed
+      "<derived link name>":               # the name the scanner would have used
+        to: "<user's name>"                # the name it uses instead, forever
+        display: org/repo/sub/file.ext     # receipt: which source this was
+        recorded: "2026-08-15T12:00:00Z"   # receipt: when the user asked
 
 Only categories in the ComfyUI category set are linkable, and sharded files are never
 linked even when their role is known. Entries whose identity vanished from the sources
@@ -114,6 +140,7 @@ later manifest-driven explicit layer (see hf-comfy-link seed) can share it.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import pickle
@@ -130,9 +157,22 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("model-scanner: pyyaml is required (the comfyui image bakes it)")
 
+# Sibling module, baked beside this one (Container.comfyui COPYs the whole set into
+# /opt/resources/scripts, which is also on PYTHONPATH). Holds the execution-free
+# container readers this file shares with the adopt tools -- above all the restricted
+# unpickler, which is a security boundary and must exist exactly once.
+try:
+    from model_formats import LEGACY_MAX_PICKLES, read_torch_container
+except ImportError as e:  # pragma: no cover
+    sys.exit(f"model-scanner: model_formats.py must sit beside this script ({e})")
+
 # --------------------------------------------------------------------------- constants
 
-REGISTRY_VERSION = 2
+# 3 (2026-08-15, s35): the top-level `renames` ledger. Entries are BYTE-IDENTICAL to v2 --
+# an old scanner reading a v3 store classifies exactly as before, it simply does not know
+# to defend the user's names -- so this bump is a description of the store, not a
+# migration. (Nothing reads the field; HEURISTICS_VERSION is the one that forces work.)
+REGISTRY_VERSION = 3
 # 7: qualified path segments (nai_hypernetworks) and annotator family names (depth_anything,
 #    ZoeD, the Annotators repo) now classify, so every registry must re-run.
 # 8: STEP 2 -- the weighted SCORE decides the category, not the heuristic ladder, and LoFi
@@ -158,12 +198,20 @@ REGISTRY_VERSION = 2
 #    controlnet_aux, so `facenet.pth` -- a pose model, not a face-recognition net --
 #    classifies by content instead of by its misleading name.
 #    Every registry must re-run.
+# NOT bumped by the s35 work (tree-awareness, renames, the name-is-API blacklist):
+# none of it changes what a file is classified AS. A bump costs a full re-classification
+# of every registry in the field, so it is spent on classification changes only.
 HEURISTICS_VERSION = 12
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
 DEFAULT_TREE = "/opt/data/model-tree"
 DEFAULT_REGISTRY = "/opt/data/model-registry.yaml"
+# The NAME-IS-API table ships BESIDE the scanner (both are baked into the image by
+# Container.comfyui), so it is found relative to this file rather than under /opt/data:
+# it is authored data, not runtime state, and an operator editing it edits the image's
+# copy knowingly. Absent file == empty table, never an error (see load_name_api_blacklist).
+DEFAULT_NAME_API_BLACKLIST = Path(__file__).resolve().parent / "name-api-blacklist.yaml"
 
 WEIGHT_EXTS = {".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin"}
 
@@ -863,122 +911,6 @@ def classify_safetensors_header(header: dict) -> str | None:
     return None
 
 
-# torch's LEGACY (pre-1.6, `_use_new_zipfile_serialization=False`) container is not a zip:
-# it is several pickles written back to back -- MAGIC_NUMBER, PROTOCOL_VERSION, sys_info,
-# THEN the payload, then the storage-key list, then raw tensor bytes. A reader that loads
-# one pickle and stops therefore gets the magic NUMBER and nothing else, which is exactly
-# how facenet.pth and detection_Resnet50_Final.pth surfaced as "(none)" on 150 MB files.
-# These two constants identify the preamble so the payload can be told apart from it.
-TORCH_LEGACY_MAGIC = 0x1950A86A20F9469CFC6C
-TORCH_LEGACY_SYSINFO_KEYS = {"protocol_version", "little_endian", "type_sizes"}
-# 4 covers magic + version + sys_info + payload; a couple spare for writer variations.
-LEGACY_MAX_PICKLES = 6
-
-
-def _is_legacy_preamble(obj) -> bool:
-    """True for the header objects torch writes AHEAD of the payload."""
-    if isinstance(obj, bool):
-        return False
-    if isinstance(obj, int):
-        return True                      # MAGIC_NUMBER / PROTOCOL_VERSION
-    if isinstance(obj, dict) and obj and set(obj) <= TORCH_LEGACY_SYSINFO_KEYS:
-        return True                      # sys_info -- its keys are NOT tensor names
-    return False
-
-
-def _restricted_unpickle(fileobj, max_objects: int = 1) -> tuple[set, set]:
-    """Recover a pickle's state-dict KEYS and the MODULE paths it references, without
-    executing any of its payload.
-
-    `max_objects` > 1 reads pickles SEQUENTIALLY from one stream (the legacy torch
-    layout above), skipping preamble objects and stopping at the first payload that
-    yields keys. Every object goes through the same restricted machinery.
-
-    SECURITY: `.pt`/`.pth` are Python pickles, and a normal load executes arbitrary code
-    -- unacceptable for files pulled off the internet. Here `find_class` never imports or
-    resolves anything: it records the module path (a strong classification signal in its
-    own right -- ultralytics.nn.tasks.DetectionModel et al) and returns an inert stub.
-    `persistent_load` (torch tensor storages) returns one too. Every REDUCE / NEWOBJ
-    therefore lands on the stub, never attacker code. Ported from scripts/droste-civitai-adopt.sh's
-    `_restricted_unpickle_keys`, which has been in service on real CivitAI downloads.
-
-    The stub is a dynamically-built TYPE, not an instance. `NEWOBJ`/`NEWOBJ_EX` -- what
-    protocol >= 2 emits for an ordinary object, and so what `torch.save` writes for a
-    serialized MODEL rather than a state dict -- require the class argument to be a real
-    type and abort the whole load otherwise. Returning an instance therefore made every
-    object-pickle (Ultralytics, segment_anything, gfpgan) unreadable before it could
-    yield a single module path -- exactly the files this pass exists for. Subclassing
-    per (module, name) satisfies the opcodes while still importing nothing.
-    """
-    keys: set = set()
-    modules: set = set()
-
-    class _Inert:
-        def __new__(cls, *a, **k):
-            return object.__new__(cls)        # NEWOBJ forwards ctor args here
-        def __init__(self, *a, **k):
-            pass                              # ... and REDUCE forwards them here
-        def __call__(self, *a, **k):
-            return self                       # call on an inert instance -> inert
-        def __setitem__(self, key, value):
-            if isinstance(key, str):
-                keys.add(key)
-        def __setstate__(self, state):
-            if isinstance(state, dict):
-                keys.update(k for k in state if isinstance(k, str))
-        def append(self, *a):
-            pass
-        def extend(self, *a):
-            pass
-        def __getattr__(self, name):
-            return self                       # any attribute -> inert
-
-    stubs: dict = {}
-
-    class _Restricted(pickle.Unpickler):
-        def find_class(self, module, name):
-            modules.add(f"{module}.{name}".lower())
-            stub = stubs.get((module, name))
-            if stub is None:                  # a TYPE, and still NEVER imported
-                stub = stubs[(module, name)] = type(name, (_Inert,),
-                                                    {"__module__": module})
-            return stub
-        def persistent_load(self, pid):
-            return _Inert()
-
-    for n in range(max_objects):
-        try:
-            obj = _Restricted(fileobj).load()
-        except Exception:
-            # Past the payload a legacy stream is RAW STORAGE BYTES, so the read that
-            # walks off the end is expected once objects have come back. Failing on the
-            # FIRST one is different: the file is not a pickle at all, and that error is
-            # the most informative thing we have -- raise it so the caller warns instead
-            # of recording a silent blank. (A stream that reads cleanly but yields
-            # nothing is caught by _signals_or_raise, which can say so precisely.)
-            if n == 0:
-                raise
-            break
-        if max_objects > 1 and _is_legacy_preamble(obj):
-            continue
-        if max_objects > 1 and isinstance(obj, list):
-            break     # the storage-key list: the payload is behind us and what follows
-                      # is RAW TENSOR BYTES, which must never be fed to the unpickler
-                      # (a stray length-prefixed opcode there could ask for a huge read)
-        # a plain dict / OrderedDict may come back concrete; harvest its keys (and one
-        # level of nesting, e.g. {"state_dict": {...}}).
-        stack, seen = [obj], 0
-        while stack and seen < 8:
-            cur = stack.pop()
-            seen += 1
-            if isinstance(cur, dict):
-                keys.update(k for k in cur if isinstance(k, str))
-                stack.extend(v for v in cur.values() if isinstance(v, dict))
-        if keys:
-            break
-    return keys, modules
-
-
 def _is_ct2_layout(src: SourceFile) -> bool:
     """A .bin sitting beside a CTranslate2 signature vocabulary file.
 
@@ -1009,37 +941,15 @@ def _signals_or_raise(keys: set, modules: set, what: str) -> tuple[set, set]:
 def read_pickle_signals(path: Path) -> tuple[set, set]:
     """(state-dict keys, referenced module paths) for a pickled checkpoint.
 
-    Modern torch files are zip archives holding a small `data.pkl`; legacy ones
-    (pre-1.6, or `_use_new_zipfile_serialization=False`) are a SEQUENCE of pickles --
-    magic number, protocol version, sys_info, payload -- followed by the raw storages.
-    Either way only the pickle STRUCTURE is read, never the tensor payload, so cost is
-    bounded regardless of file size.
+    The READING is model_formats.read_torch_container's (zip `data.pkl` vs the legacy
+    multi-pickle stream, never a tensor byte either way, shared with the adopt tools).
+    What stays here is this scanner's POLICY on the result: a read that succeeds and
+    harvests nothing is a finding, not an absence -- see _signals_or_raise. The adopt
+    tools want the opposite (soft None), which is exactly why the policy is the caller's.
     """
-    with open(path, "rb") as f:
-        head = f.read(8)
-    if head[:2] == b"PK":                      # zip archive (modern torch.save)
-        with zipfile.ZipFile(path) as z:
-            names = [n for n in z.namelist() if n.endswith("data.pkl")]
-            if not names:
-                # RAISE, do not return empty. Silently yielding no signals made an
-                # unreadable archive indistinguishable from one that genuinely holds
-                # nothing recognisable -- both surfaced as "no measure could form a
-                # judgement", which hid the failure. Callers already treat a raise as
-                # warn-and-continue, so this is loud without being fatal.
-                raise ValueError(
-                    "zip archive with no data.pkl member; contains: "
-                    + ", ".join(z.namelist()[:8]))
-            with z.open(names[0]) as fh:
-                return _signals_or_raise(*_restricted_unpickle(fh),
-                                         what=f"zip member {names[0]}")
-    # Non-zip: read the stream as a legacy multi-pickle container. A plain single
-    # pickle (what the rest of the world writes, and what the tests hand-build) is just
-    # the degenerate case -- its payload is object #1 and the loop stops there.
-    with open(path, "rb") as f:
-        keys, modules = _restricted_unpickle(f, max_objects=LEGACY_MAX_PICKLES)
-    return _signals_or_raise(
-        keys, modules,
-        what=f"legacy (non-zip) pickle stream, first bytes {head!r},")
+    keys, modules, what = read_torch_container(path,
+                                               max_objects=LEGACY_MAX_PICKLES)
+    return _signals_or_raise(keys, modules, what=what)
 
 
 # Module paths that identify a model by the code that produced it -- a far stronger
@@ -1421,12 +1331,20 @@ def classify(src: SourceFile) -> str:
 class Registry:
     entries: dict = field(default_factory=dict)   # identity -> entry dict
     heuristics: int = HEURISTICS_VERSION
+    # derived link name -> {"to": user's name, "display": ..., "recorded": ...}.
+    # Survives everything: a heuristics bump reclassifies, but a reclassified file keeps
+    # the name its owner gave it (it only moves to another category dir under that name).
+    renames: dict = field(default_factory=dict)
 
     def owned_links(self) -> set[str]:
         owned: set[str] = set()
         for e in self.entries.values():
             owned.update(e.get("links") or [])
         return owned
+
+    def renamed(self, link_name: str) -> str:
+        """The name the tree should use for a source: the user's if they chose one."""
+        return (self.renames.get(link_name) or {}).get("to") or link_name
 
 
 def load_registry(path: Path) -> Registry:
@@ -1437,8 +1355,12 @@ def load_registry(path: Path) -> Registry:
         entries = data.get("entries") or {}
         if not isinstance(entries, dict):
             raise ValueError("entries is not a mapping")
+        renames = data.get("renames") or {}
+        if not isinstance(renames, dict):
+            raise ValueError("renames is not a mapping")
         return Registry(entries=entries,
-                        heuristics=int(data.get("heuristics", 0)))
+                        heuristics=int(data.get("heuristics", 0)),
+                        renames=renames)
     except Exception as e:  # corrupt registry -> start fresh; links fail safe to "user's"
         log(f"WARN  unreadable registry {path} ({e}); starting fresh "
             f"(existing links are treated as user-owned)")
@@ -1449,6 +1371,10 @@ def save_registry(path: Path, reg: Registry) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = {"version": REGISTRY_VERSION, "heuristics": HEURISTICS_VERSION,
            "entries": reg.entries}
+    # written only when there is something to write: a store nobody has renamed anything
+    # in stays exactly the document it was before the ledger existed.
+    if reg.renames:
+        doc["renames"] = reg.renames
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(yaml.safe_dump(doc, sort_keys=True, default_flow_style=False))
     tmp.replace(path)
@@ -1494,7 +1420,14 @@ def ensure_link(target: Path, dst: Path, owned: bool, hardlink: bool, dry: bool)
 
 
 def prune_link(tree: Path, rel: str, dry: bool) -> str:
-    """Remove an OWNED link whose source vanished. Returns: pruned | kept | gone."""
+    """Remove an OWNED link whose source vanished. Returns: pruned | kept | gone.
+
+    SYMLINK-ONLY, and deliberately so: the is_symlink() test is what stands between a
+    real file that appeared at an owned path -- an in-box downloader writing through the
+    bind, a user dropping a replacement over our link -- and deletion. Ownership is not
+    enough to justify unlinking a REGULAR file, because a regular file is data we did not
+    put there and cannot recreate. (test_prune_never_deletes_a_real_file pins this.)
+    """
     dst = tree / rel
     if dst.is_symlink():
         if not dry:
@@ -1516,18 +1449,30 @@ def linkable(src: SourceFile, category: str) -> bool:
             and not src.sharded)
 
 
-def plan_links(sources: list[SourceFile], categories: dict[str, str]) -> dict[str, SourceFile]:
+def plan_links(sources: list[SourceFile], categories: dict[str, str],
+               renames: dict | None = None) -> dict[str, SourceFile]:
     """Map tree-relative link path -> source. Name collisions between two different
-    sources get a deterministic provenance-prefixed name."""
+    sources get a deterministic provenance-prefixed name.
+
+    `renames` (the registry's rename ledger) is applied HERE, which is what makes a
+    user's chosen name survive: the plan is what census reconciles the tree against, so
+    a name recorded once is re-asserted on every run rather than steamrolled back to the
+    derived one -- and the renamed path is in `desired`, so prune never mistakes it for
+    an orphan. Applied AFTER the generic-filename provenance rule (the ledger is keyed
+    on the name that rule produces) and BEFORE collision handling, so a renamed file
+    disambiguates on the name it will actually wear.
+    """
+    renames = renames or {}
     desired: dict[str, SourceFile] = {}
     for src in sources:
         cat = categories[src.identity]
         if not linkable(src, cat):
             continue
-        rel = f"{cat}/{src.link_name}"
+        name = (renames.get(src.link_name) or {}).get("to") or src.link_name
+        rel = f"{cat}/{name}"
         if rel in desired and desired[rel].identity != src.identity:
             prefix = _sanitize(str(Path(src.display).parent))
-            alt = f"{cat}/{prefix}--{src.link_name}" if prefix else None
+            alt = f"{cat}/{prefix}--{name}" if prefix else None
             if not alt or alt in desired:
                 log(f"SKIP  name collision for {src.display} -> {rel}")
                 continue
@@ -1610,10 +1555,15 @@ def cmd_sync(args) -> int:
                 note += f" DISPUTED -> {info['disputed']}"
             log(f"CLASSIFY  {src.display} -> {cat}{note}")
 
-    desired = plan_links(files, categories)
+    desired = plan_links(files, categories, old.renames)
 
     # link phase
     new = Registry()
+    new.renames = dict(old.renames)   # the user's names outlive every entry we rebuild
+    # tree paths this run has ALREADY explained on their own line (CONFLICT / KEEP). The
+    # real-file inventory below still COUNTS them -- they are real files in the tree, and
+    # the census must not lie -- but it does not say so twice.
+    named_rels: set[str] = set()
     counts = {"ok": 0, "linked": 0, "relinked": 0, "conflict": 0}
     entry_links: dict[str, list[str]] = {s.identity: [] for s in files}
     for rel in sorted(desired):
@@ -1622,6 +1572,7 @@ def cmd_sync(args) -> int:
                             hardlink=args.hardlink, dry=dry)
         counts[state] += 1
         if state == "conflict":
+            named_rels.add(rel)
             log(f"CONFLICT  {rel} exists and is not ours; leaving it alone "
                 f"(wanted -> {src.display})")
         else:
@@ -1681,21 +1632,48 @@ def cmd_sync(args) -> int:
             state = prune_link(tree, rel, dry)
             if state == "pruned":
                 n_pruned += 1
-                log(f"{'DRY-' if dry else ''}PRUNE  {rel} (source gone or reclassified)")
+                # three ways an owned link stops being wanted, and the log should not
+                # make the third look like a fault: the source vanished, the file was
+                # reclassified into another category dir, or its owner RENAMED it.
+                log(f"{'DRY-' if dry else ''}PRUNE  {rel} "
+                    f"(source gone, reclassified or renamed)")
             elif state == "kept":
+                named_rels.add(rel)
                 log(f"KEEP  {rel} is a real file now; not pruning (dropped from registry)")
         if not args.prune and ident not in new.entries:
             # keep ownership of not-yet-pruned links for a later prune
             new.entries[ident] = entry
 
-    # report broken symlinks that are NOT ours (never touched)
+    # TREE AWARENESS -- one walk of what is ACTUALLY in the tree, which is not the same
+    # question as "what did we put there". Two findings come out of it:
+    #   * broken symlinks that are NOT ours -- reported, never touched (as before);
+    #   * REAL FILES (regular files, not symlinks) that are not ours. ComfyUI-Manager and
+    #     every other in-box downloader writes straight through the models bind into this
+    #     tree, and until they were counted here they were invisible to every report the
+    #     scanner produced: not in the registry, not in the census, not in `status`
+    #     except as an undifferentiated USER row. They are INVENTORY, never inventory we
+    #     own: nothing below moves, relinks, adopts or prunes them -- ensure_link already
+    #     refuses to replace a regular file (owned or not) and prune_link only ever
+    #     unlinks a symlink, so the report is the entire feature.
+    # An owned HARDLINK is a regular file too, which is why the ownership test comes
+    # first: under --hardlink our own links would otherwise report as somebody else's.
+    n_real = 0
     if tree.is_dir():
         new_owned = new.owned_links()
         for p in sorted(tree.rglob("*")):
-            if p.is_symlink() and not p.exists():
-                rel = str(p.relative_to(tree))
-                if rel not in new_owned and rel not in owned:
+            if p.is_dir():
+                continue
+            rel = str(p.relative_to(tree))
+            if p.is_symlink():
+                if not p.exists() and rel not in new_owned and rel not in owned:
                     log(f"NOTE  broken unowned symlink (left alone): {rel}")
+                continue
+            if rel in new_owned:
+                continue
+            n_real += 1
+            if rel not in named_rels:
+                log(f"REALFILE  {rel} (real file in the tree, not a link; "
+                    f"never touched)")
 
     if not dry:
         save_registry(args.registry, new)
@@ -1708,6 +1686,7 @@ def cmd_sync(args) -> int:
     log(f"model-scanner: {len(files)} files + {len(units)} repo units ({n_new} new), "
         f"{counts['ok']} ok, {counts['linked']} linked, {counts['relinked']} relinked, "
         f"{n_pruned} pruned, {counts['conflict']} conflicts, "
+        f"{n_real} real files in tree, "
         f"{n_inv} inventory-only, {n_uncls} unclassified"
         f"{' [dry-run]' if dry else ''} ({dt:.2f}s)")
     return 0
@@ -1929,6 +1908,238 @@ def cmd_status(args) -> int:
     return 0
 
 
+# -------------------------------------------------------- rename (the user's names)
+#
+# Renaming a tree link is the USER'S choice. The scanner's job is to remember it and to
+# defend it -- against its own census, which would otherwise re-assert the derived name
+# on the next run, and against prune, which would otherwise read the renamed link as an
+# orphan. Both are handled by recording the choice in the registry and applying it in
+# plan_links, so there is exactly ONE place where a link's name is decided.
+#
+# Deliberately NOT an alias: no second link under the old name is ever created (Jei,
+# s35). An alias would mean the same weights appearing twice in every ComfyUI dropdown
+# and a second path for the ownership ledger to reason about, in exchange for hiding
+# precisely the breakage the blacklist below exists to make visible.
+
+def load_name_api_blacklist(path: Path) -> list:
+    """Load the NAME-IS-API table as a list of {filename, match, library, note} rows.
+
+    Fails OPEN, on purpose, in every direction: an absent file is an empty table (the
+    common case for anyone who deleted it), an unreadable one warns and is treated as
+    empty, and an unrecognised row is skipped. This table exists to WARN; it must never
+    be the reason a user cannot rename their own file. Which is also why BOTH document
+    shapes are accepted -- the `files:` mapping this repo ships, and a bare top-level
+    list, which is how rows arrive when they are pasted out of the research document.
+    A paste that failed to parse would silently disarm the guard, and a safety table
+    whose format is easy to break is not a safety table (see the file's own header).
+    """
+    if not path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+        rows = data if isinstance(data, list) else (data.get("files") or [])
+        table: list = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("filename") or "").strip()
+            if not name:
+                continue
+            table.append({
+                "filename": name,
+                "match": str(row.get("match") or "exact").strip().lower(),
+                "library": str(row.get("library") or "some library"),
+                "note": str(row.get("note") or "").strip(),
+            })
+        return table
+    except Exception as e:
+        log(f"WARN  unreadable name-is-API table {path} ({e}); treating it as empty "
+            f"(renames proceed unguarded)")
+        return []
+
+
+def match_name_api(table: list, name: str) -> dict | None:
+    """The first row that claims `name`, or None.
+
+    Three match kinds, which is the whole vocabulary the field data needs:
+      * exact -- the name entire. The overwhelming majority: a loader that computes
+        `dir/NAME` and checks whether it is there.
+      * dir   -- also exact, but the thing named is a DIRECTORY a loader addresses as a
+        unit. Kept a separate kind because it says something different to a reader (and
+        to any future feature that edits the tree) than "a file called this".
+      * glob  -- an fnmatch pattern. Prefix (`taesd_decoder*`), tail (`*_sd15.
+        safetensors`) and substring (`*vit_h*`) rules are all one shape once written
+        this way, so the loader needs one matcher rather than three anchors.
+    EXACT MATCHES FIRST, always: a specific row must win over a broad pattern, and some
+    of the patterns are deliberately broad.
+    """
+    lowered = name.lower()
+    for row in table:
+        if row["match"] in ("exact", "dir") and row["filename"].lower() == lowered:
+            return row
+    for row in table:
+        if row["match"] == "glob" and fnmatch.fnmatchcase(lowered,
+                                                          row["filename"].lower()):
+            return row
+    return None
+
+
+# Two facts about renaming that no per-file table can express, because they are true of
+# EVERY rename (both from danger-models-research.md, s35). They are not blocks and never
+# will be -- the user decides -- but a user deciding needs to have been told.
+RENAME_SYSTEMIC_NOTES = (
+    "saved workflows store the picker STRING, not the file, so any workflow, "
+    "template or API prompt that named the old file fails to load "
+    "(\"value not in list\"). Safe for the loader is never free for the history.",
+    "ComfyUI-Manager decides \"already installed\" by exact filename over its own "
+    "model list, so a file it knows by name may now be offered to you as a fresh "
+    "download.",
+)
+
+
+def _category_of(src: SourceFile, reg: Registry) -> str:
+    """The category a sync would file `src` under -- from the registry if it is known,
+    otherwise by classifying this ONE file the same way cmd_sync does."""
+    cached = (reg.entries.get(src.identity) or {}).get("category")
+    if cached:
+        return cached
+    winner, _, _ = score_votes(gather_votes(src))
+    return winner or classify(src)
+
+
+def cmd_rename(args) -> int:
+    reg = load_registry(args.registry)
+
+    if args.list:
+        for key in sorted(reg.renames):
+            rec = reg.renames[key] or {}
+            receipt = f"   [{rec['display']}]" if rec.get("display") else ""
+            log(f"RENAME  {key} -> {rec.get('to', '?')}{receipt}")
+        log(f"model-scanner: {len(reg.renames)} recorded rename(s)")
+        return 0
+
+    if not args.old or not args.new:
+        log("ERROR  rename takes <current-name> <new-name> (or --list). "
+            "Renaming a name back to itself forgets the recorded rename.")
+        return 2
+
+    # The OLD side may be given as a tree-relative link path (what `status` prints) or as
+    # a bare name; only the basename identifies anything. The NEW side may NOT: the
+    # category is the scanner's decision and a rename that could move a file between
+    # category dirs would be a reclassification wearing a rename's clothes.
+    old = Path(args.old).name
+    new = args.new
+    if new != Path(new).name or not new or new.startswith("."):
+        log(f"ERROR  the new name must be a plain filename, not a path: {args.new!r}")
+        return 2
+
+    files, _units = collect_sources(args.cache_dir, args.models_dir)
+    by_link: dict[str, list] = {}
+    for s in files:
+        by_link.setdefault(s.link_name, []).append(s)
+
+    # Resolve OLD to the LEDGER KEY, which is always the name the scanner DERIVES for the
+    # source -- so an already-renamed file can be renamed again by the name its owner
+    # currently sees in the tree, which is the only name they have any reason to know.
+    key = None
+    if old in reg.renames:
+        key = old
+    else:
+        key = next((k for k, rec in reg.renames.items()
+                    if (rec or {}).get("to") == old), None)
+    if key is None and old in by_link:
+        key = old
+    if key is None:
+        log(f"ERROR  nothing named {old!r}: no current source derives that link name "
+            f"and no rename records it. (`status` lists what is present; a link the "
+            f"scanner had to disambiguate wears a provenance prefix that is not part "
+            f"of its source name.)")
+        return 2
+
+    matches = by_link.get(key, [])
+    if len(matches) > 1:
+        log(f"ERROR  {key!r} is ambiguous -- {len(matches)} sources derive that name:")
+        for s in matches:
+            log(f"          {s.display}")
+        log("       rename is a per-source decision; there is no name that means both.")
+        return 2
+    src = matches[0] if matches else None
+    if src is None:
+        log(f"NOTE  no source named {key!r} is present right now; the rename is "
+            f"recorded and takes effect if that file comes back")
+
+    # NAME-IS-API guard. The refusal is loud and the exit is non-zero: a user who asked
+    # for a rename and got silence would reasonably believe it happened.
+    hit = match_name_api(load_name_api_blacklist(args.name_api_blacklist), key)
+    if hit and not args.force:
+        how = ("by that exact name" if hit["match"] == "exact" else
+               "as a DIRECTORY addressed by that exact name" if hit["match"] == "dir"
+               else f"by a NAMING RULE its name matches ({hit['filename']})")
+        log(f"SKIP  {key} is a NAME-IS-API file: {hit['library']} addresses it {how}, "
+            f"so the name is not a label, it is an interface.")
+        if hit["note"]:
+            log(f"      {hit['note']}")
+        log(f"      Nothing was renamed. Re-run with --force if you mean it "
+            f"(a forced rename is recorded exactly like any other).")
+        return 2
+
+    # Renaming a name to itself is the UNDO: there is no other spelling a user would
+    # reach for, and a mapping of X -> X is a no-op the ledger should not be carrying.
+    if new == key:
+        if reg.renames.pop(key, None) is None:
+            log(f"NOTE  {key} has no recorded rename; nothing to forget")
+            return 0
+        log(f"RENAME  {key}: recorded rename forgotten; the derived name returns")
+    else:
+        for s in files:
+            if s.link_name == new and (src is None or s.identity != src.identity):
+                log(f"ERROR  {new!r} is already the derived tree name of {s.display}; "
+                    f"two sources cannot wear one name")
+                return 2
+        clash = next((k for k, rec in reg.renames.items()
+                      if k != key and (rec or {}).get("to") == new), None)
+        if clash:
+            log(f"ERROR  {new!r} is already the recorded rename of {clash}")
+            return 2
+        if src is not None:
+            cat = _category_of(src, reg)
+            if linkable(src, cat):
+                rel = f"{cat}/{new}"
+                dst = args.tree / rel
+                current = args.tree / f"{cat}/{reg.renamed(key)}"
+                if (dst.is_symlink() or dst.exists()) and dst != current:
+                    log(f"ERROR  {rel} already exists in the tree; "
+                        f"move or remove it first (nothing there is ever clobbered)")
+                    return 2
+            else:
+                log(f"NOTE  {src.display} is {cat}: classified but never linked, so the "
+                    f"name is recorded and will apply if it ever becomes linkable")
+        reg.renames[key] = {
+            "to": new,
+            "display": src.display if src else "(source absent when recorded)",
+            "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        log(f"RENAME  {key} -> {new}")
+
+    # The tree name changed, which costs something whatever the name was. Said every
+    # time, on the way past: these are consequences of the ACT, not of the file, and a
+    # user who was never told cannot be said to have decided.
+    log("NOTE  a rename is never free, even when it is safe:")
+    for fact in RENAME_SYSTEMIC_NOTES:
+        log(f"      * {fact}")
+
+    save_registry(args.registry, reg)
+
+    # APPLY IT NOW -- by running the ordinary reconciliation, not by moving a link here.
+    # A rename that took effect immediately by one code path and at every future census
+    # by another would be two implementations of one promise; this way "renamed now" is
+    # by construction the same thing census does, old name pruned included.
+    sync_args = argparse.Namespace(**vars(args))
+    sync_args.dry_run = False
+    sync_args.prune = True
+    return cmd_sync(sync_args)
+
+
 # --------------------------------------------------------------------------------- cli
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1981,6 +2192,29 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("-u", "--unclassified", action="store_true",
                      help="only files that end up unclassified")
     ins.set_defaults(fn=cmd_inspect)
+
+    rn = sub.add_parser("rename", parents=[common],
+                        help="give a tree link the name YOU want; the scanner records "
+                             "it and re-asserts it at every future sync")
+    rn.add_argument("old", nargs="?",
+                    help="the link or source name as it stands now (a tree-relative "
+                         "path is accepted; only the filename is used)")
+    rn.add_argument("new", nargs="?",
+                    help="the name to use instead (a plain filename). Passing the "
+                         "CURRENT name forgets the recorded rename.")
+    rn.add_argument("--list", action="store_true",
+                    help="list the recorded renames and exit")
+    rn.add_argument("-f", "--force", action="store_true",
+                    help="rename even a file whose NAME IS AN API (see "
+                         "name-api-blacklist.yaml); recorded like any other rename")
+    rn.add_argument("--hardlink", action="store_true",
+                    help="hardlink blobs instead of symlinking (the reconciliation "
+                         "this verb runs to apply the rename)")
+    rn.add_argument("--name-api-blacklist", type=lambda s: Path(s).expanduser(),
+                    default=DEFAULT_NAME_API_BLACKLIST,
+                    help=f"name-is-API table (default {DEFAULT_NAME_API_BLACKLIST}; "
+                         f"absent = no guard)")
+    rn.set_defaults(fn=cmd_rename)
     return p
 
 

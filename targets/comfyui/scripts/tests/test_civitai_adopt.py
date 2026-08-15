@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/droste-civitai-adopt.sh using the DROSTE_CIVITAI_API_FIXTURE
+"""Tests for droste-civitai-adopt.sh using the DROSTE_CIVITAI_API_FIXTURE
 hook -- NO live network. A fixture dir stands in for the CivitAI API:
 
 - by-hash.json        batch by-hash endpoint: {sha256: version, ...} or
@@ -17,7 +17,7 @@ behaviors (identity gate, taxonomy dirs, sniff routing, normalization,
 never-clobber model file, --version-id, preview carry, network-error
 refusal, progress helpers, restricted unpickler).
 
-Run:  python3 tests/test_civitai_adopt.py -v
+Run:  python3 targets/comfyui/scripts/tests/test_civitai_adopt.py -v
 """
 
 import contextlib
@@ -38,7 +38,10 @@ from collections import OrderedDict
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "droste-civitai-adopt.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "droste-civitai-adopt.sh"
+# the tool imports its sibling model_formats (the shared execution-free readers); running
+# it normally puts the script's own dir on sys.path, loading it in-process does not.
+sys.path.insert(0, str(SCRIPT.parent))
 loader = importlib.machinery.SourceFileLoader("droste_civitai_adopt",
                                               str(SCRIPT))
 spec = importlib.util.spec_from_loader("droste_civitai_adopt", loader)

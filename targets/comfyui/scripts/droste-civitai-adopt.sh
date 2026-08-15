@@ -1,0 +1,1867 @@
+#!/usr/bin/env python3
+"""droste-civitai-adopt.sh: adopt already-downloaded CivitAI model files into
+a shared CivitAI cache directory.
+
+WHY: droste boxes share model directories laid out the way AUTOMATIC1111-
+style webuis expect them (models/Stable-diffusion, models/Lora, ...,
+embeddings/). Checkpoints, LoRAs, VAEs and embeddings that arrived some
+other way -- browser download, rsync from another machine -- sit outside
+that tree with arbitrary names and no metadata. This tool moves such files
+INTO the cache, but only when they are PROVABLY CivitAI content: the
+file's sha256 must be found by the CivitAI API and appear among the
+matched model version's published file hashes. Everything else is refused
+with a reason. Sibling to droste-hf-adopt.sh, same invariant: adopt only on
+hash proof, never on name similarity.
+
+HOW: every candidate file is hashed once (streamed sha256) and looked up
+with the batch by-hash API (one round-trip for a whole directory). A hit
+names the model version. During that same hash pass we also SNIFF the
+file's content (safetensors header keys, or state-dict keys recovered from
+a pickled checkpoint via a restricted, execution-free unpickler) to derive
+facts -- ControlNet vs T2I-Adapter, upscaler architecture, base model,
+dtype -- each tagged 'absolute' or 'uncertain'. Placement then routes to a
+fine-grained directory (one per distinct kind, created on demand):
+
+    <cache>/models/<TypeDir>/<Model_Version.ext>    (Checkpoint, LoRA, ...)
+    <cache>/embeddings/<Model_Version.ext>          (TextualInversion)
+    <cache>/other/<Type>/<Model_Version.ext>        (unknown/future types)
+    ... plus THREE sidecars (see below) + <Model_Version>.preview.<ext>
+
+Filenames are NORMALIZED to <model.name>_<version.name> + original ext
+(sanitized), so the cache is consistent regardless of the uploader's
+filename. An absolute content sniff that disagrees with the API's declared
+type wins the routing (e.g. a mislabelled T2I-adapter lands in T2IAdapter/,
+not ControlNet/); an uncertain sniff keeps the API type. Sniffing NEVER
+overrides the hash-proven identity -- only the placement category.
+
+THREE-FILE METADATA SCHEME (namespace suffix LAST so the terminal
+extension is the unique '.droste'). Source-sidecar fields (from a1111
+.json / ComfyUI .metadata.json / Stability Matrix .cm-info.json next to
+the download) are sorted by a 4-outcome policy: user-curation -> .user,
+model-metadata-with-no-CivitAI-home -> .meta, model-metadata that
+COMPLETES a blank/missing CivitAI field -> enrich .civitai.info, and
+tool-internal/redundant -> drop.
+  1. <Model_Version>.civitai.info -- the live CivitAI response, ENRICHED:
+     blank scalars (description/name/baseModel) filled from local sidecars;
+     local preview URLs unioned into images[]; baseModel overridden by an
+     ABSOLUTE content sniff when it contradicts. A single marker
+     extensions.droste.enriched={fields,images} records what was completed
+     -- ABSENT when nothing was (then the file stays byte-pure). Shareable.
+  2. <Model_Version>.meta.droste  -- our objective block: sha256,
+     normalized_name, IDs, api_type/resolved_type, routing, sniff verdicts,
+     upscaler_arch, detected_base_model, and a FINE sub_type (e.g.
+     text_encoder/bbox/facerestore) when the source names one CivitAI lacks.
+  3. <Model_Version>.user.droste  -- user curation from source sidecars:
+     notes/preferred_weight/usage_tips/favorite, title (cm-info UserTitle
+     when it differs from the model name), trigger_words and tags kept as
+     the user-distinct DELTA vs CivitAI trainedWords/tags, inference_defaults
+     (cm-info), filename (a --rename override, read back on re-runs), plus
+     an 'unmatched' discovery bucket for truly-unknown keys (surfaced on
+     screen). Written ONLY when non-empty.
+
+Every adopt (new placement AND already-cached) runs an idempotent SYNC:
+each sidecar is recomputed, canonically serialized, and written ONLY if it
+differs from disk -- so re-pointing the tool at a cached model refreshes
+its metadata (richer API, a source sidecar that appeared, a better sniff)
+or no-ops. The .civitai.info and .meta.droste files are tool/API-owned and
+regenerated; .user.droste is MONOTONIC (never drops preserved data). If an
+incoming user field conflicts with one already on disk, the file's ENTIRE
+adoption is refused (no placement, move, or writes) with a side-by-side
+diff unless you pass --force.
+
+Files the API does not know by hash fall back to metadata sidecars next
+to the SOURCE file: a model-version id found there is fetched and accepted
+ONLY if our sha256 appears in that version's file list. --version-id N is
+the manual escape hatch with the same sha256-must-appear gate.
+
+CAVEAT: CivitAI never hashed some very old uploads; those 404 by hash
+even though they are genuine. The sidecar fallback and --version-id
+cover them.
+
+Placements are staged as .tmp-* and renamed into place, so there is never
+partial state; existing model files are never overwritten (identical
+content counts as already cached, different content is refused); source
+files are never deleted except under --move, and only after successful
+placement.
+
+Composed names can outgrow the destination filesystem's NAME_MAX (255
+bytes on ext4 -- BYTES, so CJK costs 3 per character). A name whose whole
+sidecar family cannot fit is REFUSED up front, with its byte overage and
+a recommended shorter stem, and the batch continues -- the tool never
+truncates a name itself. Pass --rename NAME (the run must match exactly
+one file) to choose the stem yourself: it is recorded as `filename` in
+.user.droste (guarded like any user field) and read back on later runs,
+so a plain re-run lands on ALREADY instead of re-refusing. Any other
+per-file OSError likewise refuses that file only, never the batch.
+
+DEFAULT IS DRY-RUN: nothing is touched until you pass --apply.
+
+WHERE THIS LIVES (2026-08-15, s35): beside model_scanner.py in the comfyui
+image's script set, and baked into the image with it -- these tools and the
+scanner classify the same files from the same evidence, and the shared,
+execution-free readers now live in ONE sibling module (model_formats.py)
+instead of a hand-ported copy per tool. So this runs in-box as well as on
+the host. ONE BOUNDARY applies in-box: /opt/models is bind-mounted READ-ONLY
+(build-spec OPTIONAL row; droste-setup.sh emits `<dir>:/opt/models:ro`), so
+an in-box run can hash, sniff, look up and report on a custom collection but
+cannot place a file INTO it -- adopting into /opt/models is a host-side run.
+Adopting into the HF cache is writable in-box (see droste-hf-adopt.sh); it is
+bound read-write because the container downloads into it.
+"""
+
+import argparse
+import errno
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import Counter
+from pathlib import Path
+
+# Sibling module (same directory, baked into the comfyui image alongside this tool and
+# model_scanner.py). Holds the execution-free container readers all three share; `pickle`
+# and `zipfile` are no longer imported here because nothing in this file touches either
+# directly any more -- reading a torch container is that module's job, exclusively.
+try:
+    import model_formats
+except ImportError as e:  # pragma: no cover
+    sys.exit(f"droste-civitai-adopt.sh: model_formats.py must sit beside this "
+             f"script ({e})")
+
+CHUNK = 1 << 20  # 1 MiB read chunks for streamed hashing
+API_BASE = "https://civitai.com/api/v1"
+FIXTURE_ENV = "DROSTE_CIVITAI_API_FIXTURE"  # test hook; not in --help
+BATCH_LIMIT = 100  # by-hash POST accepts at most 100 hashes per call
+HASH_PROGRESS_MIN = 256 << 20  # smaller files hash too fast to show progress
+HASH_PROGRESS_STEP = 128 << 20  # progress update cadence while hashing
+SNIFF_PREFIX = 1 << 20  # bytes buffered during hashing for content sniffing
+
+# CivitAI model type / sniffed kind -> directory under the cache root.
+# Fine-grained: one dir per distinct kind, created on demand. A1111-
+# compatible names where those exist; new dirs for the splits A1111
+# collapses. Unknown/future types are NEVER refused -- they land in
+# other/<TypeName>/ (see resolve_placement).
+TYPE_DIRS = {
+    "checkpoint": "models/Stable-diffusion",
+    "lora": "models/Lora",
+    "locon": "models/LyCORIS",            # LyCORIS/LoCon split out of Lora
+    "dora": "models/DoRA",                # DoRA split out of Lora
+    "textualinversion": "embeddings",     # root level, not under models/
+    "hypernetwork": "models/hypernetworks",
+    "vae": "models/VAE",
+    "controlnet": "models/ControlNet",
+    "t2iadapter": "models/T2IAdapter",    # content-sniff split of ControlNet
+    "upscaler": "models/ESRGAN",          # arch-split at runtime (see below)
+    "motionmodule": "models/motion_modules",
+    "aestheticgradient": "models/aesthetic_embeddings",
+    "detection": "models/detection",
+    "poses": "poses",
+    "wildcards": "wildcards",
+    "workflows": "workflows",
+}
+
+# Upscaler network architecture (sniffed) -> directory; unknown -> catch-all.
+UPSCALER_ARCH_DIRS = {
+    "ESRGAN": "models/ESRGAN",
+    "RealESRGAN": "models/RealESRGAN",
+    "SwinIR": "models/SwinIR",
+    "ScuNET": "models/ScuNET",
+    "DAT": "models/DAT",
+    "HAT": "models/HAT",
+    "LDSR": "models/LDSR",
+}
+UPSCALER_CATCHALL = "models/upscale_models"
+
+# sniffed routing "kind" -> the canonical CivitAI-style type it resolves to.
+# Only kinds we can assert ABSOLUTELY from a deterministic key signature are
+# emitted for routing; everything else is left to the API type.
+KIND_TO_TYPE = {
+    "controlnet": "Controlnet",
+    "t2i_adapter": "T2IAdapter",
+    "upscaler": "Upscaler",
+}
+
+# metadata sidecars we mine for a model-version id (fallback), and the
+# preview images we carry along with a placed file
+SIDECAR_SUFFIXES = (".civitai.info", ".cm-info.json", ".metadata.json",
+                    ".json")
+PREVIEW_SUFFIXES = (".preview.png", ".preview.jpg", ".preview.jpeg",
+                    ".png", ".jpg", ".jpeg")
+# our own sidecar outputs (never candidates when scanning a cache dir)
+DROSTE_SIDECAR_SUFFIXES = (".meta.droste", ".user.droste")
+
+TOOL_ID = "droste-civitai-adopt/0.3"
+
+# ----- source-sidecar field categorization (the 4-outcome policy) -----
+# Each pre-existing source-sidecar field sorts into exactly one outcome:
+#   user            -> a normalized field in .user.droste (guarded)
+#   user_delta_*    -> user field, kept as the user-distinct DELTA vs CivitAI
+#   user_title / user_inference -> the title / inference_defaults user fields
+#   enrich_scalar   -> fill a blank CivitAI scalar in .civitai.info
+#   enrich_image_*  -> add a preview URL (+nsfw) to CivitAI images[]
+#   meta_subtype    -> a FINE functional subtype -> .meta.droste sub_type
+#   drop            -> tool-internal / redundant / private (never preserved)
+# Anything NOT in a format's table is 'unmatched' -> the discovery bucket.
+
+# The normalized user fields the guard protects + the sync monotonically
+# preserves (title, inference_defaults and the --rename-captured filename
+# included -> 9 guarded fields).
+USER_PREF_FIELDS = ("notes", "preferred_weight", "usage_tips", "favorite",
+                    "tags", "trigger_words", "title", "inference_defaults",
+                    "filename")
+# suffix -> source format, for the per-format extraction below
+USER_SIDECAR_FORMATS = {
+    ".json": "a1111",             # AUTOMATIC1111 flat sidecar
+    ".metadata.json": "comfyui",  # ComfyUI Lora-Manager nested sidecar
+    ".cm-info.json": "stability_matrix",
+}
+# CivitAI `sub_type` values that just duplicate model.type / our
+# resolved_type: coarse -> back-fill model.type when blank (~never) + drop;
+# anything else (text_encoder/bbox/segmentation/facedetection/faceparsing/
+# facerestore/future) is a genuine FINE subtype -> .meta.droste sub_type.
+COARSE_SUBTYPES = {"lora", "vae", "hypernetwork", "upscaler", "detection"}
+
+# Per-format field dispositions. Keys are compared LOWERCASED; values are
+# (outcome, *target).
+A1111_FIELDS = {
+    "notes": ("user", "notes"),
+    "activation text": ("user_delta_trigger",),
+    "preferred weight": ("user", "preferred_weight"),
+    # enrich CivitAI description, but only as a FALLBACK: ComfyUI
+    # modelDescription (the primary enrich_scalar) wins when both are present.
+    "description": ("enrich_scalar_alt", "description"),
+    "sd version": ("drop",),
+    "sd_version": ("drop",),
+}
+COMFY_FIELDS = {
+    "notes": ("user", "notes"),
+    "usage_tips": ("user", "usage_tips"),
+    "tags": ("user_delta_tags",),
+    "favorite": ("user", "favorite"),
+    "modeldescription": ("enrich_scalar", "description"),
+    "model_name": ("enrich_scalar", "model_name"),
+    "base_model": ("enrich_scalar", "base_model"),
+    "preview_url": ("enrich_image_url",),
+    "preview_nsfw_level": ("enrich_image_nsfw",),
+    "sub_type": ("meta_subtype",),
+    "civitai": ("drop",), "preview": ("drop",),
+    "sha256": ("drop",), "size": ("drop",),
+    "file_name": ("drop",), "file_path": ("drop",),  # file_path = privacy
+    "from_civitai": ("drop",), "db_checked": ("drop",),
+    "hash_status": ("drop",), "metadata_source": ("drop",),
+    "last_checked_at": ("drop",), "modified": ("drop",),
+    "exclude": ("drop",), "skip_metadata_refresh": ("drop",),
+    "civitai_deleted": ("drop",),
+}
+CM_FIELDS = {
+    "notes": ("user", "notes"),
+    "favorite": ("user", "favorite"),
+    "isfavorite": ("user", "favorite"),
+    "usagetips": ("user", "usage_tips"),
+    "usertitle": ("user_title",),
+    "inferencedefaults": ("user_inference",),
+    "thumbnailimageurl": ("enrich_image_url",),
+    "source": ("drop",), "stats": ("drop",),
+    # standard CivitAI mirror / local bookkeeping
+    "modelname": ("drop",), "modeltype": ("drop",),
+    "modeldescription": ("drop",), "modelurl": ("drop",),
+    "modelid": ("drop",), "versionid": ("drop",),
+    "versionname": ("drop",), "versiondescription": ("drop",),
+    "basemodel": ("drop",), "trainedwords": ("drop",),
+    "tags": ("drop",), "nsfw": ("drop",), "nsfwlevel": ("drop",),
+    "filename": ("drop",), "filemetadata": ("drop",),
+    "filesize": ("drop",), "hashes": ("drop",), "sha256": ("drop",),
+    "autov2": ("drop",), "blake3": ("drop",), "crc32": ("drop",),
+    "author": ("drop",), "images": ("drop",), "previewimage": ("drop",),
+    "importedat": ("drop",), "updatedat": ("drop",),
+    "lastupdated": ("drop",),
+}
+FORMAT_FIELDS = {"a1111": A1111_FIELDS, "comfyui": COMFY_FIELDS,
+                 "stability_matrix": CM_FIELDS}
+
+EXAMPLES = """\
+examples:
+  # Adopt a checkpoint you fetched with a browser (dry-run first). It is
+  # placed under a normalized <Model>_<Version> name in the right dir:
+  droste-civitai-adopt.sh ~/Downloads/juggernautXL_v9.safetensors
+  droste-civitai-adopt.sh --apply ~/Downloads/juggernautXL_v9.safetensors
+
+  # A whole downloads dir: one batch API call identifies everything,
+  # files may belong to different models/versions and route to different
+  # dirs (LoRA, VAE, ControlNet vs T2IAdapter, upscaler-by-arch, ...):
+  droste-civitai-adopt.sh --apply --move ~/Downloads/mixed/
+
+  # Rescue an old file CivitAI never hashed (404 by hash), when you know
+  # its model version id -- adoption still requires the version to list
+  # our exact sha256:
+  droste-civitai-adopt.sh --apply --version-id 128713 ~/old/dreamshaper.ckpt
+
+  # A <Model>_<Version> name past the filesystem's 255-BYTE limit (CJK is
+  # 3 bytes/char) is refused with a recommended shorter stem; adopt it
+  # under your own name instead (recorded, and reused on re-runs):
+  droste-civitai-adopt.sh --apply --rename 'Wan21-FLF2V-14B-720P' ~/dl/wan.safetensors
+
+Only files whose sha256 the CivitAI API can prove are adopted; everything
+else is refused with a reason. Each model gets three sidecars -- a pure
+.civitai.info, our .meta.droste (routing + sniff verdicts), and a
+.user.droste built from any pre-existing source sidecars -- kept in sync
+idempotently on every run (use --force to overwrite conflicting user data).
+"""
+
+
+def log(args, level, msg):
+    """level 0 = always, 1 = normal, 2 = verbose-only."""
+    verbosity = 1 + args.verbose - args.quiet
+    if level <= verbosity:
+        progress_clear()  # never print over a transient status line
+        print(msg)
+
+
+def die(msg, code=2):
+    progress_clear()
+    print(f"droste-civitai-adopt.sh: error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+_progress = 0  # width of the transient stderr status line; 0 = none showing
+
+
+def progress(args, msg):
+    """Transient in-place status line (long hashes, API waits) -- shown on
+    an interactive stderr, INCLUDING under -q (whose data-dump view keeps
+    the progress bar). Absent when stderr isn't a TTY, so pipes, logs and
+    cron output are untouched. Overwritten via \\r; progress_clear() wipes
+    it before any real output can collide with it."""
+    global _progress
+    if not sys.stderr.isatty():
+        return
+    pad = max(_progress - len(msg), 0)
+    sys.stderr.write("\r" + msg + " " * pad)
+    sys.stderr.flush()
+    _progress = len(msg)
+
+
+def progress_clear():
+    global _progress
+    if _progress:
+        sys.stderr.write("\r" + " " * _progress + "\r")
+        sys.stderr.flush()
+        _progress = 0
+
+
+# ---------------------------------------------------------------- cache/auth
+
+def resolve_cache(override):
+    """Cache resolution: flag > DROSTE_CIVITAI_CACHE > ~/.cache/civitai."""
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("DROSTE_CIVITAI_CACHE"):
+        return Path(os.environ["DROSTE_CIVITAI_CACHE"]).expanduser()
+    return Path.home() / ".cache" / "civitai"
+
+
+def find_token():
+    """CIVITAI_API_TOKEN env var; metadata endpoints are public, so this
+    is optional (it only helps with rate limits / restricted models)."""
+    return os.environ.get("CIVITAI_API_TOKEN", "").strip() or None
+
+
+# -------------------------------------------------------------- CivitAI API
+
+def api_request(args, url, token, payload=None):
+    """GET (or, with payload, POST-json) a CivitAI API url and parse the
+    JSON response. Raises HTTPError/URLError/TimeoutError; callers decide
+    fatality."""
+    body = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=body, headers={
+        "User-Agent": TOOL_ID,
+        **({"Content-Type": "application/json"} if body else {}),
+        **({"Authorization": f"Bearer {token}"} if token else {}),
+    })
+    log(args, 2, f"# {'POST' if body else 'GET'} {url} "
+                 f"(auth: {'token' if token else 'anonymous'})")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read())
+
+
+def batch_lookup(args, shas, token):
+    """Identify hashes via POST /model-versions/by-hash (<=100 per call);
+    if that form errors, fall back to one GET .../by-hash/<sha> each
+    (404 = unknown hash, simply absent from the result). Returns a list
+    of model-version objects. Raises URLError/TimeoutError on network
+    trouble -- the caller refuses the affected files, never crashes.
+
+    Fixture (DROSTE_CIVITAI_API_FIXTURE=<dir>): reads <dir>/by-hash.json
+    -- either {sha256: version-object, ...} or a plain list of version
+    objects (filtered to the requested hashes); {"error": msg} simulates
+    a network failure.
+    """
+    fixture_dir = os.environ.get(FIXTURE_ENV)
+    if fixture_dir:
+        path = Path(fixture_dir) / "by-hash.json"
+        log(args, 2, f"# fixture mode: reading {path} for "
+                     f"{len(shas)} hash(es)")
+        try:
+            data = json.loads(path.read_text())
+        except OSError as e:
+            die(f"fixture read failed: {e}")
+        if isinstance(data, dict):
+            if "error" in data:
+                raise urllib.error.URLError(data["error"])
+            data = [v for k, v in data.items() if k.lower() in shas]
+        wanted = set(shas)
+        return [v for v in data if isinstance(v, dict)
+                and wanted & set(hash_entries(v))]
+
+    versions = []
+    for i in range(0, len(shas), BATCH_LIMIT):
+        chunk = shas[i:i + BATCH_LIMIT]
+        progress(args, f"  looking up {len(chunk)} hash(es) on CivitAI...")
+        try:
+            data = api_request(args, f"{API_BASE}/model-versions/by-hash",
+                               token, payload=chunk)
+            if isinstance(data, list):
+                versions.extend(v for v in data if isinstance(v, dict))
+                continue
+            log(args, 2, "# batch by-hash returned a non-list; "
+                         "falling back to per-hash lookups")
+        except urllib.error.HTTPError as e:
+            log(args, 2, f"# batch by-hash returned HTTP {e.code}; "
+                         f"falling back to per-hash lookups")
+        for sha in chunk:  # fallback: one GET per hash
+            progress(args, f"  looking up {sha[:12]}.. on CivitAI...")
+            try:
+                v = api_request(args,
+                                f"{API_BASE}/model-versions/by-hash/{sha}",
+                                token)
+                if isinstance(v, dict):
+                    versions.append(v)
+            except urllib.error.HTTPError as e:
+                if e.code != 404:  # 404 just means: hash unknown
+                    log(args, 2, f"# HTTP {e.code} for hash {sha[:12]}..; "
+                                 f"skipping")
+    return versions
+
+
+def fetch_version(args, vid, token, versions_cache, fatal=True):
+    """GET /model-versions/<id>, cached per run. With fatal=False
+    (sidecar fallback) any failure returns None instead of exiting.
+    Fixture: <dir>/version-<id>.json; a missing file acts like a 404."""
+    if vid in versions_cache:
+        return versions_cache[vid]
+    version = None
+    fixture_dir = os.environ.get(FIXTURE_ENV)
+    if fixture_dir:
+        path = Path(fixture_dir) / f"version-{vid}.json"
+        log(args, 2, f"# fixture mode: reading {path}")
+        try:
+            version = json.loads(path.read_text())
+        except OSError:
+            if fatal:
+                die(f"model version not found: {vid}")
+            log(args, 2, f"# fixture version {vid} missing; skipping")
+    else:
+        try:
+            version = api_request(args, f"{API_BASE}/model-versions/{vid}",
+                                  token)
+        except urllib.error.HTTPError as e:
+            if fatal:
+                if e.code == 404:
+                    die(f"model version not found: {vid}")
+                die(f"CivitAI API returned HTTP {e.code} for version {vid}")
+            log(args, 2, f"# HTTP {e.code} for version {vid}; skipping")
+        except urllib.error.URLError as e:
+            if fatal:
+                die(f"cannot reach the CivitAI API ({e.reason}); "
+                    "nothing was changed")
+            log(args, 2, f"# cannot reach CivitAI for version {vid} "
+                         f"({e.reason}); skipping")
+        except TimeoutError:
+            if fatal:
+                die("CivitAI API request timed out; nothing was changed")
+            log(args, 2, f"# CivitAI timed out for version {vid}; skipping")
+    if version is not None and not isinstance(version, dict):
+        version = None
+    versions_cache[vid] = version
+    return version
+
+
+def is_hex(s, n):
+    return isinstance(s, str) and len(s) == n and \
+        all(c in "0123456789abcdef" for c in s.lower())
+
+
+def hash_entries(version):
+    """lowercase sha256 -> files[] entry, for every hashed file the
+    version publishes. Entries without a SHA256 cannot prove anything
+    and are ignored."""
+    out = {}
+    for fl in version.get("files") or []:
+        if not isinstance(fl, dict):
+            continue
+        sha = (fl.get("hashes") or {}).get("SHA256") or ""
+        if is_hex(sha, 64):
+            out[sha.lower()] = fl
+    return out
+
+
+def safe_filename(name):
+    """Validate a bare filename before using it on disk: no separators,
+    no traversal, no Windows-hostile characters. Applied to the FINAL
+    normalized name as a belt-and-braces gate."""
+    if not name or not isinstance(name, str):
+        return None
+    if "/" in name or "\\" in name or ":" in name:
+        return None
+    if name in (".", "..") or any(ch in name for ch in '<>"|?*\0'):
+        return None
+    return name
+
+
+# ------------------------------------------------------------------ hashing
+
+def hash_file(path, size, args=None):
+    """Streamed sha256 (the only digest CivitAI matches on). With args,
+    large files show a transient progress line while hashing
+    (interactive only)."""
+    h256 = hashlib.sha256()
+    show = args is not None and size >= HASH_PROGRESS_MIN
+    done = next_tick = 0
+    with open(path, "rb") as f:
+        while chunk := f.read(CHUNK):
+            h256.update(chunk)
+            if show:
+                done += len(chunk)
+                if done >= next_tick or done == size:
+                    gib = 1 << 30
+                    progress(args, f"  hashing {Path(path).name}: "
+                                   f"{done * 100 // size}% "
+                                   f"({done / gib:.1f}/{size / gib:.1f} GiB)")
+                    next_tick = done + HASH_PROGRESS_STEP
+    if show:
+        progress_clear()
+    return h256.hexdigest()
+
+
+def scan_file(path, size, args=None):
+    """Stream the file ONCE: sha256 + content sniff. A bounded prefix is
+    captured during the hash pass and handed to the sniffer (safetensors
+    headers live at the front); pickled checkpoints need a small bounded
+    metadata read of their own (never a second pass over tensor data).
+    Returns (sha256_hex, facts_dict)."""
+    h256 = hashlib.sha256()
+    prefix = bytearray()
+    show = args is not None and size >= HASH_PROGRESS_MIN
+    done = next_tick = 0
+    with open(path, "rb") as f:
+        while chunk := f.read(CHUNK):
+            h256.update(chunk)
+            if len(prefix) < SNIFF_PREFIX:
+                prefix.extend(chunk[:SNIFF_PREFIX - len(prefix)])
+            if show:
+                done += len(chunk)
+                if done >= next_tick or done == size:
+                    gib = 1 << 30
+                    progress(args, f"  hashing {Path(path).name}: "
+                                   f"{done * 100 // size}% "
+                                   f"({done / gib:.1f}/{size / gib:.1f} GiB)")
+                    next_tick = done + HASH_PROGRESS_STEP
+    if show:
+        progress_clear()
+    return h256.hexdigest(), sniff_content(Path(path), bytes(prefix))
+
+
+def memo_scan(path, size, memo, args=None, sniff=False):
+    """hash_file/scan_file, cached per run. Sources are scanned (hash +
+    sniff) once; existing destination files are hash-only. Returns
+    (sha256, facts_or_None)."""
+    key = str(path)
+    if key not in memo:
+        if sniff:
+            memo[key] = scan_file(path, size, args)
+        else:
+            memo[key] = (hash_file(path, size, args), None)
+    return memo[key]
+
+
+# -------------------------------------------------------------- content sniff
+
+def parse_safetensors_header(prefix, path):
+    """safetensors layout: 8-byte little-endian header length, then that
+    many bytes of JSON (tensor name -> {dtype, shape, data_offsets}). We
+    read ONLY the header. Returns the parsed dict or None."""
+    if len(prefix) < 8:
+        return None
+    n = int.from_bytes(prefix[:8], "little")
+    if n <= 0 or n > (200 << 20):  # sane header bound
+        return None
+    blob = bytes(prefix[8:8 + n])
+    if len(blob) < n:  # header longer than the captured prefix (rare)
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(8)
+                blob = fh.read(n)
+        except OSError:
+            return None
+    try:
+        header = json.loads(blob)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def _restricted_unpickle_keys(fileobj):
+    """The string keys of a pickled state dict, recovered WITHOUT executing
+    any of its payload -- see model_formats.restricted_unpickle for the
+    machinery and the security argument.
+
+    Thin on purpose. This function was the ORIGINAL home of that reader; it
+    was hand-ported into model_scanner.py and the two copies then drifted
+    (the scanner's learned torch's legacy multi-pickle container and to
+    record module paths, this one did not). One security boundary deserves
+    one implementation, so the body moved to the shared sibling module and
+    what is left here is this tool's shape of the answer: a sorted list of
+    keys, module paths discarded (nothing in this tool routes on them yet)."""
+    keys, _modules = model_formats.restricted_unpickle(fileobj)
+    return sorted(keys)
+
+
+def sniff_pickle_keys(path):
+    """Recover state-dict keys from a pickled checkpoint. Modern torch
+    files are zip archives (data.pkl inside); legacy ones are a bare
+    pickle. Bounded: only the pickle structure is read, never the tensor
+    storages. Any trouble -> None (fall back to API-type routing).
+
+    The SOFT failure is this tool's policy, and the reason the shared reader
+    raises instead of returning empty: model_scanner turns the same silence
+    into a loud `empty: ...` finding, because for a classifier a 150 MB file
+    that yields nothing is news. Here it is merely a file the API type will
+    have to route."""
+    try:
+        keys, _modules, _what = model_formats.read_torch_container(path)
+        return sorted(keys)
+    except Exception:
+        return None
+
+
+def _dominant_dtype(header):
+    c = Counter()
+    for k, v in header.items():
+        if k == "__metadata__":
+            continue
+        if isinstance(v, dict) and isinstance(v.get("dtype"), str):
+            c[v["dtype"]] += 1
+    return c.most_common(1)[0][0] if c else None
+
+
+def _detect_upscaler_arch(keys):
+    """Super-resolution network architecture from key signatures.
+    Returns (arch, confidence) or (None, None)."""
+    has = lambda sub: any(sub in k for k in keys)
+    starts = lambda pre: any(k.startswith(pre) for k in keys)
+    if starts("m_head") and has("m_body") and has("m_tail"):
+        return ("ScuNET", "absolute")
+    if has("relative_position_bias_table"):
+        # SwinIR-family window attention; HAT adds conv blocks per group
+        if has("conv_block") or has("conv_after_body"):
+            return ("HAT", "absolute")
+        if has("residual_group"):
+            return ("SwinIR", "absolute")
+        return ("SwinIR", "uncertain")
+    if has("spatial_block") or has(".dat_"):
+        return ("DAT", "uncertain")
+    if has("model.1.sub.") or has("RRDB_trunk"):
+        return ("ESRGAN", "absolute")
+    if has("conv_first") and (has("rdb") or has("RDB") or has("conv_body")):
+        return ("RealESRGAN", "absolute")
+    return (None, None)
+
+
+def _detect_kind(keys):
+    """Routing-relevant network KIND from key signatures. Only kinds we
+    can assert absolutely are returned (uncertain guesses defer to the
+    API type). Returns (kind, confidence) or None."""
+    has = lambda sub: any(sub in k for k in keys)
+    if has("adapter.body") or has("adapter_down"):
+        return ("t2i_adapter", "absolute")
+    if has("control_model") or has("controlnet_cond_embedding") \
+            or has("controlnet_down_blocks"):
+        return ("controlnet", "absolute")
+    arch, conf = _detect_upscaler_arch(keys)
+    if arch is not None and conf == "absolute":
+        return ("upscaler", "absolute")
+    return None
+
+
+def _detect_base_model(keys):
+    """Base diffusion model from key signatures. Distinct architectures
+    (FLUX/SD3/SDXL) are absolute; SD1.x vs SD2 is uncertain. Recorded
+    only -- never used for routing."""
+    has = lambda sub: any(sub in k for k in keys)
+    if has("double_blocks.") or has("single_blocks."):
+        return ("FLUX.1", "absolute")
+    if has("joint_blocks."):
+        return ("SD3", "absolute")
+    if has("conditioner.embedders.1"):
+        return ("SDXL", "absolute")
+    if has("cond_stage_model.model."):
+        return ("SD2", "uncertain")
+    if has("model.diffusion_model.") or has("cond_stage_model.transformer"):
+        return ("SD1.x", "uncertain")
+    return None
+
+
+def sniff_content(path, prefix):
+    """Best-effort content facts derived DURING the hash pass (from the
+    captured prefix / bounded metadata reads -- never a second full read).
+    Returns {fact: (value, confidence)}; confidence is 'absolute' (a
+    deterministic key signature that can be nothing else) or 'uncertain'.
+    Never raises -- on any trouble, facts = {'sniff': ('unavailable', ..)}
+    and routing falls back to the API type."""
+    facts = {}
+    try:
+        ext = path.suffix.lower()
+        keys = header = None
+        if ext in (".safetensors", ".sft"):
+            header = parse_safetensors_header(prefix, path)
+            if header is not None:
+                facts["format"] = ("safetensors", "absolute")
+                keys = [k for k in header if k != "__metadata__"]
+        if keys is None and ext in (".ckpt", ".pt", ".pth", ".bin"):
+            keys = sniff_pickle_keys(path)
+            if keys is not None:
+                facts["format"] = ("pytorch-pickle", "absolute")
+        if keys is None:
+            facts["sniff"] = ("unavailable", "uncertain")
+            return facts
+        facts["tensor_count"] = (len(keys), "absolute")
+        if header is not None:
+            dt = _dominant_dtype(header)
+            if dt:
+                facts["dtype"] = (dt, "absolute")
+        kind = _detect_kind(keys)
+        if kind:
+            facts["kind"] = kind
+            if kind[0] == "upscaler":
+                arch, conf = _detect_upscaler_arch(keys)
+                if arch:
+                    facts["upscaler_arch"] = (arch, conf)
+        else:
+            # not a routing kind, but still record an upscaler-arch guess
+            arch, conf = _detect_upscaler_arch(keys)
+            if arch:
+                facts["upscaler_arch"] = (arch, conf)
+        base = _detect_base_model(keys)
+        if base:
+            facts["base_model"] = base
+        if any("first_stage_model." in k for k in keys):
+            facts["embedded_vae"] = (True, "absolute")
+        if any(".model_ema." in k or k.startswith("model_ema.") for k in keys):
+            facts["has_ema"] = (True, "absolute")
+    except Exception:
+        facts.setdefault("sniff", ("unavailable", "uncertain"))
+    return facts
+
+
+# ----------------------------------------------------------- identification
+
+def sidecar_version_id(f):
+    """Mine Civitai-Helper-style metadata next to the SOURCE file for a
+    model-version id. The id is only a LEAD, never proof: the fetched
+    version must still contain our sha256."""
+    stem = f.name[:f.name.rfind(".")] if "." in f.name else f.name
+    for suf in SIDECAR_SUFFIXES:
+        side = f.with_name(stem + suf)
+        if side == f or not side.is_file():
+            continue
+        try:
+            data = json.loads(side.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        vid = data.get("modelVersionId") or data.get("model_version_id") \
+            or data.get("versionId") or data.get("VersionId")
+        if vid is None and ("modelId" in data or "files" in data):
+            vid = data.get("id")  # a raw model-version response (.civitai.info)
+        try:
+            vid = int(vid)
+        except (TypeError, ValueError):
+            continue
+        if vid > 0:
+            return vid
+    return None
+
+
+def describe_version(version):
+    """'<model name> / <version name> (Checkpoint, SDXL 1.0) [AIR urn:..]'"""
+    model = version.get("model") or {}
+    label = f"{model.get('name', '?')} / {version.get('name', '?')}"
+    kind = ", ".join(x for x in (model.get("type"),
+                                 version.get("baseModel")) if x)
+    if kind:
+        label += f" ({kind})"
+    if version.get("air"):
+        label += f" [AIR {version['air']}]"
+    return label
+
+
+def _norm_type(s):
+    return re.sub(r"[-_ ]+", "", (s or "").strip().lower())
+
+
+def resolve_placement(version, fentry, facts):
+    """Decide (relative_dir, resolved_type, arch, routing) for a matched
+    file. VAE file-entry override wins first (bundled VAEs). Otherwise the
+    Jei sniff-vs-API rule: an ABSOLUTE sniff kind routes the file (winning
+    over the API type when they disagree, and routing coarse/absent API
+    types); an uncertain/absent sniff keeps the API type. Unknown types
+    are never refused -- they get other/<Type>/."""
+    model = version.get("model") or {}
+    api_type = (model.get("type") or "").strip()
+    ftype = (fentry.get("type") or "").strip()
+    facts = facts or {}
+
+    if ftype.lower() == "vae":  # bundled-VAE second file: strongest signal
+        return TYPE_DIRS["vae"], "VAE", None, "file-entry:VAE"
+
+    kind, kconf = facts.get("kind", (None, None))
+    sniff_type = KIND_TO_TYPE.get(kind)
+    if sniff_type and kconf == "absolute":
+        if _norm_type(sniff_type) == _norm_type(api_type):
+            routing = "agree"
+        else:
+            routing = f"sniff-override(api={api_type or 'none'})"
+        resolved = sniff_type
+    else:
+        resolved = api_type
+        routing = "api" if api_type else "api-missing"
+
+    arch = None
+    key = resolved.lower()
+    if key == "upscaler":
+        arch = facts.get("upscaler_arch", (None,))[0]
+        rel = UPSCALER_ARCH_DIRS.get(arch, UPSCALER_CATCHALL)
+    elif key in TYPE_DIRS:
+        rel = TYPE_DIRS[key]
+    else:
+        rel = "other/" + (sanitize_component(resolved) or "Unknown")
+    return rel, resolved or "Unknown", arch, routing
+
+
+# ---------------------------------------------------------------- placement
+
+def sanitize_component(s):
+    """model.name / version.name -> filename-safe component: drop path and
+    Windows-hostile characters, collapse whitespace to '-', collapse
+    repeated dashes, strip leading/trailing dots/dashes/spaces. Unicode
+    letters are kept."""
+    if not isinstance(s, str):
+        return ""
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "", s)
+    s = re.sub(r"\s+", "-", s.strip())
+    s = re.sub(r"-{2,}", "-", s)
+    return s.strip(" .-")
+
+
+def split_ext(name, cap=32):
+    """(stem, ext) where ext is the dotted trailing run accumulated RIGHT-
+    to-left while it stays within `cap` characters -- so multi-dot
+    extensions (.tar.gz, .civitai.info, .vae.safetensors) hold together,
+    while a dotted run past `cap` is no extension at all and falls into
+    the stem. Segments must be non-empty and free of path separators and
+    whitespace; a leading dot (hidden file) never starts an extension.
+    Replaces Path.suffix's last-dot rule wherever a model file's extension
+    is derived."""
+    stem, ext = name, ""
+    while True:
+        i = stem.rfind(".")
+        if i <= 0:
+            break
+        seg = stem[i + 1:]
+        if not seg or any(c in "/\\" or c.isspace() for c in seg):
+            break
+        cand = stem[i:] + ext
+        if len(cand) > cap:
+            break
+        stem, ext = stem[:i], cand
+    return stem, ext
+
+
+def normalized_name(version, fentry, disambiguator=None):
+    """<sanitized model.name>_<sanitized version.name>[-<disamb>] + ext.
+    The extension is taken from the original files[].name so the on-disk
+    type is preserved (split_ext: multi-dot extensions ride along whole)."""
+    model = version.get("model") or {}
+    mname = sanitize_component(model.get("name")) or "model"
+    vname = sanitize_component(version.get("name")) or "v"
+    ext = split_ext(fentry.get("name") or "")[1]
+    base = f"{mname}_{vname}"
+    if disambiguator:
+        base += "-" + disambiguator
+    return base + ext
+
+
+# ------------------------------------------------- name-length byte budget
+
+def _name_max(directory):
+    """NAME_MAX in BYTES for the filesystem holding `directory`, walking up
+    past not-yet-created components; 255 when pathconf cannot say."""
+    d = Path(directory)
+    while True:
+        try:
+            nm = os.pathconf(str(d), "PC_NAME_MAX")
+            if nm > 0:
+                return nm
+        except (OSError, ValueError, AttributeError):
+            pass
+        if d.parent == d:
+            return 255
+        d = d.parent
+
+
+def stem_budget_bytes(directory, ext):
+    """How many UTF-8 BYTES a placed stem may hold in `directory`: NAME_MAX
+    minus the worst family member built over the stem -- the model file
+    itself, the widest sidecar (which derives from dest.stem, so all of the
+    ext but its last dotted segment survives into it), the carried preview,
+    and the .tmp-<name>-<pid> staging form of each. Everything here is
+    bytes, never characters (CJK costs 3 per character)."""
+    ext_b = len(ext.encode())
+    # sidecars/previews build on dest.stem == stem + ext-minus-last-segment
+    side_b = ext_b - len(ext[ext.rfind("."):].encode()) if ext else 0
+    tmp_b = len(f".tmp--{os.getpid()}".encode())  # staging wraps a name
+    worst = max(
+        ext_b,                                   # the model file
+        side_b + len(".civitai.info"),           # widest sidecar
+        side_b + len(".preview.jpeg"),           # widest carried preview
+        ext_b + tmp_b,                           # staged model file
+        side_b + len(".civitai.info") + tmp_b,   # staged sidecar/preview
+    )
+    return _name_max(directory) - worst
+
+
+# Unicode blocks of historic/archaic scripts, dropped FIRST by the
+# recommendation cascade (the least likely part of a name a user wants to
+# keep). Inclusive codepoint ranges; the stdlib has no script API, so this
+# is a small curated table, not an exhaustive one.
+HISTORIC_SCRIPT_RANGES = (
+    (0x1680, 0x169F),    # Ogham
+    (0x16A0, 0x16FF),    # Runic
+    (0x10000, 0x1007F),  # Linear B Syllabary
+    (0x10080, 0x100FF),  # Linear B Ideograms
+    (0x10100, 0x1013F),  # Aegean Numbers
+    (0x10280, 0x1029F),  # Lycian
+    (0x102A0, 0x102DF),  # Carian
+    (0x10300, 0x1032F),  # Old Italic
+    (0x10330, 0x1034F),  # Gothic
+    (0x10380, 0x1039F),  # Ugaritic
+    (0x103A0, 0x103DF),  # Old Persian
+    (0x10600, 0x1077F),  # Linear A
+    (0x10900, 0x1091F),  # Phoenician
+    (0x10A00, 0x10A5F),  # Kharoshthi
+    (0x10C00, 0x10C4F),  # Old Turkic
+    (0x10C80, 0x10CFF),  # Old Hungarian
+    (0x12000, 0x123FF),  # Cuneiform
+    (0x12400, 0x1247F),  # Cuneiform Numbers and Punctuation
+    (0x13000, 0x1342F),  # Egyptian Hieroglyphs
+    (0x14400, 0x1467F),  # Anatolian Hieroglyphs
+)
+
+
+def _is_historic(cp):
+    return any(lo <= cp <= hi for lo, hi in HISTORIC_SCRIPT_RANGES)
+
+
+def recommend_stem(stem, budget):
+    """Advisory shortened stem for a REFUSEd too-long name -- the tool
+    NEVER applies it; the user pastes it into --rename. A CUMULATIVE cascade
+    of ever-blunter filters: each step narrows the PREVIOUS step's candidate
+    (never re-derives from the raw stem), returned at the first that fits
+    `budget` bytes. Deleted characters leave their surrounding punctuation
+    intact (no dash/space re-collapse), so the result stays honest about
+    what was removed:
+      1. NFKC-normalize, then drop historic/archaic-script characters
+         (NFKC folds e.g. fullwidth '！' U+FF01 -> ASCII '!', which then
+         survives every later step)
+      2. drop Unicode planes 2-16      (codepoint >= 0x20000)
+      3. drop plane 1                  (>= 0x10000)
+      4. drop 3-byte UTF-8             (>= 0x800; all CJK)
+      5. drop non-ASCII                (>= 0x80)
+      6. right-truncate keeping the last 8 characters (always fits)."""
+    def fits(s):
+        return len(s.encode()) <= budget
+    cand = unicodedata.normalize("NFKC", stem)
+    cand = "".join(c for c in cand if not _is_historic(ord(c)))
+    if fits(cand):
+        return cand
+    for bound in (0x20000, 0x10000, 0x800, 0x80):
+        cand = "".join(c for c in cand if ord(c) < bound)  # narrow PREVIOUS
+        if fits(cand):
+            return cand
+    keep = cand[-8:]           # cand is pure ASCII after step 5
+    if budget <= len(keep):
+        return keep[len(keep) - budget:] if budget > 0 else ""
+    return cand[:-len(keep)][:budget - len(keep)] + keep
+
+
+def place_file(args, src, dest, mode):
+    """Get src's content to dest atomically. Returns a short verb
+    describing what happened ('hardlinked' / 'copied' / ...).
+
+    Stage into .tmp-<name>-<pid> beside dest, then rename -- a reader
+    never sees a partial file and a crash leaves only a .tmp-* to sweep."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".tmp-{dest.name}-{os.getpid()}"
+    verb = None
+    try:
+        if mode in ("link", "move"):
+            try:
+                os.link(src, tmp)
+                verb = "hardlinked"
+            except OSError as e:
+                if e.errno not in (errno.EXDEV, errno.EPERM, errno.EMLINK):
+                    raise
+                log(args, 1, f"  note: hardlink not possible "
+                             f"({errno.errorcode.get(e.errno, e.errno)}); "
+                             f"copying instead")
+        if verb is None:
+            shutil.copyfile(src, tmp)
+            verb = "copied"
+        os.rename(tmp, dest)  # same dir -> atomic
+    finally:
+        tmp.unlink(missing_ok=True)
+    return verb
+
+
+def sidecar_paths(dest):
+    """(civitai.info, meta.droste, user.droste) for a placed model file.
+    Namespace suffix LAST so the terminal extension is the unique .droste."""
+    stem = dest.stem
+    return (dest.with_name(stem + ".civitai.info"),
+            dest.with_name(stem + ".meta.droste"),
+            dest.with_name(stem + ".user.droste"))
+
+
+def _canon(obj):
+    """Canonical JSON: sorted keys, stable indent -- the serialization the
+    idempotent sync compares against disk (identical inputs -> byte-
+    identical output -> no rewrite)."""
+    return json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+
+def _read_json(path):
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_if_changed(args, path, obj, apply_mode, label):
+    """Write canon(obj) to path only if it differs from what's there
+    (no needless rewrite / mtime churn). Returns the action taken."""
+    text = _canon(obj)
+    try:
+        if path.read_text() == text:
+            return "unchanged"
+    except OSError:
+        pass
+    if not apply_mode:
+        log(args, 2, f"# would sync {label}: {path.name}")
+        return "would-write"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".tmp-{path.name}-{os.getpid()}"
+    try:
+        tmp.write_text(text)
+        os.rename(tmp, path)  # same dir -> atomic
+    finally:
+        tmp.unlink(missing_ok=True)
+    log(args, 2, f"# synced {label}: {path.name}")
+    return "written"
+
+
+def stored_user_prefs(dirpath, sha):
+    """READ-BACK: find an existing placement of `sha` in the routed dir by
+    scanning its *.meta.droste sidecars, and return (user_path, user_dict)
+    for its paired .user.droste -- (None, None) when nothing matches. A
+    prior --rename left `filename` there; reusing it makes a plain re-run
+    land on ALREADY instead of re-refusing a too-long normalized name.
+    Tolerant of a missing dir and unreadable/foreign json."""
+    try:
+        metas = sorted(dirpath.glob("*.meta.droste"))
+    except OSError:
+        return None, None
+    for mp in metas:
+        meta = _read_json(mp)
+        if not meta or meta.get("sha256") != sha:
+            continue
+        up = mp.with_name(mp.name[:-len(".meta.droste")] + ".user.droste")
+        return up, _read_json(up)
+    return None, None
+
+
+# ------------------------------- source-sidecar categorization + enrichment
+
+_EMPTY = (None, "", [], {})
+
+
+def _tokenize(value):
+    """A source list/comma-string -> trimmed non-empty token list."""
+    if isinstance(value, list):
+        toks = [str(t).strip() for t in value]
+    elif isinstance(value, str):
+        toks = [t.strip() for t in value.split(",")]
+    else:
+        return []
+    return [t for t in toks if t]
+
+
+def _delta(tokens, civitai_values):
+    """User-distinct tokens: keep those NOT already in the CivitAI values
+    (case-insensitive), order-preserving, de-duplicated."""
+    have = {str(t).strip().lower() for t in (civitai_values or [])}
+    out = []
+    for t in tokens:
+        if t.lower() not in have and t not in out:
+            out.append(t)
+    return out
+
+
+def _civitai_tags(version):
+    tags = []
+    model = version.get("model") or {}
+    for src_tags in (version.get("tags"), model.get("tags")):
+        if isinstance(src_tags, list):
+            tags.extend(src_tags)
+    return tags
+
+
+def _base_family(s):
+    """Coarse base-model family token, for the enrich override contradiction
+    check (so 'SDXL' the sniff agrees with 'SDXL 1.0' the API, but 'FLUX.1'
+    disagrees with 'SD 1.5')."""
+    t = (s or "").lower()
+    if "flux" in t:
+        return "flux"
+    if "sd3" in t or "sd 3" in t or "stable diffusion 3" in t:
+        return "sd3"
+    if "xl" in t:
+        return "sdxl"
+    if "sd 2" in t or "sd2" in t or "2.0" in t or "2.1" in t:
+        return "sd2"
+    if "1.5" in t or "sd 1" in t or "sd1" in t:
+        return "sd1"
+    return t or None
+
+
+def categorize_sources(src, version):
+    """Read every source sidecar next to `src` and sort its fields by the
+    4-outcome policy (relative to the hash-proven CivitAI `version`).
+    Returns a dict: user (normalized fields), unmatched (per-file), discoveries
+    (for the screen note), meta_sub_type (fine only), enrich_scalars (blank-
+    fill candidates), enrich_images ([(url, nsfw_or_None)])."""
+    stem = src.name[:src.name.rfind(".")] if "." in src.name else src.name
+    user, unmatched, discoveries = {}, {}, []
+    meta_sub_type = None
+    enrich_scalars = {}
+    enrich_alt = {}  # fallback enrich candidates (used only if primary absent)
+    enrich_images = []
+    model_name = ((version.get("model") or {}).get("name") or "").strip()
+
+    for suffix, fmt in USER_SIDECAR_FORMATS.items():
+        side = src.with_name(stem + suffix)
+        if side == src or not side.is_file():
+            continue
+        raw = _read_json(side)
+        if raw is None:
+            continue
+        table = FORMAT_FIELDS[fmt]
+        extra, img_urls, img_nsfw = {}, [], None
+        for k, v in raw.items():
+            disp = table.get(k.strip().lower())
+            if disp is None:
+                extra[k] = v
+                continue
+            tag = disp[0]
+            if tag == "drop":
+                continue
+            if tag == "user":
+                if v not in _EMPTY:
+                    user.setdefault(disp[1], v)
+            elif tag == "user_delta_trigger":
+                toks = _delta(_tokenize(v), version.get("trainedWords"))
+                if toks:
+                    user.setdefault("trigger_words", toks)
+            elif tag == "user_delta_tags":
+                toks = _delta(_tokenize(v), _civitai_tags(version))
+                if toks:
+                    user.setdefault("tags", toks)
+            elif tag == "user_title":
+                if isinstance(v, str) and v.strip() \
+                        and v.strip().lower() != model_name.lower():
+                    user.setdefault("title", v.strip())
+            elif tag == "user_inference":
+                if v not in _EMPTY:
+                    user.setdefault("inference_defaults", v)
+            elif tag == "enrich_scalar":
+                if v not in _EMPTY:
+                    enrich_scalars.setdefault(disp[1], v)
+            elif tag == "enrich_scalar_alt":
+                # a lower-priority enrich source (e.g. A1111 description);
+                # folded in AFTER the loop so a primary source always wins
+                if v not in _EMPTY:
+                    enrich_alt.setdefault(disp[1], v)
+            elif tag == "enrich_image_url":
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    if v not in img_urls:
+                        img_urls.append(v)
+            elif tag == "enrich_image_nsfw":
+                if img_nsfw is None and isinstance(v, int) \
+                        and not isinstance(v, bool):
+                    img_nsfw = v
+            elif tag == "meta_subtype":
+                if isinstance(v, str) and v.strip():
+                    if v.strip().lower() in COARSE_SUBTYPES:
+                        enrich_scalars.setdefault("model.type", v.strip())
+                    elif meta_sub_type is None:
+                        meta_sub_type = v.strip()
+        seen = {u for u, _ in enrich_images}
+        for u in img_urls:
+            if u not in seen:
+                enrich_images.append((u, img_nsfw))
+                seen.add(u)
+        if extra:
+            unmatched[side.name] = extra
+            discoveries.append((side.name, sorted(extra)))
+
+    # comfy-first precedence: fallback candidates fill only where no primary
+    # enrich source supplied the scalar (order-independent).
+    for k, val in enrich_alt.items():
+        enrich_scalars.setdefault(k, val)
+
+    return {"user": user, "unmatched": unmatched, "discoveries": discoveries,
+            "meta_sub_type": meta_sub_type, "enrich_scalars": enrich_scalars,
+            "enrich_images": enrich_images}
+
+
+def incoming_user_prefs(cat):
+    """Assemble the incoming .user.droste dict (normalized fields + the
+    unmatched bucket) from a categorization, or None when empty."""
+    user = dict(cat["user"])
+    if cat["unmatched"]:
+        user["unmatched"] = cat["unmatched"]
+    return user or None
+
+
+def enrich_civitai_info(version, enrich_scalars, enrich_images, facts):
+    """Return a COPY of the live CivitAI response COMPLETED from local data:
+    blank scalars filled, local preview URLs unioned into images[], and
+    baseModel overridden by an absolute-confidence base-model sniff when it
+    contradicts CivitAI. When anything changed, embed the sole droste marker
+    extensions.droste.enriched={fields,images}. Byte-identical to `version`
+    when nothing was enriched. Never mutates `version`."""
+    info = json.loads(json.dumps(version))  # deep copy
+    facts = facts or {}
+    filled = []
+
+    def blank(x):
+        return x is None or x == "" or x == []
+
+    if "description" in enrich_scalars and blank(info.get("description")):
+        info["description"] = enrich_scalars["description"]
+        filled.append("description")
+    model = info.get("model")
+    if isinstance(model, dict):
+        if "model_name" in enrich_scalars and blank(model.get("name")):
+            model["name"] = enrich_scalars["model_name"]
+            filled.append("model.name")
+        if "model.type" in enrich_scalars and blank(model.get("type")):
+            model["type"] = enrich_scalars["model.type"]
+            filled.append("model.type")
+
+    civ_bm = info.get("baseModel")
+    sniff_bm = facts.get("base_model")
+    local_bm = enrich_scalars.get("base_model")
+    if sniff_bm and sniff_bm[1] == "absolute" and not blank(civ_bm) \
+            and _base_family(sniff_bm[0]) and _base_family(civ_bm) \
+            and _base_family(sniff_bm[0]) != _base_family(civ_bm):
+        info["baseModel"] = sniff_bm[0]        # good-reason override
+        filled.append("baseModel")
+    elif blank(civ_bm):
+        new_bm = local_bm or (sniff_bm[0] if sniff_bm else None)
+        if new_bm:
+            info["baseModel"] = new_bm
+            filled.append("baseModel")
+
+    images = info.get("images")
+    have_list = isinstance(images, list)
+    work = images if have_list else []
+    existing = {im.get("url") for im in work if isinstance(im, dict)}
+    added = []
+    for url, nsfw in enrich_images:
+        if url in existing:
+            continue
+        # nsfwLevel only when the source actually provided one; absent = an
+        # honest "unknown rating", not a default we don't know.
+        img = {"url": url} if nsfw is None else {"url": url, "nsfwLevel": nsfw}
+        work.append(img)
+        existing.add(url)
+        added.append(url)
+    if added and not have_list:
+        info["images"] = work
+
+    if filled or added:
+        ext = dict(info.get("extensions") or {})
+        ext["droste"] = {"enriched": {"fields": filled, "images": added}}
+        info["extensions"] = ext
+    return info
+
+
+def merge_user_prefs(ondisk, incoming):
+    """Monotonic merge of an incoming user-prefs dict onto what's on disk:
+    never drop existing data; add new fields; deep-union the `unmatched`
+    bucket (retain entries whose source later vanished, refresh changed
+    values, add new). Returns (merged, conflicts) where conflicts =
+    [(field, old, new)] for normalized fields whose value would change."""
+    merged = json.loads(json.dumps(ondisk)) if ondisk else {}
+    incoming = incoming or {}
+    conflicts = []
+    for field in USER_PREF_FIELDS:
+        if field not in incoming:
+            continue
+        new = incoming[field]
+        if field not in merged:
+            merged[field] = new           # add: not a conflict
+        elif merged[field] != new:
+            conflicts.append((field, merged[field], new))  # differs: guard
+        # equal -> no-op
+    inc_unmatched = incoming.get("unmatched") or {}
+    if inc_unmatched:
+        munm = dict(merged.get("unmatched") or {})
+        for name, extra in inc_unmatched.items():
+            if isinstance(munm.get(name), dict) and isinstance(extra, dict):
+                union = dict(munm[name])
+                union.update(extra)       # refresh, never drop old keys
+                munm[name] = union
+            else:
+                munm[name] = extra
+        merged["unmatched"] = munm
+    return merged, conflicts
+
+
+def _fmt_value(v):
+    return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+
+def print_user_conflict(user_path, conflicts):
+    """The exact guard message: a side-by-side old/new diff of the
+    conflicting user fields. Printed to stderr (an error), independent of
+    verbosity."""
+    progress_clear()
+    width = max(len(f) for f, _, _ in conflicts)
+    lines = [f"Error: sheepishly refusing to overwrite existing user data "
+             f"in {user_path}.", ""]
+    for field, old, new in conflicts:
+        lines.append(f"  {field.ljust(width)}     "
+                     f"old: {_fmt_value(old)}     new: {_fmt_value(new)}")
+    lines.append("")
+    lines.append("If you are sure you want to overwrite this data, add the "
+                 "--force flag to ignore this error.")
+    print("\n".join(lines), file=sys.stderr)
+
+
+def carry_preview(args, src, dest, apply_mode):
+    """Carry a preview image sitting next to the SOURCE file to
+    <placed-stem>.preview.<ext> (never clobbering an existing one; no
+    API downloads -- this is an adopt-only tool). Returns the source
+    preview path when it was carried (so --move can reclaim it)."""
+    stem = src.name[:src.name.rfind(".")] if "." in src.name else src.name
+    for suf in PREVIEW_SUFFIXES:
+        prev = src.with_name(stem + suf)
+        if prev != src and prev.is_file():
+            break
+    else:
+        return None
+    pdest = dest.with_name(f"{dest.stem}.preview{prev.suffix}")
+    if pdest.exists():
+        log(args, 1, f"        preview exists; leaving it ({pdest.name})")
+        return None
+    if apply_mode:
+        place_file(args, prev, pdest, "copy")
+        log(args, 2, f"# preview carried: {pdest}")
+    else:
+        log(args, 2, f"# would carry preview {prev.name} -> {pdest.name}")
+    return prev
+
+
+# ----------------------------------------------------------- file gathering
+
+def gather_files(args, paths):
+    """Expand CLI paths: files as-is; dirs scanned (non-recursive unless
+    --recursive). Metadata sidecars and preview images are companions of
+    the models next to them, never candidates themselves."""
+    # metadata sidecars (minus plain .json -- let hashing decide those),
+    # our own .droste outputs, and every image form: none are model files
+    companion = (SIDECAR_SUFFIXES[:-1] + DROSTE_SIDECAR_SUFFIXES
+                 + PREVIEW_SUFFIXES)
+
+    def is_companion(name):
+        return name.lower().endswith(companion)
+
+    out = []
+    for p in paths:
+        p = Path(p).expanduser()
+        if p.is_dir():
+            if args.recursive:
+                for root, dirs, files in os.walk(p):
+                    dirs[:] = sorted(d for d in dirs if d != ".cache")
+                    out.extend(Path(root) / f for f in sorted(files)
+                               if not is_companion(f))
+            else:
+                out.extend(sorted(c for c in p.iterdir()
+                                  if c.is_file() and not is_companion(c.name)))
+        elif p.is_file():
+            out.append(p)  # named explicitly: the user means it
+        else:
+            die(f"no such file or directory: {p}")
+    files = [f for f in out if f.is_file()]
+    if not files:
+        die("no candidate files found (empty dir? need --recursive?)")
+    return files
+
+
+# --------------------------------------------------------------------- main
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="droste-civitai-adopt.sh",
+        description="Adopt already-downloaded CivitAI model files "
+                    "(checkpoints, LoRAs, VAEs, embeddings, ...) into a "
+                    "webui-style cache dir -- no re-download. Each file is "
+                    "IDENTIFIED by its sha256 via the CivitAI API and "
+                    "adopted only on hash proof; content is sniffed during "
+                    "the hash pass to route it to a fine-grained directory, "
+                    "and it is placed under a normalized <Model>_<Version> "
+                    "name with a .civitai.info sidecar. Unidentifiable "
+                    "files are refused. NOTE: CivitAI never hashed some very "
+                    "old uploads -- those 404 by hash even though genuine; "
+                    "local metadata sidecars and --version-id cover them. "
+                    "DRY-RUN by default: pass --apply to change the cache.",
+        epilog=EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version-id", type=int, metavar="N",
+                   help="CivitAI model-version id the files claim to "
+                        "belong to (escape hatch for old unhashed "
+                        "uploads; files must still hash-match the "
+                        "version's file list)")
+    p.add_argument("paths", nargs="+", metavar="PATH",
+                   help="files to adopt, or a directory to scan")
+    p.add_argument("--apply", action="store_true",
+                   help="actually modify the cache (default: dry-run)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report only, change nothing (this is the default)")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--link", dest="mode", action="store_const",
+                      const="link",
+                      help="hardlink into the cache (default; falls back "
+                           "to copy across filesystems)")
+    mode.add_argument("--copy", dest="mode", action="store_const",
+                      const="copy", help="copy into the cache")
+    mode.add_argument("--move", dest="mode", action="store_const",
+                      const="move",
+                      help="move into the cache (source removed only "
+                           "after successful placement)")
+    p.set_defaults(mode="link")
+    p.add_argument("--force", action="store_true",
+                   help="DANGEROUS -- I understand the consequences: "
+                        "overwrite conflicting user data in a "
+                        ".user.droste sidecar. Overrides ONLY that guard; "
+                        "does NOT imply --apply and does NOT bypass the "
+                        "hash identity gate or the different-content "
+                        "model-file refusal")
+    p.add_argument("--rename", metavar="NAME",
+                   help="place the adopted file under NAME instead of the "
+                        "normalized <Model>_<Version> name (the escape for "
+                        "names past the filesystem's byte limit -- the tool "
+                        "never truncates on its own). A bare stem gets the "
+                        "identified file's extension appended; a NAME that "
+                        "already ends in it is used whole. Recorded in "
+                        ".user.droste and reused on later runs. The run "
+                        "must match exactly one file")
+    p.add_argument("--recursive", action="store_true",
+                   help="recurse into directories")
+    p.add_argument("--cache", metavar="DIR",
+                   help="cache dir laid out like a webui root (default: "
+                        "$DROSTE_CIVITAI_CACHE or ~/.cache/civitai)")
+    p.add_argument("-q", "--quiet", action="count", default=0,
+                   help="quiet: only the summary, refusals/warnings, and a "
+                        "consolidated list of unrecognized fields (progress "
+                        "bar still shown)")
+    p.add_argument("-v", "--verbose", action="count", default=0,
+                   help="show hashes, sniff facts, API details, decisions")
+    return p
+
+
+def _meta_payload(version, plan, name, meta_sub_type=None):
+    """.meta.droste payload: our objective/tool block. Shareable -- no
+    private data (adopted_from / original_name dropped). sha256/api_type/
+    baseModel are also native CivitAI fields, but kept here as a self-
+    identifying anchor plus the sniff verdicts (and any FINE sub_type) that
+    are novel to us."""
+    model = version.get("model") or {}
+    facts = {k: {"value": v[0], "confidence": v[1]}
+             for k, v in (plan["facts"] or {}).items()}
+    meta = {
+        "tool": TOOL_ID,
+        "sha256": plan["sha"],
+        "normalized_name": name,
+        "modelId": version.get("modelId") or model.get("id"),
+        "modelVersionId": version.get("id"),
+        "api_type": model.get("type"),
+        "resolved_type": plan["rtype"],
+        "routing": plan["routing"],
+        "sniff": facts,
+    }
+    if plan["arch"]:
+        meta["upscaler_arch"] = plan["arch"]
+    if "base_model" in (plan["facts"] or {}):
+        meta["detected_base_model"] = plan["facts"]["base_model"][0]
+    if meta_sub_type:
+        meta["sub_type"] = meta_sub_type
+    return meta
+
+
+def sync_sidecars(args, dest, info, meta, merged_user, apply_mode):
+    """Idempotent write-if-changed of all THREE sidecars. `info` is the
+    already-ENRICHED CivitAI response; .meta.droste is tool/API-owned; both
+    are regenerated. .user.droste is written only when it holds data (the
+    caller has already merged monotonically and cleared any guard)."""
+    civ_p, meta_p, user_p = sidecar_paths(dest)
+    write_if_changed(args, civ_p, info, apply_mode, "civitai.info")
+    write_if_changed(args, meta_p, meta, apply_mode, "meta.droste")
+    if merged_user:
+        write_if_changed(args, user_p, merged_user, apply_mode, "user.droste")
+
+
+def adopt_group(args, cache, version, entries, scan_memo):
+    """Place all files matched to one model version: resolve dir (API type
+    refined by content sniff) + normalized name (disambiguated on same-dir
+    collision) + sidecar + preview, never clobbering anything. `entries`
+    is [(src, sha256, files[]-entry, facts), ...]. Returns
+    (adopted, already, refused)."""
+    log(args, 1, f"version {describe_version(version)} "
+                 f"(id {version.get('id', '?')}) | {len(entries)} file(s) "
+                 f"| mode: {args.mode}")
+
+    # Plan every placement first so same-dir/same-name collisions within
+    # this version can be disambiguated deterministically.
+    plans = []
+    for src, sha, fentry, facts in entries:
+        rel, rtype, arch, routing = resolve_placement(version, fentry, facts)
+        plans.append({"src": src, "sha": sha, "fentry": fentry,
+                      "facts": facts, "rel": rel, "rtype": rtype,
+                      "arch": arch, "routing": routing,
+                      "base": normalized_name(version, fentry)})
+    collide = Counter((p["rel"], p["base"]) for p in plans)
+    for p in plans:
+        if collide[(p["rel"], p["base"])] > 1:
+            stem = sanitize_component(Path(p["fentry"].get("name") or "").stem)
+            p["base"] = normalized_name(version, p["fentry"],
+                                        disambiguator=stem or p["sha"][:8])
+
+    adopted = already = refused = 0
+    run_discoveries = []  # (source filename, [unmatched keys]) for this group
+    for p in plans:
+        src, sha, rel = p["src"], p["sha"], p["rel"]
+        shown = str(src)
+        # BATCH CONTAINMENT: any per-file OSError (ENAMETOOLONG on a path
+        # the fit check could not foresee, a permission wall, ...) refuses
+        # THIS file and the batch continues -- it never aborts the run.
+        try:
+            adopted_one, already_one = _adopt_one(
+                args, cache, version, p, scan_memo, run_discoveries)
+        except OSError as e:
+            log(args, 0, f"REFUSE  {shown}: {e}")
+            refused += 1
+            continue
+        adopted += adopted_one
+        already += already_one
+        if not (adopted_one or already_one):
+            refused += 1
+    return adopted, already, refused, run_discoveries
+
+
+def _adopt_one(args, cache, version, p, scan_memo, run_discoveries):
+    """Place ONE planned file (the body of adopt_group's loop). Returns
+    (adopted, already) as 0/1 -- (0, 0) means this file was refused (the
+    reason has been logged). Raises OSError on filesystem trouble; the
+    caller contains it to this file."""
+    apply_mode = args.apply
+    src, sha, rel = p["src"], p["sha"], p["rel"]
+    shown = str(src)
+
+    # READ-BACK: an earlier run may have placed this very sha under a
+    # user-chosen name (--rename); reuse that recorded `filename` so a
+    # plain re-run lands on ALREADY instead of re-refusing a too-long
+    # normalized name.
+    stored_user_p, stored_user = stored_user_prefs(cache / rel, sha)
+    base = p["base"]
+    stored_name = (stored_user or {}).get("filename")
+    if isinstance(stored_name, str) and stored_name:
+        base = stored_name
+
+    # --rename override (the run is gated to exactly ONE file; see main).
+    # NAME is a bare stem unless its own trailing extension -- parsed with
+    # a tighter 16-char detection window -- equals the identified file's
+    # extension, in which case NAME is already a whole filename. Either
+    # way the tool owns the extension of the sha-identified file.
+    if args.rename is not None:
+        ext = split_ext(p["fentry"].get("name") or "")[1]
+        _, own_ext = split_ext(args.rename, cap=16)
+        base = args.rename if own_ext == ext else args.rename + ext
+
+    name = safe_filename(base)
+    if name is None:
+        log(args, 0, f"REFUSE  {shown}: could not derive a safe "
+                     f"filename from the model/version names")
+        return 0, 0
+
+    # FIT CHECK -- in BYTES, and BEFORE any exists()/stat on dest, so a
+    # name past NAME_MAX is refused, never touched (pathlib.Path.exists
+    # propagates ENAMETOOLONG). The recommendation is advisory only: the
+    # user pastes it into --rename; the tool never applies it.
+    stem, ext = split_ext(name)
+    budget = stem_budget_bytes(cache / rel, ext)
+    over = len(stem.encode()) - budget
+    if over > 0:
+        log(args, 0, f"REFUSE  {shown}: name for "
+                     f"{describe_version(version)} is over the "
+                     f"filesystem's name limit by {over} bytes")
+        log(args, 0, f"        recommend: --rename "
+                     f"'{recommend_stem(stem, budget)}'")
+        return 0, 0
+    dest = cache / rel / name
+    _, _, user_p = sidecar_paths(dest)
+
+    # Sort the source-sidecar fields once (user / meta-subtype / enrich /
+    # drop / unmatched), relative to the hash-proven CivitAI version.
+    cat = categorize_sources(src, version)
+    discoveries = cat["discoveries"]
+
+    # USER-DATA GUARD -- run BEFORE any placement/move/write. Compare
+    # incoming ingested prefs against an on-disk .user.droste; a
+    # conflicting field aborts this file's entire adoption unless
+    # --force is given. A stem that differs from the pure normalized
+    # name (a --rename, now or read back) rides along as the guarded
+    # `filename` field; when the final dest has no user file yet, the
+    # read-back one (same sha, earlier name) is the guard's basis, so a
+    # DIFFERENT --rename cannot silently shed the recorded name.
+    incoming_user = incoming_user_prefs(cat)
+    if name != p["base"]:
+        incoming_user = dict(incoming_user or {})
+        incoming_user["filename"] = name
+    ondisk_user, guard_p = _read_json(user_p), user_p
+    if ondisk_user is None and stored_user is not None:
+        ondisk_user, guard_p = stored_user, stored_user_p
+    merged_user, conflicts = merge_user_prefs(ondisk_user, incoming_user)
+    if conflicts and not args.force:
+        print_user_conflict(guard_p, conflicts)
+        log(args, 0, f"REFUSE  {shown}: existing user data in "
+                     f"{guard_p.name} would be overwritten; pass --force")
+        return 0, 0
+    if conflicts:  # --force: overwrite the conflicting fields
+        for field, _old, new in conflicts:
+            merged_user[field] = new
+
+    meta = _meta_payload(version, p, name, cat["meta_sub_type"])
+    info = enrich_civitai_info(version, cat["enrich_scalars"],
+                               cat["enrich_images"], p["facts"])
+    dest_exists = dest.exists()
+    if dest_exists:
+        d_sha, _ = memo_scan(dest, dest.stat().st_size, scan_memo, args)
+        if d_sha != sha:
+            log(args, 0, f"REFUSE  {shown}: {rel}/{name} exists with "
+                         f"DIFFERENT content; refusing to overwrite")
+            return 0, 0
+        log(args, 1, f"ALREADY {shown}")
+        log(args, 1, f"        == {rel}/{name} (same content already "
+                     f"in cache)")
+    else:
+        if apply_mode:
+            verb = place_file(args, src, dest, args.mode)
+        else:
+            verb = {"link": "would hardlink", "copy": "would copy",
+                    "move": "would move"}[args.mode]
+        note = f" via {p['routing']}" \
+            if p["routing"].startswith("sniff-override") else ""
+        # level 1 so -q suppresses the per-file adopt lines (leaving the
+        # data-dump view: progress + unrecognized list + summary)
+        log(args, 1, f"ADOPT   {shown}")
+        log(args, 1, f"        -> {rel}/{name} (sha256 {sha[:12]}..) "
+                     f"[{verb}]{note}")
+
+    # discovery signal: unrecognized source fields kept under 'unmatched'.
+    # Non-quiet prints them inline per file; quiet collects them for one
+    # consolidated block before the summary (the -q data-dump view).
+    for fname, keys in discoveries:
+        run_discoveries.append((fname, keys))
+        if not args.quiet:
+            log(args, 1, f"note: unrecognized field(s) in {fname}: "
+                         f"{', '.join(keys)} — kept under 'unmatched'")
+
+    # idempotent metadata sync -- both branches, write-only-if-changed
+    sync_sidecars(args, dest, info, meta, merged_user, apply_mode)
+    prev = carry_preview(args, src, dest, apply_mode)
+
+    if apply_mode and args.mode == "move" \
+            and src.resolve() != dest.resolve():
+        src.unlink()
+        if prev is not None:
+            prev.unlink()  # carried successfully -> reclaim it too
+        log(args, 1, "        source removed (--move)")
+
+    return (0, 1) if dest_exists else (1, 0)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.dry_run and args.apply:
+        die("--dry-run and --apply are mutually exclusive")
+    apply_mode = args.apply
+
+    cache = resolve_cache(args.cache)
+    token = find_token()
+    files = gather_files(args, args.paths)
+    scan_memo = {}  # path -> (sha256, facts); each file scanned once
+    header = (f"{'DRY RUN (pass --apply to make changes)' if not apply_mode else 'APPLY'}"
+              f" | cache: {cache}")
+
+    refused = 0
+    versions_cache = {}  # version id -> version object (or None), per run
+    groups = {}  # version id -> [(src, sha, files[]-entry, facts), ...]
+
+    if args.version_id:
+        progress(args, f"  fetching version {args.version_id}...")
+        version = fetch_version(args, args.version_id, token,
+                                versions_cache, fatal=True)
+        progress_clear()
+        if version is None or version.get("id") is None:
+            die(f"CivitAI returned no usable data for version "
+                f"{args.version_id}")
+        log(args, 1, header)
+        entries = hash_entries(version)
+        for f in files:
+            sha, facts = memo_scan(f, f.stat().st_size, scan_memo, args,
+                                   sniff=True)
+            fentry = entries.get(sha)
+            if fentry is None:
+                log(args, 0, f"REFUSE  {f}: not byte-identical to any "
+                             f"file in version {args.version_id}")
+                refused += 1
+                continue
+            groups.setdefault(version["id"], []).append((f, sha, fentry,
+                                                          facts))
+        versions_cache[version["id"]] = version
+    else:
+        # IDENTIFY phase: hash+sniff everything, one batch by-hash round-
+        # trip, then per-file sidecar fallback for the misses. One
+        # directory may hold files from many models/versions.
+        log(args, 1, header)
+        scans = {f: memo_scan(f, f.stat().st_size, scan_memo, args,
+                              sniff=True) for f in files}
+        unique = list(dict.fromkeys(sha for sha, _ in scans.values()))
+        try:
+            found = batch_lookup(args, unique, token)
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(args, 0, f"warning: CivitAI hash lookup failed "
+                         f"({getattr(e, 'reason', e)})")
+            found = None
+        by_sha = {}  # our sha -> (version, files[]-entry)
+        for v in found or []:
+            if v.get("id") is None:
+                continue  # no id -> unusable for grouping/sidecars
+            for sha, fentry in hash_entries(v).items():
+                by_sha.setdefault(sha, (v, fentry))
+            versions_cache.setdefault(v["id"], v)
+
+        for f in files:
+            sha, facts = scans[f]
+            if found is None:
+                log(args, 0, f"REFUSE  {f}: CivitAI lookup unavailable; "
+                             f"try again or pass --version-id")
+                refused += 1
+                continue
+            hit = by_sha.get(sha)
+            note = "via hash lookup"
+            if hit is None:
+                # sidecar fallback: a version id found in local metadata
+                # is a lead only -- the fetched version must contain OUR
+                # sha256 before anything is adopted.
+                vid = sidecar_version_id(f)
+                if vid is not None:
+                    progress(args, f"  fetching version {vid}...")
+                    v = fetch_version(args, vid, token, versions_cache,
+                                      fatal=False)
+                    usable = v is not None and v.get("id") is not None
+                    fentry = hash_entries(v).get(sha) if usable else None
+                    if fentry is not None:
+                        versions_cache.setdefault(v["id"], v)
+                        hit = (v, fentry)
+                        note = f"via local sidecar -> version {vid}"
+                    else:
+                        log(args, 0, f"REFUSE  {f}: sidecar points at "
+                                     f"version {vid} but this file's hash "
+                                     f"is not among its published files")
+                        refused += 1
+                        continue
+            if hit is None:
+                log(args, 0, f"REFUSE  {f}: not found by hash on CivitAI "
+                             f"and no provable local metadata (old "
+                             f"unhashed file? pass --version-id)")
+                refused += 1
+                continue
+            v, fentry = hit
+            log(args, 1, f"IDENTIFIED {f} -> {describe_version(v)} "
+                         f"({note})")
+            groups.setdefault(v.get("id"), []).append((f, sha, fentry,
+                                                        facts))
+
+    if args.rename is not None:
+        matched = sum(len(e) for e in groups.values())
+        if matched != 1:
+            die(f"--rename applies to a single file; {matched} matched")
+
+    adopted = already = 0
+    discoveries = []  # unrecognized source fields across the whole run
+    for vid, entries in groups.items():
+        a, c, r, disc = adopt_group(args, cache, versions_cache[vid], entries,
+                                    scan_memo)
+        adopted += a
+        already += c
+        refused += r
+        discoveries.extend(disc)
+
+    # QUIET data-dump: one consolidated, filename-sorted list of unrecognized
+    # fields, just before the summary. (Non-quiet already printed them inline
+    # per file; under -q the inline notes are suppressed in favour of this.)
+    if args.quiet and discoveries:
+        log(args, 0, "unrecognized fields:")
+        for fname, keys in sorted(discoveries):
+            log(args, 0, f"  {fname}: {', '.join(keys)}")
+
+    tag = " (dry-run; nothing was changed)" if not apply_mode else ""
+    log(args, 0, f"summary: {adopted} adopted, {already} already cached, "
+                 f"{refused} refused{tag}")
+    if adopted == 0 and already == 0 and refused > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

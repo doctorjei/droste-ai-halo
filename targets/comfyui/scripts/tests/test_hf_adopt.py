@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/droste-hf-adopt.sh using the DROSTE_ADOPT_API_FIXTURE hook --
+"""Tests for droste-hf-adopt.sh using the DROSTE_ADOPT_API_FIXTURE hook --
 NO live network. A fixture dir stands in for the HF API:
 
 - <org>__<name>.json           repo manifest (?blobs=true shape)
@@ -19,7 +19,7 @@ discovery), the curated ecosystem map (short-circuit, renamed-file
 placement at the manifest path, wrong hint falls through, hash gate
 always required), and the config > map > search priority order.
 
-Run:  python3 tests/test_hf_adopt.py -v
+Run:  python3 targets/comfyui/scripts/tests/test_hf_adopt.py -v
 """
 
 import contextlib
@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "droste-hf-adopt.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "droste-hf-adopt.sh"
 loader = importlib.machinery.SourceFileLoader("droste_hf_adopt", str(SCRIPT))
 spec = importlib.util.spec_from_loader("droste_hf_adopt", loader)
 mod = importlib.util.module_from_spec(spec)

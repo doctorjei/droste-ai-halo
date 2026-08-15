@@ -77,16 +77,25 @@ RUN git clone --depth=1 https://github.com/city96/ComfyUI-GGUF /opt/ComfyUI/cust
 
 # Relocate the 11 baked SD/SD2 config yamls OUT of the models tree (the runtime
 # model-tree bind replaces models/); they register back via the seeded
-# /opt/data/extra_model_paths.yaml -> /opt/resources/model_configs. models/configs/
-# stays (empty): users may drop their own .yaml into their models bind.
+# /opt/program-cache/extra_model_paths.yaml -> /opt/resources/model_configs.
+# models/configs/ stays (empty): users may drop their own .yaml into their
+# models bind.
 RUN mkdir -p /opt/resources/model_configs \
     && mv /opt/ComfyUI/models/configs/*.yaml /opt/resources/model_configs/
 
 # --- Assets (copied into build context from upstream/comfyui) ---
-# Helper scripts: baked RO on PATH/PYTHONPATH, never seeded.
+# Helper scripts: baked RO on PATH/PYTHONPATH, never seeded. One directory, one COPY:
+# model_scanner.py, the two adopt tools and model_formats.py are one toolset -- they
+# classify the same files from the same evidence, and model_formats.py is the shared
+# execution-free reader module the other three IMPORT (hence PYTHONPATH, which is what
+# makes the sibling import resolve wherever they are invoked from).
+# name-api-blacklist.yaml is DATA the scanner reads at `rename` time (files whose name a
+# library hardcodes); it ships beside the scanner so it can be edited as data.
 COPY scripts/get_wan22.sh scripts/get_qwen_image.sh scripts/get_hunyuan15.sh \
      scripts/get_ltx2.sh scripts/benchmark_workflows.py scripts/collect_perf_logs.py \
-     scripts/model_manager.py scripts/model_scanner.py /opt/resources/scripts/
+     scripts/model_manager.py scripts/model_scanner.py scripts/model_formats.py \
+     scripts/droste-hf-adopt.sh scripts/droste-civitai-adopt.sh \
+     scripts/name-api-blacklist.yaml /opt/resources/scripts/
 ENV PATH=/opt/resources/scripts:$PATH PYTHONPATH=/opt/resources/scripts
 
 # API-format workflow definitions (baked RO reference; 1:1 with the get_*.sh models).
@@ -98,7 +107,9 @@ COPY build-spec /opt/resources/build-spec
 COPY templates /opt/resources/templates
 
 # Permissions & trims (keep compilers/headers for Triton JIT at runtime).
-RUN chmod +x /opt/resources/scripts/* \
+# (+x on the executables only: the script dir now also holds DATA -- name-api-blacklist.yaml
+# -- and a table of filenames has no business being executable.)
+RUN chmod +x /opt/resources/scripts/*.py /opt/resources/scripts/*.sh \
     && find /opt/venv -type f -name "*.so" -exec strip -s {} + 2>/dev/null || true \
     && find /opt/venv -type d -name "__pycache__" -prune -exec rm -rf {} + \
     && pip cache purge || true \

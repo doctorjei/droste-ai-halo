@@ -1,0 +1,837 @@
+# name-api-blacklist.yaml -- files whose NAME IS AN API.
+#
+# Read by model_scanner.py (`rename` verb only). For most weights a filename is a
+# label: nothing in any library cares what it says, so renaming a tree link is purely
+# the user's business and the scanner records and defends the choice. For the files
+# below the filename is part of a CODE-LEVEL CONTRACT, and renaming one has a
+# consequence the user should get to see BEFORE they choose. Three mechanisms, all
+# verified by reading the consuming loader:
+#
+#   A  auto-download-if-missing to a fixed path -- `if not exists(dir/NAME): download()`
+#      -> SILENT DUPLICATE DOWNLOAD. The renamed file stays, the canonical name
+#         reappears beside it. The most expensive failure and the quietest.
+#   B  fixed-path load, no download -- `torch.load(join(dir, "NAME"))`
+#      -> HARD ERROR (FileNotFoundError, or the node reporting "model not found").
+#   C  filename SNIFF -- architecture or preset chosen from a substring/prefix/tail
+#      -> SILENTLY WRONG MODEL, or a file that quietly vanishes from a dropdown.
+#         Nastiest of the three: no download, no error, no message.
+#
+# Mechanism D (a plain picker / directory scan) is SAFE and deliberately absent, as is
+# E (files that live in the HF hub cache and are never in the tree at all).
+#
+# PROVENANCE. Seeded 2026-08-15 (s35) from `danger-models-research.md`, a source-reading
+# pass over the ComfyUI custom-node ecosystem: loader functions cloned and read at HEAD,
+# 207 rows, every one verified in source except `inswapper_128_fp16.onnx`, which is
+# strongly-inferred and says so in its own note. 211 rows here, not 207: four of that
+# document's rows each stated SEVERAL patterns in one field (`*vit_h* / *vit_l* / *hq* /
+# *mobile*`, `*GFPGAN* / *RestoreFormer*`) and are split one pattern per row, because a
+# matcher can act on a pattern and cannot act on a sentence. Nothing was added or
+# dropped. The per-ecosystem `loader:` comments below carry the file:line receipts, so
+# this table stands on its own evidence even if that document is lost. Nothing here
+# rests on a forum post.
+#
+# THIS FILE IS DATA. Entries are appended without touching a line of Python. The loader
+# (model_scanner.load_name_api_blacklist) FAILS OPEN in every direction -- absent file,
+# unreadable file, unrecognised row -- because this table exists to WARN, and must never
+# be the reason a user cannot rename their own file. It accepts either shape: this
+# `files:` mapping, or a bare top-level list, so rows pasted straight out of the
+# research document parse whether or not somebody remembered to indent them.
+#
+# SCHEMA, per row:
+#   filename -- the on-disk basename that is load-bearing (matched case-insensitively)
+#   match    -- exact (default) | glob | dir
+#                 exact: the whole name
+#                 glob : an fnmatch pattern, which is how every prefix / tail /
+#                        substring rule is spelled -- `taesd_decoder*` (prefix),
+#                        `*_sd15.safetensors` (tail), `*vit_h*` (substring). A few of
+#                        these (`*hq*`, `*mobile*`) are deliberately broad: over-warning
+#                        on a rename is cheap, and --force is one word away.
+#                 dir  : the name is a DIRECTORY that a loader addresses as a unit
+#                        (insightface packs, `from_pretrained(dir)` model dirs). Its
+#                        member files are individually harmless; the DIR name is not.
+#                        Matched exactly. The scanner never links or renames a
+#                        directory, so these rows are mainly a standing warning to any
+#                        future tree-editing feature -- and to whoever reads the table.
+#   library  -- who hardcodes it (named verbatim in the skip warning)
+#   note     -- ONE line: the mechanism and the consequence, shown to the user when a
+#               rename is refused. Write it as the answer to "so what?".
+#
+# SIBLING FAMILIES are named inside a `note` rather than given a row each -- the twelve
+# BiRefNet variants (1038lab/ComfyUI-RMBG), the thirteen LayerDiffuse files
+# (ComfyUI-Easy-Use), the `wd-*` tagger family (ComfyUI-WD14-Tagger). That is on
+# purpose: their membership lives in the node's own config file (`pysssss.json` and the
+# two model lists), and this table does not guess at names nobody has read. Expand them
+# from those three files -- or cover a family with one `match: glob` row -- the day
+# somebody confirms the shape.
+#
+# TWO SYSTEMIC FACTS about renaming are NOT in this table because they apply to every
+# rename, safe or not, and so belong in the verb rather than the data: saved workflow
+# JSON stores the picker STRING, and ComfyUI-Manager decides "already installed" by
+# exact filename. model_scanner prints both on every successful rename.
+
+version: 1
+
+files:
+
+  # ---------------------------------------------------------------------------
+  # facexlib — xinntao/facexlib
+  # loader: facexlib/utils/misc.py:59-78 load_file_from_url()
+  #   filename = basename(url); if not os.path.exists(save_dir/filename): download
+  #   save_dir = model_rootpath or <pkg>/facexlib/weights
+  # seen in tree as: models/facexlib, models/facedetection, gfpgan/weights
+  # ---------------------------------------------------------------------------
+  - filename: "detection_Resnet50_Final.pth"
+    library: facexlib
+    note: "RetinaFace-R50 detector; loaded by exact URL-basename. Rename -> silent 109MB re-download. Also used by CodeFormer facelib, ReActor r_facelib, GFPGAN, comfy_mtb."
+  - filename: "detection_mobilenet0.25_Final.pth"
+    library: facexlib
+    note: "RetinaFace-mobile detector; exact-name existence check. Rename -> silent re-download."
+  - filename: "parsing_parsenet.pth"
+    library: facexlib
+    note: "ParseNet face parsing (default in FaceRestoreHelper); exact-name. Rename -> silent re-download."
+  - filename: "parsing_bisenet.pth"
+    library: facexlib
+    note: "BiSeNet face parsing; exact-name. Rename -> silent re-download."
+  - filename: "alignment_WFLW_4HG.pth"
+    library: facexlib
+    note: "AWing FAN 98-point landmarks; exact-name. Rename -> silent re-download."
+  - filename: "headpose_hopenet.pth"
+    library: facexlib
+    note: "Hopenet head-pose; exact-name. Rename -> silent re-download."
+  - filename: "matting_modnet_portrait.pth"
+    library: facexlib
+    note: "MODNet portrait matting; exact-name. Rename -> silent re-download."
+  - filename: "recognition_arcface_ir_se50.pth"
+    library: facexlib
+    note: "ArcFace IR-SE50 recognition; exact-name. Rename -> silent re-download."
+  - filename: "assessment_hyperIQA.pth"
+    library: facexlib
+    note: "HyperIQA quality assessment; exact-name. Rename -> silent re-download."
+  - filename: "yolov5l-face.pth"
+    library: codeformer-facelib
+    note: "CodeFormer/ReActor facelib YOLOv5 face detector; exact-name into weights/facelib or models/facedetection. Rename -> re-download."
+  - filename: "yolov5n-face.pth"
+    library: codeformer-facelib
+    note: "As yolov5l-face.pth (nano variant)."
+
+  # ---------------------------------------------------------------------------
+  # comfyui_controlnet_aux — Fannovel16/comfyui_controlnet_aux
+  # loader: src/custom_controlnet_aux/util.py:289-338 custom_hf_download()
+  #   model_path = <ckpts>/<repo_id>/[subfolder]/<filename>; hf_hub_download(local_dir=...)
+  #   if not os.path.exists(model_path): download   <- dir+filename addressed, NOT hub cache
+  # default ckpts dir: custom_nodes/comfyui_controlnet_aux/ckpts (config.yaml can move it into models/)
+  # ---------------------------------------------------------------------------
+  - filename: "ControlNetHED.pth"
+    library: comfyui_controlnet_aux
+    note: "HED softedge; hed/__init__.py:64. Rename -> re-download to canonical name."
+  - filename: "table5_pidinet.pth"
+    library: comfyui_controlnet_aux
+    note: "PiDiNet softedge; pidi/__init__.py:20. Rename -> re-download."
+  - filename: "sk_model.pth"
+    library: comfyui_controlnet_aux
+    note: "LineArt realistic; lineart/__init__.py:100. Rename -> re-download."
+  - filename: "sk_model2.pth"
+    library: comfyui_controlnet_aux
+    note: "LineArt coarse; lineart/__init__.py:100. Rename -> re-download."
+  - filename: "netG.pth"
+    library: comfyui_controlnet_aux
+    note: "LineArt Anime; lineart_anime/__init__.py:122. Generic name, easy to want to rename - don't."
+  - filename: "erika.pth"
+    library: comfyui_controlnet_aux
+    note: "Manga2Line preprocessor; manga_line/__init__.py:23. Rename -> re-download."
+  - filename: "mlsd_large_512_fp32.pth"
+    library: comfyui_controlnet_aux
+    note: "M-LSD straight lines; mlsd/__init__.py:19. Rename -> re-download."
+  - filename: "body_pose_model.pth"
+    library: comfyui_controlnet_aux
+    note: "OpenPose body; open_pose/__init__.py:114. Rename -> re-download."
+  - filename: "hand_pose_model.pth"
+    library: comfyui_controlnet_aux
+    note: "OpenPose hand; open_pose/__init__.py:114. Rename -> re-download."
+  - filename: "facenet.pth"
+    library: comfyui_controlnet_aux
+    note: "OpenPose face; open_pose/__init__.py:114. Rename -> re-download."
+  - filename: "upernet_global_small.pth"
+    library: comfyui_controlnet_aux
+    note: "UniFormer segmentation; uniformer/__init__.py:21. Rename -> re-download."
+  - filename: "res101.pth"
+    library: comfyui_controlnet_aux
+    note: "LeReS depth; leres/__init__.py:22. Very generic name. Rename -> re-download."
+  - filename: "latest_net_G.pth"
+    library: comfyui_controlnet_aux
+    note: "LeReS pix2pix refiner; leres/__init__.py:22. Extremely generic name - still name-addressed."
+  - filename: "scannet.pt"
+    library: comfyui_controlnet_aux
+    note: "NormalBAE; normalbae/__init__.py:38. Rename -> re-download."
+  - filename: "7_model.pth"
+    library: comfyui_controlnet_aux
+    note: "TEED edge detector, subfolder Annotators; teed/__init__.py:24. Meaningless name, do not 'fix' it."
+  - filename: "MTEED.pth"
+    library: comfyui_controlnet_aux
+    note: "AnyLine (TheMistoAI/MistoLine, subfolder Anyline); node_wrappers/anyline.py:48."
+  - filename: "UNet.pth"
+    library: comfyui_controlnet_aux
+    note: "Anime face segment, subfolder Annotators; anime_face_segment/__init__.py:20. Generic name."
+  - filename: "isnetis.ckpt"
+    library: comfyui_controlnet_aux
+    note: "skytnt/anime-seg companion for anime face segment; anime_face_segment/__init__.py:22."
+  - filename: "dsine.pt"
+    library: comfyui_controlnet_aux
+    note: "DSINE normal map; dsine/__init__.py:178 (own custom_hf_download at dsine/__init__.py:97)."
+  - filename: "diffusion_edge_indoor.pt"
+    library: comfyui_controlnet_aux
+    note: "DiffusionEdge; filename built as diffusion_edge_{environment}.pt, node_wrappers/diffusion_edge.py:30."
+  - filename: "diffusion_edge_urban.pt"
+    library: comfyui_controlnet_aux
+    note: "DiffusionEdge urban variant; same f-string construction."
+  - filename: "diffusion_edge_natrual.pt"
+    library: comfyui_controlnet_aux
+    note: "DiffusionEdge nature variant - upstream typo 'natrual' is load-bearing; do NOT correct the spelling."
+  - filename: "densepose_r50_fpn_dl.torchscript"
+    library: comfyui_controlnet_aux
+    note: "DensePose; densepose/__init__.py:26 + node enum node_wrappers/densepose.py:8."
+  - filename: "densepose_r101_fpn_dl.torchscript"
+    library: comfyui_controlnet_aux
+    note: "DensePose R101; node enum, exact name."
+  - filename: "graphormer_hand_state_dict.bin"
+    library: comfyui_controlnet_aux
+    note: "MeshGraphormer hand refiner; mesh_graphormer/__init__.py:20."
+  - filename: "hrnetv2_w64_imagenet_pretrained.pth"
+    library: comfyui_controlnet_aux
+    note: "MeshGraphormer HRNet backbone; mesh_graphormer/__init__.py:20 and pipeline.py:54."
+  - filename: "metric_depth_vit_small_800k.pth"
+    library: comfyui_controlnet_aux
+    note: "Metric3D; filename built from backbone combo, node_wrappers/metric3d.py:26."
+  - filename: "metric_depth_vit_large_800k.pth"
+    library: comfyui_controlnet_aux
+    note: "Metric3D large; f-string metric_depth_{backbone}_800k.pth."
+  - filename: "metric_depth_vit_giant2_800k.pth"
+    library: comfyui_controlnet_aux
+    note: "Metric3D giant2; f-string metric_depth_{backbone}_800k.pth."
+  - filename: "depth_anything_v2_vits.pth"
+    library: comfyui_controlnet_aux
+    note: "Depth-Anything-V2 small; node enum node_wrappers/depth_anything_v2.py:9 + repo lookup keyed on the filename."
+  - filename: "depth_anything_v2_vitb.pth"
+    library: comfyui_controlnet_aux
+    note: "Depth-Anything-V2 base; filename is also the dict key selecting the HF repo."
+  - filename: "depth_anything_v2_vitl.pth"
+    library: comfyui_controlnet_aux
+    note: "Depth-Anything-V2 large (default); filename is also the repo-selection key."
+  - filename: "depth_anything_v2_vitg.pth"
+    library: comfyui_controlnet_aux
+    note: "Depth-Anything-V2 giant; filename is also the repo-selection key."
+  - filename: "depth_anything_v2_metric_hypersim_vitl.pth"
+    library: comfyui_controlnet_aux
+    note: "DA-V2 metric indoor; node_wrappers/depth_anything_v2.py:43."
+  - filename: "depth_anything_v2_metric_vkitti_vitl.pth"
+    library: comfyui_controlnet_aux
+    note: "DA-V2 metric outdoor; node_wrappers/depth_anything_v2.py:43."
+  - filename: "gmflow-scale1-mixdata.pth"
+    library: comfyui_controlnet_aux
+    note: "Unimatch optical flow; node enum node_wrappers/unimatch.py:15."
+  - filename: "gmflow-scale2-mixdata.pth"
+    library: comfyui_controlnet_aux
+    note: "Unimatch optical flow; node enum."
+  - filename: "gmflow-scale2-regrefine6-mixdata.pth"
+    library: comfyui_controlnet_aux
+    note: "Unimatch optical flow (default); node enum."
+  - filename: "yolox_l.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose bbox detector; hardcoded dropdown enum + string branch node_wrappers/dwpose.py:39,57. Rename -> option gone AND re-download."
+  - filename: "yolox_l.torchscript.pt"
+    library: comfyui_controlnet_aux
+    note: "DWPose bbox detector (torchscript); enum + endswith('.torchscript.pt') branch."
+  - filename: "yolo_nas_l_fp16.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose bbox alt; enum node_wrappers/dwpose.py:39."
+  - filename: "yolo_nas_m_fp16.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose bbox alt; enum."
+  - filename: "yolo_nas_s_fp16.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose bbox alt; enum."
+  - filename: "dw-ll_ucoco_384.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose estimator; enum + explicit equality test node_wrappers/dwpose.py:66."
+  - filename: "dw-ll_ucoco_384_bs5.torchscript.pt"
+    library: comfyui_controlnet_aux
+    note: "DWPose estimator batched torchscript (default); enum."
+  - filename: "dw-ll_ucoco.onnx"
+    library: comfyui_controlnet_aux
+    note: "DWPose estimator legacy; enum."
+  - filename: "rtmpose-m_ap10k_256.onnx"
+    library: comfyui_controlnet_aux
+    note: "AnimalPose estimator; enum node_wrappers/dwpose.py:107."
+  - filename: "rtmpose-m_ap10k_256_bs5.torchscript.pt"
+    library: comfyui_controlnet_aux
+    note: "AnimalPose estimator torchscript; enum."
+  # legacy: file-addressed in older controlnet_aux pins and in the upstream pip lib
+  # when it is handed a local directory (os.path.join(dir, filename) -> hard error).
+  # In current Fannovel16 main these are transformers/hub-cache and NOT in the tree.
+  - filename: "dpt_hybrid-midas-501f0c75.pt"
+    library: controlnet_aux (legacy)
+    note: "MiDaS DPT-hybrid. Older installs: file in ckpts/lllyasviel/Annotators. Current main: name is only an HF-repo selection key (midas/transformers.py:29-42)."
+  - filename: "ZoeD_M12_N.pt"
+    library: controlnet_aux (legacy, upstream pip lib)
+    note: "ZoeDepth; upstream zoe/__init__.py:22 filename default. Local-dir mode -> hard error on rename."
+  - filename: "mobile_sam.pt"
+    library: controlnet_aux (legacy) / comfyui_segment_anything
+    note: "MobileSAM. Also actively name-addressed by comfyui_segment_anything (models/sams)."
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI-ReActor — Gourieff/ComfyUI-ReActor  (old Gourieff/comfyui-reactor-node is 403/gone)
+  # ---------------------------------------------------------------------------
+  - filename: "inswapper_128.onnx"
+    library: ComfyUI-ReActor
+    note: "install.py:23-26,61 downloads to models/insightface/inswapper_128.onnx if that exact path is missing. Rename -> ~530MB silent duplicate at next install/update. Also referenced by comfy_mtb scripts/download_models.py."
+  - filename: "inswapper_128_fp16.onnx"
+    library: ComfyUI-ReActor
+    note: "fp16 swapper distributed alongside; picker-selected in-node but widely referenced by name in docs/workflows. Confidence: strongly-inferred (not in the auto-download path)."
+  - filename: "codeformer-v0.1.0.pth"
+    library: ComfyUI-ReActor
+    note: "FILENAME SNIFF: nodes.py:239,975 select the CodeFormer architecture via 'codeformer' in name.lower(). Rename without 'codeformer' -> loaded as a plain GFPGAN state dict -> error/garbage. Same applies to any CodeFormer weight in models/facerestore_models."
+  - filename: "GPEN-BFR-512.onnx"
+    library: ComfyUI-ReActor
+    note: "ONNX restorer path chosen by '.onnx' in the name (nodes.py:252). Keep the extension; auto-downloaded only when models/facerestore_models is empty."
+  - filename: "GFPGANv1.4.pth"
+    library: ComfyUI-ReActor / comfy_mtb / GFPGAN
+    note: "Re-downloaded when models/facerestore_models is EMPTY (nodes.py:113-128); comfy_mtb lists it only if the name contains 'GFPGAN' (nodes/faceenhance.py:53). Rename -> disappears from the mtb dropdown."
+  - filename: "GFPGANv1.3.pth"
+    library: ComfyUI-ReActor / comfy_mtb / GFPGAN
+    note: "As GFPGANv1.4.pth."
+  - filename: "RestoreFormer.pth"
+    library: comfy_mtb / GFPGAN
+    note: "comfy_mtb lists face restorers only if the name contains 'GFPGAN' or 'RestoreFormer' (nodes/faceenhance.py:53,61)."
+
+  # ---------------------------------------------------------------------------
+  # comfy_mtb — melMass/comfy_mtb
+  # ---------------------------------------------------------------------------
+  - filename: "deepbump256.onnx"
+    library: comfy_mtb
+    note: "nodes/deep_bump.py:76-84 get_model_path('deepbump','deepbump256.onnx'); missing -> auto-download or ModelNotFound. Rename -> duplicate download."
+
+  # ---------------------------------------------------------------------------
+  # SAM / GroundingDINO — storyicon/comfyui_segment_anything (node.py:27-113),
+  # ComfyUI-Impact-Pack (impact_pack.py:97-166, impact_server.py:25-43, install.py:87),
+  # WAS Node Suite (WAS_Node_Suite.py:11891-11926)
+  # ---------------------------------------------------------------------------
+  - filename: "sam_vit_h_4b8939.pth"
+    library: comfyui_segment_anything / Impact-Pack / WAS
+    note: "TRIPLE hazard: exact-name download into models/sams (or models/sam for WAS, 2.4GB); arch parsed from the filename (node.py:82-86); Impact picks vit_h only if 'vit_h' is IN the name (impact_pack.py:159) else silently builds vit_b -> state-dict crash."
+  - filename: "sam_vit_l_0b3195.pth"
+    library: comfyui_segment_anything / Impact-Pack / WAS
+    note: "As above; 'vit_l' substring is load-bearing for architecture selection."
+  - filename: "sam_vit_b_01ec64.pth"
+    library: comfyui_segment_anything / Impact-Pack / WAS
+    note: "Also hardcoded as the Impact Pack SAM Editor default (impact_server.py:25,73; config.py:62 sam_editor_model) and auto-downloaded by Impact install.py:87. Rename -> mask editor HTTP 400 + 375MB re-download."
+  - filename: "sam_hq_vit_h.pth"
+    library: comfyui_segment_anything
+    note: "Exact-name download to models/sams; 'hq' substring routes the predictor (node.py:238) AND hides it from Impact's SAMLoader list (impact_pack.py:111)."
+  - filename: "sam_hq_vit_l.pth"
+    library: comfyui_segment_anything
+    note: "As sam_hq_vit_h.pth."
+  - filename: "sam_hq_vit_b.pth"
+    library: comfyui_segment_anything
+    note: "As sam_hq_vit_h.pth."
+  - filename: "groundingdino_swint_ogc.pth"
+    library: comfyui_segment_anything
+    note: "Exact-name download into models/grounding-dino (node.py:53-58,128). Rename -> 694MB re-download."
+  - filename: "groundingdino_swinb_cogcoor.pth"
+    library: comfyui_segment_anything
+    note: "Exact-name download into models/grounding-dino. Rename -> 938MB re-download."
+  - filename: "GroundingDINO_SwinT_OGC.cfg.py"
+    library: comfyui_segment_anything
+    note: "Config sidecar fetched by the same exact-name mechanism (node.py:117-121). Not a weight, but lives in the model dir - blacklist it."
+  - filename: "GroundingDINO_SwinB.cfg.py"
+    library: comfyui_segment_anything
+    note: "Config sidecar, exact-name."
+  - filename: "sam2.1_hiera_large.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key lookup in sam2_config_table (impact_pack.py:97-106,152). Rename -> falls into the SAM1 branch -> crash."
+  - filename: "sam2.1_hiera_base_plus.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2.1_hiera_small.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2.1_hiera_tiny.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2_hiera_large.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2_hiera_base_plus.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2_hiera_small.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+  - filename: "sam2_hiera_tiny.pt"
+    library: ComfyUI-Impact-Pack
+    note: "Exact-key in sam2_config_table."
+
+  # ---------------------------------------------------------------------------
+  # ultralytics detectors — ComfyUI-Impact-Subpack install.py:31-40
+  # ---------------------------------------------------------------------------
+  - filename: "face_yolov8m.pt"
+    library: ComfyUI-Impact-Subpack
+    note: "Auto-downloaded to models/ultralytics/bbox if that exact path is missing. Rename -> duplicate download at next update. Detector dropdown itself is a picker (safe)."
+  - filename: "hand_yolov8s.pt"
+    library: ComfyUI-Impact-Subpack
+    note: "As face_yolov8m.pt (models/ultralytics/bbox)."
+  - filename: "person_yolov8m-seg.pt"
+    library: ComfyUI-Impact-Subpack
+    note: "As face_yolov8m.pt (models/ultralytics/segm)."
+
+  # ---------------------------------------------------------------------------
+  # rembg — danielgatis/rembg; on-disk name = session id + .onnx, in $U2NET_HOME
+  # (~/.u2net by default; WAS Node Suite points it at ComfyUI/models/rembg)
+  # pooch.retrieve(fname=..., path=u2net_home, known_hash='md5:...')
+  # ---------------------------------------------------------------------------
+  - filename: "u2net.onnx"
+    library: rembg
+    note: "Default rembg session; name derived from the session id. Rename (or edit) -> pooch re-downloads under the canonical name."
+  - filename: "u2netp.onnx"
+    library: rembg
+    note: "Lightweight U2Net session; exact-name."
+  - filename: "u2net_human_seg.onnx"
+    library: rembg
+    note: "Human segmentation session; exact-name."
+  - filename: "u2net_cloth_seg.onnx"
+    library: rembg
+    note: "Cloth segmentation session; exact-name."
+  - filename: "silueta.onnx"
+    library: rembg
+    note: "Silueta session; exact-name."
+  - filename: "isnet-general-use.onnx"
+    library: rembg
+    note: "ISNet general session; exact-name (release asset name differs from disk name)."
+  - filename: "isnet-anime.onnx"
+    library: rembg
+    note: "ISNet anime session; exact-name."
+  - filename: "birefnet-general.onnx"
+    library: rembg
+    note: "BiRefNet general; disk name is the session id, not the release asset name (BiRefNet-general-epoch_244.onnx)."
+  - filename: "birefnet-general-lite.onnx"
+    library: rembg
+    note: "BiRefNet general lite; session-id name."
+  - filename: "birefnet-portrait.onnx"
+    library: rembg
+    note: "BiRefNet portrait; session-id name."
+  - filename: "birefnet-dis.onnx"
+    library: rembg
+    note: "BiRefNet DIS; session-id name."
+  - filename: "birefnet-hrsod.onnx"
+    library: rembg
+    note: "BiRefNet HRSOD; session-id name."
+  - filename: "birefnet-cod.onnx"
+    library: rembg
+    note: "BiRefNet COD; session-id name."
+  - filename: "birefnet-massive.onnx"
+    library: rembg
+    note: "BiRefNet massive; session-id name."
+  - filename: "bria-rmbg.onnx"
+    library: rembg
+    note: "BRIA RMBG 2.0 session; session-id name."
+  - filename: "sam_vit_h_4b8939.encoder.onnx"
+    library: rembg
+    note: "rembg SAM session encoder (sessions/sam.py:316-339); exact-name in $U2NET_HOME. Quantized variant: sam_vit_h_4b8939.encoder.quant.onnx."
+  - filename: "sam_vit_h_4b8939.decoder.onnx"
+    library: rembg
+    note: "rembg SAM session decoder; exact-name. Quantized variant: sam_vit_h_4b8939.decoder.quant.onnx."
+
+  # ---------------------------------------------------------------------------
+  # WAS Node Suite — WASasquatch/was-node-suite-comfyui
+  # ---------------------------------------------------------------------------
+  - filename: "dpt_large_384.pt"
+    library: was-node-suite-comfyui
+    note: "MiDaS DPT-Large; models/midas/checkpoints/<name> existence check (WAS_Node_Suite.py:8897-8907) then torch.hub. Rename -> re-download."
+  - filename: "dpt_hybrid_384.pt"
+    library: was-node-suite-comfyui
+    note: "MiDaS DPT-Hybrid; same fixed path."
+
+  # ---------------------------------------------------------------------------
+  # IPAdapter Unified Loader — cubiq/ComfyUI_IPAdapter_plus utils.py:13-127
+  # regex matches the TAIL of the filename ($-anchored). Prefixes are tolerated,
+  # suffix/extension changes are not. Failure = hard error "model not found".
+  # ---------------------------------------------------------------------------
+  - filename: "ip-adapter_sd15.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Unified Loader preset STANDARD matches r'ip.adapter.sd15$'. Basic IPAdapterModelLoader picker still works after a rename."
+  - filename: "ip-adapter_sd15_light_v11.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset LIGHT matches r'sd15.light.v11$' (falls back to r'sd15.light$')."
+  - filename: "ip-adapter_sd15_vit-G.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset VIT-G (SD1.5) matches r'sd15.vit.g$'."
+  - filename: "ip-adapter-plus_sd15.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset PLUS matches r'ip.adapter.plus.sd15$'."
+  - filename: "ip-adapter-plus-face_sd15.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset PLUS FACE matches r'plus.face.sd15$'."
+  - filename: "ip-adapter-full-face_sd15.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FULL FACE matches r'full.face.sd15$'."
+  - filename: "ip-adapter_sdxl.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset VIT-G (SDXL) matches r'ip.adapter.sdxl$'."
+  - filename: "ip-adapter_sdxl_vit-h.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset STANDARD (SDXL) matches r'ip.adapter.sdxl.vit.h$'."
+  - filename: "ip-adapter-plus_sdxl_vit-h.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset PLUS (SDXL) matches r'plus.sdxl.vit.h$'."
+  - filename: "ip-adapter-plus-face_sdxl_vit-h.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset PLUS FACE (SDXL) matches r'plus.face.sdxl.vit.h$'."
+  - filename: "ip-adapter-faceid_sd15.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID matches r'faceid.sd15$'; pairs with ip-adapter-faceid_sd15_lora.safetensors."
+  - filename: "ip-adapter-faceid_sd15_lora.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "LoRA half of FACEID, matched in models/loras by r'faceid.sd15.lora$' (utils.py:122-127)."
+  - filename: "ip-adapter-faceid-plus_sd15.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PLUS matches r'faceid.plus.sd15$'."
+  - filename: "ip-adapter-faceid-plus_sd15_lora.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "LoRA half of FACEID PLUS."
+  - filename: "ip-adapter-faceid-plusv2_sd15.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PLUS V2 matches r'faceid.plusv2.sd15$'."
+  - filename: "ip-adapter-faceid-plusv2_sd15_lora.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "LoRA half of FACEID PLUS V2 (SD1.5)."
+  - filename: "ip-adapter-faceid_sdxl.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID (SDXL) matches r'faceid.sdxl$'."
+  - filename: "ip-adapter-faceid_sdxl_lora.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "LoRA half of FACEID (SDXL)."
+  - filename: "ip-adapter-faceid-plusv2_sdxl.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PLUS V2 (SDXL) matches r'faceid.plusv2.sdxl$'."
+  - filename: "ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "LoRA half of FACEID PLUS V2 (SDXL)."
+  - filename: "ip-adapter-faceid-portrait_sd15.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PORTRAIT matches r'portrait.sd15$' (v11 variant preferred)."
+  - filename: "ip-adapter-faceid-portrait-v11_sd15.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PORTRAIT matches r'portrait.v11.sd15$'."
+  - filename: "ip-adapter-faceid-portrait_sdxl.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PORTRAIT (SDXL) matches r'portrait.sdxl$'."
+  - filename: "ip-adapter-faceid-portrait_sdxl_unnorm.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Preset FACEID PORTRAIT UNNORM matches r'portrait.sdxl.unnorm$'."
+  - filename: "ip_plus_composition_sd15.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Community COMPOSITION preset matches r'plus.composition.sd15$'."
+  - filename: "ip_plus_composition_sdxl.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "Community COMPOSITION preset matches r'plus.composition.sdxl$'."
+  - filename: "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "CLIP-Vision auto-pick matches r'ViT.H.14.*s32B.b79K' in models/clip_vision (utils.py:22). Renaming breaks every Unified Loader SD1.5/vit-h preset."
+  - filename: "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
+    library: ComfyUI_IPAdapter_plus
+    note: "CLIP-Vision auto-pick matches r'ViT.bigG.14.*39B.b160k' (utils.py:18)."
+  - filename: "clip-vit-large-patch14-336.bin"
+    library: ComfyUI_IPAdapter_plus
+    note: "Kolors CLIP-Vision auto-pick matches r'clip.vit.large.patch14.336' (utils.py:20)."
+
+  # ---------------------------------------------------------------------------
+  # insightface model DIRECTORIES (not single files)
+  # InstantID.py:29,217 FaceAnalysis(name='antelopev2', root=models/insightface)
+  # IPAdapter utils.py:157-166 FaceAnalysis(name=model_name in {buffalo_l, antelopev2})
+  # ReActor scripts/reactor_swapper.py:101 FaceAnalysis(name='buffalo_l', ...)
+  # ---------------------------------------------------------------------------
+  - filename: "antelopev2"
+    match: dir
+    library: ComfyUI_InstantID / PuLID / IPAdapter_plus
+    note: "DIRECTORY under models/insightface/models/. Name is hardcoded in FaceAnalysis(name=...). Renaming the folder -> insightface re-downloads the pack. (The .onnx files inside are routed by ONNX graph inspection, not by name - see report section 14.)"
+  - filename: "buffalo_l"
+    match: dir
+    library: ComfyUI-ReActor / IPAdapter_plus FaceID
+    note: "DIRECTORY under models/insightface/models/. Hardcoded FaceAnalysis name; ReActor also references buffalo_l.zip (reactor_swapper.py:202)."
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI core — models/vae_approx only (everything else is picker-based)
+  # latent_preview.py:83-105 startswith(taesd_decoder_name); nodes.py:796-806
+  # startswith('{name}_encoder.') / ('{name}_decoder.')
+  # Failure is SILENT: previews fall back, VAE Loader entry disappears.
+  # ---------------------------------------------------------------------------
+  - filename: "taesd_decoder.pth"
+    library: ComfyUI (core)
+    note: "SD1.x TAESD preview decoder; matched by prefix 'taesd_decoder'. Suffixes OK (taesd_decoder_v2.pth works), prefix changes silently disable previews."
+  - filename: "taesd_encoder.pth"
+    library: ComfyUI (core)
+    note: "SD1.x TAESD encoder; VAELoader pairs '<tae>_encoder.' with '<tae>_decoder.' (nodes.py:777-806)."
+  - filename: "taesdxl_decoder.pth"
+    library: ComfyUI (core)
+    note: "SDXL TAESD preview decoder; prefix-matched."
+  - filename: "taesdxl_encoder.pth"
+    library: ComfyUI (core)
+    note: "SDXL TAESD encoder; prefix-matched."
+  - filename: "taesd3_decoder.pth"
+    library: ComfyUI (core)
+    note: "SD3 TAESD preview decoder; prefix-matched."
+  - filename: "taesd3_encoder.pth"
+    library: ComfyUI (core)
+    note: "SD3 TAESD encoder; prefix-matched."
+  - filename: "taef1_decoder.pth"
+    library: ComfyUI (core)
+    note: "Flux TAESD preview decoder; prefix-matched."
+  - filename: "taef1_encoder.pth"
+    library: ComfyUI (core)
+    note: "Flux TAESD encoder; prefix-matched."
+  - filename: "taef2_decoder.pth"
+    library: ComfyUI (core)
+    note: "Flux-2 TAESD preview decoder; prefix-matched (comfy/latent_formats.py:234)."
+  - filename: "taef2_encoder.pth"
+    library: ComfyUI (core)
+    note: "Flux-2 TAESD encoder; prefix-matched."
+  - filename: "taehv.safetensors"
+    library: ComfyUI (core)
+    note: "Video TAE (Hunyuan/WAN family); matched by startswith('taehv') - latent_preview.py:14, nodes.py:770."
+  - filename: "lighttaew2_1.safetensors"
+    library: ComfyUI (core)
+    note: "WAN 2.1 light TAE; startswith match."
+  - filename: "lighttaew2_2.safetensors"
+    library: ComfyUI (core)
+    note: "WAN 2.2 light TAE; startswith match."
+  - filename: "lighttaehy1_5.safetensors"
+    library: ComfyUI (core)
+    note: "Hunyuan 1.5 light TAE; startswith match."
+  - filename: "taeltx_2.safetensors"
+    library: ComfyUI (core)
+    note: "LTX-2 TAE; startswith match."
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI-WD14-Tagger — pythongosssss
+  # dropdown = hardcoded known_models list (wd14tagger.py:173-177), NOT a dir scan;
+  # installed-scan requires a matching .onnx/.csv PAIR (wd14tagger.py:45-47);
+  # miss -> download_model() and the downloader renames model.onnx -> <model>.onnx
+  # ---------------------------------------------------------------------------
+  - filename: "wd-v1-4-moat-tagger-v2.onnx"
+    library: ComfyUI-WD14-Tagger
+    note: "Default tagger. Name is a hardcoded dropdown key; rename -> silent re-download. EVERY wd-* variant listed in pysssss.json behaves identically (wd-v1-4-convnextv2/swinv2/vit-tagger-v2, wd-vit-tagger-v3, ...)."
+  - filename: "wd-v1-4-moat-tagger-v2.csv"
+    library: ComfyUI-WD14-Tagger
+    note: "Tag list sidecar (downloaded as selected_tags.csv, renamed to <model>.csv). The .onnx is only listed if a .csv with the SAME STEM exists - renaming one of the pair de-pairs both."
+
+  # ---------------------------------------------------------------------------
+  # Background removal
+  # ---------------------------------------------------------------------------
+  - filename: "model.pth"
+    library: ComfyUI-BRIA_AI-RMBG (ZHO-ZHO-ZHO) / ComfyUI_LayerStyle
+    note: "RMBG-1.4 weight, loaded as os.path.join(node_dir,'RMBG-1.4/model.pth') with no fallback (BRIA_RMBG.py:43); LayerStyle has three fixed fallbacks all literally 'model.pth' (py/imagefunc.py:1493-1500). Rename -> hard error. Extremely generic name - flag any file called model.pth under an RMBG-1.4 dir."
+  - filename: "RMBG-1.4.pth"
+    library: ComfyUI-Easy-Use
+    note: "Easy-Use downloads the same weight but RENAMES it to <mode>.<ext> in models/rembg (py/nodes/image.py:914). Rename -> silent re-download."
+  - filename: "model.safetensors"
+    library: 1038lab/ComfyUI-RMBG (RMBG-2.0) / Florence2 / segformer dirs
+    note: "HF snapshot payload inside models/RMBG/RMBG-2.0, models/LLM/Florence-2-*, segformer_* dirs. check_model_cache()/from_pretrained stat this exact name (py/AILab_RMBG.py:101-137, Florence2 nodes.py:65-67). Rename -> re-download or FileNotFoundError. Applies to its siblings config.json / preprocessor_config.json / pytorch_model.bin too."
+  - filename: "inspyrenet.safetensors"
+    library: 1038lab/ComfyUI-RMBG
+    note: "models/RMBG/INSPYRENET; exact-name cache check -> silent re-download."
+  - filename: "BEN_Base.pth"
+    library: 1038lab/ComfyUI-RMBG
+    note: "models/RMBG/BEN (plus its code sidecar model.py); exact-name cache check."
+  - filename: "BEN2_Base.pth"
+    library: 1038lab/ComfyUI-RMBG / ComfyUI-Easy-Use
+    note: "models/RMBG/BEN2 (plus BEN2.py sidecar); exact-name cache check."
+  - filename: "BiRefNet-general.safetensors"
+    library: 1038lab/ComfyUI-RMBG
+    note: "models/RMBG/BiRefNet. Twelve sibling variants are equally name-locked: BiRefNet_512x512, BiRefNet-HR, BiRefNet-portrait, BiRefNet-matting, BiRefNet-HR-matting, BiRefNet_lite, BiRefNet_lite-2K, BiRefNet_dynamic, BiRefNet_lite-matting, BiRefNet_toonout, Lucida (.safetensors)."
+  - filename: "BiRefNet-ep480.pth"
+    library: ComfyUI_LayerStyle
+    note: "py/birefnet_legacy.py:56-65 hardcodes the name, no download fallback -> hard error on rename."
+  - filename: "BiRefNet-general-epoch_244.pth"
+    library: ComfyUI_LayerStyle_Advance
+    note: "py/birefnet_ultra_v2.py:88-90 checks this exact path; if missing, snapshot_download pulls ~900MB into models/BiRefNet/BiRefNet-General. Other files in models/BiRefNet/pth/ ARE picker-selected and safe."
+  - filename: "SDMatte.safetensors"
+    library: 1038lab/ComfyUI-RMBG
+    note: "models/RMBG/SDMatte (py/AILab_SDMatte.py:70-89); sibling SDMatte_plus.safetensors likewise."
+  - filename: "big-lama.pt"
+    library: 1038lab/ComfyUI-RMBG
+    note: "LaMa inpaint weight, exact-name cache check."
+  - filename: "deeplabv3p-resnet50-human.onnx"
+    library: 1038lab/ComfyUI-RMBG / ComfyUI-Easy-Use
+    note: "Human parsing; exact-name cache check in both suites."
+  - filename: "parsing_lip.onnx"
+    library: ComfyUI-Easy-Use
+    note: "Human parsing (py/config.py:367-373); URL-basename cache -> silent re-download."
+  - filename: "sam3.pt"
+    library: 1038lab/ComfyUI-RMBG
+    note: "SAM3 weight; exact-name cache check."
+  - filename: "ckpt_base.pth"
+    library: transparent-background (ComfyUI-Inspyrenet-Rembg)
+    note: "~/.transparent-background/ckpt_base.pth; name from the lib's config.yaml AND md5-gated (Remover.py:62-80). Rename OR edit -> ~500MB silent re-download."
+  - filename: "ckpt_fast.pth"
+    library: transparent-background (ComfyUI-Inspyrenet-Rembg)
+    note: "Fast variant; same fixed-name + md5 gate."
+  - filename: "ckpt_base_nightly.pth"
+    library: transparent-background (ComfyUI-Inspyrenet-Rembg)
+    note: "Nightly variant; same mechanism (md5 NULL, so only the name gates it)."
+  - filename: "ckpt_base_cuda:0.pt"
+    library: transparent-background (ComfyUI-Inspyrenet-Rembg)
+    note: "TorchScript cache whose name is DERIVED by mutation: ckpt_name.replace('.pth','_{device}.pt') (Remover.py:97). Rename -> silent slow re-trace. CPU form: ckpt_base_cpu.pt."
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI-Frame-Interpolation — Fannovel16
+  # every dropdown is a hardcoded Python list; vfi_utils.py:84-133 builds the
+  # download URL FROM the filename and caches at <node>/ckpts/<type>/<basename>
+  # with an if-not-exists gate. All entries: rename -> silent re-download.
+  # NOTE: ComfyUI core's own frame_interpolation folder is picker+state-dict = SAFE.
+  # ---------------------------------------------------------------------------
+  - filename: "rife47.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/rife/. Hardcoded enum (vfi_models/rife/__init__.py:10-19). Siblings equally locked: rife49.pth, rife417.pth, rife426.pth, rife46.pth, sudo_rife4_269.662_testV1_scale1.pth."
+  - filename: "film_net_fp32.pt"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/film/ (vfi_models/film/__init__.py:49,73)."
+  - filename: "amt-s.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/amt/ (vfi_models/amt/__init__.py:11-30). Siblings: amt-l.pth, amt-g.pth, gopro_amt-s.pth."
+  - filename: "atm-vfi-lite.pt"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/atm/. ALSO an architecture sniff: vfi_models/atm/__init__.py:115 `if ckpt_name == \"atm-vfi-lite.pt\"` selects network_lite. Siblings: atm-vfi-base.pt, atm-vfi-base-pct.pt."
+  - filename: "FLAVR_2x.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/flavr/. Siblings: FLAVR_4x.pth, FLAVR_8x.pth."
+  - filename: "M2M.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/m2m/ (vfi_models/m2m/__init__.py:11,43)."
+  - filename: "IFUNet.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/ifunet/ (vfi_models/ifunet/__init__.py:9,44)."
+  - filename: "IFRNet_S_Vimeo90K.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/ifrnet/. Siblings: IFRNet_L_Vimeo90K.pth, IFRNet_S_GoPro.pth, IFRNet_L_GoPro.pth."
+  - filename: "stmfnet.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/stmfnet/ (vfi_models/stmfnet/__init__.py:18,50)."
+  - filename: "sepconv.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/sepconv/ (vfi_models/sepconv/__init__.py:10,42)."
+  - filename: "pretrained_cain.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/cain/ (vfi_models/cain/__init__.py:9,41)."
+  - filename: "momo-base.pth"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/momo/. Sibling: momo-lite.pth."
+  - filename: "XVFInet_X4K1000FPS_exp1_latest.pt"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/xvfi/. Sibling: XVFInet_Vimeo_exp1_latest.pt."
+  - filename: "eisai_ssl.pt"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/eisai/. INVISIBLE IN THE UI - the dropdown is just ['eisai'] and the three real names live in MODEL_FILE_NAMES. Siblings: eisai_dtm.pt, eisai_anime_interp_full.ckpt."
+  - filename: "GMFSS_fortuna_flownet.pkl"
+    library: ComfyUI-Frame-Interpolation
+    note: "ckpts/gmfss_fortuna/. Also UI-invisible. Siblings: GMFSS_fortuna_union_metric.pkl, _union_feat.pkl, _union_fusionnet.pkl, _metric.pkl, _feat.pkl, _fusionnet.pkl."
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI_LayerStyle / _LayerStyle_Advance — chflame163
+  # reuses the comfyui_segment_anything loader INCLUDING the filename->arch parse
+  # (py/segment_anything_func.py:73-79, resolver :87-101), so the whole SAM /
+  # GroundingDINO block above applies here too.
+  # ---------------------------------------------------------------------------
+  - filename: "face_landmarker.task"
+    library: ComfyUI_LayerStyle_Advance
+    note: "MediaPipe face landmarker, fixed join in py/mediapipe_facial_segment.py:37-44 -> hard error on rename."
+
+  # ---------------------------------------------------------------------------
+  # facerestore_cf — mav-rik  (models/facedetection; facelib/utils/misc.py:98-110)
+  # resolves by URL basename through folder_paths, then re-downloads on miss;
+  # the 'facedetection' widget is a hardcoded list, not a directory scan.
+  # Filenames are the facexlib/CodeFormer six already listed above:
+  #   detection_Resnet50_Final.pth, detection_mobilenet0.25_Final.pth,
+  #   yolov5l-face.pth, yolov5n-face.pth, parsing_bisenet.pth, parsing_parsenet.pth
+  # (models/facerestore_models/* is a picker and IS safe to rename)
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # ComfyUI-Easy-Use — yolain; py/libs/utils.py:202-215 URL-basename cache
+  # ---------------------------------------------------------------------------
+  - filename: "fooocus_inpaint_head.pth"
+    library: ComfyUI-Easy-Use
+    note: "models/inpaint/ (py/config.py:47-90). Rename -> silent re-download."
+  - filename: "inpaint_v26.fooocus.patch"
+    library: ComfyUI-Easy-Use
+    note: "models/inpaint/. Siblings: inpaint_v25.fooocus.patch, inpaint.fooocus.patch."
+  - filename: "brushnet_random_mask_fp16.safetensors"
+    library: ComfyUI-Easy-Use
+    note: "models/inpaint/. Siblings: brushnet_random_mask_sdxl, brushnet_segmentation_mask_fp16, brushnet_segmentation_mask_sdxl (.safetensors)."
+  - filename: "layer_xl_transparent_attn.safetensors"
+    library: ComfyUI-Easy-Use
+    note: "models/layer_model/ LayerDiffuse set (py/config.py:94-163). 13 files total incl. vae_transparent_encoder/decoder.safetensors, layer_sd15_*.safetensors, layer_xl_*.safetensors - all URL-basename cached."
+  - filename: "iclight_sd15_fc_unet_ldm.safetensors"
+    library: ComfyUI-Easy-Use
+    note: "models/unet/ IC-Light (py/config.py:168-180). Sibling: iclight_sd15_fbc_unet_ldm.safetensors."
+  - filename: "selfie_multiclass_256x256.tflite"
+    library: ComfyUI-Easy-Use
+    note: "models/mediapipe/ (py/config.py:386-391, py/nodes/image.py:1324)."
+
+  # ---------------------------------------------------------------------------
+  # Directory-level locks (rename the DIRECTORY = re-download; treat as opaque)
+  # ---------------------------------------------------------------------------
+  - filename: "Florence-2-large"
+    match: dir
+    library: ComfyUI-Florence2 (kijai)
+    note: "DIRECTORY under models/LLM/, named basename(repo_id) (nodes.py:183-191); missing -> snapshot_download. All Florence-2-* / CogFlorence-* / PromptGen variants behave the same, and the inner model.safetensors|pytorch_model.bin|config.json are name-locked (nodes.py:65-67)."
+  - filename: "clipseg-rd64-refined-fp16"
+    match: dir
+    library: ComfyUI-KJNodes
+    note: "DIRECTORY models/clip_seg/clipseg-rd64-refined-fp16 (nodes/mask_nodes.py:70-76); rename -> snapshot re-download. Same for <node>/models/superprompt-v1."
+  - filename: "vitmatte"
+    match: dir
+    library: ComfyUI_LayerStyle_Advance
+    note: "DIRECTORY models/vitmatte (hustvl/vitmatte-small-composition-1k) via check_and_download_model + from_pretrained (py/imagefunc.py:1563-1580). Sibling: models/vitmatte-base-composition-1k."
+  - filename: "bert-base-uncased"
+    match: dir
+    library: comfyui_segment_anything / ComfyUI_LayerStyle_Advance
+    note: "DIRECTORY models/bert-base-uncased, found by glob '**/model.safetensors' (node.py:64-69); GroundingDINO falls back to downloading from the hub if absent."
+  - filename: "segformer_clothes"
+    match: dir
+    library: 1038lab/ComfyUI-RMBG
+    note: "DIRECTORY models/RMBG/segformer_clothes, loaded with from_pretrained(dir) (py/AILab_ClothSegment.py:59,101). Siblings: segformer_face, segformer_fashion, body_segment."
+
+  # ---------------------------------------------------------------------------
+  # Substring hazards (not a specific file - a naming rule)
+  # ---------------------------------------------------------------------------
+  - filename: "*connector*"
+    match: glob
+    library: ComfyUI-KJNodes
+    note: "SUBSTRING RULE: nodes/model_optimization_nodes.py:325 routes a file to models/text_encoders if 'connector' is in its name, else models/diffusion_models. Adding or removing that token sends the loader to the wrong folder -> get_full_path_or_raise throws."
+  - filename: "*vit_h*"
+    match: glob
+    library: Impact-Pack / comfyui_segment_anything / LayerStyle_Advance
+    note: "SUBSTRING RULE for SAM: architecture is chosen from these tokens in the filename; 'hq' additionally hides a file from Impact's SAMLoader list. Losing the token -> silently built as vit_b -> state-dict crash."
+  - filename: "*vit_l*"
+    match: glob
+    library: Impact-Pack / comfyui_segment_anything / LayerStyle_Advance
+    note: "SUBSTRING RULE for SAM: architecture is chosen from these tokens in the filename; 'hq' additionally hides a file from Impact's SAMLoader list. Losing the token -> silently built as vit_b -> state-dict crash."
+  - filename: "*hq*"
+    match: glob
+    library: Impact-Pack / comfyui_segment_anything / LayerStyle_Advance
+    note: "SUBSTRING RULE for SAM: architecture is chosen from these tokens in the filename; 'hq' additionally hides a file from Impact's SAMLoader list. Losing the token -> silently built as vit_b -> state-dict crash."
+  - filename: "*mobile*"
+    match: glob
+    library: Impact-Pack / comfyui_segment_anything / LayerStyle_Advance
+    note: "SUBSTRING RULE for SAM: architecture is chosen from these tokens in the filename; 'hq' additionally hides a file from Impact's SAMLoader list. Losing the token -> silently built as vit_b -> state-dict crash."
+  - filename: "*codeformer*"
+    match: glob
+    library: ComfyUI-ReActor
+    note: "SUBSTRING RULE: the CodeFormer architecture is selected by 'codeformer' in name.lower(); any restorer weight that loses the token is loaded with the wrong arch."
+  - filename: "*GFPGAN*"
+    match: glob
+    library: comfy_mtb
+    note: "SUBSTRING RULE: models/face_restore is filtered to names containing GFPGAN or RestoreFormer; a renamed file silently vanishes from the dropdown."
+  - filename: "*RestoreFormer*"
+    match: glob
+    library: comfy_mtb
+    note: "SUBSTRING RULE: models/face_restore is filtered to names containing GFPGAN or RestoreFormer; a renamed file silently vanishes from the dropdown."

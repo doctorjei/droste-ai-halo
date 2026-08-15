@@ -262,6 +262,12 @@ class Fixture:
             rc = ms.main(["inspect", *self.args(*extra)])
         return rc, buf.getvalue()
 
+    def rename(self, *extra: str) -> tuple[int, str]:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ms.main(["rename", *self.args(*extra)])
+        return rc, buf.getvalue()
+
     def load_registry(self) -> dict:
         return yaml.safe_load(self.registry.read_text())
 
@@ -388,7 +394,11 @@ class ScannerTest(unittest.TestCase):
                 self.assertEqual(resolved.parent.name, "blobs", rel)
 
         reg = self.fx.load_registry()
-        self.assertEqual(reg["version"], 2)
+        # 3 since s35 (the top-level `renames` ledger). Entries are unchanged from v2,
+        # which the assertions below this line are the standing proof of.
+        self.assertEqual(reg["version"], 3)
+        # ...and a store nobody has renamed anything in does not grow the key at all
+        self.assertNotIn("renames", reg)
         cats = {e["display"]: e["category"] for e in reg["entries"].values()}
         for display, want in EXPECTED_INVENTORY.items():
             self.assertEqual(cats[display], want, display)
@@ -1561,6 +1571,334 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("diffusion_models/flux1-dev.safetensors", owned)
         rc, out = self.fx.sync()                    # default prune cleans it up
         self.assertFalse(stale.is_symlink())
+
+    # -------------------------------------------------------------- tree awareness
+    # s35: in-box downloaders (ComfyUI-Manager et al) write REAL FILES through the models
+    # bind straight into the link tree. Every sync now inventories them -- and does
+    # nothing else to them, ever.
+    def test_real_files_in_tree_are_inventoried_and_never_touched(self):
+        populate_standard(self.fx)
+        rc, out = self.fx.sync()
+        self.assertIn("0 real files in tree", out)     # a pure link tree reports none
+
+        drop = self.fx.tree / "loras" / "manager-downloaded.safetensors"
+        drop.write_bytes(b"pulled in-box by a custom node")
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertIn("1 real files in tree", out)
+        self.assertIn("REALFILE  loras/manager-downloaded.safetensors", out)
+        # never adopted: not in the registry, so it can never become prunable
+        reg = self.fx.load_registry()
+        owned = {l for e in reg["entries"].values() for l in e["links"]}
+        self.assertNotIn("loras/manager-downloaded.safetensors", owned)
+        # ...and still exactly the bytes the downloader wrote, run after run
+        for _ in range(2):
+            self.fx.sync()
+            self.assertTrue(drop.is_file())
+            self.assertFalse(drop.is_symlink())
+            self.assertEqual(drop.read_bytes(), b"pulled in-box by a custom node")
+
+    def test_prune_never_deletes_a_real_file(self):
+        """The dangerous case: a real file sitting at a path the registry OWNS, whose
+        source has since vanished. Ownership says prune; the file being real says no,
+        and the file wins -- prune_link only ever unlinks a symlink."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        owned_path = self.fx.tree / "diffusion_models" / "flux1-dev.safetensors"
+        self.assertTrue(owned_path.is_symlink())
+        owned_path.unlink()
+        owned_path.write_bytes(b"a real file where our link used to be")
+        shutil.rmtree(self.fx.cache / "models--acme--flux-dev")   # source gone: prune!
+
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertTrue(owned_path.is_file())
+        self.assertFalse(owned_path.is_symlink())
+        self.assertEqual(owned_path.read_bytes(), b"a real file where our link used to be")
+        self.assertIn("KEEP  diffusion_models/flux1-dev.safetensors", out)
+        # counted (it IS a real file in the tree) but explained only once
+        self.assertIn("1 real files in tree", out)
+        self.assertNotIn("REALFILE  diffusion_models/flux1-dev.safetensors", out)
+
+    def test_real_file_at_a_wanted_path_counts_once_as_a_conflict(self):
+        populate_standard(self.fx)
+        squatter = self.fx.tree / "loras" / "pixel-style-lora.safetensors"
+        squatter.parent.mkdir(parents=True)
+        squatter.write_bytes(b"user data - do not touch")
+        rc, out = self.fx.sync()
+        self.assertIn("CONFLICT  loras/pixel-style-lora.safetensors", out)
+        self.assertIn("1 real files in tree", out)
+        self.assertNotIn("REALFILE  loras/pixel-style-lora.safetensors", out)
+
+    def test_owned_hardlinks_are_not_reported_as_real_files(self):
+        """--hardlink makes every link we own a REGULAR file. Ownership is tested first
+        precisely so the census does not accuse the scanner of its own work."""
+        populate_standard(self.fx)
+        rc, out = self.fx.sync("--hardlink")
+        self.assertEqual(rc, 0)
+        self.assertEqual(tree_links(self.fx.tree), EXPECTED_LINKS)
+        hard = self.fx.tree / "vae" / "ae.safetensors"
+        self.assertTrue(hard.is_file())
+        self.assertFalse(hard.is_symlink())
+        self.assertIn("0 real files in tree", out)
+
+    # ------------------------------------------------- s35: user-driven link renames
+    def test_rename_records_and_applies_immediately(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        rc, out = self.fx.rename("pixel-style-lora.safetensors", "my-pixel-style.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("RENAME  pixel-style-lora.safetensors -> my-pixel-style.safetensors",
+                      out)
+        links = tree_links(self.fx.tree)
+        self.assertIn("loras/my-pixel-style.safetensors", links)
+        self.assertNotIn("loras/pixel-style-lora.safetensors", links)
+        # the new link is a real link to the real blob, not a stub
+        self.assertTrue((self.fx.tree / "loras" / "my-pixel-style.safetensors").resolve()
+                        .is_file())
+        reg = self.fx.load_registry()
+        self.assertEqual(reg["renames"]["pixel-style-lora.safetensors"]["to"],
+                         "my-pixel-style.safetensors")
+        self.assertEqual(reg["renames"]["pixel-style-lora.safetensors"]["display"],
+                         "acme/style-pack/pixel-style-lora.safetensors")
+        owned = {l for e in reg["entries"].values() for l in e["links"]}
+        self.assertIn("loras/my-pixel-style.safetensors", owned)
+
+    def test_census_defends_a_rename_instead_of_steamrolling_it(self):
+        """THE point of recording it: an ordinary sync must re-assert the user's name,
+        and prune must not read the renamed link as an orphan."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        self.fx.rename("loras/pixel-style-lora.safetensors", "keeper.safetensors")
+        for _ in range(2):
+            rc, out = self.fx.sync()
+            self.assertEqual(rc, 0)
+            self.assertIn("loras/keeper.safetensors", tree_links(self.fx.tree))
+            self.assertNotIn("loras/pixel-style-lora.safetensors",
+                             tree_links(self.fx.tree))
+            self.assertNotIn("PRUNE", out)        # not an orphan
+            self.assertNotIn("RELINKED", out)     # ...and not churn, either
+
+    def test_rename_survives_a_heuristics_bump(self):
+        """A reclassification may move a file to another category dir. It may not take
+        the owner's name away from it."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        self.fx.rename("pixel-style-lora.safetensors", "keeper.safetensors")
+        with mock.patch.object(ms, "HEURISTICS_VERSION", ms.HEURISTICS_VERSION + 1):
+            rc, out = self.fx.sync()
+        self.assertIn("reclassifying everything", out)
+        self.assertIn("loras/keeper.safetensors", tree_links(self.fx.tree))
+
+    def test_rename_back_to_the_derived_name_forgets_it(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        self.fx.rename("pixel-style-lora.safetensors", "keeper.safetensors")
+        rc, out = self.fx.rename("keeper.safetensors", "pixel-style-lora.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("forgotten", out)
+        self.assertIn("loras/pixel-style-lora.safetensors", tree_links(self.fx.tree))
+        self.assertNotIn("loras/keeper.safetensors", tree_links(self.fx.tree))
+        self.assertNotIn("renames", self.fx.load_registry())
+
+    def test_rename_addresses_a_file_by_the_name_it_currently_wears(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        self.fx.rename("pixel-style-lora.safetensors", "first.safetensors")
+        rc, out = self.fx.rename("first.safetensors", "second.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("loras/second.safetensors", tree_links(self.fx.tree))
+        reg = self.fx.load_registry()
+        # ...and the ledger is still keyed on the DERIVED name, not chained
+        self.assertEqual(list(reg["renames"]), ["pixel-style-lora.safetensors"])
+        self.assertEqual(reg["renames"]["pixel-style-lora.safetensors"]["to"],
+                         "second.safetensors")
+
+    def test_rename_refuses_collisions_and_unknown_targets(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        # (a) the new name is another source's derived name
+        rc, out = self.fx.rename("pixel-style-lora.safetensors", "ae.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("ERROR", out)
+        self.assertIn("Comfy-Org/flux-repack", out)
+        # (b) something is already sitting at the target path in the tree
+        squatter = self.fx.tree / "loras" / "taken.safetensors"
+        squatter.write_bytes(b"mine")
+        rc, out = self.fx.rename("pixel-style-lora.safetensors", "taken.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("loras/taken.safetensors already exists", out)
+        self.assertEqual(squatter.read_bytes(), b"mine")
+        # (c) nothing by that name
+        rc, out = self.fx.rename("no-such-model.safetensors", "whatever.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing named", out)
+        # (d) a path, not a name, on the NEW side
+        rc, out = self.fx.rename("pixel-style-lora.safetensors", "sub/dir.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("plain filename", out)
+        # nothing above changed anything
+        self.assertIn("loras/pixel-style-lora.safetensors", tree_links(self.fx.tree))
+        self.assertNotIn("renames", self.fx.load_registry())
+
+    def test_rename_list_reports_what_is_recorded(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        rc, out = self.fx.rename("--list")
+        self.assertEqual(rc, 0)
+        self.assertIn("0 recorded rename(s)", out)
+        self.fx.rename("pixel-style-lora.safetensors", "keeper.safetensors")
+        rc, out = self.fx.rename("--list")
+        self.assertEqual(rc, 0)
+        self.assertIn("RENAME  pixel-style-lora.safetensors -> keeper.safetensors", out)
+        self.assertIn("acme/style-pack/pixel-style-lora.safetensors", out)  # receipt
+        self.assertIn("1 recorded rename(s)", out)
+
+    # ------------------------------------------- s35: the NAME-IS-API blacklist (data)
+    def _facexlib_fixture(self) -> str:
+        """A file that ships under a name facexlib loads by. Content is irrelevant --
+        the whole claim of the table is about the NAME."""
+        self.fx.add_local_file("facedetection/detection_Resnet50_Final.pth", b"\x00" * 64)
+        return "detection_Resnet50_Final.pth"
+
+    def test_shipped_blacklist_seeds_the_facexlib_trio_with_receipts(self):
+        table = ms.load_name_api_blacklist(ms.DEFAULT_NAME_API_BLACKLIST)
+        for name in ("detection_Resnet50_Final.pth",
+                     "detection_mobilenet0.25_Final.pth",
+                     "parsing_parsenet.pth"):
+            hit = ms.match_name_api(table, name)
+            self.assertIsNotNone(hit, name)
+            self.assertEqual(hit["library"], "facexlib")
+            self.assertEqual(hit["match"], "exact")
+            self.assertTrue(hit["note"], f"{name} has no consequence note")
+
+    def test_shipped_blacklist_carries_every_match_kind_it_claims(self):
+        """The s35 research pass (danger-models-research.md) is not a list of exact
+        filenames: 7 rows name DIRECTORIES a loader addresses as a unit, and 8 are
+        NAMING RULES rather than names. Both shapes have to survive the trip from that
+        document into this table, or the entries were silently dropped."""
+        table = ms.load_name_api_blacklist(ms.DEFAULT_NAME_API_BLACKLIST)
+        self.assertGreater(len(table), 200, "the seeded table lost most of its rows")
+        kinds = {row["match"] for row in table}
+        self.assertEqual(kinds, {"exact", "glob", "dir"})
+        # a directory row: insightface's pack, whose MEMBER .onnx files are safe
+        buffalo = ms.match_name_api(table, "buffalo_l")
+        self.assertEqual(buffalo["match"], "dir")
+        # a naming RULE: the SAM architecture token. Deliberately tested on a name that
+        # is NOT one of the canonical SAM releases (those have exact rows of their own)
+        # -- the whole point of the rule is that it also covers the repacks and forks
+        # nobody has enumerated, which is the class no exact name can express.
+        sam = ms.match_name_api(table, "some-repack_sam_vit_h_v2.pth")
+        self.assertIsNotNone(sam, "the *vit_h* substring rule did not fire")
+        self.assertEqual(sam["match"], "glob")
+        # ...and an exact row still outranks a broad pattern that also matches it
+        exact = ms.match_name_api(table, "detection_mobilenet0.25_Final.pth")
+        self.assertEqual(exact["match"], "exact")   # not the `*mobile*` glob
+        self.assertEqual(exact["library"], "facexlib")
+        # every row is usable: a consumer to name and a consequence to state
+        for row in table:
+            self.assertTrue(row["library"], row)
+            self.assertTrue(row["note"], row)
+
+    def test_every_rename_states_what_it_costs(self):
+        """Two facts no per-file table can carry, because they are true of EVERY
+        rename. They are not blocks -- the user decides -- but a user who was never
+        told has not decided (danger-models-research.md sections 10 and 12)."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        rc, out = self.fx.rename("pixel-style-lora.safetensors", "renamed.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("saved workflows store the picker STRING", out)
+        self.assertIn("ComfyUI-Manager", out)
+        # ...and on the way back out again, because undoing is also a rename
+        rc, out = self.fx.rename("renamed.safetensors",
+                                 "pixel-style-lora.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("value not in list", out)
+
+    def test_rename_of_a_name_is_api_file_is_skipped_unless_forced(self):
+        name = self._facexlib_fixture()
+        self.fx.sync()
+        rc, out = self.fx.rename(name, "my-face-detector.pth")
+        self.assertEqual(rc, 2)                       # a refusal is never silent
+        self.assertIn("SKIP", out)
+        self.assertIn("facexlib", out)                # who hardcodes it
+        self.assertIn("re-download", out)             # ...and what it costs
+        self.assertIn("--force", out)                 # ...and the way past it
+        self.assertIn(f"facedetection/{name}", tree_links(self.fx.tree))
+        self.assertNotIn("renames", self.fx.load_registry())
+
+        # --force overrides, and the record it leaves is an ORDINARY record: nothing in
+        # the registry marks it as forced, because nothing downstream should treat it so.
+        rc, out = self.fx.rename("--force", name, "my-face-detector.pth")
+        self.assertEqual(rc, 0)
+        self.assertIn("facedetection/my-face-detector.pth", tree_links(self.fx.tree))
+        rec = self.fx.load_registry()["renames"][name]
+        self.assertEqual(set(rec), {"to", "display", "recorded"})
+
+    def test_blacklist_is_data_appendable_without_code_changes(self):
+        """The table is a YAML FILE, not a Python constant: an entry nobody has written
+        code for still guards a rename, and an absent file guards nothing."""
+        self.fx.add_local_file("loras/some-node-weights.safetensors",
+                               safetensors_bytes(["whatever.weight"]))
+        self.fx.sync()
+        table = self.fx.root / "extra-blacklist.yaml"
+        table.write_text(
+            "version: 1\n"
+            "files:\n"
+            "  - filename: some-node-weights.safetensors\n"
+            "    library: some-future-node-pack\n"
+            "    note: it re-downloads 2 GB if the name changes.\n")
+        rc, out = self.fx.rename("--name-api-blacklist", str(table),
+                                 "some-node-weights.safetensors", "nicer.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("some-future-node-pack", out)
+        self.assertIn("re-downloads 2 GB", out)
+        # ...and the BARE-LIST shape parses too, because that is how rows arrive when
+        # they are pasted straight out of the research document. A paste that failed to
+        # parse would disarm the whole guard silently (the loader fails open).
+        flat = self.fx.root / "pasted.yaml"
+        flat.write_text(
+            "- filename: some-node-weights.safetensors\n"
+            "  library: pasted-without-indenting\n"
+            "  note: still guarded.\n")
+        rc, out = self.fx.rename("--name-api-blacklist", str(flat),
+                                 "some-node-weights.safetensors", "nicer.safetensors")
+        self.assertEqual(rc, 2)
+        self.assertIn("pasted-without-indenting", out)
+        # absent table -> empty table -> no guard, and NOT an error
+        self.assertEqual(ms.load_name_api_blacklist(self.fx.root / "gone.yaml"), [])
+        rc, out = self.fx.rename("--name-api-blacklist", str(self.fx.root / "gone.yaml"),
+                                 "some-node-weights.safetensors", "nicer.safetensors")
+        self.assertEqual(rc, 0)
+        self.assertIn("loras/nicer.safetensors", tree_links(self.fx.tree))
+
+    def test_unreadable_blacklist_warns_and_fails_open(self):
+        bad = self.fx.root / "bad.yaml"
+        bad.write_text("files: [ this: is: not: yaml\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            table = ms.load_name_api_blacklist(bad)
+        self.assertEqual(table, [])
+        self.assertIn("WARN", buf.getvalue())
+
+    # ------------------------------- s35: one restricted unpickler, not one per tool
+    def test_the_restricted_unpickler_exists_exactly_once(self):
+        """The execution-free reader is a SECURITY boundary. It was written for
+        droste-civitai-adopt, hand-ported into this scanner, and the two copies then
+        drifted -- so a hardening applied to the copy you were looking at was not a
+        hardening. model_formats.py is now the only place it exists, and this test is
+        what notices if somebody re-forks it."""
+        import model_formats
+
+        self.assertIs(ms.read_torch_container, model_formats.read_torch_container)
+        self.assertFalse(hasattr(ms, "_restricted_unpickle"))
+        scripts = Path(ms.__file__).resolve().parent
+        self.assertIn("pickle.Unpickler",
+                      (scripts / "model_formats.py").read_text())
+        for tool in ("model_scanner.py", "droste-civitai-adopt.sh"):
+            self.assertNotIn("pickle.Unpickler", (scripts / tool).read_text(),
+                             f"{tool} grew its own unpickler again")
 
     # --------------------------------------------------------------- inventory
     def test_inventory_skipped_and_cached(self):

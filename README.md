@@ -98,6 +98,12 @@ still wins (`podman run IMAGE bash` gets a shell). The critical-bind checks run
 first even then, so a quick shell with no binds needs `-e ALLOW_EPHEMERAL=1`.
 Full contract + rationale: [BUILD_NOTES](BUILD_NOTES.md).
 
+The normal way in is `droste-setup.sh` (see [Host tools](#host-tools)): it
+creates ONE container per app — `droste-<port>-halo` — with two doors, a
+serve door and an interactive one (below). The `podman run` form in this
+section is that same image driven directly; the mount contract is identical
+either way.
+
 | Image | Service | Port | Config file (seeded if missing, on `/opt/data`) |
 |---|---|---|---|
 | comfyui | ComfyUI web UI | 8188 | `extra_model_paths.yaml` |
@@ -106,42 +112,82 @@ Full contract + rationale: [BUILD_NOTES](BUILD_NOTES.md).
 | llama | `llama-server` | 8080 | `llama.env` — set `LLAMA_ARG_MODEL` |
 | ds4 | `ds4-server` | 8000 | `ds4.env` — set `DS4_DROSTE_MODEL` |
 
+Those ports are the in-container defaults a direct `podman run` publishes. A
+box binds the port recorded in its `server.env` instead (host networking, no
+remap) — `droste-setup.sh` offers these values, nudging ds4 to 8001 so it and
+vllm run side by side.
+
 Mount contract (all ports):
 
-- **`/opt/data`** — the one container-private volume (venv overlay upper, the
-  seeded config file, comfyui's model tree, llama's slot store). Unbound → anonymous
-  volume + a warning. Because overlay uppers live here, the backing filesystem
-  must be ext4/btrfs/xfs-class (tmpfs also works) — **not** ecryptfs (encrypted
-  homes), NFS, or virtiofs, which kernel overlayfs rejects as an upper. On such
-  hosts the resolver falls back to fuse-overlayfs automatically (add
-  `--device /dev/fuse` to the run to enable it), with a copy-mode last resort;
-  `DROSTE_OVERLAY_MODE=auto|kernel|fuse|copy` overrides (default `auto`).
+- **`/opt/data`** — the box's PERSISTENT volume: the seeded config file you
+  edit, comfyui's model tree + `user/` + its custom-node overlay upper, ds4's
+  saved sessions, the finetuning workspace, `server.env`. Nothing on it is ever
+  deleted by anything we ship. Unbound → anonymous volume + a warning. Because
+  overlay uppers live here — and on `/opt/program-cache` below — the backing
+  filesystem must be ext4/btrfs/xfs-class (tmpfs also works) — **not** ecryptfs
+  (encrypted homes), NFS, or virtiofs, which kernel overlayfs rejects as an
+  upper. On such hosts the resolver falls back to fuse-overlayfs automatically
+  (add `--device /dev/fuse` to the run to enable it), with a copy-mode last
+  resort; `DROSTE_OVERLAY_MODE=auto|kernel|fuse|copy` overrides (default
+  `auto`). The rule and the fallback cover BOTH per-box roots, and a box runs
+  ONE mode over the two.
   Plain binds (HF cache, `/opt/caches`, input/output, workspace) have no
   filesystem requirement.
+- **`/opt/program-cache`** — the box's PROGRAM-CACHE volume: everything it can
+  re-obtain by itself. The venv overlay upper (and its `.work` sibling),
+  comfyui's scratch `temp/` and its seeded `extra_model_paths.yaml`, llama's
+  slot store, ds4's KV disk, the serve-state record `.droste-serve.pid`, and
+  the per-box compute-cache fallback under `compute/`. This root is the only
+  thing `droste-setup.sh` ever empties, and only when you say yes to a question
+  that names it. There is deliberately **no `VOLUME` declaration** for it in
+  the images — an anonymous volume would silently hoard multi-GB venv uppers
+  under a name nobody goes looking for — so the bind in the ini (or the `-v`
+  below) is the only thing keeping your in-box `pip install`s off the container
+  layer. Unbound → a warning, never an error.
 - **Critical binds** — hard-error at start unless bound; `ALLOW_EPHEMERAL=1`
   downgrades that to a warning. Always the **HF cache** (`~/.cache/huggingface` —
   the SINGLE model store, shared across all five ports; bind the same host dir
   everywhere and any model one tool downloads is available to the rest); plus
   comfyui `input`/`output` and finetuning `workspace` (irreplaceable user work).
 - **`/opt/caches`** — the shared compute-cache store (MIOpen / Triton /
-  torch-hub). The story is TWO shared stores plus one private volume: models
-  live in the HF cache, compute caches live here, and everything box-private
-  stays on `/opt/data`. Bind the same host dir (default `~/droste/caches`; any
-  dir you like) into every container/box and kernels tuned or JIT-compiled by
-  one are warm for the rest. Optional: unbound → the resolver degrades
-  gracefully to per-box `/opt/data/cache` with an INFO, never an error.
+  torch-hub). The story is TWO shared stores plus the two per-box roots above:
+  models live in the HF cache, compute caches live here, and everything
+  box-private stays on `/opt/data` or `/opt/program-cache`. Bind the same host
+  dir (default `~/droste/compute-caches`; any dir you like) into every
+  container/box and kernels tuned or JIT-compiled by one are warm for the
+  rest. Optional: unbound → the resolver degrades
+  gracefully to the box's own `/opt/program-cache/compute/` with an INFO, never
+  an error. llama and ds4 declare no cache rows at all (neither uses Triton or
+  MIOpen), yet their inis bind this volume anyway — uniformity, so every box's
+  `volume=` line reads the same.
 - **`/opt/models`** — optional read-only local model collection (comfyui scanner
   source #2; the llama/ds4/vllm config model path may point here). Unbound →
   one-time INFO + marker file, never an error.
 
+Those container paths come off **three host roots**, and what separates them is
+what may be thrown away:
+
+- **`~/droste/data/<box>`** — persistent, per box. Your work and everything you
+  authored; `droste-setup.sh` never deletes anything here. comfyui's
+  `input`/`output` and the finetuning `workspace` nest inside it by default.
+- **`~/droste/caches/<box>`** — that box's program caches and nothing else: the
+  venv overlay, llama's slots, ds4's KV disk, scratch temp, the seeded
+  `extra_model_paths.yaml`. Emptied only on consent, at the installer's
+  stale-cache question; every one of those is re-seeded or rebuilt at the next
+  box start.
+- **`~/droste/compute-caches`** — the compiled GPU kernels, shared by every box
+  because their content is keyed by version and architecture. Safe to delete
+  anytime; kernels rebuild on next start. The installer never touches it.
+
 ```bash
 podman run -d -p 8188:8188 --device /dev/kfd --device /dev/dri \
   --cap-add sys_admin --group-add keep-groups \
-  -v ~/droste/comfyui/data:/opt/data \
-  -v ~/droste/comfyui/input:/opt/ComfyUI/input \
-  -v ~/droste/comfyui/output:/opt/ComfyUI/output \
+  -v ~/droste/data/comfyui:/opt/data \
+  -v ~/droste/caches/comfyui:/opt/program-cache \
+  -v ~/droste/data/comfyui/input:/opt/ComfyUI/input \
+  -v ~/droste/data/comfyui/output:/opt/ComfyUI/output \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  -v ~/droste/caches:/opt/caches \
+  -v ~/droste/compute-caches:/opt/caches \
   ghcr.io/doctorjei/droste-comfyui-halo:latest
 ```
 
@@ -153,9 +199,11 @@ nothing you couldn't already do with `unshare -Urm`. Under **rootful**
 podman/docker it is real host `SYS_ADMIN` — a bigger ask, though still confined
 to the container's private mount namespace. `--group-add keep-groups` carries
 the invoking user's supplementary groups (render/video) into the container for
-rootless GPU access — the invoking user must be in those host groups. The
-distrobox lane has the same needs (its init hook performs the same mounts);
-the shipped inis carry the cap and `/dev/fuse` via `additional_flags`.
+rootless GPU access — the invoking user must be in those host groups. A box
+created by `distrobox assemble` has the same mount needs (its init hook runs
+the same resolver), so every ini — the shipped `targets/<port>/distrobox.ini`
+and the ones `droste-setup.sh` emits — carries `--cap-add sys_admin` and
+`--device /dev/fuse` in `additional_flags`.
 
 comfyui additionally runs a pre-launch **model scanner**: it classifies everything
 in the HF cache (+ `/opt/models`) and maintains a ComfyUI-friendly symlink tree
@@ -172,24 +220,65 @@ settled is still visible. Names and sidecar files such as `config.json` are
 deliberately capped low — they are editable, and an edited one points
 confidently at the wrong answer.
 
-**distrobox lane:** the same images double as `$HOME`-native interactive
-toolboxes — `distrobox assemble create --file targets/<port>/distrobox.ini`.
-As of v0.2.0 the lanes are unified: the ini's init hook runs the **same
-resolver mounts as the server entrypoint** — the overlays (venv, comfyui
+**One box, two doors:** the same images double as `$HOME`-native interactive
+toolboxes, and that is not a second container. Each app is ONE container,
+`droste-<port>-halo`, created by `distrobox assemble` — from the record
+`droste-setup.sh` writes for you, or by hand from
+`targets/<port>/distrobox.ini` — with two ways in:
+
+- **the serve door** — `podman start droste-<port>-halo`. Starting the
+  container replays its init hook, which applies the mounts and then reads
+  `server.env` from the box's data dir: `SERVE=1` launches the service on
+  `PORT` (bound directly — boxes use host networking), `SERVE=0` brings up
+  the box and nothing else. Edit that file and `podman restart` the box; no
+  recreate, and it survives image updates. The boxes are created with a
+  podman healthcheck (flags in the ini's `additional_flags`,
+  `--health-on-failure=restart`) that requires the box's OWN service to be
+  the thing answering — if something else already holds the port, the box
+  refuses to start a second listener, appends the refusal to its serve log
+  (`/opt/data/.droste-serve.log`) and reports UNHEALTHY rather than claiming
+  a stranger's port. Boxes you ask to start at host boot get a systemd user
+  unit plus lingering;
+- **the enter door** — `distrobox enter droste-<port>-halo`, a shell in your
+  own `$HOME` with the box's toolchain. Entering a stopped box starts it, so
+  the serve door opens with it when `SERVE=1`.
+
+Both doors are the SAME environment: a `pip install` you do interactively is
+what the served process runs. The init hook performs the **same resolver
+mounts as the server entrypoint** — the overlays (venv, comfyui
 custom_nodes; kernel→fuse→copy fallback included), the surfaces (including
 comfyui's model tree and `user/`, so the ini no longer carries its own volume
 lines for those), and the cache binds (the inis carry the same shared
-`~/droste/caches` → `/opt/caches` volume). The payoff is the whole point of this
-project: in-box changes (`pip install` into `/opt/venv`, custom nodes) live on
-`/opt/data` and **survive box deletion/recreation** instead of dying with the
-container layer. Consequently the inis carry `additional_flags` with
-`--cap-add sys_admin` and `--device /dev/fuse`, and the `/opt/data` filesystem
-rule above (with its automatic fallback) applies to this lane too. Deliberate
-deviations from the server lane: the HF cache gets no bind (the auto-bound
-real home already provides it), destinations under `/root/` remap to the box
-user's home, and directories the hook creates are chowned to the box user.
+`~/droste/compute-caches` → `/opt/caches` volume). The payoff is the whole
+point of this project: in-box changes **survive box deletion/recreation**
+instead of dying with the container layer — a `pip install` into `/opt/venv`
+rides the venv overlay on `/opt/program-cache`, custom nodes their own overlay
+on `/opt/data`. Consequently the inis carry `additional_flags` with
+`--cap-add sys_admin` and `--device /dev/fuse`, and the overlay filesystem
+rule above (with its automatic fallback) applies to a box too. Deliberate
+deviations from a directly-run container: the HF cache gets no bind (the
+auto-bound real home already provides it), destinations under `/root/` remap
+to the box user's home, and directories the hook creates are chowned to the
+box user.
 **Upgrading from v0.1.0:** existing boxes must be recreated (`distrobox rm`
-then `distrobox assemble create`) to pick up the unified mounts.
+then `distrobox assemble create`) to pick up the unified mounts. An install
+predating the merge also has a separate server container and compose file per
+box — those are superseded by the single box above; re-run `droste-setup.sh`,
+which writes the one ini and leaves your data dirs untouched.
+**Upgrading to the three-root layout:** nothing is migrated, on purpose. A
+re-run simply stops reading the old paths, and all of them are safe to move or
+delete by hand once you have moved anything you want to keep — the old per-box
+data dir `~/droste/<box>/data`, `~/droste/finetuning/workspace`, and the old
+shared cache dir `~/droste/caches`. Two traps live in that last one. (1)
+`~/droste/caches` is the per-box PROGRAM-CACHE root now, so only the old
+kernel caches inside it (`miopen*`, `triton`, `torch`, `vllm`) are leftovers —
+the per-box directories beside them are live; and because a modify run seeds
+its defaults from your old ini, the compute-cache question will offer you
+`~/droste/caches` — re-point it at `~/droste/compute-caches`. (2) a `ds4.env`
+seeded before the split still carries
+`DS4_DROSTE_KV_DISK_DIR=/opt/data/kv-disk` and keeps writing KV cache into the
+data root; seeded configs are never overwritten, so edit that line to
+`/opt/program-cache/kv-disk` yourself (see Troubleshooting).
 
 ### Troubleshooting
 
@@ -234,6 +323,18 @@ then `distrobox assemble create`) to pick up the unified mounts.
   session — `machinectl shell <user>@` (package `systemd-container`) or
   `ssh <user>@localhost` — and run from it. `droste-setup.sh` stops on
   `SUDO_USER`/`DOAS_USER` in its preflight, before pulling.
+- **A config file that an image update did not change** — a new option missing
+  from it, or vLLM logging `Found duplicate keys --port` at every start → the
+  per-port config files are seeded ONCE (`if_missing`) and never overwritten,
+  because after first start they are yours to edit. Nothing tells you when the
+  baked original moves on, so after an image update compare yours against it
+  inside the box: `/opt/resources/templates/`. Two known cases. An old
+  `vllm_config.yaml` carries a `port:` key: delete the line — the container
+  owns the listen port (`server.env`), and the same goes for `LLAMA_ARG_PORT`
+  in `llama.env` or `DS4_DROSTE_PORT` in `ds4.env` if you re-add them. And a
+  `ds4.env` seeded before the storage split still points
+  `DS4_DROSTE_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
+  persistent volume: repoint it to `/opt/program-cache/kv-disk`.
 
 ## Host tools
 
@@ -246,29 +347,49 @@ populate the shared model stores the containers mount.
 ### droste-setup.sh — interactive installer
 
 One self-contained bash script with zero repo-checkout dependencies (safe as
-`curl <url> | bash`). It guides lane choice (server container and/or
-distrobox), every bind in the mount contract, and host ports — ds4 and vllm both
-listen on 8000 inside their containers, so ds4's host port defaults to **8001**
-and the two run side by side out of the box. It **probes each data dir's
-filesystem** and, on an overlay-hostile one (ecryptfs/NFS/…, see
-Troubleshooting), offers another location, the fuse-overlayfs fallback, or
-copy-mode. It then emits per-box **recreation records** into `~/droste/` —
-`<box>-halo-srv.cmp.yaml` (server lane; when no compose provider is
-installed, creation falls back to plain `podman create` with identical flags),
-`<box>-halo-dbox.ini` (distrobox lane), and a `NOTES.md` guide with your real
-paths baked in — and can pull images, create boxes, and start servers.
-**Safe to re-run:** existing compose/ini files, containers, and distroboxes are
-detected and listed; per box you choose keep / recreate / modify — nothing is
-silently clobbered. Its **preflight** reports the host state the run depends on
-(runtime, GPU devices, groups, lingering) and covers the two traps that would
-otherwise only surface after a multi-GB pull: subordinate id ranges podman
-never picked up, and a `sudo -iu` / `su -` session distrobox will refuse — see
-[Troubleshooting](#troubleshooting) for both cures.
+`curl <url> | bash`). It guides which boxes you want, every bind in the mount
+contract, the port each service binds — ds4 and vllm both default to 8000, so
+ds4's is nudged to **8001** and the two run side by side out of the box — and
+whether each box serves when it starts and whether it starts at host boot. It
+**probes each data dir's filesystem** and, on an overlay-hostile one
+(ecryptfs/NFS/…, see Troubleshooting), offers another location, the
+fuse-overlayfs fallback, or copy-mode. It then emits per-box **recreation
+records** into `~/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
+definition for that box, healthcheck flags and all), `server.env` in the box's
+own data dir (`SERVE` + `PORT`, re-read at every start), and a `NOTES.md` guide
+with your real paths baked in — and can pull images, create boxes, and start
+servers. Boxes asked to start at host boot also get a systemd **user** unit
+(`~/.config/systemd/user/droste-<box>.service`) doing `podman start`, and the
+installer enables lingering for you (printing the `sudo` form if the session
+will not let it).
+**The storage questions** follow the three host roots. Two yes/no questions
+decide whether the program caches and the persistent data each sit under one
+common base — `Store program caches at common base path (e.g.,
+~/droste/caches)`, then the same for `~/droste/data`; decline either and that
+family is asked per box instead (`Please indicate the path for the
+program-specific caches`). Then the paths every box shares: the compute caches,
+the HF cache (labelled `"cache" - never wiped`, because it is the model store),
+and `Path to bind as read-only share /opt/models` — a path-or-**None** prompt,
+defaulting to None, since a local model collection has no default location
+(name one, e.g. `~/models`, and it is bound read-only everywhere). Finally, if
+it finds leftovers in a program-cache dir, it offers to clear them: once for
+the whole install (`Clear all old / stale caches`), then per box (🔶 `Clear
+stale caches`) for whatever a global "no" left behind. That clear is the ONLY
+deletion droste-setup.sh performs, it never reaches outside a box's
+program-cache dir, and it will not touch a box that is running.
+**Safe to re-run:** existing definition files, containers and boxes are
+detected and listed; per box you choose keep / recreate / modify — settings
+files are never silently clobbered. Its **preflight** reports the host state
+the run depends on (runtime, GPU devices, groups, lingering) and covers the
+two traps that would otherwise only surface after a multi-GB pull:
+subordinate id ranges podman never picked up, and a `sudo -iu` / `su -`
+session distrobox will refuse — see [Troubleshooting](#troubleshooting) for
+both cures.
 
 ```bash
 ./droste-setup.sh                  # interactive menu over all five boxes
 ./droste-setup.sh comfyui llama    # direct-to-box shortcut
-./droste-setup.sh --plain          # ASCII output (no emoji / ANSI)
+./droste-setup.sh --ascii          # ASCII-only output (no emoji / ANSI)
 ```
 
 ### scripts/droste-hf-adopt.sh — local downloads → the shared HF cache

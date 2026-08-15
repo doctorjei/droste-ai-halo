@@ -113,6 +113,12 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   destinations remapped to the box user's home, created dirs chowned to the box
   user. (Pre-0.2.0 the distrobox lane skipped every internal mount — see
   "2026-07-09 — lane unification" below for why that was wrong and reversed.)
+  **LANE ≠ CONTAINER (2026-08-14).** The two lanes are the resolver's two
+  ENTRY POINTS, not two boxes: `server` is reached only through the image
+  ENTRYPOINT, i.e. a DIRECT `podman run` (and `check-rocm.sh`), while a box
+  created by `distrobox assemble` runs `DROSTE_LANE=distrobox` for BOTH of its
+  doors — serving included, because the serve door IS the init hook. See
+  "2026-08-14 — one container, two doors" below.
 - `droste-entrypoint.sh` — the server-lane ENTRYPOINT for every port. Sources the
   library + the port's `/opt/resources/build-spec`, runs `resolve::apply_spec` in
   the fixed design order (ensure `/opt/data` → SURFACES/OVERLAYS/CACHES → CRITICAL
@@ -145,6 +151,9 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   leave no log at all, which reads as "nothing ran").
   **The server lane never reads server.env** — its ports are podman-published
   `HOST:CONTAINER` remaps, so rewriting the in-container bind would break them.
+  (Since the 2026-08-14 merge that lane is the direct-`podman run` route only;
+  droste-setup.sh creates no such container, so every INSTALLED box takes the
+  server.env path.)
 - `droste-healthcheck.sh` — the container-side probe for
   `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup.sh at create
   time; the images bake NO `HEALTHCHECK`). TWO gates, both required: (1) the state
@@ -183,6 +192,16 @@ cache-specific behaviour — which arrived in v0.2.0, when CACHES retargeted to
 the shared `/opt/caches` volume; see the 2026-07-09 shared compute-cache
 entry). There is deliberately no DEFAULTS row — ALL content
 seeding is owned by templates.yaml. Contract doc: `base/resolve/build-spec.example`.
+
+**Which root a row uses IS its class declaration (2026-08-15).** There are
+three container-side roots, and the prefix of a src/upper carries the whole
+classification, so nothing downstream has to guess from a path's contents:
+`/opt/data` = per-box PERSISTENT, `/opt/program-cache` = per-box PROGRAM CACHE
+(re-obtainable, and the one root the installer may empty whole), `/opt/caches`
+= the SHARED compute caches, which no spec writes to directly — it is reached
+only by the CACHES rewrite. The single exception to the table is a `.work`
+dir, which follows its own upper's root instead (kernel: workdir and upperdir
+must share a filesystem). See the 2026-08-15 storage-taxonomy entry below.
 
 ### Templates (first-run seeding)
 `targets/<port>/templates/` bakes to `/opt/resources/templates/`; the manifest
@@ -231,6 +250,10 @@ measurable growth in the upper, where a recursive walk over *files* copies every
 payload (2.7 GB in an earlier test). `! -uid` makes re-runs a no-op and also
 reclaims dirs a **server**-lane run left root-owned in the shared upper, so the
 two lanes stop contaminating each other. Never extend this to files.
+(2026-08-14: with the lanes merged into one container the crossing is no longer
+routine — it now takes a data dir ALSO driven by a direct `podman run`, or one
+left behind by a pre-merge install. The reclaim stays precisely because those
+dirs exist in the field, and it costs a no-op walk when they do not.)
 
 ### Model classification: signals and confidence
 `model_scanner.py` classifies by a ladder, but the evidence it uses is not all
@@ -320,9 +343,10 @@ keys reuse the safetensors classifier rather than growing parallel prefix rules.
   cache-path resolution and setting it would re-separate the shared HF cache.
   Slot save/restore: the pinned fork ships `--slot-save-path` with NO env
   annotation (verified by the first CI run failing loudly, as designed), so
-  the entrypoint launch line passes `--slot-save-path /opt/data/slots`
+  the entrypoint launch line passes `--slot-save-path /opt/program-cache/slots`
   (user override = own flag in LLAMA_EXTRA_ARGS; later flags win); the dir is
-  pre-created in PRE_LAUNCH.
+  pre-created in PRE_LAUNCH. (The slots were on `/opt/data` until the
+  2026-08-15 storage taxonomy moved them to the program-cache root.)
 - **ds4** — ds4 has no native per-flag env vars, so PRE_LAUNCH translates
   `DS4_DROSTE_*` → argv (arity source-verified against pinned kyuz0/ds4
   `@00e64ea`); NATIVE `DS4_*` vars (DS4_THREADS, …) pass through untouched — the
@@ -401,6 +425,10 @@ hardware surfaced three findings and one decided design change.
 
 ### 2026-07-09 — lane unification (v0.2.0: distrobox gets the server lane's mounts)
 
+> Amended 2026-08-14: the mount unification decided here STANDS unchanged, but
+> the two-CONTAINER shape it assumes is gone — one container per box now
+> carries both doors. See "2026-08-14 — one container, two doors" below.
+
 The v0.1.0 "distrobox lane mounts nothing in-container" design is REVERSED.
 Decision (Jei, 2026-07-09): the two lanes' mounts are now MOSTLY IDENTICAL —
 the init hook runs the same resolver mounts as the server entrypoint, with
@@ -457,13 +485,23 @@ assumed.
   `KEEP_OLD_VENV=1` in its `server.env` (silences the report, changes nothing
   about the mount). The warning text itself is the user-facing documentation;
   this bullet only records that it exists.
+  **Superseded 2026-08-15 (storage taxonomy):** the venv upper lives on the
+  per-box program-cache root now, so the trap is a stale CACHE the installer
+  offers to clear BY LOCATION, and the hand-kept pair retired with it —
+  `venv_upper_review`, `serve_env_keep_venv` and the `KEEP_OLD_VENV` key are
+  all gone (a `KEEP_OLD_VENV=1` line left behind in an old `server.env` is
+  simply ignored: the box reads `SERVE` and `PORT` from that file and nothing
+  else). What survives in the box is `resolve::_upper_is_env`, reduced to one
+  ungated WARN when an overlay upper turns out to be a whole environment, and
+  mirrored nowhere.
 
 ### 2026-07-09 — shared compute-cache volume (`/opt/caches`, folded into v0.2.0)
 
 Decision (Jei, 2026-07-09): the compute caches (MIOpen / Triton / torch-hub)
 move from per-box `/opt/data/cache` to ONE shared volume, bound at
-`/opt/caches` in every container and box (host default `~/droste/caches`,
-user-overridable). Rationale, his: "easier to make the caches all shared,
+`/opt/caches` in every container and box (host default `~/droste/compute-caches`
+since the 2026-08-15 rename below, user-overridable — it was `~/droste/caches`
+until then). Rationale, his: "easier to make the caches all shared,
 generally". The resulting mount story is TWO shared stores plus one private
 volume — models (the HF cache) and compute caches (`/opt/caches`) shared
 across all five ports; `/opt/data` stays strictly box-private.
@@ -498,6 +536,150 @@ across all five ports; `/opt/data` stays strictly box-private.
   shared-cache retarget lands as a CACHES-row semantics change — no SURFACES
   touch, no build-spec format change — because the seam was already there.
   His foresight, on the record as his.
+- **Partly superseded 2026-08-15 (storage taxonomy):** the sharing rationale
+  and the MIOpen caveat stand unchanged, but three paths in this entry moved.
+  The unbound fallback is the box's own `/opt/program-cache/compute/`, not
+  `/opt/data/cache`; llama's slots and ds4's kv-disk went with it to
+  `/opt/program-cache` — still per-box and still never shared, but cache CLASS
+  by location, which is the whole point of that round; and the mount story is
+  now two shared stores plus TWO per-box roots.
+
+### 2026-08-14 — one container, two doors (the compose lane is retired)
+
+The TWO-ARTIFACT shape is gone. Until this date every box shipped a server-lane
+compose file (`<box>-halo-srv.cmp.yaml` — podman compose, root entrypoint,
+published ports) AND a distrobox ini (`<box>-halo-dbox.ini`): two containers,
+two records, one shared data dir. After the lane unification above they ran the
+SAME mounts, so the second container bought nothing and cost plenty — two
+definitions to keep in sync, two things to recreate, and one overlay upper
+written by both uid regimes (the `_own_dirs` reclaim above is that scar).
+
+What ships instead: ONE container per box, named `droste-<box>-halo`, created
+by `distrobox assemble` from ONE record, `<box>-halo.ini`, with two doors.
+
+- **Serve door** — `podman start droste-<box>-halo` replays the ini's
+  `init_hooks` line; the hook ends in `serve::maybe_launch`, which reads
+  `<data dir>/server.env` and launches the build-spec's SERVICE as the box
+  user on the recorded `PORT`. It is deliberately `|| true`: a serve problem
+  must never fail the hook, because distrobox reports a failed hook as a
+  generic error and the box would become hard to ENTER — the opposite of what
+  you want when the service is the broken part.
+- **Enter door** — `distrobox enter droste-<box>-halo`. Same container, so the
+  environment a user pip-installs into is the one the service runs. Entering a
+  stopped box starts it, which opens the serve door with it when `SERVE=1`.
+- **server.env is the single authority** for both SERVE and PORT. It lives on
+  the per-box data volume, so it survives image updates and box recreation,
+  and it is re-read at EVERY start (edit + `podman restart`, no recreate).
+  That authority is why the seeded per-port config files carry no active port
+  line — `serve::apply_port` would overwrite it anyway; see the vllm
+  (`port:` key), llama (`LLAMA_ARG_PORT`) and ds4 (`DS4_DROSTE_PORT`) notes
+  above, all dated 2026-08-14 for this reason.
+- **Ports are BOUND, not published.** distrobox containers use HOST
+  networking, so there is no `HOST:CONTAINER` remap to make: `PORT` is the
+  host port. ds4's installer default is nudged to 8001 because vllm owns 8000.
+  (Host networking is also why the healthcheck has to prove OWNERSHIP of the
+  port — see the `droste-healthcheck.sh` bullet in the runtime contract.)
+- **Supervision is wired at CREATE time**, into the ini's `additional_flags`:
+  `--health-cmd` + `--health-interval` + `--health-retries` +
+  `--health-start-period` (per box, generous — it must cover a multi-GB model
+  load) + `--health-on-failure=restart`, plus `--stop-timeout`. The images
+  bake no `HEALTHCHECK` of their own, so those flags are the whole contract;
+  droste-setup.sh emits them unconditionally, interactive-only boxes included,
+  because the probe answers HEALTHY for a box that is not configured to serve.
+- **Host boot is a systemd USER unit** per box (`droste-<box>.service`,
+  oneshot `podman start` + `RemainAfterExit`) plus `loginctl enable-linger` —
+  not a podman restart policy. Lingering is load-bearing twice over: without
+  it the user manager exits at logout and takes both the unit AND podman's
+  healthcheck timers with it.
+
+The server-lane ENTRYPOINT is NOT removed: `podman run <image>` behaves exactly
+as the runtime contract describes, and `check-rocm.sh` drives it. It simply is
+not something the installer creates any more, so "server lane" now means "the
+image run directly", never "the box's other container".
+
+Migration: a pre-merge install's `-srv.cmp.yaml` / `-dbox.ini` pair and the
+containers made from them are superseded, and the installer neither reads nor
+removes them — it looks only for `<box>-halo.ini`. Re-running droste-setup.sh
+writes the single ini + server.env and reuses the data dir as-is; delete the
+old files and containers by hand. The one data-dir hazard is the pre-merge
+venv upper — see the poisoned-upper bullet in the lane-unification entry above.
+
+### 2026-08-15 — storage taxonomy (three roots, classification by LOCATION)
+
+ONE per-box volume was doing two jobs. `/opt/data` held both the things a user
+would mourn (configs, the model tree, custom nodes, saved sessions, the
+finetuning workspace) and the things a box rebuilds without being asked (the
+venv upper, slots, KV disk, scratch), so anything that wanted to clear the
+second had to GUESS which was which from a path's CONTENTS — the s36 heuristic,
+and that guess is what lost here. The split makes the mount point the class:
+what a thing IS decides where it lives, and no consumer has to infer it again.
+
+Three roots, container-side (host defaults in parentheses):
+
+- **`/opt/data`** (`~/droste/data/<box>`) — per-box PERSISTENT. Configs
+  (`server.env`, `*.env`, `vllm_config.yaml`), comfyui `user/` + the
+  custom_nodes upper + the model tree, ds4 `sessions/` + `cockpit/`, the
+  finetuning workspace, the `.droste-*.log` files.
+- **`/opt/program-cache`** (`~/droste/caches/<box>`) — per-box PROGRAM CACHE,
+  re-obtainable by construction: the venv upper and its `.work`, copy-mode
+  materializations, `tmp`, llama's slots, ds4's kv-disk, comfyui's seeded
+  `extra_model_paths.yaml`, the `.droste-serve.pid` state record, and the
+  per-box compute-cache fallback under `compute/`. The installer may empty this
+  ROOT WHOLE on consent, so nothing a user would miss may ever be put here.
+- **`/opt/caches`** (`~/droste/compute-caches`) — the shared compute caches,
+  unchanged in role and renamed on the HOST side only: the old shared default
+  `~/droste/caches` is now the per-box program-cache PARENT, and leaving both
+  meanings on one path would have been unreadable.
+
+Resolver contract delta (`base/resolve/droste-resolve.sh`):
+
+- `DROSTE_PCACHE_DIR` (default `/opt/program-cache`) joins `DROSTE_DATA_DIR`
+  and `DROSTE_CACHES_DIR` under the same override discipline, and
+  `ensure_pcache` mirrors `ensure_data` — but WARNs only, never fatal, because
+  nothing on the root is irreplaceable (`resolve::critical` is for the paths
+  that are). There is deliberately NO `VOLUME /opt/program-cache` in any
+  Containerfile, same stance as `/opt/caches`: an anonymous volume would
+  silently hoard multi-GB venv uppers under a name nobody goes looking for.
+  The bind in the emitted ini is therefore the ONLY thing keeping in-box
+  installs off the container's writable layer.
+- The shared-cache src rewrite now keys on the prefix
+  `$DROSTE_PCACHE_DIR/compute/` (it was `$DROSTE_DATA_DIR/cache/`): a CACHES
+  row under `compute/` re-sources from `$DROSTE_CACHES_DIR` when that volume is
+  bound, and everything else on the program-cache root — slots, kv-disk, tmp,
+  the venv upper — is cache CLASS but never SHARED (one box's KV state means
+  nothing to another) and never rewrites. The `compute/` prefix is load-bearing
+  and the build-specs say so at the CACHES row.
+- **The work dir is always a sibling of its own upper**, which is why `.work`
+  follows the upper's root rather than the class table's "all `.work` is cache"
+  line: the venv's lands on the program-cache root, comfyui's `custom_nodes`
+  `.work` stays on data. Kernel constraint (workdir and upperdir must be on the
+  same filesystem), not a taste call — the two roots may well be different
+  filesystems, which is the whole point of asking for them separately (the
+  installer mock sends one box's caches to `/fast/caches/llama`).
+- The overlay-hostile-fs probe follows BOTH roots — the venv upper moved, the
+  custom_nodes upper did not — and either one objecting settles ONE
+  `DROSTE_OVERLAY_MODE` for the box: a per-root mode would be two answers to a
+  question the user was asked once.
+- The whole-environment-upper machinery is gone but for one survivor:
+  `resolve::_upper_is_env` is now a single ungated WARN fired BEFORE the mount
+  is attempted, so it speaks in every overlay mode — copy included, where the
+  old report deliberately stayed silent because it fired only at the
+  kernel/fuse SUCCESS sites — and it is mirrored NOWHERE. See the supersession
+  note in the poisoned-upper bullet above for the KEEP_OLD_VENV retirement it
+  replaces.
+- Installer side, for the record: the per-box program-cache clear (offered once
+  install-wide, then per box for whatever a global "no" left) is now the ONLY
+  deletion droste-setup.sh can perform, and it never reaches outside a box's
+  program-cache dir.
+
+Migration: NONE, deliberately. The old paths — `~/droste/<box>/data`,
+`~/droste/finetuning/workspace` and the old shared `~/droste/caches` — are
+simply no longer read; NOTES.md and the README name them as safe to move or
+delete by hand. `parse_existing_ini` TOLERATES the old ini shape (it seeds the
+data path and hands the box a factory program-cache path), so a modify run is
+not a re-typing exercise. The one sharp edge is the compute-cache prompt, whose
+default seeds from the old ini's `/opt/caches` host path — which under the new
+names is the program-cache ROOT, and wants re-pointing at `compute-caches`.
 
 ---
 

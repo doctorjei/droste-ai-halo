@@ -80,6 +80,15 @@ declare -A BIND_ROW=(
   [data]="Data Path" [input]="Input" [output]="Output" [workspace]="Workspace"
 )
 
+# A bind whose prompt is written OUT, instead of composed as "Path for <Box>
+# <bind title>". The program-cache dir is the case: what the answer places is a
+# class of files (everything the installer may throw away), not a thing the box
+# owns a name for, so the prompt says what lives there — Jei's s38 wording, one
+# per box. Any label without an entry here keeps the composed shape.
+declare -A BIND_PROMPT=(
+  [pcache]="Please indicate the path for the program-specific caches"
+)
+
 # Default HOST-side port offered at the prompt. In the merged shape there is no
 # publish/remap to be had (distrobox containers use HOST networking), so this is
 # the port the service BINDS: droste-setup.sh writes it into server.env and the
@@ -256,12 +265,16 @@ esac
 if [[ $ASCII -eq 1 ]]; then
   RESET="" DIVCH="-"
   # Prose typography, transliterated at the mode boundary so the sentences
-  # themselves are written once: em-dash -> "--", ellipsis -> "...".
+  # themselves are written once: em-dash -> "--", ellipsis -> "...". ELL has no
+  # caller at the moment (its last one was a preflight hint the marker rework
+  # retired) and is kept anyway: it is one of exactly two atoms standing between
+  # a typed "…" and a broken --ascii byte contract, and it costs one assignment.
+  # shellcheck disable=SC2034
   EMD="--" ELL="..."
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --ascii / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
-  C_BRK="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD="" C_NOTB="" C_NOT=""
+  C_BRK="" C_OKB="" C_OK="" C_BADB="" C_NOTB=""
   C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
@@ -281,12 +294,20 @@ if [[ $ASCII -eq 1 ]]; then
   # earlier [+]/[-]/[?], and only here — no other ASCII fallback changed).
   GS_YES="[Y]" GS_NO="[N]" GS_NA="[?]" W_STATE=3 GB_L="" GB_R=""
   BULLET="-" ARROW_G=" ---> " ARROW_M="-->"
+  # The three status markers: ok / caution / blocker. They open every preflight
+  # row, and the caution sign is also the one marker a QUESTION wears (the
+  # stale-cache offer). ASCII keeps the transcript's long-standing [ok]/[!!]
+  # pair, so CAUT and BAD deliberately COLLAPSE onto [!!] here: this palette has
+  # never spelled a third state, and inventing one ([XX]) would change rows the
+  # ASCII transcript has drawn the same way since the rework.
+  MK_OK="[ok]" MK_CAUT="[!!]" MK_BAD="[!!]"
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
   # The two banner weights collapse onto the same ASCII drawing in --ascii.
   BANTL="." BANTR="." BANBL="'" BANBR="'" BANH="-" BANV="|"
   BANTL2="." BANTR2="." BANBL2="'" BANBR2="'" BANH2="-" BANV2="|"
 else
   RESET=$'\e[0m' DIVCH="─"
+  # shellcheck disable=SC2034   # ELL: see the ASCII twin above
   EMD="—" ELL="…"
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
   C_TITLE=$'\e[1;96m'   # installer title (top banner only)
@@ -297,12 +318,16 @@ else
   C_SUB2=$'\e[4;37m'    # underlined subtitle, intro variant (Resource Path)
   C_TEXT=$'\e[0;37m'    # body + prompt text
   C_BRK=$'\e[0;32m'     # option-list brackets, default row
-  C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m' C_OKT=$'\e[0;36m'    # preflight ok row
-  C_BADB=$'\e[0;31m' C_BAD=$'\e[0;91m'                    # preflight [!!] row
-  # The yellow twin of the pair above: same shape, one shade down, for a row
-  # that reports something the installer itself fixes later. Reset-prefixed
-  # like every other entry so neither shade inherits a neighbour's weight.
-  C_NOTB=$'\e[0;33m' C_NOT=$'\e[0;93m'                    # preflight note row
+  # Preflight row text, one shade per marker: green behind ✅, red behind 🚨,
+  # yellow behind 🔶. The marker itself is never painted (it is emoji), so each
+  # of these opens the row AFTER the glyph and runs to the reset. C_OK is the
+  # bright green of the pull section's [OK] tag, which is a different animal
+  # from a preflight row and keeps its own bracketed drawing.
+  C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m'                      # preflight ✅ row
+  C_BADB=$'\e[0;31m'                                      # preflight 🚨 row
+  # Reset-prefixed like every other entry so no shade inherits a neighbour's
+  # weight; also worn by the one QUESTION that carries the caution sign.
+  C_NOTB=$'\e[0;33m'                                      # preflight 🔶 row
   C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'  # table [N] + option-list, other rows
   C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
   C_SUBJ=$'\e[1;97m'    # sub-notice subject
@@ -318,8 +343,8 @@ else
   C_FILE=$'\e[3;37m'    # emitted file names + the closing "Wrote NOTES.md."
   C_ERR=$'\e[1;91m'     # the [ERROR] tag of a failed pull/create status line
   # The word "stop" inside the Shortcuts parenthetical — the one word in it the
-  # reader has to TYPE. Its own entry rather than a borrowed one: C_BAD is
-  # 0;91 (not bold), and C_ERR/C_ARROW mean "this failed" / "aside follows"
+  # reader has to TYPE. Its own entry rather than a borrowed one: C_ERR and
+  # C_ARROW are the same bold red but mean "this failed" / "aside follows"
   # everywhere else. Deliberately NOT italic: 3;37 renders bold-bright on Jei's
   # terminal, which is why the parenthetical is coloured instead of slanted.
   C_STOPW=$'\e[1;91m'   # ...and its tail, italic grey. Reset-prefixed on purpose:
@@ -368,6 +393,13 @@ else
   # Legend wraps the emoji in its own brackets (GB_L/GB_R).
   GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
   BULLET="·" ARROW_G=" 🭹🭹🭹⮞ " ARROW_M="🭹🭹⮞"
+  # The three status markers — ✅ ok / 🔶 something to decide about / 🚨 blocker.
+  # BORN-EMOJI ONLY (U+2705, U+1F536, U+1F6A8): each is Emoji_Presentation by
+  # default, so it is two columns wide with no VS16 promotion in sight — a
+  # VS16-promoted glyph (⚠️ and its class) is what breaks the width math. They
+  # bring their own colour, so nothing is painted onto them; the row's colour
+  # opens AFTER the marker.
+  MK_OK=$'\U2705' MK_CAUT=$'\U1F536' MK_BAD=$'\U1F6A8'
   BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
   # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
   # the per-box titles. The light set above is the summary box's.
@@ -479,14 +511,19 @@ hint_yn() {   # Y|N
 # set off from the next prompt by a blank line.
 subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
 
-# Preflight rows: cyan [ok] / red [!!] / yellow [!!]. A preflight problem is
-# reported here rather than through warn(), and only one of them ends the run
-# (pf_session). The yellow row is the same marker in the informational shade:
-# the state is not what the installer wants, but the installer offers to change
-# it before the run ends.
-pf_ok()   { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
-pf_bad()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
-pf_note() { printf '  %s[%s%s%s]%s %s%s\n' "$C_NOTB" "$C_NOT" "!!" "$C_NOTB" "$C_NOTB" "$1" "$RESET"; }
+# Preflight rows, one marker each — ✅ this is fine / 🔶 a possible blocker, or
+# something the reader has to decide about / 🚨 a definite blocker. A preflight
+# problem is reported here rather than through warn(), and only one of them ends
+# the run (pf_session); the markers say which rows the reader must act on
+# without making the run stop to say it.
+#
+# Layout, byte for byte: two spaces, the marker (two columns — born-emoji, see
+# the palette), the row colour, ONE space, the text, reset. The colour opens
+# after the glyph so nothing repaints the emoji, and the space lives inside it
+# so the row ends in exactly one reset.
+pf_ok()   { printf '  %s%s %s%s\n' "$MK_OK"   "$C_OKB"  "$1" "$RESET"; }
+pf_bad()  { printf '  %s%s %s%s\n' "$MK_BAD"  "$C_BADB" "$1" "$RESET"; }
+pf_note() { printf '  %s%s %s%s\n' "$MK_CAUT" "$C_NOTB" "$1" "$RESET"; }
 
 # Follow-on detail under a preflight row — the four-space indent and body-text
 # grey of linger_fallback_note(), with any command emph()'d inside the string.
@@ -496,10 +533,14 @@ pf_hint() { printf '    %s%s%s\n' "$C_TEXT" "$1" "$RESET"; }
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
 # Two weights: the ONE installer title is DOUBLE-ruled, each per-box title HEAVY.
 BANNER_W=0                       # outer width of the last banner drawn
-banner() {   # text [bold]
-  local text=$1 bold=${2:-} n i fill top mid bot tcol
+banner() {   # text [bold] [min-inner-width]
+  local text=$1 bold=${2:-} minw=${3:-0} n i fill top mid bot tcol pad
   local tl=$BANTL tr=$BANTR bl=$BANBL br=$BANBR h=$BANH v=$BANV
   n=$(( ${#text} + 2 ))          # text plus one space of padding each side
+  # A caller that knows what will be drawn UNDER the banner (a per-box summary
+  # box) hands its width in, and the banner grows to it: the title stays where
+  # it is and the extra columns are added on the right, inside the frame.
+  [[ $minw -gt $n ]] && n=$minw
   # "bold" marks the per-box banners; the top installer banner is the title one.
   if [[ $bold == bold ]]; then
     tcol=$C_BTITLE
@@ -512,7 +553,10 @@ banner() {   # text [bold]
   for (( i = 0; i < n; i = i + 1 )); do fill+=$h; done
   top="$tl$fill$tr"
   bot="$bl$fill$br"
-  mid="$v $tcol$text$C_FRAME $v"
+  # The padding after the title is FRAME-coloured (it is frame, not title), and
+  # it is one space in the ordinary case — the same line the banner always drew.
+  printf -v pad '%*s' "$(( n - ${#text} - 1 ))" ''
+  mid="$v $tcol$text$C_FRAME$pad$v"
   printf '\n'
   # Wrap each line separately so it renders even when RESET is empty (--ascii).
   printf '  %s%s%s\n' "$C_FRAME" "$top" "$RESET"
@@ -566,6 +610,15 @@ sub() {   # text [intro]
 # in a per-box Box Settings section.
 subhdr() {   # text
   printf '\n  %s%s%s\n' "$C_HDR" "$1" "$RESET"
+}
+
+# An EXPLAINER above a run of prompts: sub()'s placement (blank line, indent
+# two) in the quit notice's voice — light grey italic, the shade this installer
+# uses for a sentence that explains rather than titles. A subtitle names the
+# block it opens; this one tells the reader what the block is going to ask for,
+# so it is deliberately NOT the underlined subtitle style (Jei's mock).
+explain() {   # text
+  printf '\n  %s%s%s\n' "$C_QTXT" "$1" "$RESET"
 }
 
 # Pad a cell whose DISPLAY width may differ from its byte length (emoji).
@@ -855,6 +908,11 @@ quit_notice() {
 }
 
 ANS=""
+# Text printed between the indent and the prompt's body colour, for the one
+# prompt shape that opens with something that is NOT body text (the caution
+# sign and the clause it introduces). Empty for every other prompt, and cleared
+# by the helper that sets it — ask_raw only reads it.
+ASK_LEAD=""
 ask_raw() {  # $1 = prompt text (printed without newline)
   # ONE place owns the 2-space prompt indent and the body-text colour — call
   # sites pass bare text (which may carry its own [option] colours inside).
@@ -873,10 +931,10 @@ ask_raw() {  # $1 = prompt text (printed without newline)
   # run whose STDOUT is redirected keeps showing its prompts on the terminal.
   local ok=1 p
   if [[ $READLINE -eq 1 ]]; then
-    p=$(rl_prompt "  $C_TEXT$1$C_IN")
+    p=$(rl_prompt "  $ASK_LEAD$C_TEXT$1$C_IN")
     IFS= read -e -r -p "$p" ANS <&"$ASK_FD" || ok=0
   else
-    printf '  %s%s' "$C_TEXT" "$1"
+    printf '  %s%s%s' "$ASK_LEAD" "$C_TEXT" "$1"
     [[ $SCRIPTED -eq 1 ]] || printf '%s' "$C_IN"
     IFS= read -r ANS <&"$ASK_FD" || ok=0
   fi
@@ -908,6 +966,20 @@ ask_yn() {  # question default(Y|N)  → ANS_YN=1/0   (renders "... [Y/n]? ")
       n|N) ANS_YN=0; return 0 ;;
     esac
   done
+}
+
+# The same question with a CAUTION SIGN and a clause in front of it: the sign
+# (unpainted — it brings its own colour), then the reason the question is being
+# asked in the preflight note's yellow, then the question itself in body text.
+# The clause rides in ASK_LEAD rather than in the question string because
+# ask_raw opens its line in body text, and both the sign and the clause have to
+# be printed before that colour is set. The separating space belongs to the
+# QUESTION for the same reason (it is body text in the mock, not clause yellow).
+ask_yn_caution() {  # clause question default(Y|N) → ANS_YN
+  ASK_LEAD="$MK_CAUT $C_NOTB$1"
+  ask_yn " $2" "$3"
+  ASK_LEAD=""
+  return 0
 }
 
 # The INLINE three-way cluster "[y]es, [N]o, or [c]ase-by-case". It is written
@@ -1014,6 +1086,31 @@ ask_path_as() {  # "prompt label" default → ANS_PATH (existing dir, or confirm
   while :; do
     ask_path_as_raw "$1" "$2"
     ensure_dir "$ANS_PATH" && return 0
+  done
+}
+
+# The OPTIONAL twin of ask_path_as (s38): the default is the WORD "None", not a
+# path, so an empty answer leaves the bind switched off and anything else is a
+# path, confirmed/created exactly like a required one. It replaces the old
+# "bind X? [y/N]" toggle plus its follow-up path prompt — one prompt, one
+# answer. The literal word is matched BEFORE expand_path, which would otherwise
+# turn a typed "None" into a directory called $HOME/None.
+ANS_OPT_PATH=""
+ask_path_or_none() {  # "prompt label" default("" = none) → ANS_OPT_PATH ("" = none)
+  local label=$1 def=$2 shown=None
+  [[ -n $def ]] && shown=$(home_disp "$def")
+  while :; do
+    ask_raw "$label $(dflt "$shown"): "
+    [[ -z $ANS ]] && ANS=${def:-none}
+    if [[ ${ANS,,} == none ]]; then
+      ANS_OPT_PATH=""
+      return 0
+    fi
+    ANS_PATH=$(expand_path "$ANS")
+    if ensure_dir "$ANS_PATH"; then
+      ANS_OPT_PATH=$ANS_PATH
+      return 0
+    fi
   done
 }
 
@@ -1153,9 +1250,14 @@ pf_idmap() {
   # run — no newuidmap, a locked-down host, a broken runtime dir). Say so
   # instead of diagnosing a map that was never read.
   if [[ $ru -eq 0 || $rg -eq 0 ]]; then
-    pf_note "subuid/subgid granted ($u ids); podman's own map went unread"
-    pf_hint "$(emph "$RUNTIME unshare") would not run here $EMD if a pull then dies"
-    pf_hint "on \"lchown $ELL: invalid argument\", $(emph "$RUNTIME system migrate")"
+    # TWO rows, because the probe answers two different questions and only one
+    # of them came back: the grant on paper IS good (✅), the map podman holds
+    # simply went unread (🔶 — maybe fine, maybe the lchown death). Saying that
+    # in one row made the good half look like part of the problem, and the two
+    # hint lines under it explained a failure that has not happened yet; the
+    # fix now rides in the caution row itself.
+    pf_ok "subuid/subgid granted ($u ids)"
+    pf_note "$RUNTIME id mapping unverified; if pull fails, try \"$RUNTIME system migrate\""
     return 0
   fi
   if [[ $ru -lt 2 || $rg -lt 2 ]]; then
@@ -1198,7 +1300,9 @@ preflight() {
   if [[ -e /dev/kfd && -e /dev/dri ]]; then
     pf_ok "GPU devices present: /dev/kfd /dev/dri"
   else
-    pf_bad "GPU devices missing (/dev/kfd, /dev/dri) $EMD fine on a non-GPU host"
+    # No reassuring tail: on THIS installer's hosts the GPU is the point, and a
+    # 🚨 that ends in "fine on a non-GPU host" reads as its own dismissal.
+    pf_bad "GPU devices missing (/dev/kfd, /dev/dri)"
   fi
   # ONE list, used twice: the prose names the groups exactly as the usermod
   # argument spells them (bare commas), which is also what brings the row to 79
@@ -1216,7 +1320,9 @@ preflight() {
   if [[ -e /dev/fuse ]]; then
     pf_ok "/dev/fuse present (fuse-overlayfs fallback option)"
   else
-    pf_bad "/dev/fuse missing $EMD fuse-overlayfs fallback unavailable"
+    # 🔶, not 🚨: fuse-overlayfs is one of three mitigation options, so losing
+    # it only blocks the run on a filesystem that turns out to need it.
+    pf_note "/dev/fuse missing $EMD fuse-overlayfs fallback unavailable"
   fi
   # The pull path is curl (POST to the podman REST API) piped into python3
   # (which aggregates the per-layer byte counts into one bar). Both are hard
@@ -1240,19 +1346,22 @@ preflight() {
   case "$LINGER" in
     yes) pf_ok "user lingering enabled (boot auto-start + healthcheck timers)" ;;
     no)  pf_note "user lingering off $EMD needed to start boxes at host boot (offered later)" ;;
-    *)   pf_bad "cannot read user lingering state (loginctl missing?)" ;;
+    # Unknown is 🔶: nothing is wrong yet, the installer just could not look —
+    # and the boot auto-start offer later on works it out for itself.
+    *)   pf_note "cannot read user lingering state (loginctl missing?)" ;;
   esac
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
   if [[ $HAVE_DISTROBOX -eq 0 ]]; then
-    pf_bad "distrobox not found (it creates every box)"
-    pf_hint "apt distros: $(emph 'sudo apt install distrobox') $EMD else your package manager"
+    # The blocker and its fix in ONE row: the hint under it said the same thing
+    # at a second indent, and this is the row a first-time reader stops at.
+    pf_bad "distrobox missing; needed to create boxes. Try \`sudo apt install distrobox\`"
   fi
   # The whole report is printed first, THEN the run ends: a session that has to
   # be replaced is worth reporting alongside everything else the new one will
   # find. This is the one thing preflight blocks on (see pf_session).
   if [[ $PF_STOP -eq 1 ]]; then
     say ""
-    die "log in as $PF_ME itself, then re-run (see the [!!] row above)"
+    die "log in as $PF_ME itself, then re-run (see the $MK_BAD row above)"
   fi
   return 0
 }
@@ -1288,8 +1397,13 @@ serve_env_file() {  # box → path ("" when the data dir is not known yet)
 
 dest_to_label() {  # box dest → label ("" if unknown)
   local box=$1 dest=$2 pair
+  # /opt/program-cache is the PER-BOX cache root (s38 taxonomy) and /opt/caches
+  # the SHARED compute one — one letter apart on the container side, and two
+  # different host roots. An ini written before s38 has no /opt/program-cache
+  # bind at all; that is not an error, it just means nothing seeds `pcache`.
   case "$dest" in
     /opt/data) printf 'data'; return 0 ;;
+    /opt/program-cache) printf 'pcache'; return 0 ;;
     /opt/models) printf 'models'; return 0 ;;
     /opt/caches) printf 'caches'; return 0 ;;
     */.cache/huggingface) printf 'hf'; return 0 ;;
@@ -1300,6 +1414,15 @@ dest_to_label() {  # box dest → label ("" if unknown)
   printf ''
 }
 
+# Read back what the last run wrote. NO MIGRATION (Jei s38 Q4): an ini from
+# before the storage taxonomy records the OLD shapes — the data dir at
+# `<rc>/<box>/data`, a workspace beside it, the shared caches at `<rc>/caches`,
+# and no /opt/program-cache bind at all. Every one of those is read as what it
+# says, and the parts the old layout has nothing to say about (the box's
+# program-cache dir) simply stay unseeded, so they offer their factory default.
+# A path that does not fit the new <base>/<box> shape makes its family answer
+# "no common base" (family_base), which routes it to the per-box question — the
+# user is asked where it goes now rather than being moved without being told.
 parse_existing_ini() {  # box
   local box=$1 f line vols entry src dest label
   f=$(ini_file "$box")
@@ -1353,30 +1476,6 @@ parse_serve_env() {  # box
     esac
   done < "$f"
   return 0
-}
-
-# The third key of the same file, asked about a DIRECTORY rather than a box:
-# KEEP_OLD_VENV says "the older-generation environment in this data dir is there
-# on purpose — keep it, and stop reporting it" (the box honours it at every
-# start; see resolve::_keep_old_venv). It is read from the dir under review, not
-# from the box's detected settings, because a run may have pointed the box at a
-# different data dir since detection — and it is what the two callers below need:
-# venv_upper_review (do not offer to empty it) and emit_serve_env (do not drop a
-# setting the user made by hand). Same parse as parse_serve_env, LAST assignment
-# winning, so a file the box reads one way is never read the other way here.
-serve_env_keep_venv() {  # data dir → 0 when KEEP_OLD_VENV is set
-  local f=$1/server.env line k v val=""
-  [[ -f $f && -r $f ]] || return 1
-  while IFS= read -r line; do
-    line=${line%%#*}
-    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
-    k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
-    [[ $k == KEEP_OLD_VENV ]] && val=$v
-  done < "$f"
-  case "${val,,}" in
-    1|true|yes|on) return 0 ;;
-  esac
-  return 1
 }
 
 # Host-boot state comes from systemd itself, not from a file we wrote: the user
@@ -1612,6 +1711,12 @@ hydrate_keep() {  # box
   CFG_MODE[$box]=${EXD_MODE[$box]:-}
   CFG_FS[$box]=${CFG_FS[$box]:-?}
   [[ -n "${EXD_PATH["$box:data"]:-}" ]] && PATHS["$box:data"]=${EXD_PATH["$box:data"]}
+  # The program-cache root gets the same treatment as the data one: it is not a
+  # BOX_EXTRA_BIND (emit_ini writes its bind on its own), so the loop below
+  # would never reach it, and a kept box that cannot name its cache dir cannot
+  # be described in NOTES/the dashboard. An ini from before s38 records none,
+  # and the box keeps the factory path.
+  [[ -n "${EXD_PATH["$box:pcache"]:-}" ]] && PATHS["$box:pcache"]=${EXD_PATH["$box:pcache"]}
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
     [[ -n "${EXD_PATH["$box:$label"]:-}" ]] && PATHS["$box:$label"]=${EXD_PATH["$box:$label"]}
@@ -1635,9 +1740,9 @@ hydrate_keep() {  # box
 # factory defaults everywhere. That is why this runs AFTER Box Options.
 SEED_PORTS=Y                 # "use default ports for all services"
 SEED_SERVE=n SEED_HOST=n     # the two three-way start questions (y|n|c)
-SEED_DATA_Q1=Y SEED_DATA_Q2=N SEED_DATA_BASE=""     # service-data placement
-SEED_OTHER_Q1=Y SEED_OTHER_Q2=N SEED_OTHER_BASE=""  # input/output/workspace
-SEED_HF="" SEED_COMPUTE="" SEED_MODELS_Q=N SEED_MODELS=""
+SEED_PCACHE_Q=Y SEED_PCACHE_BASE=""  # per-box program caches at a common base
+SEED_DATA_Q=Y SEED_DATA_BASE=""      # persistent data at a common base
+SEED_HF="" SEED_COMPUTE="" SEED_MODELS=""   # SEED_MODELS "" = None (no bind)
 SEED_SRC=()                  # the boxes whose files may seed anything at all
 
 # Selected AND modify — the only boxes a default may be read from.
@@ -1651,14 +1756,22 @@ seed_sources() {
 }
 
 # The common base of a family of recorded paths, or "" when they do not share
-# the <base>/<box>/<leaf> shape (or disagree about the base).
+# the family's shape (or disagree about the base). TWO shapes since s38: the
+# two ROOTS put the box directly under the base (<base>/<box> — the box's data
+# dir and its program-cache dir ARE that directory), while the leaves that nest
+# inside the data dir keep the <base>/<box>/<leaf> shape.
 family_base() {   # leaf...
   local leaf box p base first="" seen=0
   for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
     for leaf in "$@"; do
       p=${EXD_PATH["$box:$leaf"]:-}
       [[ -n $p ]] || continue
-      if [[ $p == */"$box"/"$leaf" ]]; then base=${p%/"$box"/"$leaf"}; else base="-"; fi
+      case "$leaf" in
+        data|pcache)
+          if [[ $p == */"$box" ]]; then base=${p%/"$box"}; else base="-"; fi ;;
+        *)
+          if [[ $p == */"$box"/"$leaf" ]]; then base=${p%/"$box"/"$leaf"}; else base="-"; fi ;;
+      esac
       if [[ $seen -eq 0 ]]; then first=$base seen=1
       elif [[ $base != "$first" ]]; then printf '-'; return 0
       fi
@@ -1670,22 +1783,23 @@ family_base() {   # leaf...
 }
 
 seed_globals() {
-  local box base first_leaf yes=0 no=0
+  local box base yes=0 no=0
   seed_sources
   # Factory values first: with no seed source (all-recreate, all-new, all-keep)
   # these are exactly what every question below offers.
   SEED_PORTS=Y
   SEED_SERVE=n SEED_HOST=n
-  SEED_DATA_Q1=Y SEED_DATA_Q2=N
-  SEED_OTHER_Q1=Y SEED_OTHER_Q2=N
-  SEED_MODELS_Q=N
+  SEED_PCACHE_Q=Y SEED_DATA_Q=Y
   SEED_HF=$HOME/.cache/huggingface
-  SEED_COMPUTE=$EMIT_DIR/caches
-  # The model collection lives UNDER the resource path by default (Jei s34):
-  # one directory holds the whole droste installation unless told otherwise.
-  SEED_MODELS=$EMIT_DIR/models
-  SEED_DATA_BASE=$EMIT_DIR
-  SEED_OTHER_BASE=$EMIT_DIR
+  # The compute cache is SHARED by every box (kernels are content-keyed), so it
+  # sits beside the two per-box roots rather than inside either of them.
+  SEED_COMPUTE=$EMIT_DIR/compute-caches
+  # No model collection until a path is typed (s38): the prompt's default is
+  # the word "None", not a directory the installer would go and create.
+  SEED_MODELS=""
+  # The two host roots, both derived from the resource path.
+  SEED_DATA_BASE=$EMIT_DIR/data
+  SEED_PCACHE_BASE=$EMIT_DIR/caches
   [[ ${#SEED_SRC[@]} -eq 0 ]] && return 0
   for box in "${SEED_SRC[@]}"; do
     [[ -n "${EXD_PATH["$box:hf"]:-}" ]] && { SEED_HF=${EXD_PATH["$box:hf"]}; break; }
@@ -1693,13 +1807,10 @@ seed_globals() {
   for box in "${SEED_SRC[@]}"; do
     [[ -n "${EXD_PATH["$box:caches"]:-}" ]] && { SEED_COMPUTE=${EXD_PATH["$box:caches"]}; break; }
   done
-  # A recorded /opt/models bind is the answer to the toggle AND to the path.
+  # A recorded /opt/models bind IS the answer: it comes back as the prompt's
+  # default, so an empty answer keeps the share exactly where it was.
   for box in "${SEED_SRC[@]}"; do
-    if [[ -n "${EXD_PATH["$box:models"]:-}" ]]; then
-      SEED_MODELS_Q=Y
-      SEED_MODELS=${EXD_PATH["$box:models"]}
-      break
-    fi
+    [[ -n "${EXD_PATH["$box:models"]:-}" ]] && { SEED_MODELS=${EXD_PATH["$box:models"]}; break; }
   done
   # Ports: wholesale defaults only if nothing recorded moved off them.
   for box in "${SEED_SRC[@]}"; do
@@ -1729,30 +1840,18 @@ seed_globals() {
   elif [[ $yes -gt 0 ]]; then SEED_HOST=y
   else SEED_HOST=n
   fi
-  # Service data: same base as the resource path → Y; a different single base →
-  # N + "different base" prefilled; anything else → both N (ask per box).
-  base=$(family_base data)
+  # The two roots, each read back from the paths its family actually records:
+  # one shared base → Y with that base offered at the base prompt; no agreement
+  # (or a shape the layout does not use) → N, and the boxes are asked one by
+  # one. Persistent data counts its nested leaves too, since they are the same
+  # family: an input dir somewhere else means the base is NOT common.
+  base=$(family_base data input output workspace)
   if [[ -n $base ]]; then
-    if [[ $base == "$EMIT_DIR" ]]; then
-      SEED_DATA_Q1=Y
-    elif [[ $base == "-" ]]; then
-      SEED_DATA_Q1=N SEED_DATA_Q2=N
-    else
-      SEED_DATA_Q1=N SEED_DATA_Q2=Y SEED_DATA_BASE=$base
-    fi
+    if [[ $base == "-" ]]; then SEED_DATA_Q=N; else SEED_DATA_BASE=$base; fi
   fi
-  # Other data (input/output/workspace) against the service-data base.
-  first_leaf=$(family_base input output workspace)
-  if [[ -n $first_leaf ]]; then
-    if [[ $first_leaf == "-" ]]; then
-      SEED_OTHER_Q1=N SEED_OTHER_Q2=N
-    elif [[ -n $base && $base != "-" && $first_leaf == "$base" ]]; then
-      SEED_OTHER_Q1=Y
-    elif [[ -z $base && $first_leaf == "$EMIT_DIR" ]]; then
-      SEED_OTHER_Q1=Y
-    else
-      SEED_OTHER_Q1=N SEED_OTHER_Q2=Y SEED_OTHER_BASE=$first_leaf
-    fi
+  base=$(family_base pcache)
+  if [[ -n $base ]]; then
+    if [[ $base == "-" ]]; then SEED_PCACHE_Q=N; else SEED_PCACHE_BASE=$base; fi
   fi
   return 0
 }
@@ -1760,12 +1859,10 @@ seed_globals() {
 # ── General Setup ────────────────────────────────────────────────────────────
 # Everything that can be settled ONCE for the whole install: the two networking
 # questions that would otherwise repeat per box (ports, and when a box's server
-# comes up), then where the two data families and the shared caches live.
+# comes up), then the two HOST ROOTS (program caches, persistent data) and the
+# paths every box shares — the compute cache, the HF cache, the model share.
 general_setup() {
-  local box wants_other=0
-  for box in "${CONFIGURE[@]}"; do
-    [[ -n "${BOX_EXTRA_BINDS[$box]}" ]] && wants_other=1
-  done
+  local pcache_common=0 data_common=0
   section "General Setup"
   subhdr "Networking"
   # One answer settles every per-box port question (the table above just showed
@@ -1789,48 +1886,56 @@ general_setup() {
     *) HOST_MODE=n ;;
   esac
   subhdr "Storage Paths"
-  # The prompts name the BASE, not the templated leaf (Jei, live test): the
-  # per-box "<base>/<box>/data" shape is the installer's business, and spelling
-  # it out here read as though the literal string were the answer.
-  ask_yn "Store all service data in $(emph "$(home_disp "$EMIT_DIR")")" \
-    "$SEED_DATA_Q1"
-  if [[ $ANS_YN -eq 1 ]]; then
-    DATA_AUTO=1
-  else
-    ask_yn "Provide a different base path for service data" "$SEED_DATA_Q2"
-    if [[ $ANS_YN -eq 1 ]]; then
-      ask_path_as "Base path for service data" "$SEED_DATA_BASE"
-      DATA_ROOT=$ANS_PATH
-      DATA_AUTO=1
-    fi
-  fi
-  # The other CRITICAL binds (input/output/workspace). Answering this places
-  # them all; declining it hands them back to the per-box "<Box> Paths" questions (A2).
-  if [[ $wants_other -eq 1 ]]; then
-    # Same rule, and the base shown is the SERVICE-DATA one — so a different
-    # base just chosen above is what this question offers to share.
-    ask_yn "Store other data $(emph "(input, output, workspace, etc.)") in $(emphg "$(home_disp "$(data_root)")")" \
-      "$SEED_OTHER_Q1"
-    if [[ $ANS_YN -eq 1 ]]; then
-      OTHER_AUTO=1
-    else
-      ask_yn "Provide a different base path for other box data" "$SEED_OTHER_Q2"
-      if [[ $ANS_YN -eq 1 ]]; then
-        ask_path_as "Base path for other box data" "$SEED_OTHER_BASE"
-        OTHER_ROOT=$ANS_PATH
-        OTHER_AUTO=1
-      fi
-    fi
-  fi
-  sub "Please provide paths for shared box data (caches, models)."
-  ask_path_as "HuggingFace cache (models)" "$SEED_HF"
-  HF_CACHE=$ANS_PATH
-  ask_path_as "Compute cache (MIOpen/Triton/torch)" "$SEED_COMPUTE"
+  # The two HOST ROOTS, one question each, program caches first: they are the
+  # disposable half of the install and the half most likely to be sent to
+  # another filesystem, so they are asked before the data people keep.
+  #
+  # Each question names the BASE, not the templated leaf (Jei, live test): the
+  # per-box "<base>/<box>" shape is the installer's business, and spelling it
+  # out here read as though the literal string were the answer. The base itself
+  # is asked further down — only for a family that gets a common base at all.
+  ask_yn "Store program caches at common base path (e.g., $(emphg "$(home_disp "$SEED_PCACHE_BASE")"))" \
+    "$SEED_PCACHE_Q"
+  pcache_common=$ANS_YN
+  ask_yn "Store persistent data at common base path (e.g., $(emphg "$(home_disp "$SEED_DATA_BASE")"))" \
+    "$SEED_DATA_Q"
+  data_common=$ANS_YN
+  explain "Please provide host paths for data (persistent data, caches, models, etc)."
+  # The two SHARED caches (every box binds them; neither is per-box), then the
+  # optional read-only model share — a path-or-None prompt, so the bind and its
+  # location are one answer instead of a toggle plus a follow-up.
+  ask_path_as "Compute caches (MIOpen/Triton/torch)" "$SEED_COMPUTE"
   COMPUTE_CACHE=$ANS_PATH
-  ask_yn "Bind read-only model collection to /opt/models" "$SEED_MODELS_Q"
-  if [[ $ANS_YN -eq 1 ]]; then
-    ask_path_as "Path for local model collections" "$SEED_MODELS"
-    MODELS_DIR=$ANS_PATH
+  ask_path_as "HuggingFace models (\"cache\" - never wiped)" "$SEED_HF"
+  HF_CACHE=$ANS_PATH
+  ask_path_or_none "Path to bind as read-only share /opt/models" "$SEED_MODELS"
+  MODELS_DIR=$ANS_OPT_PATH
+  # A base prompt renders ONLY for a family the user agreed to place at a common
+  # base (Jei s38); declining routes that family to the per-box path question in
+  # the box's own section instead. Same order as the pair above.
+  if [[ $pcache_common -eq 1 ]]; then
+    ask_path_as "Program cache base path" "$SEED_PCACHE_BASE"
+    PCACHE_ROOT=$ANS_PATH
+    PCACHE_AUTO=1
+  fi
+  if [[ $data_common -eq 1 ]]; then
+    ask_path_as "Persistent data base path" "$SEED_DATA_BASE"
+    DATA_ROOT=$ANS_PATH
+    DATA_AUTO=1
+  fi
+  # Close the section the way a per-box section and the Data Mapping one close,
+  # so whatever follows (a rule, a banner) keeps the same two-line gap.
+  say ""
+  # THE STALE-CACHE QUESTION, install-wide and last: it is about the caches the
+  # answers above just placed, and it is asked ONLY when there is something to
+  # clear (the s37 run, with nothing stale, shows the blank line on its own).
+  # One YES settles every box; a NO hands the decision to the boxes that have
+  # something, in their own sections. Default YES — a stale cache is the box's
+  # most common cause of "it starts but misbehaves", and nothing in one is
+  # authored: everything in there is rebuilt on the next start.
+  if stale_any; then
+    ask_yn "Stale caches often cause malfunctions. Clear all old / stale caches" Y
+    CLEAR_STALE_ALL=$ANS_YN
   fi
   return 0
 }
@@ -1920,10 +2025,14 @@ mitigate_path() {  # dir [nested]
 mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
   case "$1" in
     rc)      printf '%s' "$EMIT_DIR" ;;
-    base)    [[ -n $DATA_ROOT && $DATA_ROOT != "$EMIT_DIR" ]] \
+    data)    [[ -n $DATA_ROOT && $DATA_ROOT != "$EMIT_DIR" ]] \
                && printf '%s' "$DATA_ROOT" ;;
-    other)   [[ -n $OTHER_ROOT && $OTHER_ROOT != "$(data_root)" ]] \
-               && printf '%s' "$OTHER_ROOT" ;;
+    # The program-cache root is where the venv upper lands, so it has to accept
+    # an overlay upper in its own right (P0 choice C) — probed unless it is one
+    # of the paths already answered for.
+    pcache)  [[ -n $PCACHE_ROOT && $PCACHE_ROOT != "$EMIT_DIR" \
+               && $PCACHE_ROOT != "$(data_root)" ]] \
+               && printf '%s' "$PCACHE_ROOT" ;;
     compute) printf '%s' "$COMPUTE_CACHE" ;;
     hf)      printf '%s' "$HF_CACHE" ;;
   esac
@@ -1935,8 +2044,9 @@ reask_slot() {  # slot → 0 when re-asked
   case "$1" in
     rc)
       ask_path_as "Identify a path for droste resource storage" "$EMIT_DIR"
-      # A data base that merely tracked the resource path keeps tracking it.
-      [[ $DATA_ROOT == "$EMIT_DIR" ]] && DATA_ROOT=""
+      # A root that merely tracked the resource path keeps tracking it.
+      [[ $DATA_ROOT == "$EMIT_DIR/data" ]] && DATA_ROOT=""
+      [[ $PCACHE_ROOT == "$EMIT_DIR/caches" ]] && PCACHE_ROOT=""
       EMIT_DIR=$ANS_PATH
       DEFAULT_ROOT=$EMIT_DIR
       # Everything the old resource path implied has to be re-derived: which
@@ -1947,17 +2057,17 @@ reask_slot() {  # slot → 0 when re-asked
       existing_settings
       seed_globals
       ;;
-    base)
-      ask_path_as "Base path for service data" "$(data_root)"
+    data)
+      ask_path_as "Persistent data base path" "$(data_root)"
       DATA_ROOT=$ANS_PATH ;;
-    other)
-      ask_path_as "Base path for other box data" "$OTHER_ROOT"
-      OTHER_ROOT=$ANS_PATH ;;
+    pcache)
+      ask_path_as "Program cache base path" "$(pcache_root)"
+      PCACHE_ROOT=$ANS_PATH ;;
     compute)
-      ask_path_as "Compute cache (MIOpen/Triton/torch)" "$COMPUTE_CACHE"
+      ask_path_as "Compute caches (MIOpen/Triton/torch)" "$COMPUTE_CACHE"
       COMPUTE_CACHE=$ANS_PATH ;;
     hf)
-      ask_path_as "HuggingFace cache (models)" "$HF_CACHE"
+      ask_path_as "HuggingFace models (\"cache\" - never wiped)" "$HF_CACHE"
       HF_CACHE=$ANS_PATH ;;
     *) return 1 ;;
   esac
@@ -1972,7 +2082,7 @@ global_mitigation() {
   local slot dir rc
   while :; do
     dir=""
-    for slot in rc base other compute hf; do
+    for slot in rc data pcache compute hf; do
       dir=$(mitigation_slot_path "$slot")
       [[ -n $dir ]] || continue
       probe_fstype "$dir"
@@ -1992,37 +2102,48 @@ global_mitigation() {
   done
 }
 
-# ── Where the two path families live ─────────────────────────────────────────
+# ── Where the two host roots live ────────────────────────────────────────────
 # Both are settled up front in General Setup; the old "would you like this
 # pattern applied to everything?" follow-up (PATTERN_ROOT) is retired with it.
 DEFAULT_ROOT=""  # emit dir (default ~/droste)
 
-# Base path for the SERVICE DATA family (/opt/data) and for the OTHER data
-# family (input/output/workspace). Caches are deliberately in neither: they
-# were asked separately.
-DATA_ROOT=""     # "" = the resource path itself
-DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>/data, never asked
-OTHER_ROOT=""    # "" = wherever the service data family lives
-OTHER_AUTO=0     # 1 = every box's other binds are <base>/<box>/<label>
+# Base path for the PERSISTENT DATA family (the box's /opt/data, with
+# input/output/workspace nested inside it) and for the PROGRAM CACHE family
+# (venv, tmp, slots, kv-disk — everything the installer may wipe). The compute
+# and HuggingFace caches are deliberately in neither: they are shared by every
+# box, keyed by content, and were asked separately.
+DATA_ROOT=""     # "" = <resource path>/data
+DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>, never asked
+PCACHE_ROOT=""   # "" = <resource path>/caches
+PCACHE_AUTO=0    # 1 = every box's program-cache dir is <base>/<box>, never asked
 PORTS_DEFAULT=0  # 1 = every box takes the default host port, never asked
 SERVE_MODE=n     # y|n|c — serve at box start, install-wide (c = ask per box)
 HOST_MODE=n      # y|n|c — start at host boot, install-wide (c = ask per box)
+CLEAR_STALE_ALL=0  # 1 = stale program caches are cleared for every box, never asked
 
-data_root()  { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT}"; }
-other_root() { printf '%s' "${OTHER_ROOT:-$(data_root)}"; }
+data_root()   { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT/data}"; }
+pcache_root() { printf '%s' "${PCACHE_ROOT:-$DEFAULT_ROOT/caches}"; }
 
 # 1 when this label needs no question (General Setup already placed it).
+# input/output/workspace nest INSIDE the box's data dir (Jei s38 K), so they
+# ride on the data answer and are never asked on their own.
 auto_label() {  # label
-  if [[ $1 == data ]]; then [[ $DATA_AUTO -eq 1 ]]; else [[ $OTHER_AUTO -eq 1 ]]; fi
+  if [[ $1 == pcache ]]; then [[ $PCACHE_AUTO -eq 1 ]]; else [[ $DATA_AUTO -eq 1 ]]; fi
 }
 
 path_default() {  # box label → default path (existing value > family base)
   local box=$1 label=$2 root
   if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
     printf '%s' "${EXD_PATH["$box:$label"]}"
+  elif [[ $label == pcache ]]; then
+    printf '%s/%s' "$(pcache_root)" "$box"
+  elif [[ $label == data ]]; then
+    printf '%s/%s' "$(data_root)" "$box"
   else
-    [[ $label == data ]] && root=$(data_root) || root=$(other_root)
-    printf '%s/%s/%s' "$root" "$box" "$label"
+    # A leaf hangs off THIS box's data dir: the path just settled for it when it
+    # was asked, the derived one when General Setup placed the whole family.
+    root=${PATHS["$box:data"]:-$(data_root)/$box}
+    printf '%s/%s' "$root" "$label"
   fi
 }
 
@@ -2044,8 +2165,11 @@ set_bind_path() {  # box label
       ANS_PATH=$def
       ensure_dir "$ANS_PATH" || :
     else
-      # No per-bind header: the prompt itself names the box + bind family.
-      ask_path_as "Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}" "$def"
+      # No per-bind header: the prompt itself names the box + bind family —
+      # unless the family writes its own prompt (BIND_PROMPT), which is how the
+      # program-cache question gets its own wording without a second asker.
+      ask_path_as \
+        "${BIND_PROMPT[$label]:-Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}}" "$def"
     fi
     PATHS["$box:$label"]=$ANS_PATH
     # Modify with the SAME path keeps the mitigation already recorded for it
@@ -2073,11 +2197,140 @@ set_bind_path() {  # box label
   [[ $label == data ]] && CFG_FS[$box]=$FSTYPE
   if [[ -n $MIT_MODE ]]; then
     [[ $label == data ]] && CFG_MODE[$box]=$MIT_MODE
-    MIT_LABELS[$box]="${MIT_LABELS[$box]:-} $label"
-    MIT_FS[$box]=$FSTYPE
+    # ONE overlay mode per box (P0 choice C). The venv upper lives on the
+    # PROGRAM-CACHE root now, so that root has to accept an overlay upper in its
+    # own right: a hostile one sets the box's mode when the data dir did not
+    # (the data dir, which carries comfyui's custom_nodes upper, still wins when
+    # both objected — the two answers are the same menu answer anyway).
+    #
+    # It contributes no CATEGORY to the mitigation line: that sentence names the
+    # binds the user was asked about by name ("using fuse for data, input, &
+    # output"), and both s37/s38 mocks keep it to the data family, cache root
+    # asked or not. Hence no MIT_LABELS/MIT_FS entry here — those two feed the
+    # sentence and nothing else.
+    if [[ $label == pcache ]]; then
+      # `if`, not `[[ … ]] &&`: a false test as the last command of a branch is
+      # the status of the whole compound, and this script runs under `set -e`.
+      if [[ -z ${CFG_MODE[$box]:-} ]]; then CFG_MODE[$box]=$MIT_MODE; fi
+    else
+      MIT_LABELS[$box]="${MIT_LABELS[$box]:-} $label"
+      MIT_FS[$box]=$FSTYPE
+    fi
   elif [[ $label == data ]]; then
     CFG_MODE[$box]=""
   fi
+  return 0
+}
+
+# ── Stale program caches ─────────────────────────────────────────────────────
+# A box's program-cache dir holds nothing but disposables: the venv upper and
+# its work dir, tmp, slots, kv-disk, the seeded extra_model_paths.yaml, the
+# serve pid. Nothing in it is authored and nothing in it is data — the taxonomy
+# classifies BY LOCATION, which is exactly what makes this test cheap and
+# honest: anything in there at all is a previous generation's leftovers, and an
+# old stack layered under a new image is the failure that never names itself.
+#
+# SCOPE, ruled (Jei s38 D): the NEW layout only. An old-layout data/<box>/venv
+# is not tested for — "not worth the complexity" — and is covered by the docs
+# line naming the old paths safe to delete by hand. Compute caches are never
+# tested and never cleared: they are content-keyed and shared by every box.
+stale_pcache() {  # dir → 0 when it holds anything at all
+  local d=$1 p
+  [[ -n $d && -d $d ]] || return 1
+  # Dotfiles count — `.work` is the overlay bookkeeping and is exactly the kind
+  # of leftover this question is about.
+  for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    [[ -e $p || -L $p ]] && return 0
+  done
+  return 1
+}
+
+# Does ANY box this run is about to configure have one? Asked at the path each
+# box would take by default, since this runs before the per-box path questions;
+# a box that is being KEPT is frozen and is not asked about here or anywhere.
+stale_any() {
+  local box
+  for box in ${CONFIGURE[@]+"${CONFIGURE[@]}"}; do
+    stale_pcache "$(path_default "$box" pcache)" && return 0
+  done
+  return 1
+}
+
+# A directory is cleared ONLY if it is this box's caches and nothing else. The
+# answer to a question about caches is not consent to empty whatever else is at
+# that path, and the one way the two can meet is a typed path: the prompt takes
+# any directory, including the one the box keeps its DATA in. Everything this
+# run has placed somewhere is checked by name — the two roots, the resource
+# dir, the three shared paths, and every other bind of every box (another box's
+# cache dir is not excluded: clearing a shared cache dir is what both of its
+# answers asked for). $HOME and / are refused outright.
+pcache_wipe_safe() {  # dir → 0 when nothing else in this install is that dir
+  local dir=$1 key
+  case "$dir" in /|"$HOME") return 1 ;; esac
+  [[ $dir == "$EMIT_DIR" || $dir == "$(data_root)" || $dir == "$(pcache_root)" ]] && return 1
+  [[ -n $COMPUTE_CACHE && $dir == "$COMPUTE_CACHE" ]] && return 1
+  [[ -n $HF_CACHE && $dir == "$HF_CACHE" ]] && return 1
+  [[ -n $MODELS_DIR && $dir == "$MODELS_DIR" ]] && return 1
+  for key in "${!PATHS[@]}"; do
+    [[ ${key##*:} == pcache ]] && continue
+    [[ ${PATHS[$key]} == "$dir" ]] && return 1
+  done
+  return 0
+}
+
+# The test both halves of the consent share: this box has something stale, and
+# clearing it would clear only caches. A path that fails the second half is
+# reported once and then left out of the offer entirely — asking about it would
+# be asking about the wrong directory.
+stale_clearable() {  # box → 0 when the box has stale caches this may clear
+  local box=$1
+  local dir=${PATHS["$box:pcache"]:-}
+  stale_pcache "$dir" || return 1
+  pcache_wipe_safe "$dir" && return 0
+  warn "$(home_disp "$dir") holds more than ${BOX_NAME[$box]}'s caches $EMD left alone"
+  return 1
+}
+
+# Empty ONE box's program-cache dir: its CONTENTS, never the directory itself,
+# and never a byte outside it — not the box's data, not the shared compute
+# caches, not the HF cache. Silent on success (the summary box follows it
+# immediately in the mock); the two ways it does NOT happen are reported.
+#
+# A RUNNING box is left alone: the venv upper is mounted under this dir,
+# emptying it out from under the mount repairs nothing, and the box has to be
+# restarted for any fix to take anyway.
+clear_pcache() {  # box
+  local box=$1
+  local dir=${PATHS["$box:pcache"]:-} p
+  stale_clearable "$box" || return 0
+  if [[ $(box_state "$box") == ACTIVE ]]; then
+    subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to clear its caches."
+    return 0
+  fi
+  for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [[ -e $p || -L $p ]] || continue
+    rm -rf "$p" && continue
+    warn "could not clear $(home_disp "$dir") $EMD empty it by hand, then re-run"
+    return 0
+  done
+  return 0
+}
+
+# The per-box half of the consent. It is asked ONLY when the install-wide
+# question did not already settle it AND this box actually has something stale
+# at the path it just settled on — which is why it can fire even when the
+# install-wide question never appeared: a path typed here may hold leftovers
+# the default path did not. Nothing is ever cleared without one of the two
+# answers, and the wipe happens the moment consent is given (s36 precedent),
+# while the path it applies to is the one on screen.
+stale_cache_offer() {  # box
+  local box=$1
+  stale_clearable "$box" || return 0
+  if [[ $CLEAR_STALE_ALL -eq 0 ]]; then
+    ask_yn_caution "Stale caches cause unpredictable behavior." "Clear stale caches" Y
+    [[ $ANS_YN -eq 1 ]] || return 0
+  fi
+  clear_pcache "$box"
   return 0
 }
 
@@ -2090,21 +2343,26 @@ set_bind_path() {  # box label
 configure_box() {  # box
   local box=$1 pair label dest
   local asked=0 bw sv_def=N hs_def=N pdef
-  banner "${BOX_BANNER[$box]}" bold
+  # The banner is drawn before the box is asked anything, so it asks the
+  # DEFAULTS what its summary box is going to need and widens to match (choice
+  # L) — the two stack, and the pair is read as one object.
+  banner "${BOX_BANNER[$box]}" bold "$(predict_card_inner "$box")"
   bw=$BANNER_W
 
-  # Which of this box's questions are still open? Data and the other binds are
-  # skipped when General Setup placed their family; the port when the defaults
-  # were accepted wholesale; the two start questions unless their install-wide
-  # answer was "case-by-case" (and, for host boot, unless this box serves).
+  # Which of this box's questions are still open? The data dir is skipped when
+  # General Setup placed the family (and its input/output/workspace leaves are
+  # never asked at all — they nest inside it); the port when the defaults were
+  # accepted wholesale; the two start questions unless their install-wide answer
+  # was "case-by-case" (and, for host boot, unless this box serves).
+  #
+  # The PROGRAM-CACHE question is deliberately NOT in this list: it joins a
+  # section that already exists and never opens one of its own (Jei s38 J), so
+  # a box whose only open question is its cache path shows the question bare
+  # under its banner, with the summary box flush beneath it — the s38 mock.
+  # set_bind_path/auto_label decide whether it is asked at all.
   local -a todo=()
   local want_port=0 want_sv=0
   [[ $DATA_AUTO -eq 0 ]] && todo+=(data)
-  if [[ $OTHER_AUTO -eq 0 ]]; then
-    for pair in ${BOX_EXTRA_BINDS[$box]}; do
-      todo+=("${pair%%:*}")
-    done
-  fi
   [[ $PORTS_DEFAULT -eq 0 ]] && want_port=1
   [[ $SERVE_MODE == c ]] && want_sv=1
   if [[ $want_port -eq 1 || $want_sv -eq 1 || $HOST_MODE == c ]]; then
@@ -2162,6 +2420,11 @@ configure_box() {  # box
     : "$dest"          # the container side is the emitters' business, not ours
     set_bind_path "$box" "$label"
   done
+  # LAST, and after the data dir on purpose: every leaf default reads the data
+  # path that was just settled, and the cache question is the one the stale
+  # offer below depends on (it asks about the dir this answer names).
+  set_bind_path "$box" pcache
+  stale_cache_offer "$box"
 
   [[ $asked -eq 1 ]] && say ""
   summary_box "$box" "$bw"
@@ -2178,6 +2441,31 @@ configure_box() {  # box
 # Width: the banner's, so the two stack; wider only when a path needs it, and
 # never past the screen — a path that still will not fit is elided by fit_path.
 SUM_HDR_W=14       # "Start w Host: " is the longest header, and sets the column
+
+# The width that summary box is GOING to want, worked out from the defaults
+# before the box is asked anything (choice L) — the banner takes it as its floor
+# so the two stack flush. Same arithmetic as summary_box's own widest-row pass,
+# on the values path_default() would offer: a run that accepts them (or never
+# asks) matches exactly, and a path typed LONGER than its default still widens
+# the card past the banner, which is what an overlong value has always done.
+# The Server rows are included for completeness; a port never sets the width.
+predict_card_inner() {  # box → inner width, capped at the screen
+  local box=$1 pair label v w inner=0 avail
+  local -a vals=()
+  vals+=("$(home_disp "$(path_default "$box" data)")")
+  for pair in ${BOX_EXTRA_BINDS[$box]}; do
+    label=${pair%%:*}
+    vals+=("$(home_disp "$(path_default "$box" "$label")")")
+  done
+  vals+=("${EXD_PORT[$box]:-${BOX_HOST_PORT[$box]}}")
+  for v in "${vals[@]}"; do
+    w=$(( 4 + SUM_HDR_W + ${#v} ))
+    [[ $w -gt $inner ]] && inner=$w
+  done
+  avail=$(( $(disp_width) - 4 ))
+  [[ $inner -gt $avail ]] && inner=$avail
+  printf '%s' "$inner"
+}
 
 summary_box() {  # box banner-width
   local box=$1 bw=$2 inner avail pair label
@@ -2279,120 +2567,6 @@ mitigation_line() {  # box
   return 0
 }
 
-# ── Whole-environment data dirs (the pre-merge trap) ─────────────────────────
-# A box's data dir carries the WRITABLE HALF of its python environment: the box
-# stacks it over the one baked into the image, so what belongs there is the
-# packages installed inside the box and nothing else. A data dir written by the
-# PRE-MERGE generation holds a COMPLETE environment instead, and an old stack
-# layered over a new one breaks the service in ways that never name it — a
-# transformers import error about a numpy that IS installed, a JupyterLab /lab
-# that 404s. The box warns about it at every start it actually overlays the dir
-# (droste-resolve.sh); here it can still be fixed, before anything is pulled,
-# created or started.
-#
-# THE SIGNAL IS STRUCTURAL, and deliberately not "this dir carries names the
-# image also carries" — that is what a HEALTHY dir looks like: installing into
-# the box (`pip install --force-reinstall` of a baked package included) is the
-# entire point of the writable half, and the in-box ownership pass copies up
-# every directory of the environment as a matter of course. What no install in
-# the box ever writes is the environment's own ROOT: pyvenv.cfg, untouched after
-# creation, and the bin/python* links only creating or copying an environment
-# produces.
-#
-# MIRROR of resolve::_upper_is_env / _upper_records / _keep_old_venv in
-# base/resolve/droste-resolve.sh — including the KEEP_OLD_VENV key, which is one
-# setting read by both sides. The two cannot share code — this script is
-# standalone by contract (curl | bash, no checkout) and that one is baked into
-# the image — so they are kept in step by hand; change one, change the other.
-venv_upper_full() {  # dir → 0 when it holds a WHOLE environment
-  local d=$1 p
-  [[ -f $d/pyvenv.cfg ]] || return 1
-  for p in "$d"/bin/python*; do
-    [[ -e $p || -L $p ]] && return 0
-  done
-  return 1
-}
-
-# How many package records it carries: the SIZE of the problem, never the signal
-# for it (a healthy dir carries plenty). Glob only — no walk of a 20 GB tree.
-venv_upper_records() {  # dir → count
-  local d=$1 p n=0
-  for p in "$d"/lib/python*/site-packages/*.dist-info; do
-    [[ -d $p ]] && n=$((n + 1))
-  done
-  printf '%s' "$n"
-}
-
-# One offer per affected box, defaulting to NO — emptying a directory is the
-# user's decision, never a side effect of running the installer. A RUNNING box
-# is reported and left alone: deleting the environment out from under a mounted
-# overlay is not a repair, and the box has to be restarted for the fix to take
-# anyway. So is a box whose server.env sets KEEP_OLD_VENV: that setting is the
-# answer to this question, given once and kept.
-#
-# Every affected box gets a ROW either way, so the section appears whenever
-# there is something to say (and stays away entirely when no data dir is
-# affected) — a box that is being kept on purpose is still named, rather than
-# vanishing from a section that would otherwise have reported it.
-#
-# ASYMMETRY WITH THE BOX, deliberate on both sides: in the box the report fires
-# only when an overlay MOUNT put the dir over the baked stack (kernel or fuse) —
-# copy mode never mounts the upper and says so in its own words, so
-# resolve::_report_env_upper stays quiet there. The offer HERE is made for every
-# affected data dir regardless: it runs on the host before any box is started, so
-# the mode that run will end up using is not known yet, and emptying a stale
-# pre-merge environment is right in copy mode too — dead weight there instead of
-# a shadowing layer. Same note at resolve::_report_env_upper; neither side is a
-# bug to be "fixed" into agreement with the other.
-venv_upper_review() {
-  local box dir n shown=0
-  for box in "${BOXES[@]}"; do
-    dir=${PATHS["$box:data"]:-}
-    [[ -n $dir ]] || continue
-    venv_upper_full "$dir/venv" || continue
-    if [[ $shown -eq 0 ]]; then
-      shown=1
-      section "Existing Box Data"
-      say ""
-      prose "One or more data directories were written by an older droste generation: they hold a complete Python environment, which the box stacks on top of the one built into its image. The older packages win, and the service then fails in ways that never mention them. Emptying the directory hands the box back to its own environment; packages you installed in the box yourself go with it. To keep an old environment instead, and stop the box reporting it at every start, put KEEP_OLD_VENV=1 in that box's server.env."
-    fi
-    n=$(venv_upper_records "$dir/venv")
-    say ""
-    printf '  %s%s%s %s%s%s: %s%s%s package records from an older generation.%s\n' \
-      "$C_ARROW" "$ARROW_M" "$RESET" "$C_DETN" "$box" "$C_TEXT" \
-      "$C_SVAL" "$n" "$C_TEXT" "$RESET"
-    if serve_env_keep_venv "$dir"; then
-      subnote "Kept: server.env sets KEEP_OLD_VENV=1 $EMD not offered, not reported."
-      continue
-    fi
-    if [[ $(box_state "$box") == ACTIVE ]]; then
-      subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to empty it."
-      continue
-    fi
-    ask_yn "Empty $(home_disp "$dir/venv")" N
-    if [[ $ANS_YN -eq 0 ]]; then
-      subnote "Left as-is $EMD reported at every start; KEEP_OLD_VENV=1 stops that."
-      continue
-    fi
-    # THE OVERLAY WORK DIR GOES WITH IT, under the same consent and without a
-    # second question: it is not a second decision, it is the rest of this one.
-    # resolve::overlay puts each row's workdir at $(dirname upper)/.work/
-    # $(basename upper) — for this row, <data>/.work/venv — and it holds only
-    # that mount's in-flight bookkeeping, which is meaningless once the upper it
-    # belonged to is gone. ONLY THIS ROW'S: .work/ is shared by every overlay
-    # row a box has (comfyui also mounts custom_nodes, whose work dir must
-    # survive an untouched custom_nodes), so the name is never dropped from the
-    # path. Absent is normal and silent — copy mode never creates one, and the
-    # resolver re-creates whatever it needs at the next start.
-    if rm -rf "$dir/venv" "$dir/.work/venv"; then
-      subnote "Emptied with its overlay work dir $EMD the image's environment wins."
-    else
-      warn "could not empty $dir/venv and $dir/.work/venv $EMD remove them by hand, then re-run"
-    fi
-  done
-  return 0
-}
-
 # ── Build ladder ─────────────────────────────────────────────────────────────
 ask_ladder() {
   local letters="Awpc"
@@ -2465,6 +2639,12 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # bind must live in ONE space-separated volume= value. Accumulate them all
     # here and emit a single line.
     vols="$data:/opt/data"
+    # The box's PROGRAM CACHE root, right behind its data dir: the venv overlay
+    # upper lives here, so without this bind the environment a `pip install`
+    # writes lands in the container layer and dies with the next recreate. It is
+    # not a BOX_EXTRA_BIND (nobody is asked about it as a work dir), so the bind
+    # is written here, by name, for every box.
+    vols="$vols ${PATHS["$box:pcache"]}:/opt/program-cache"
     for pair in ${BOX_EXTRA_BINDS[$box]}; do
       label=${pair%%:*} dest=${pair#*:}
       vols="$vols ${PATHS["$box:$label"]}:$dest"
@@ -2481,6 +2661,10 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # prompt time, so the :ro bind is safe (a bind to a missing dir would be
     # fatal to `distrobox assemble create`). It lands INSIDE the single volume=.
     [[ -n $MODELS_DIR ]] && vols="$vols $MODELS_DIR:/opt/models:ro"
+    printf '# /opt/data = this box%s PERSISTENT state (your work, the seeded\n' "'s"
+    printf '# configs, server.env) — never wiped. /opt/program-cache = its PROGRAM\n'
+    printf '# CACHE (venv upper, scratch, per-box caches) — the installer offers to\n'
+    printf '# empty it when it finds an older generation there.\n'
     printf '# Shared compute caches across ALL droste boxes are folded into the\n'
     printf '# single volume= value below (distrobox reads only the LAST volume=).\n'
     printf 'volume="%s"\n' "$vols"
@@ -2490,10 +2674,14 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
           "$(home_disp "$MODELS_DIR")"
         printf '# is already included in the single volume= value above.\n'
       else
-        # Not opted in: a read-only /opt/models bind to a missing dir is fatal to
-        # `distrobox assemble create`, so it is not added — enable it by hand.
-        printf '# Optional read-only local model collection: to enable, APPEND\n'
-        printf '#   %s:/opt/models:ro\n' "$(home_disp "$EMIT_DIR/models")"
+        # Not opted in: the share has no default location (the prompt's default
+        # is the word "None"), and a read-only /opt/models bind to a missing dir
+        # is fatal to `distrobox assemble create` — so nothing is added here.
+        # Re-run droste-setup.sh and give it a path, or add the bind by hand:
+        printf '# Optional read-only local model collection (none configured — the\n'
+        printf '# installer asks for a path, and None means no bind). To enable, name\n'
+        printf '# YOUR collection and APPEND\n'
+        printf '#   %s:/opt/models:ro\n' "$(home_disp "$HOME/models")"
         printf '# (space-separated) INSIDE the single volume= value above — do NOT add a\n'
         printf '# second volume= line (distrobox reads only the LAST, dropping the rest).\n'
       fi
@@ -2512,16 +2700,14 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
 # file is a settings file the user may well have hand-edited); rewritten from
 # the current answers for every box that is (re)configured.
 #
-# The one thing a rewrite CARRIES OVER is KEEP_OLD_VENV: the installer never
-# writes that key on its own (declining the offer in Existing Box Data is an
-# answer for this run, not forever), so a key in the file is one the user put
-# there — dropping it while rewriting would silently restore a report they
-# switched off. Read BEFORE the block below: its redirect truncates the file.
+# The rewrite carries NOTHING over: the two keys it writes are the two it asked
+# about, and any other key a user put in the file by hand is a key the box's
+# serve library ignores (it reads SERVE and PORT and nothing else), so there is
+# nothing here worth preserving across a run that was told to reconfigure.
 emit_serve_env() {  # box
-  local box=$1 f keep=""
+  local box=$1 f
   f=$(serve_env_file "$box") || return 0
   [[ -n $f ]] || return 0
-  serve_env_keep_venv "$(dirname "$f")" && keep=1
   mkdir -p "$(dirname "$f")" 2>/dev/null || :
   {
     printf '# server.env — read by droste-init-hook.sh at every container start.\n'
@@ -2532,12 +2718,6 @@ emit_serve_env() {  # box
       "${RUNTIME:-podman}" "$(box_ctr "$box")"
     printf 'SERVE=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
     printf 'PORT=%s\n' "${CFG_PORT[$box]}"
-    if [[ -n $keep ]]; then
-      printf '# Your setting, carried over: this data dir holds an older\n'
-      printf '# generation Python environment, kept on purpose. Remove the line\n'
-      printf '# to hear about it again at every start.\n'
-      printf 'KEEP_OLD_VENV=1\n'
-    fi
   } > "$f" 2>/dev/null || warn "could not write $f $EMD the box will not know its serve setting"
   return 0
 }
@@ -3328,7 +3508,7 @@ execute() {
 # line by line.
 # shellcheck disable=SC2016
 write_notes() {
-  local f=$EMIT_DIR/NOTES.md box port bs hs data note
+  local f=$EMIT_DIR/NOTES.md box port bs hs data pcache note
   {
     printf '# droste-halo setup notes\n\n'
     printf 'Generated by droste-setup.sh on %s. Re-run droste-setup.sh any time —\n' \
@@ -3346,14 +3526,19 @@ write_notes() {
     printf 'service with it. Both doors are the SAME environment: a `pip install`\n'
     printf 'you do interactively is what the served process runs.\n'
     printf '\n## Your installation\n\n'
-    printf '| Box | Start w Box | Start w Host | Port | Data dir |\n'
-    printf '|---|---|---|---|---|\n'
+    printf '| Box | Start w Box | Start w Host | Port | Data dir | Cache dir |\n'
+    printf '|---|---|---|---|---|---|\n'
     for box in "${SELECTED[@]}"; do
       port=$(box_port_disp "$box")
       bs=$(yn_word "$(box_boxsv "$box")")
       hs=$(yn_word "$(box_hstsv "$box")")
       data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-?}}"
-      printf '| %s | %s | %s | %s | %s |\n' "$box" "$bs" "$hs" "$port" "$data"
+      # A box carried over from an older layout has no cache dir of its own to
+      # report (nothing bound one); it says so rather than naming a path the
+      # ini does not carry.
+      pcache="${PATHS["$box:pcache"]:-${EXD_PATH["$box:pcache"]:-?}}"
+      printf '| %s | %s | %s | %s | %s | %s |\n' \
+        "$box" "$bs" "$hs" "$port" "$data" "$pcache"
     done
     printf '\nShared HF cache: `%s` — bound into every box; the SINGLE model\n' \
       "$HF_CACHE"
@@ -3373,6 +3558,56 @@ write_notes() {
     printf 'keyed by version/arch). ONE caveat: avoid heavy simultaneous\n'
     printf 'first-run MIOpen tuning in two boxes at once; everything else\n'
     printf 'is conflict-free.\n'
+    # The Q4 write-up: three host roots, told as "what may be deleted", which
+    # is the only distinction between them a user has to remember. The paths
+    # themselves are in the table above (they are per box, and may have been
+    # typed one by one), so this names the ROLES.
+    printf '\n## Three places your files live\n\n'
+    printf 'Every box reads three host directories, and what separates them is\n'
+    printf 'what may be thrown away:\n\n'
+    printf -- '- **Data dir** (`data/<box>` by default) — PERSISTENT. Your work and\n'
+    printf '  everything you authored: the seeded config you edited, the model\n'
+    printf '  tree, ComfyUI%s `user/` and custom nodes, ds4%s saved sessions, the\n' \
+      "'s" "'s"
+    printf '  finetuning workspace, `server.env`. droste-setup.sh never deletes\n'
+    printf '  anything here.\n'
+    printf -- '- **Cache dir** (`caches/<box>` by default) — PROGRAM CACHES, and\n'
+    printf '  nothing else: the Python environment overlay and its work dir,\n'
+    printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, the seeded\n' \
+      "'s" "'s"
+    printf '  `extra_model_paths.yaml`, the serve pid record. Nothing in here is\n'
+    printf '  authored and nothing is irreplaceable — droste-setup.sh offers to\n'
+    printf '  EMPTY it when it finds leftovers from an older generation, and the\n'
+    printf '  box rebuilds what it needs at the next start.\n'
+    printf -- '- **Compute caches** (`%s`) — the compiled GPU\n' "$COMPUTE_CACHE"
+    printf '  kernels, SHARED by every box because their content is keyed by\n'
+    printf '  version and architecture. compute-caches is safe to delete anytime;\n'
+    printf '  kernels rebuild on next start. The installer never touches it.\n'
+    # The M-line (Jei s38): no migration, so a re-run simply stops reading the
+    # old paths and leaves them on disk. The last of the three is the delicate
+    # one — the old SHARED cache dir is the new PROGRAM CACHE root's default
+    # location, so what is safe to delete there depends on where this run just
+    # put its compute caches.
+    printf '\nUpgrading from an older droste? Nothing is migrated, on purpose:\n'
+    printf 'the old paths are simply no longer read, and all of them are safe to\n'
+    printf 'move or delete by hand once you have moved anything you want to keep\n'
+    printf 'into the data dir listed above.\n\n'
+    printf '    %s/<box>/data          the old per-box data dir\n' \
+      "$(home_disp "$EMIT_DIR")"
+    printf '    %s/finetuning/workspace\n' "$(home_disp "$EMIT_DIR")"
+    printf '    %s/caches              the old SHARED cache dir\n\n' \
+      "$(home_disp "$EMIT_DIR")"
+    if [[ $COMPUTE_CACHE == "$EMIT_DIR/caches" ]]; then
+      printf 'Careful with the last one: this install still keeps its compute\n'
+      printf 'caches there, so that directory is LIVE — only the per-box `data`\n'
+      printf 'trees above are leftovers.\n'
+    else
+      printf 'Careful with the last one: `%s/caches` is the program cache\n' \
+        "$(home_disp "$EMIT_DIR")"
+      printf 'root now. The leftovers in it are the old kernel caches (`miopen*`,\n'
+      printf '`triton`, `torch`, `vllm`); the per-box directories beside them are\n'
+      printf 'live.\n'
+    fi
     printf '\n## Day-to-day commands\n\n'
     printf '    podman start <name>        # start the box (+ its server)\n'
     printf '    podman stop <name>         # stop it\n'
@@ -3390,16 +3625,7 @@ write_notes() {
     printf 'Edit it and `podman restart <name>` — no recreate needed, and the\n'
     printf 'file survives image updates and box recreation. droste-setup.sh writes\n'
     printf 'it from your answers for every box it (re)configures, and leaves it\n'
-    printf 'alone for boxes you asked to KEEP.\n\n'
-    printf 'One more key belongs to you alone; the installer only carries it over:\n\n'
-    printf '    KEEP_OLD_VENV=1  # keep an older-generation environment in this\n'
-    printf '                     # data dir, and stop reporting it at every start\n\n'
-    printf 'A data dir written by an older droste generation holds a COMPLETE\n'
-    printf 'Python environment, which the box stacks over the one in its image —\n'
-    printf 'the older packages win, and the failures never name them. The box says\n'
-    printf 'so at every start, and droste-setup.sh offers to empty it. Set this key\n'
-    printf 'if you want to keep that environment anyway; remove it to hear about\n'
-    printf 'it again.\n'
+    printf 'alone for boxes you asked to KEEP.\n'
     printf '\n## Supervision (podman healthcheck)\n\n'
     printf 'Each box is created with a healthcheck that probes its service from\n'
     printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'
@@ -3472,9 +3698,11 @@ write_notes() {
         printf '    distrobox assemble create --file %s\n' "$(ini_file "$box")"
       fi
     done
-    printf '\nRecreating replaces the container; your data dir, server.env and\n'
-    printf 'the in-box overlays under it are untouched — that is what makes\n'
-    printf 'in-box installs (pip packages, custom nodes) survive a recreate.\n'
+    printf '\nRecreating replaces the container; your data dir, your cache dir,\n'
+    printf 'server.env and the in-box overlays under them are untouched — that\n'
+    printf 'is what makes in-box installs survive a recreate (pip packages ride\n'
+    printf 'the environment overlay in the cache dir, custom nodes their own\n'
+    printf 'overlay in the data dir).\n'
     printf '\n## Start at host boot\n\n'
     printf 'Boxes you asked to start at host boot get a systemd USER unit:\n\n'
     printf '    systemctl --user status droste-<box>      # is it enabled/active\n'
@@ -3501,9 +3729,10 @@ write_notes() {
         ignore) note="fs=${CFG_FS[$box]} → IGNORED (box will fail on start!)" ;;
         *) note="fs=${CFG_FS[$box]:-?} (kernel overlayfs OK)" ;;
       esac
-      printf -- '- %s: port=%s, box-start=%s, host-boot=%s, data=`%s`, %s.%s\n' \
+      printf -- '- %s: port=%s, box-start=%s, host-boot=%s, data=`%s`, cache=`%s`, %s.%s\n' \
         "$box" "${CFG_PORT[$box]}" "$(yn_word "${CFG_BOXSV[$box]:-}")" \
-        "$(yn_word "${CFG_HSTSV[$box]:-}")" "${PATHS["$box:data"]}" "$note" \
+        "$(yn_word "${CFG_HSTSV[$box]:-}")" "${PATHS["$box:data"]}" \
+        "${PATHS["$box:pcache"]}" "$note" \
         "$([[ -n ${BOX_CONFIG[$box]} ]] \
            && printf ' Seeded config: %s.' "${BOX_CONFIG[$box]}")"
     done
@@ -3858,10 +4087,6 @@ main() {
         "$C_TEXT" "$EMD" "$RESET"
       printf '%sYou can still pull images / create / start them below.%s\n' "$C_TEXT" "$RESET"
     fi
-    # Every data dir in play is known now (configured AND kept), and nothing has
-    # been pulled or created yet — the last moment a stale environment can be
-    # dealt with before a box is asked to start on top of it.
-    venv_upper_review
     ask_ladder
     execute
     write_notes

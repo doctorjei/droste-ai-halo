@@ -1152,6 +1152,30 @@ parse_serve_env() {  # box
   return 0
 }
 
+# The third key of the same file, asked about a DIRECTORY rather than a box:
+# KEEP_OLD_VENV says "the older-generation environment in this data dir is there
+# on purpose — keep it, and stop reporting it" (the box honours it at every
+# start; see resolve::_keep_old_venv). It is read from the dir under review, not
+# from the box's detected settings, because a run may have pointed the box at a
+# different data dir since detection — and it is what the two callers below need:
+# venv_upper_review (do not offer to empty it) and emit_serve_env (do not drop a
+# setting the user made by hand). Same parse as parse_serve_env, LAST assignment
+# winning, so a file the box reads one way is never read the other way here.
+serve_env_keep_venv() {  # data dir → 0 when KEEP_OLD_VENV is set
+  local f=$1/server.env line k v val=""
+  [[ -f $f && -r $f ]] || return 1
+  while IFS= read -r line; do
+    line=${line%%#*}
+    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
+    k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
+    [[ $k == KEEP_OLD_VENV ]] && val=$v
+  done < "$f"
+  case "${val,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
 # Host-boot state comes from systemd itself, not from a file we wrote: the user
 # may have disabled the unit by hand. `is-enabled` exits non-zero for disabled
 # AND for "no such unit", which are the same answer to us.
@@ -2059,8 +2083,9 @@ mitigation_line() {  # box
 # PRE-MERGE generation holds a COMPLETE environment instead, and an old stack
 # layered over a new one breaks the service in ways that never name it — a
 # transformers import error about a numpy that IS installed, a JupyterLab /lab
-# that 404s. The box warns about it at every start (droste-resolve.sh); here it
-# can still be fixed, before anything is pulled, created or started.
+# that 404s. The box warns about it at every start it actually overlays the dir
+# (droste-resolve.sh); here it can still be fixed, before anything is pulled,
+# created or started.
 #
 # THE SIGNAL IS STRUCTURAL, and deliberately not "this dir carries names the
 # image also carries" — that is what a HEALTHY dir looks like: installing into
@@ -2071,8 +2096,9 @@ mitigation_line() {  # box
 # creation, and the bin/python* links only creating or copying an environment
 # produces.
 #
-# MIRROR of resolve::_upper_is_env / _upper_records in
-# base/resolve/droste-resolve.sh. The two cannot share code — this script is
+# MIRROR of resolve::_upper_is_env / _upper_records / _keep_old_venv in
+# base/resolve/droste-resolve.sh — including the KEEP_OLD_VENV key, which is one
+# setting read by both sides. The two cannot share code — this script is
 # standalone by contract (curl | bash, no checkout) and that one is baked into
 # the image — so they are kept in step by hand; change one, change the other.
 venv_upper_full() {  # dir → 0 when it holds a WHOLE environment
@@ -2098,7 +2124,23 @@ venv_upper_records() {  # dir → count
 # user's decision, never a side effect of running the installer. A RUNNING box
 # is reported and left alone: deleting the environment out from under a mounted
 # overlay is not a repair, and the box has to be restarted for the fix to take
-# anyway.
+# anyway. So is a box whose server.env sets KEEP_OLD_VENV: that setting is the
+# answer to this question, given once and kept.
+#
+# Every affected box gets a ROW either way, so the section appears whenever
+# there is something to say (and stays away entirely when no data dir is
+# affected) — a box that is being kept on purpose is still named, rather than
+# vanishing from a section that would otherwise have reported it.
+#
+# ASYMMETRY WITH THE BOX, deliberate on both sides: in the box the report fires
+# only when an overlay MOUNT put the dir over the baked stack (kernel or fuse) —
+# copy mode never mounts the upper and says so in its own words, so
+# resolve::_report_env_upper stays quiet there. The offer HERE is made for every
+# affected data dir regardless: it runs on the host before any box is started, so
+# the mode that run will end up using is not known yet, and emptying a stale
+# pre-merge environment is right in copy mode too — dead weight there instead of
+# a shadowing layer. Same note at resolve::_report_env_upper; neither side is a
+# bug to be "fixed" into agreement with the other.
 venv_upper_review() {
   local box dir n shown=0
   for box in "${BOXES[@]}"; do
@@ -2109,26 +2151,40 @@ venv_upper_review() {
       shown=1
       section "Existing Box Data"
       say ""
-      prose "One or more data directories were written by an older droste generation: they hold a complete Python environment, which the box stacks on top of the one built into its image. The older packages win, and the service then fails in ways that never mention them. Emptying the directory hands the box back to its own environment; packages you installed in the box yourself go with it."
+      prose "One or more data directories were written by an older droste generation: they hold a complete Python environment, which the box stacks on top of the one built into its image. The older packages win, and the service then fails in ways that never mention them. Emptying the directory hands the box back to its own environment; packages you installed in the box yourself go with it. To keep an old environment instead, and stop the box reporting it at every start, put KEEP_OLD_VENV=1 in that box's server.env."
     fi
     n=$(venv_upper_records "$dir/venv")
     say ""
     printf '  %s%s%s %s%s%s: %s%s%s package records from an older generation.%s\n' \
       "$C_ARROW" "$ARROW_M" "$RESET" "$C_DETN" "$box" "$C_TEXT" \
       "$C_SVAL" "$n" "$C_TEXT" "$RESET"
+    if serve_env_keep_venv "$dir"; then
+      subnote "Kept: server.env sets KEEP_OLD_VENV=1 — not offered, not reported."
+      continue
+    fi
     if [[ $(box_state "$box") == ACTIVE ]]; then
       subnote "$(box_ctr "$box") is running — stop it, then re-run to empty it."
       continue
     fi
     ask_yn "Empty $(home_disp "$dir/venv")" N
     if [[ $ANS_YN -eq 0 ]]; then
-      subnote "Left as-is — the box reports it at every start."
+      subnote "Left as-is — reported at every start; KEEP_OLD_VENV=1 stops that."
       continue
     fi
-    if rm -rf "$dir/venv"; then
-      subnote "Emptied — the box uses the environment from its image."
+    # THE OVERLAY WORK DIR GOES WITH IT, under the same consent and without a
+    # second question: it is not a second decision, it is the rest of this one.
+    # resolve::overlay puts each row's workdir at $(dirname upper)/.work/
+    # $(basename upper) — for this row, <data>/.work/venv — and it holds only
+    # that mount's in-flight bookkeeping, which is meaningless once the upper it
+    # belonged to is gone. ONLY THIS ROW'S: .work/ is shared by every overlay
+    # row a box has (comfyui also mounts custom_nodes, whose work dir must
+    # survive an untouched custom_nodes), so the name is never dropped from the
+    # path. Absent is normal and silent — copy mode never creates one, and the
+    # resolver re-creates whatever it needs at the next start.
+    if rm -rf "$dir/venv" "$dir/.work/venv"; then
+      subnote "Emptied with its overlay work dir — the image's environment wins."
     else
-      warn "could not empty $dir/venv — remove it by hand, then re-run"
+      warn "could not empty $dir/venv and $dir/.work/venv — remove them by hand, then re-run"
     fi
   done
   return 0
@@ -2252,10 +2308,17 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
 # NEVER touched for a KEPT box (keep = "change nothing about settings", and this
 # file is a settings file the user may well have hand-edited); rewritten from
 # the current answers for every box that is (re)configured.
+#
+# The one thing a rewrite CARRIES OVER is KEEP_OLD_VENV: the installer never
+# writes that key on its own (declining the offer in Existing Box Data is an
+# answer for this run, not forever), so a key in the file is one the user put
+# there — dropping it while rewriting would silently restore a report they
+# switched off. Read BEFORE the block below: its redirect truncates the file.
 emit_serve_env() {  # box
-  local box=$1 f
+  local box=$1 f keep=""
   f=$(serve_env_file "$box") || return 0
   [[ -n $f ]] || return 0
+  serve_env_keep_venv "$(dirname "$f")" && keep=1
   mkdir -p "$(dirname "$f")" 2>/dev/null || :
   {
     printf '# server.env — read by droste-init-hook.sh at every container start.\n'
@@ -2266,6 +2329,12 @@ emit_serve_env() {  # box
       "${RUNTIME:-podman}" "$(box_ctr "$box")"
     printf 'SERVE=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
     printf 'PORT=%s\n' "${CFG_PORT[$box]}"
+    if [[ -n $keep ]]; then
+      printf '# Your setting, carried over: this data dir holds an older\n'
+      printf '# generation Python environment, kept on purpose. Remove the line\n'
+      printf '# to hear about it again at every start.\n'
+      printf 'KEEP_OLD_VENV=1\n'
+    fi
   } > "$f" 2>/dev/null || warn "could not write $f — the box will not know its serve setting"
   return 0
 }
@@ -3117,7 +3186,16 @@ write_notes() {
     printf 'Edit it and `podman restart <name>` — no recreate needed, and the\n'
     printf 'file survives image updates and box recreation. droste-setup.sh writes\n'
     printf 'it from your answers for every box it (re)configures, and leaves it\n'
-    printf 'alone for boxes you asked to KEEP.\n'
+    printf 'alone for boxes you asked to KEEP.\n\n'
+    printf 'One more key belongs to you alone; the installer only carries it over:\n\n'
+    printf '    KEEP_OLD_VENV=1  # keep an older-generation environment in this\n'
+    printf '                     # data dir, and stop reporting it at every start\n\n'
+    printf 'A data dir written by an older droste generation holds a COMPLETE\n'
+    printf 'Python environment, which the box stacks over the one in its image —\n'
+    printf 'the older packages win, and the failures never name them. The box says\n'
+    printf 'so at every start, and droste-setup.sh offers to empty it. Set this key\n'
+    printf 'if you want to keep that environment anyway; remove it to hear about\n'
+    printf 'it again.\n'
     printf '\n## Supervision (podman healthcheck)\n\n'
     printf 'Each box is created with a healthcheck that probes its service from\n'
     printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'

@@ -36,6 +36,11 @@ set -euo pipefail
 : "${RESOLVE_TEMPLATES_DIR:=/opt/resources/templates}"
 : "${RESOLVE_APPLY_TEMPLATES:=/opt/resources/resolve/apply_templates.py}"
 : "${DROSTE_OVERLAY_MODE:=auto}"   # auto (kernel→fuse→copy) | kernel | fuse | copy (non-auto = forced, no fallback)
+# The per-box settings file on the DATA volume — droste-serve.sh's SERVE/PORT live
+# in it, and so does KEEP_OLD_VENV (see _keep_old_venv). Same name and default as
+# DROSTE_SERVE_ENV there on purpose: it is ONE file, and a test can point both
+# libraries at one fixture by exporting this.
+: "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"
 # DROSTE_RESOLVE_DRYRUN (bare name) — echo mount commands instead of running them.
 # ALLOW_EPHEMERAL     (bare name) — downgrade a CRITICAL unbound hard-error to a warning.
 
@@ -282,6 +287,13 @@ resolve::_own_dirs() {
 # after creation (pip never writes it) and bin/python* are the interpreter links
 # `python -m venv` made. Their presence means the upper IS an environment rather
 # than a layer over one, which only a copied/created-in-place venv produces.
+#
+# MIRRORED, by hand, in droste-setup.sh (venv_upper_full / venv_upper_records /
+# serve_env_keep_venv, which offer the same cure from the host before anything
+# starts). The two cannot share code — the installer is standalone by contract
+# (curl | bash, no checkout) and this file is baked into the image — so change
+# one, change the other; the KEEP_OLD_VENV key below is shared between them.
+# WHEN each side speaks is deliberately NOT mirrored — see _report_env_upper.
 resolve::_upper_is_env() {
     local upper=$1 p
     [ -f "$upper/pyvenv.cfg" ] || return 1
@@ -304,6 +316,30 @@ resolve::_upper_records() {
     printf '%d' "$n"
 }
 
+# _keep_old_venv — has the user said, in this box's server.env, that the old
+# environment is there ON PURPOSE? Reporting it at every start is the DEFAULT
+# (the symptoms it explains are obscure enough to be worth repeating), so the
+# opt-out is manual and per box: KEEP_OLD_VENV=1 means "I know, keep it, stop
+# telling me" — it changes nothing about the mount, only the report.
+# Read exactly the way droste-serve.sh reads the same file: sourced in a
+# SUBSHELL with errexit/nounset off and all output discarded, so a hand-edited
+# typo can neither abort the start nor leak assignments into it, and only the
+# one key is printed back. Absent/unreadable file => unset => report as usual.
+resolve::_keep_old_venv() {
+    local file=${DROSTE_SERVE_ENV:-$DROSTE_DATA_DIR/server.env} v=""
+    [ -f "$file" ] && [ -r "$file" ] || return 1
+    v=$(
+        set +e +u +o pipefail
+        # shellcheck disable=SC1090
+        . "$file" >/dev/null 2>&1
+        printf '%s' "${KEEP_OLD_VENV-}"
+    ) 2>/dev/null || v=""
+    case "${v,,}" in
+        1|true|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
 # The warning itself: loud, and naming the cure rather than the diagnosis. NOT
 # fatal — only resolve::critical refuses to start (an unbound volume loses data;
 # this one degrades a stack the box may still partly run), and aborting here
@@ -316,6 +352,35 @@ resolve::_warn_env_upper() {
     resolve::warn "  - symptoms are obscure and do not name it: import errors about packages that ARE installed, missing web assets, version mismatches;"
     resolve::warn "  - CURE, from the host, with this box stopped:  rm -rf <data dir>/venv  — then start the box again;"
     resolve::warn "  - <data dir> is the host directory bound to $DROSTE_DATA_DIR (the 'volume=' line of the box's .ini). Packages YOU installed in the box go with it; the image's own stack is used from then on."
+    resolve::warn "  - to KEEP this environment instead and stop this warning, add KEEP_OLD_VENV=1 to <data dir>/server.env (the file the box's SERVE/PORT settings live in) and restart the box."
+}
+
+# _report_env_upper — the gate around that warning, called from overlay()'s
+# SUCCESS sites and nowhere else. WHY POST-MOUNT: the warning's claim (the
+# upper's records "take precedence over the ones baked into this image") is true
+# exactly when the upper is really layered over the lower — i.e. when the kernel
+# or the fuse mount succeeded. COPY MODE NEVER MOUNTS THE UPPER: _overlay_copy
+# clones the lower alone and bind-mounts the clone, and says so itself ("overlay
+# upper ... is non-empty — deltas ... NOT visible"), so a stale-stack warning
+# there would name a cure for a problem that run does not have. Still once per
+# start per row: the re-entrancy guard at the top of overlay() returns before any
+# mount attempt, and each success site returns immediately after.
+# The warning names $upper and $lower in its first line, so it stays attributable
+# to its own row when it lands after the mount lines of several overlays.
+# DETECTION always runs; server.env's KEEP_OLD_VENV only silences the report (a
+# user who has decided to keep the old environment still gets the same mount, and
+# dropping the key restores the report).
+# ASYMMETRY WITH THE INSTALLER, deliberate on both sides: droste-setup.sh offers
+# to empty an affected data dir whatever overlay mode the box will run in. It
+# works host-side, before anything is mounted, and emptying a stale pre-merge
+# venv is right in copy mode too — dead weight there instead of a shadowing
+# layer. The same note sits above venv_upper_review in droste-setup.sh: neither
+# side is a bug to be "fixed" into agreement with the other.
+resolve::_report_env_upper() {
+    local upper=$1 lower=$2
+    if resolve::_upper_is_env "$upper" && ! resolve::_keep_old_venv; then
+        resolve::_warn_env_upper "$upper" "$lower"
+    fi
 }
 
 # ── Primitive: overlay (BOTH lanes since lane unification) ──────────────────
@@ -346,12 +411,9 @@ resolve::overlay() {
         resolve::info "overlay $lower: already mounted — skipping (re-entrant init hook)"
         return 0
     fi
-    # Runs BEFORE the mount, once per start per row (the guard above swallows the
-    # re-entrant hook), and only reports — see _warn_env_upper for why it is not
-    # fatal.
-    if resolve::_upper_is_env "$upper"; then
-        resolve::_warn_env_upper "$upper" "$lower"
-    fi
+    # (The stale-upper report is NOT here: it belongs to a mount that actually
+    # layered this upper over the lower, so it fires from the kernel/fuse success
+    # sites below — see _report_env_upper.)
     local mode=$DROSTE_OVERLAY_MODE
     case "$mode" in
         auto|kernel|fuse|copy) ;;
@@ -376,6 +438,9 @@ resolve::overlay() {
     if [ "$mode" = auto ] || [ "$mode" = kernel ]; then
         if resolve::_try_mount mount -t overlay overlay \
                -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
+            # Mounted: the upper IS in play over the lower, so report it if it is
+            # a whole environment rather than a delta.
+            resolve::_report_env_upper "$upper" "$lower"
             resolve::_own_dirs "$lower"
             return 0
         fi
@@ -406,6 +471,8 @@ resolve::overlay() {
             if resolve::_try_mount fuse-overlayfs \
                    -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
                 resolve::warn "using fuse-overlayfs for $lower (userspace overlay; slower I/O; kernel overlay unavailable on this $DROSTE_DATA_DIR filesystem)."
+                # Mounted (same as the kernel site above): the upper is in play.
+                resolve::_report_env_upper "$upper" "$lower"
                 resolve::_own_dirs "$lower"
                 return 0
             fi

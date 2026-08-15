@@ -252,7 +252,7 @@ if [[ $PLAIN -eq 1 ]]; then
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --plain / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
-  C_BRK="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD=""
+  C_BRK="" C_OKB="" C_OK="" C_OKT="" C_BADB="" C_BAD="" C_NOTB="" C_NOT=""
   C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
@@ -289,6 +289,10 @@ else
   C_BRK=$'\e[0;32m'     # option-list brackets, default row
   C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m' C_OKT=$'\e[0;36m'    # preflight ok row
   C_BADB=$'\e[0;31m' C_BAD=$'\e[0;91m'                    # preflight [!!] row
+  # The yellow twin of the pair above: same shape, one shade down, for a row
+  # that reports something the installer itself fixes later. Reset-prefixed
+  # like every other entry so neither shade inherits a neighbour's weight.
+  C_NOTB=$'\e[0;33m' C_NOT=$'\e[0;93m'                    # preflight note row
   C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'  # table [N] + option-list, other rows
   C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
   C_SUBJ=$'\e[1;97m'    # sub-notice subject
@@ -453,10 +457,17 @@ hint_yn() {   # Y|N
 # set off from the next prompt by a blank line.
 subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
 
-# Preflight rows: cyan [ok] / red [!!]. Preflight never blocks, so a problem is
-# reported here rather than through warn().
-pf_ok()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
-pf_bad() { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
+# Preflight rows: cyan [ok] / red [!!] / yellow [!!]. Preflight never blocks, so
+# a problem is reported here rather than through warn(). The yellow row is the
+# same marker in the informational shade: the state is not what the installer
+# wants, but the installer offers to change it before the run ends.
+pf_ok()   { printf '  %s[%s%s%s]%s %s%s\n' "$C_OKB" "$C_OK" "ok" "$C_OKB" "$C_OKT" "$1" "$RESET"; }
+pf_bad()  { printf '  %s[%s%s%s]%s %s%s\n' "$C_BADB" "$C_BAD" "!!" "$C_BADB" "$C_BADB" "$1" "$RESET"; }
+pf_note() { printf '  %s[%s%s%s]%s %s%s\n' "$C_NOTB" "$C_NOT" "!!" "$C_NOTB" "$C_NOTB" "$1" "$RESET"; }
+
+# Follow-on detail under a preflight row — the four-space indent and body-text
+# grey of linger_fallback_note(), with any command emph()'d inside the string.
+pf_hint() { printf '    %s%s%s\n' "$C_TEXT" "$1" "$RESET"; }
 
 # A titled box drawn with the banner glyphs (ASCII in --plain mode).
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
@@ -982,8 +993,11 @@ preflight() {
     RUNTIME=docker
     RUNTIME_BIN=$(command -v docker)
     pf_ok "docker found (podman not present)"
+    pf_hint "docker satisfies distrobox's dependency, so no podman comes in;"
+    pf_hint "the image pulls need it: $(emph 'sudo apt install podman') (apt distros)"
   else
     pf_bad "neither podman nor docker found — definitions will still be written"
+    pf_hint "apt distros: $(emph 'sudo apt install podman') — else your package manager"
   fi
   if [[ -e /dev/kfd && -e /dev/dri ]]; then
     pf_ok "GPU devices present: /dev/kfd /dev/dri"
@@ -1029,11 +1043,14 @@ preflight() {
   probe_linger
   case "$LINGER" in
     yes) pf_ok "user lingering enabled (boot auto-start + healthcheck timers)" ;;
-    no)  pf_bad "user lingering off — needed to start boxes at host boot (offered later)" ;;
+    no)  pf_note "user lingering off — needed to start boxes at host boot (offered later)" ;;
     *)   pf_bad "cannot read user lingering state (loginctl missing?)" ;;
   esac
   command -v distrobox >/dev/null 2>&1 && HAVE_DISTROBOX=1
-  [[ $HAVE_DISTROBOX -eq 0 ]] && pf_bad "distrobox not found (it creates every box)"
+  if [[ $HAVE_DISTROBOX -eq 0 ]]; then
+    pf_bad "distrobox not found (it creates every box)"
+    pf_hint "apt distros: $(emph 'sudo apt install distrobox') — else your package manager"
+  fi
   return 0
 }
 
@@ -2032,6 +2049,88 @@ mitigation_line() {  # box
   printf '    %s%s%s %s%s detected%s — using %s%s%s for %s%s.%s\n' \
     "$C_ARROW" "$ARROW_M" "$RESET" "$C_SUBJ" "$fs" "$C_TEXT" \
     "$C_MOPT" "$mode" "$C_TEXT" "$cats" "$C_TEXT" "$RESET"
+  return 0
+}
+
+# ── Whole-environment data dirs (the pre-merge trap) ─────────────────────────
+# A box's data dir carries the WRITABLE HALF of its python environment: the box
+# stacks it over the one baked into the image, so what belongs there is the
+# packages installed inside the box and nothing else. A data dir written by the
+# PRE-MERGE generation holds a COMPLETE environment instead, and an old stack
+# layered over a new one breaks the service in ways that never name it — a
+# transformers import error about a numpy that IS installed, a JupyterLab /lab
+# that 404s. The box warns about it at every start (droste-resolve.sh); here it
+# can still be fixed, before anything is pulled, created or started.
+#
+# THE SIGNAL IS STRUCTURAL, and deliberately not "this dir carries names the
+# image also carries" — that is what a HEALTHY dir looks like: installing into
+# the box (`pip install --force-reinstall` of a baked package included) is the
+# entire point of the writable half, and the in-box ownership pass copies up
+# every directory of the environment as a matter of course. What no install in
+# the box ever writes is the environment's own ROOT: pyvenv.cfg, untouched after
+# creation, and the bin/python* links only creating or copying an environment
+# produces.
+#
+# MIRROR of resolve::_upper_is_env / _upper_records in
+# base/resolve/droste-resolve.sh. The two cannot share code — this script is
+# standalone by contract (curl | bash, no checkout) and that one is baked into
+# the image — so they are kept in step by hand; change one, change the other.
+venv_upper_full() {  # dir → 0 when it holds a WHOLE environment
+  local d=$1 p
+  [[ -f $d/pyvenv.cfg ]] || return 1
+  for p in "$d"/bin/python*; do
+    [[ -e $p || -L $p ]] && return 0
+  done
+  return 1
+}
+
+# How many package records it carries: the SIZE of the problem, never the signal
+# for it (a healthy dir carries plenty). Glob only — no walk of a 20 GB tree.
+venv_upper_records() {  # dir → count
+  local d=$1 p n=0
+  for p in "$d"/lib/python*/site-packages/*.dist-info; do
+    [[ -d $p ]] && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# One offer per affected box, defaulting to NO — emptying a directory is the
+# user's decision, never a side effect of running the installer. A RUNNING box
+# is reported and left alone: deleting the environment out from under a mounted
+# overlay is not a repair, and the box has to be restarted for the fix to take
+# anyway.
+venv_upper_review() {
+  local box dir n shown=0
+  for box in "${BOXES[@]}"; do
+    dir=${PATHS["$box:data"]:-}
+    [[ -n $dir ]] || continue
+    venv_upper_full "$dir/venv" || continue
+    if [[ $shown -eq 0 ]]; then
+      shown=1
+      section "Existing Box Data"
+      say ""
+      prose "One or more data directories were written by an older droste generation: they hold a complete Python environment, which the box stacks on top of the one built into its image. The older packages win, and the service then fails in ways that never mention them. Emptying the directory hands the box back to its own environment; packages you installed in the box yourself go with it."
+    fi
+    n=$(venv_upper_records "$dir/venv")
+    say ""
+    printf '  %s%s%s %s%s%s: %s%s%s package records from an older generation.%s\n' \
+      "$C_ARROW" "$ARROW_M" "$RESET" "$C_DETN" "$box" "$C_TEXT" \
+      "$C_SVAL" "$n" "$C_TEXT" "$RESET"
+    if [[ $(box_state "$box") == ACTIVE ]]; then
+      subnote "$(box_ctr "$box") is running — stop it, then re-run to empty it."
+      continue
+    fi
+    ask_yn "Empty $(home_disp "$dir/venv")" N
+    if [[ $ANS_YN -eq 0 ]]; then
+      subnote "Left as-is — the box reports it at every start."
+      continue
+    fi
+    if rm -rf "$dir/venv"; then
+      subnote "Emptied — the box uses the environment from its image."
+    else
+      warn "could not empty $dir/venv — remove it by hand, then re-run"
+    fi
+  done
   return 0
 }
 
@@ -3469,6 +3568,10 @@ main() {
       printf '%sAll selected boxes kept as-is — definitions unchanged.%s\n' "$C_TEXT" "$RESET"
       printf '%sYou can still pull images / create / start them below.%s\n' "$C_TEXT" "$RESET"
     fi
+    # Every data dir in play is known now (configured AND kept), and nothing has
+    # been pulled or created yet — the last moment a stale environment can be
+    # dealt with before a box is asked to start on top of it.
+    venv_upper_review
     ask_ladder
     execute
     write_notes

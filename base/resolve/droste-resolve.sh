@@ -264,6 +264,60 @@ resolve::_own_dirs() {
     return 0
 }
 
+# ── Whole-environment upper detection (the pre-merge data-dir trap) ─────────
+# An overlay upper is meant to be a DELTA over the baked lower: the files the box
+# user's own installs wrote, and nothing else. A data dir written by the
+# PRE-MERGE generation instead holds a COMPLETE python environment at
+# $DROSTE_DATA_DIR/venv, and mounting that as the upper shadows the image's stack
+# with the older one — measured on hardware as a transformers import error naming
+# a numpy that is installed, and as a JupyterLab /lab 404 from stale lab assets.
+# Both cured by emptying the upper, neither traceable to it from the symptom.
+#
+# THE SIGNAL IS STRUCTURAL, not a collision count: pip installing into the box —
+# `--force-reinstall` of a baked package included — is exactly what the writable
+# upper is FOR, and _own_dirs chowns every directory of the lower, which copies
+# up the whole directory tree (dist-info directories and all). So "the upper
+# carries names the lower also has" describes a perfectly healthy upper. What no
+# in-box install ever writes is the venv's own ROOT: pyvenv.cfg is untouched
+# after creation (pip never writes it) and bin/python* are the interpreter links
+# `python -m venv` made. Their presence means the upper IS an environment rather
+# than a layer over one, which only a copied/created-in-place venv produces.
+resolve::_upper_is_env() {
+    local upper=$1 p
+    [ -f "$upper/pyvenv.cfg" ] || return 1
+    for p in "$upper"/bin/python*; do
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _upper_records — how many package records the upper carries, to size the
+# problem in the warning. GLOB ONLY (no find walk): this runs on every container
+# start. Never a signal in its own right — see the block above.
+resolve::_upper_records() {
+    local upper=$1 p n=0
+    for p in "$upper"/lib/python*/site-packages/*.dist-info; do
+        [ -d "$p" ] && n=$((n + 1))
+    done
+    printf '%d' "$n"
+}
+
+# The warning itself: loud, and naming the cure rather than the diagnosis. NOT
+# fatal — only resolve::critical refuses to start (an unbound volume loses data;
+# this one degrades a stack the box may still partly run), and aborting here
+# would stand the interactive door up as well, which is where the cure is read.
+resolve::_warn_env_upper() {
+    local upper=$1 lower=$2 n
+    n=$(resolve::_upper_records "$upper")
+    resolve::warn "STALE STACK: the overlay upper $upper is a COMPLETE python environment, not a layer over $lower."
+    resolve::warn "  - it is what a PRE-MERGE data dir holds; its $n package records take precedence over the ones baked into this image;"
+    resolve::warn "  - symptoms are obscure and do not name it: import errors about packages that ARE installed, missing web assets, version mismatches;"
+    resolve::warn "  - CURE, from the host, with this box stopped:  rm -rf <data dir>/venv  — then start the box again;"
+    resolve::warn "  - <data dir> is the host directory bound to $DROSTE_DATA_DIR (the 'volume=' line of the box's .ini). Packages YOU installed in the box go with it; the image's own stack is used from then on."
+}
+
 # ── Primitive: overlay (BOTH lanes since lane unification) ──────────────────
 # entry form: <upper>:<lower>  (upper = /opt/data side, lower = baked app dir)
 # Mounts a writable layer OVER the baked lower. Strategy = DROSTE_OVERLAY_MODE:
@@ -291,6 +345,12 @@ resolve::overlay() {
     if resolve::_is_mountpoint "$lower"; then
         resolve::info "overlay $lower: already mounted — skipping (re-entrant init hook)"
         return 0
+    fi
+    # Runs BEFORE the mount, once per start per row (the guard above swallows the
+    # re-entrant hook), and only reports — see _warn_env_upper for why it is not
+    # fatal.
+    if resolve::_upper_is_env "$upper"; then
+        resolve::_warn_env_upper "$upper" "$lower"
     fi
     local mode=$DROSTE_OVERLAY_MODE
     case "$mode" in

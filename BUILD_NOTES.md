@@ -134,14 +134,25 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   (replace-or-append `--port` — all five services take it), and starts the service
   in the background as the BOX USER via `setpriv --reuid/--regid` (supplementary
   groups inherited, so the GPU device groups survive; runuser/su would not).
-  Re-entrant by construction: a pid file on the data volume records
+  Re-entrant by construction: a STATE RECORD on the data volume
+  (`.droste-serve.pid`, one line: `pid starttime token argv0 status`) records
   pid + process start time + a per-container-start token, so a re-run of the init
   line adopts, skips or replaces the previous instance instead of double-starting.
+  The `status` field (`running` | `refused` | `failed`) is rewritten by every
+  outcome of every start — including the refusals that launch nothing — and is
+  what the healthcheck reads as PROOF OF OWNERSHIP; a refusal is also appended to
+  `.droste-serve.log` (created at launch, so a start that never launched used to
+  leave no log at all, which reads as "nothing ran").
   **The server lane never reads server.env** — its ports are podman-published
   `HOST:CONTAINER` remaps, so rewriting the in-container bind would break them.
 - `droste-healthcheck.sh` — the container-side probe for
   `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup.sh at create
-  time; the images bake NO `HEALTHCHECK`). Reads the same server.env for PORT and
+  time; the images bake NO `HEALTHCHECK`). TWO gates, both required: (1) the state
+  record says OUR launch succeeded and that exact pid is still alive, (2) the
+  endpoint answers. Gate 1 exists because these boxes use HOST networking — when
+  the door refuses a port another process already holds, that squatter's reply
+  satisfies gate 2 and the box reported HEALTHY while serving nothing (live-confirmed).
+  Reads the same server.env for PORT and
   the build-spec's `HEALTH_PATH`/`HEALTH_ACCEPT` rows: comfyui `/`, llama `/health`,
   vllm `/health`, finetuning `/` with `accept=any` (jupyter only ever answers 302/403
   unauthenticated), ds4 `/v1/models` (source-verified: ds4-server has no `/health`
@@ -676,7 +687,9 @@ compiled here ABI-matches the runtime libs it ships against.
 ### base/Container.torch
 Shared torch layer. `FROM` the runtime base + one
 `. /etc/droste/rocm-version.env && pip install torch==$TORCH_VERSION`
-from the gfx1151 index — nothing else. The three Python targets (comfyui, vllm,
+from the gfx1151 index, plus the one apt layer torch's own triton demands at GPU
+init (`gcc` + `python3.13-dev`, last bullet) — nothing else. The three Python
+targets (comfyui, vllm,
 finetuning) build FROM this instead of installing torch themselves; llama and ds4
 stay torch-free on the runtime base and do NOT go through here.
 
@@ -696,6 +709,48 @@ stay torch-free on the runtime base and do NOT go through here.
 - No pin `ARG`s at all: the version comes from the file the runtime base baked
   in, sourced inside the `RUN`, so this layer is pinned by its own base.
 - No `CMD`: intermediate base, never run directly.
+- **Triton's GPU-init-time C compile — `gcc` + `python3.13-dev`, the one apt
+  layer this base carries** (hardware 2026-08-15; the deepest layer of the
+  onion and the first one only a GPU could find). Triton's AMD backend
+  (`triton/backends/amd/driver.py`, `HIPUtils`) runtime-compiles a small C
+  helper module, `hip_utils`, through `compile_module_from_src` the FIRST time
+  the GPU driver is initialised. That is SERVE/run time on a GPU host — never
+  import time — so every gate we own runs upstream of it: the compiler-less
+  `import aiter` smoke test passes, `pip check` passes, the build is green, and
+  the service then dies with `RuntimeError: Failed to find C compiler` (triton
+  probes `gcc`, then `clang`, and these images had neither). Adding gcc alone
+  moves the failure exactly one step, to `fatal error: Python.h: No such file
+  or directory`.
+  **Why the fix lives here and not in a port:** the trap is a property of the
+  torch stack (torch ships triton), so it belongs to whoever ships torch — and
+  on 2026-08-15 BOTH triton-carrying children reproduced it verbatim, same two
+  steps, same order: vllm (found first; cure verified by `vllm serve` coming
+  up) and finetuning (independently confirmed on the same box; cure verified
+  by driving a full triton JIT kernel launch, which printed `True`). Of the
+  three children of this base, that is two bitten and one — comfyui —
+  self-covered, because it already installs the FULL toolchain
+  (gcc/g++/make/binutils) at runtime for ComfyUI's own Triton JIT; its list is
+  now partly duplicative of this layer and is kept verbatim on purpose (apt is
+  a no-op on what is installed, and comfyui's list should stay a self-contained
+  statement of comfyui's needs). `llama`/`ds4` never come through here, carry
+  no torch and no triton, and are immune. One install, two cures, zero reach
+  into the immune images.
+  In both cases those two packages were the WHOLE bill measured live — no HIP
+  headers beyond what the images already carry, nothing else missing. Baked as
+  the exact `python3.13-dev` rather than the `python3-dev` metapackage: the
+  venv is Debian 13's system python3.13, triton's include path comes from
+  `sysconfig` (`/usr/include/python3.13`), and the exact name is what the build
+  stages already pin — the metapackage would silently follow a future Debian
+  python3 default away from the venv's interpreter. Placed ABOVE the torch pip
+  layer so a pin bump does not re-run apt.
+  **`gcc`, NOT `g++` — and no `c++` on this base at all.** vllm's aiter probes
+  `shutil.which("c++")` and must keep finding nothing, so its prebuilt
+  `module_aiter_enum.so` (see the vllm section) stays load-bearing; a `g++`
+  here would silently re-arm that lazy JIT path in a child image. The C++/hipcc
+  toolchain still belongs to the build images.
+  The generalisation: **build != import != serve**. CI can only ever reach the
+  first two, so anything that fires on GPU-driver init is hardware-only by
+  construction — found on the box and fixed by baking, never by a gate.
 
 ---
 
@@ -943,7 +998,13 @@ contract (bucket B).
 - App deps + Triton runtime toolchain + pip. The base already ships
   python3-venv/pip, but pip is re-listed for explicitness.
   gcc/g++/make/binutils/python3-dev are the Triton JIT toolchain kept at runtime
-  (this is why comfyui is not split). Fedora translations: `ffmpeg-free`->
+  (this is why comfyui is not split). Since 2026-08-15 the torch base carries
+  `gcc` + `python3.13-dev` of its own (Triton's GPU-init `hip_utils` compile —
+  see `base/Container.torch`), so this list partly duplicates the base; kept
+  verbatim, because only comfyui wants the FULL toolchain (g++/make/binutils)
+  and the list should stay a self-contained statement of comfyui's needs. This
+  port is also why comfyui was the one torch child NEVER bitten by that trap.
+  Fedora translations: `ffmpeg-free`->
   `ffmpeg`, `libdrm-devel`->`libdrm2` (runtime, not `-dev`), `gcc-c++`->`g++`,
   `python3.13-devel`->`python3-dev`; `python3.13(-venv)` dropped (interpreter +
   venv already in the base).
@@ -1032,7 +1093,15 @@ Deliberate upstream deltas:
 - Toolchain for the source installs (clone + patch); canopy ships none. git/curl
   clone flash-attention + unsloth and fetch the unsloth PR diff; `patch` applies
   it. Kept small — the HF wheels + flash-attn (Triton backend) + unsloth are
-  pure-Python/prebuilt, no C toolchain.
+  pure-Python/prebuilt, so nothing in THIS image's apt layer compiles anything.
+  At RUN time it is a different story: triton (which rides torch) compiles its
+  own `hip_utils` helper on the first GPU-driver init, and on hardware
+  2026-08-15 this image reproduced the vllm failure verbatim — `RuntimeError:
+  Failed to find C compiler`, then `fatal error: Python.h: No such file or
+  directory` — cured by `gcc` + `python3.13-dev` and verified through a full
+  triton JIT kernel launch (printed `True`). That pair now comes from the torch
+  base, installed once for both bitten children; see `base/Container.torch`.
+  It is the second confirmation that the trap is the torch stack's, not vllm's.
 - bitsandbytes: install the gfx1151 wheel (`--no-deps` — torch already present),
   then apply the upstream version-parse fixup — bitsandbytes searches fixed
   fallback names (`rocm7.12` / `rocm82`) that won't match our built lib's name,
@@ -1081,8 +1150,11 @@ kernels the base carries — NO ROCm re-adds. The base already writes a real
 ### targets/Container.vllm
 The shippable vLLM toolbox for Strix Halo / gfx1151. FROM the runtime base + the
 pinned TheRock torch, then `COPY --from` the flash-attention/aiter/vLLM wheels
-compiled in vllm-artifacts and pip-install them into the base venv. No compilers,
-no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
+compiled in vllm-artifacts and pip-install them into the base venv. No ROCm
+`-dev`, no C++ toolchain, and nothing compiler-shaped added HERE — the bare
+`gcc` + `python3.13-dev` this image does rely on at serve time arrive from the
+torch base (Triton's `hip_utils` compile; see `base/Container.torch`).
+Toolbox submodule provenance (droste-ai-halo):
 `6446b9595273f289e11586c3c7d3e1e6f2945888`.
 
 - Torch (pinned TheRock nightly) into the base venv — must match the torch the
@@ -1140,7 +1212,8 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
 - Prebuilt aiter JIT module + import smoke test (2026-08-14, the third layer of
   the same onion): vLLM inspects a model's architecture -> `import flash_attn`
   -> `import aiter` -> `aiter/ops/enum.py` JIT-compiles `module_aiter_enum`.
-  This image ships NO compiler by design, so `shutil.which("c++")` returned None
+  This image ships NO C++ compiler by design (and shipped no compiler at all
+  until the torch base gained `gcc`), so `shutil.which("c++")` returned None
   and blew up in `check_compiler_ok_for_platform` (`TypeError: expected str,
   bytes or os.PathLike object, not NoneType`) -> `RuntimeError: [aiter] build
   [module_aiter_enum] ... failed` -> pydantic `Model architectures
@@ -1150,12 +1223,25 @@ no ROCm `-dev` — pure runtime. Toolbox submodule provenance (droste-ai-halo):
   where aiter's `get_module` imports it as `aiter.jit.module_aiter_enum` and
   never reaches the compiler probe. It lands in the BAKED venv — the overlay
   lower layer — so a user's venv copy-up cannot shadow it. Deliberately NOT
-  fixed by adding a compiler to the runtime: the toolchain belongs to the build
-  images (comfyui is the sole exception, for Triton JIT). The new
+  fixed by adding a C++ compiler to the runtime: the C++/hipcc toolchain
+  belongs to the build images (comfyui is the sole exception, for Triton JIT).
+  The bare `gcc` the torch base gained on 2026-08-15 does not weaken this —
+  `gcc` ships no `c++`, so aiter's probe still finds nothing. The new
   `RUN python -c "import aiter"` is the durable half: it is the first thing in
   CI that imports any of this stack, it needs no GPU (aiter falls back to arch
   "cpu" when `rocminfo` finds nothing), and it fails the build if the prebuilt
   module is missing — the gap that let three import-broken images ship green.
+- Triton's serve-time C compile — found HERE (hardware 2026-08-15: `vllm serve`
+  died with `RuntimeError: Failed to find C compiler`, then with `fatal error:
+  Python.h: No such file or directory`), FIXED in the torch base. The trigger
+  rides the torch stack, not this port, and finetuning reproduced it verbatim
+  the same day, so `gcc` + `python3.13-dev` are installed once in
+  `base/Container.torch` — full write-up in that section. Nothing about it is
+  vllm-specific EXCEPT the g++ half: the base ships `gcc` and no `c++`
+  precisely so the prebuilt `module_aiter_enum.so` above stays load-bearing —
+  aiter's probe is `shutil.which("c++")`, and it must keep finding nothing.
+  The generalisation: **build != import != serve**, and CI can only ever reach
+  the first two.
 - Runtime libs: `libnuma` (vLLM numa lookup on `import vllm`) + `libgomp1` —
   torch links `libgomp.so.1` (OpenMP), which the lean runtime base does NOT
   carry, so `import torch` (and thus `import vllm`) fails without it. Verified on

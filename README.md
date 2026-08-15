@@ -59,7 +59,8 @@ torch-free on the runtime base.
 **Artifact-carrier pattern:** heavy compiles happen in `droste-build-base-halo`; outputs
 are captured in minimal `FROM scratch` `-build` carriers (holding only `/artifacts`); thin
 runtimes `COPY --from` them onto `droste-runtime-base-halo`. Shipped runtimes carry no
-SDK/toolchain.
+ROCm SDK and no C++ toolchain; the torch-based ones do carry a bare `gcc` +
+`python3.13-dev`, which Triton needs to compile its own helper at GPU init.
 
 ## Images
 
@@ -70,7 +71,7 @@ Published as `ghcr.io/doctorjei/droste-<name>-halo`. Containerfiles are named
 |---|---|---|---|
 | `droste-runtime-base-halo` | `base/Container.runtime` | `gemet/canopy` | ROCm runtime kernels (pip), de-divert, venv `/opt/venv` |
 | `droste-build-base-halo` | `base/Container.build` | `droste-runtime-base-halo` | + `rocm-sdk-devel` (hipcc/clang) + host toolchain |
-| `droste-torch-base-halo` | `base/Container.torch` | `droste-runtime-base-halo` | + shared `torch` wheel (installed once; comfyui/vllm/finetuning build FROM this) |
+| `droste-torch-base-halo` | `base/Container.torch` | `droste-runtime-base-halo` | + shared `torch` wheel (installed once; comfyui/vllm/finetuning build FROM this) + `gcc`/`python3.13-dev` for Triton's runtime compile |
 | `droste-llama-build-halo` | `scaffolding/Container.llama-build` | build base | llama.cpp turboquant fork, gfx1151 HIP build [scratch carrier] |
 | `droste-llama-halo` | `targets/Container.llama` | runtime base | llama runtime (no torch); `COPY --from` build carrier |
 | `droste-ds4-build-halo` | `scaffolding/Container.ds4-build` | build base | ds4 + rocWMMA build [scratch carrier] |
@@ -215,6 +216,24 @@ then `distrobox assemble create`) to pick up the unified mounts.
   host `render`/`video` groups (`groups`); if it still fails, try
   `--security-opt seccomp=unconfined` (`check-rocm.sh`'s known-good flag set
   carries both).
+- **`lchown …: invalid argument` part-way through a pull** (rootless podman) →
+  your `/etc/subuid` and `/etc/subgid` entries were added *after* podman's
+  first run. Podman caches the id map when it initialises its storage, so a
+  grant made later never reaches it: the map still covers your own id alone,
+  and the first layer carrying a foreign uid/gid fails to unpack — gigabytes
+  into the download. Fix: confirm both files grant this user 65536 ids
+  (`sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535
+  <user>` if not), then `podman system migrate` so podman re-reads them, and
+  pull again. `droste-setup.sh` checks both halves — the grant on paper and
+  the map podman actually holds — in its preflight, before it pulls anything.
+- **`Running distrobox-assemble via SUDO/DOAS is not supported`** → the shell
+  you ran from came out of `sudo -iu <user>` or `su - <user>`. That is the
+  natural way to reach a dedicated user the boxes belong to, and everything
+  works there right up to box creation — the pulls included, so the refusal
+  arrives *after* the images are on disk. Fix: get that user a real login
+  session — `machinectl shell <user>@` (package `systemd-container`) or
+  `ssh <user>@localhost` — and run from it. `droste-setup.sh` stops on
+  `SUDO_USER`/`DOAS_USER` in its preflight, before pulling.
 
 ## Host tools
 
@@ -240,7 +259,11 @@ installed, creation falls back to plain `podman create` with identical flags),
 paths baked in — and can pull images, create boxes, and start servers.
 **Safe to re-run:** existing compose/ini files, containers, and distroboxes are
 detected and listed; per box you choose keep / recreate / modify — nothing is
-silently clobbered.
+silently clobbered. Its **preflight** reports the host state the run depends on
+(runtime, GPU devices, groups, lingering) and covers the two traps that would
+otherwise only surface after a multi-GB pull: subordinate id ranges podman
+never picked up, and a `sudo -iu` / `su -` session distrobox will refuse — see
+[Troubleshooting](#troubleshooting) for both cures.
 
 ```bash
 ./droste-setup.sh                  # interactive menu over all five boxes

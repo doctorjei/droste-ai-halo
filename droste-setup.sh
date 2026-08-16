@@ -159,6 +159,15 @@ declare -A BOX_NOTE=(
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
 IMAGE_SUFFIX="-halo:latest"
+# The image ref AS SHOWN to the reader: the same ref without its tag. The tag
+# is hardcoded above — every pull this installer makes is :latest — so on
+# screen it is seven columns that tell nobody anything, and those seven columns
+# are the difference between the pull bar's header fitting its line and not.
+# The PULL and the ini keep the tag: one has to name a tag, the other is the
+# reference distrobox resolves.
+img_disp() {   # box → <prefix><box>-halo
+  printf '%s%s%s' "$IMAGE_PREFIX" "$1" "${IMAGE_SUFFIX%:*}"
+}
 # ONE container per box, named exactly like the image stem: droste-<box>-halo.
 # (The old -server / -box lane suffixes are gone with the lanes; see box_ctr().)
 INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
@@ -285,8 +294,11 @@ if [[ $ASCII -eq 1 ]]; then
   C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP=""
   C_PATHB="" C_PATHG=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --ascii
-  # (and any dumb terminal) gets ONE static status line per image instead, so
-  # the section stays byte-for-byte free of control sequences.
+  # (and any dumb terminal) gets the APPEND-ONLY bar instead — a drawing that
+  # only ever grows to the right and down, so the section stays byte-for-byte
+  # free of control sequences and reads the same in a pipe or a log. BAR_E has
+  # no caller there (an append-only bar never draws the part it has not
+  # reached), and is kept because the pair is one atom.
   CR="" EL="" BAR_F="#" BAR_E="-"
   # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
   # The ASCII glyph already carries its own brackets, so the Legend adds none
@@ -833,6 +845,18 @@ expand_path() {  # ~ expansion + absolutize + lexical normalize (no symlinks)
   printf '%s' "$p"
 }
 
+# Do two spellings name the SAME directory? Walking symlinks is precisely what
+# expand_path refuses to do when STORING a path (a link is an answer, not a
+# detour), but a comparison is transient and has to see through them — the same
+# licence probe_fstype's `findmnt --target` takes. Falls back to a literal
+# compare on a host with no realpath(1).
+same_dir() {  # a b → 0 when both spellings resolve to one directory
+  local a b
+  a=$(realpath -m -- "$1" 2>/dev/null) || a=$1
+  b=$(realpath -m -- "$2" 2>/dev/null) || b=$2
+  [[ $a == "$b" ]]
+}
+
 # ── Prompt plumbing (curl|bash-safe: /dev/tty, or the scripted-input hook) ───
 ASK_FD=""
 SCRIPTED=0
@@ -1155,6 +1179,15 @@ SELECTED=()                  # chosen boxes, canonical order
 CONFIGURE=()                 # SELECTED minus keeps (definitions (re)generated)
 KEEP=()                      # kept boxes (untouched files; ladder still offered)
 HF_CACHE=""
+# The box user's home AS THE CONTAINER SEES IT. distrobox mounts the real home
+# out of /etc/passwd, which is not necessarily what $HOME is spelled as: a login
+# through an aliased or symlinked home (HOME=/srv, passwd=/home/gopher) leaves
+# the two different. Anything that names a path INSIDE the box has to use this
+# one — $HOME there produced a container-side destination that does not exist,
+# which silently unsatisfied the CRITICAL hf-cache bind and re-downloaded
+# gigabytes into the container layer.
+USER_HOME=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+[[ -n $USER_HOME ]] || USER_HOME=$HOME
 COMPUTE_CACHE=""             # shared MIOpen/Triton/torch/vLLM kernel cache
 MODELS_DIR=""                # "" = not configured
 EMIT_DIR=""
@@ -1743,6 +1776,12 @@ SEED_SERVE=n SEED_HOST=n     # the two three-way start questions (y|n|c)
 SEED_PCACHE_Q=Y SEED_PCACHE_BASE=""  # per-box program caches at a common base
 SEED_DATA_Q=Y SEED_DATA_BASE=""      # persistent data at a common base
 SEED_HF="" SEED_COMPUTE="" SEED_MODELS=""   # SEED_MODELS "" = None (no bind)
+# A family that fell back to per-box questions, and the recorded path that
+# settled it: "<box>: <path>". Empty = no fallback (or nothing recorded to
+# fall back FROM). Printed above the storage questions, because a default that
+# came out of a fallback should say so — a silent flip to N with a factory
+# example reads exactly like a broken read-back, which is how it was reported.
+SEED_NOBASE_DATA="" SEED_NOBASE_PCACHE=""
 SEED_SRC=()                  # the boxes whose files may seed anything at all
 
 # Selected AND modify — the only boxes a default may be read from.
@@ -1778,6 +1817,32 @@ family_base() {   # leaf...
     done
   done
   [[ $seen -eq 0 ]] && return 0     # nothing recorded: caller keeps its factory
+  printf '%s' "$first"
+  return 0
+}
+
+# The recorded path that best EXPLAINS a "-" from family_base: the first entry
+# whose shape this layout does not use, else simply the first recorded one (two
+# boxes can each be well-shaped and still disagree about the base). A separate
+# walk on purpose — family_base runs in a command substitution, so it cannot
+# hand anything back out of band, and widening its contract to two fields would
+# complicate the one thing every caller wants from it.
+family_example() {   # leaf... → "<box>: <path>" ("" when nothing is recorded)
+  local leaf box p first="" shown
+  for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
+    for leaf in "$@"; do
+      p=${EXD_PATH["$box:$leaf"]:-}
+      [[ -n $p ]] || continue
+      shown="$box: $(home_disp "$p")"
+      if [[ -z $first ]]; then first=$shown; fi
+      case "$leaf" in
+        data|pcache)
+          if [[ $p != */"$box" ]]; then printf '%s' "$shown"; return 0; fi ;;
+        *)
+          if [[ $p != */"$box"/"$leaf" ]]; then printf '%s' "$shown"; return 0; fi ;;
+      esac
+    done
+  done
   printf '%s' "$first"
   return 0
 }
@@ -1847,12 +1912,33 @@ seed_globals() {
   # family: an input dir somewhere else means the base is NOT common.
   base=$(family_base data input output workspace)
   if [[ -n $base ]]; then
-    if [[ $base == "-" ]]; then SEED_DATA_Q=N; else SEED_DATA_BASE=$base; fi
+    if [[ $base == "-" ]]; then
+      SEED_DATA_Q=N
+      SEED_NOBASE_DATA=$(family_example data input output workspace)
+    else
+      SEED_DATA_BASE=$base
+    fi
   fi
   base=$(family_base pcache)
   if [[ -n $base ]]; then
-    if [[ $base == "-" ]]; then SEED_PCACHE_Q=N; else SEED_PCACHE_BASE=$base; fi
+    if [[ $base == "-" ]]; then
+      SEED_PCACHE_Q=N
+      SEED_NOBASE_PCACHE=$(family_example pcache)
+    else
+      SEED_PCACHE_BASE=$base
+    fi
   fi
+  return 0
+}
+
+# Why a family is about to be asked box by box. A fallback that says nothing
+# looks exactly like a failed read-back: the question flips to N and offers a
+# FACTORY example, while the user knows perfectly well where their files are.
+# Naming what was found turns a silent degrade into a statement.
+nobase_note() {   # "what" "<box>: <path>"
+  [[ -n $2 ]] || return 0
+  printf '\n  %sExisting %s do not share a common base%s\n' "$C_QTXT" "$1" "$RESET"
+  printf '  %s(%s) - asking per box.%s\n' "$C_QTXT" "$2" "$RESET"
   return 0
 }
 
@@ -1894,10 +1980,12 @@ general_setup() {
   # per-box "<base>/<box>" shape is the installer's business, and spelling it
   # out here read as though the literal string were the answer. The base itself
   # is asked further down — only for a family that gets a common base at all.
-  ask_yn "Store program caches at common base path (e.g., $(emphg "$(home_disp "$SEED_PCACHE_BASE")"))" \
+  nobase_note "program cache dirs" "$SEED_NOBASE_PCACHE"
+  ask_yn "Store program caches at common base path (e.g., $(home_disp "$SEED_PCACHE_BASE"))" \
     "$SEED_PCACHE_Q"
   pcache_common=$ANS_YN
-  ask_yn "Store persistent data at common base path (e.g., $(emphg "$(home_disp "$SEED_DATA_BASE")"))" \
+  nobase_note "data dirs" "$SEED_NOBASE_DATA"
+  ask_yn "Store persistent data at common base path (e.g., $(home_disp "$SEED_DATA_BASE"))" \
     "$SEED_DATA_Q"
   data_common=$ANS_YN
   explain "Please provide host paths for data (persistent data, caches, models, etc)."
@@ -2131,11 +2219,14 @@ auto_label() {  # label
   if [[ $1 == pcache ]]; then [[ $PCACHE_AUTO -eq 1 ]]; else [[ $DATA_AUTO -eq 1 ]]; fi
 }
 
-path_default() {  # box label → default path (existing value > family base)
+# Where General Setup's roots PUT this label. Deliberately ignores a modify
+# box's recorded path: the recorded value's job is to SEED the General Setup
+# questions (family_base), not to override the answer given there. Letting it
+# do both is what silently discarded a freshly typed base — the user was asked
+# where the family goes, answered, and the box stayed where it was.
+path_derived() {  # box label → derived path
   local box=$1 label=$2 root
-  if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
-    printf '%s' "${EXD_PATH["$box:$label"]}"
-  elif [[ $label == pcache ]]; then
+  if [[ $label == pcache ]]; then
     printf '%s/%s' "$(pcache_root)" "$box"
   elif [[ $label == data ]]; then
     printf '%s/%s' "$(data_root)" "$box"
@@ -2145,6 +2236,18 @@ path_default() {  # box label → default path (existing value > family base)
     root=${PATHS["$box:data"]:-$(data_root)/$box}
     printf '%s/%s' "$root" "$label"
   fi
+}
+
+# The DEFAULT a per-box prompt offers: a modify box's recorded path, else the
+# derived placement. Only ever a prompt default — an auto-placed family takes
+# path_derived instead, so an answer always beats a memory.
+path_default() {  # box label → default path (existing value > family base)
+  local box=$1 label=$2
+  if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
+    printf '%s' "${EXD_PATH["$box:$label"]}"
+    return 0
+  fi
+  path_derived "$box" "$label"
 }
 
 # Which labels of a box ended up on an overlay-hostile filesystem, and the
@@ -2160,9 +2263,11 @@ set_bind_path() {  # box label
   while :; do
     def=$(path_default "$box" "$label")
     if [[ $force -eq 0 ]] && auto_label "$label"; then
-      # General Setup placed this family; a modify box's recorded path is
-      # its own default, so an auto-placed run leaves it exactly where it was.
-      ANS_PATH=$def
+      # General Setup placed this family, and the answer given THERE wins — a
+      # recorded path seeded that question, it does not get to overrule it.
+      # (path_derived, not $def: $def is the per-box PROMPT default, which is
+      # the recorded value on a modify box and would pin the box in place.)
+      ANS_PATH=$(path_derived "$box" "$label")
       ensure_dir "$ANS_PATH" || :
     else
       # No per-bind header: the prompt itself names the box + bind family —
@@ -2654,8 +2759,12 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     vols="$vols $COMPUTE_CACHE:/opt/caches"
     # A non-default HF cache (outside the auto-bound host home) needs an
     # explicit bind to the in-box expected location — also same value.
-    if [[ $HF_CACHE != "$HOME/.cache/huggingface" ]]; then
-      vols="$vols $HF_CACHE:$HOME/.cache/huggingface"
+    # BOTH sides are compared PHYSICALLY: an aliased home makes
+    # /srv/.cache/huggingface and /home/me/.cache/huggingface the same
+    # directory spelled two ways, and binding a directory over itself under a
+    # name the box does not have is worse than not binding it at all.
+    if ! same_dir "$HF_CACHE" "$USER_HOME/.cache/huggingface"; then
+      vols="$vols $HF_CACHE:$USER_HOME/.cache/huggingface"
     fi
     # Opted-in read-only model collection: the dir was confirmed-or-created at
     # prompt time, so the :ro bind is safe (a bind to a missing dir would be
@@ -3129,16 +3238,32 @@ PY
 # the pull and the percentage only ever climbs; without one (or after the map
 # turns out not to describe this stream), it falls back to the running sum and
 # says so by printing the total with a "~".
+#
+# In --ascii there is no cursor to move, so the same two modes are drawn
+# APPEND-ONLY instead (Jei's s39 spec): a header line, then either one "#" per
+# percent across two 50-mark rows, or — when the manifest came back empty — one
+# dot per elapsed minute, each row closing with its own (elapsed, bytes). That
+# block stands in for the caller's status line, so it reports back the column it
+# stopped on and the caller pads from there to the [OK] tag.
 _pull_progress_py() {
   cat <<'PY'
-import json, sys, time
+import json, sys, threading, time
 
 label, width, fill, empty, plain = sys.argv[1:6]
 width = int(width)
-quiet = plain == "1"
+ascii_mode = plain == "1"
 out = sys.stdout
 
 raw = sys.argv[6] if len(sys.argv) > 6 else ""
+# The --ascii block is a drawing of its own (Jei's s39 spec) and REPLACES the
+# status line the caller would otherwise have opened, so it needs three things
+# the repainting bar does not: the image ref in FULL (it gets a line to itself,
+# so there is no reason to shorten it), the name-column width that fixes where
+# the [OK] tag ends, and a file to report the column it stopped on — which is
+# what lets status_ok/status_err pad from there to the tag.
+alabel = sys.argv[7] if len(sys.argv) > 7 else label
+statw = int(sys.argv[8]) if len(sys.argv) > 8 else 53
+colfile = sys.argv[9] if len(sys.argv) > 9 else ""
 known = {}                                     # blob digest (bare hex) -> size
 try:
     for digest, size in (json.loads(raw) if raw.strip() else {}).items():
@@ -3185,8 +3310,180 @@ def sizes(cur, tot, guess):
     return "%.0f/%s%.0f KB" % (cur / 1024.0, mark, tot / 1024.0)
 
 
+# ── The --ascii drawing: APPEND-ONLY ────────────────────────────────────────
+# No CR, no erase-line, nothing outside {0x20-7E, LF}: this is the form that
+# survives a pipe, a log file and a dumb terminal, which is why it exists at
+# all (the repainting bar below simply had nothing to repaint with there, and
+# was switched off). Terminal mode is untouched.
+#
+# CAP is the right edge of the [OK] tag — the same column every other status
+# line in this section ends on (2 indent + name column + 4), which is 59 for a
+# full run. A bar row's own content stops five short of that, leaving " [OK]"
+# for the caller to print. The block itself is drawn flush left: it is a
+# full-width drawing, like a rule, whose closing tag lands in the tag column.
+CAP = 2 + statw + 4
+ANN = CAP - 5                                  # right edge of a row's content
+ROW_MARKS = 50                                 # 100 marks (one per percent), 2 rows
+
+# col = the column the open line has reached; row = marks/dots on it.
+A = {"col": 0, "row": 0, "marks": 0, "dots": 0, "closed": False,
+     "t0": time.time(), "done": False}
+lock = threading.Lock()                        # the minute clock writes too
+
+
+def fmt_size(n):
+    """3 significant characters, then the unit: "6.6 GiB" / " 66 MiB" / "999 B"."""
+    for unit, div in (("TiB", 1 << 40), ("GiB", 1 << 30),
+                      ("MiB", 1 << 20), ("KiB", 1 << 10)):
+        if n >= div:
+            v = n / float(div)
+            return "%s %s" % ("%.1f" % v if v < 10 else "%3d" % int(v), unit)
+    return "%3d B" % int(n)
+
+
+def fmt_time(m, level=0):
+    """Elapsed minutes. level is the compression rung: the full form, the same
+    thing without a day field (36h 07m), then bare minutes (2167m)."""
+    if level >= 2:
+        return "%dm" % m
+    day, rem = divmod(m, 1440)
+    if level == 0 and day:
+        return "%dd %dh %02dm" % (day, rem // 60, rem % 60)
+    if m >= 60:
+        return "%dh %02dm" % (m // 60, m % 60)
+    return "%dm" % m
+
+
+def reserve_w(m):
+    """Room to keep for the NEXT order of magnitude, so the annotation does not
+    have to move once it grows: 36m -> 1h 11m -> 10h 46m -> 1d 12h 07m."""
+    w = len(fmt_time(m))
+    return {2: 3, 3: 6, 6: 7, 7: 10}.get(w, w + 1)
+
+
+def dot_cap(m):
+    """Dots a row may hold: its one-character prefix, then whatever is left
+    before the widest annotation this row could still have to print."""
+    return ANN - 1 - (4 + reserve_w(m) + 7)
+
+
+def cur_bytes():
+    return sum(v[0] for v in layers.values())
+
+
+def write(s):
+    out.write(s)
+    A["col"] += len(s)
+
+
+def newrow():
+    out.write("\n ")                           # every row after the first
+    A["col"] = 1
+    A["row"] = 0
+
+
+def annot(final):
+    """(elapsed, bytes) while running; SQUARE brackets on the final row. It is
+    right-aligned to ANN, and degrades in Jei's order when it will not fit:
+    first the gap before it is eaten, then the time field is compressed. If
+    even that is too wide it prints anyway and wraps — we got super unlucky."""
+    room = ANN - A["col"]
+    lb, rb = ("[", "]") if final else ("(", ")")
+    for level in (0, 1, 2):
+        text = "%s%s, %s%s" % (lb, fmt_time(A["dots"], level),
+                               fmt_size(cur_bytes()), rb)
+        if len(text) <= room:
+            break
+    pad = room - len(text)
+    write(" " * (pad if pad > 0 else 0) + text)
+
+
+def ascii_open():
+    """The header, printed before the first byte: the ref, then the size the
+    manifest prefetch found — or the fact that it did not — right-aligned to
+    CAP. Then the bar opens, so a registry that never answers still shows that
+    something was asked."""
+    tag = "(%s)" % fmt_size(fixed_total) if fixed_total else "(Size: ???)"
+    # The cap governs, so the gap is what gives: the longest ref this installer
+    # pulls (finetuning) leaves exactly none of it, and "latest...(4.6 GiB)" at
+    # 59 is the same trade the annotation rows make one rung down the ladder.
+    pad = CAP - len(alabel) - len(tag)
+    out.write("%s%s%s\n[" % (alabel, " " * (pad if pad > 0 else 0), tag))
+    A["col"] = 1
+    out.flush()
+
+
+def ascii_marks(pct):
+    """Size known: one mark per percent, 50 to a row. The manifest's total is
+    the denominator for the whole pull — a mid-flight degrade() cannot be
+    honoured by ink already on the page, and the prefetched size is the true
+    one anyway; only the mapping of stream ids to blobs was ever in doubt."""
+    while A["marks"] < pct:
+        if A["row"] >= ROW_MARKS:
+            newrow()
+        write(fill)
+        A["marks"] += 1
+        A["row"] += 1
+    if A["marks"] >= 100 and not A["closed"]:
+        write("]")
+        A["closed"] = True
+
+
+def ascii_dots(upto):
+    """Size unknown: one dot per elapsed minute. A row closes with its own
+    cumulative annotation the moment another dot would not leave room for it."""
+    while A["dots"] < upto:
+        if A["row"] >= dot_cap(A["dots"]):
+            annot(False)
+            newrow()
+        write(".")
+        A["dots"] += 1
+        A["row"] += 1
+
+
+def paint_ascii(final=False):
+    with lock:
+        if A["done"]:
+            return
+        if fixed_total:
+            ascii_marks(100 if final
+                        else min(100, int(cur_bytes() * 100 // fixed_total)))
+        else:
+            ascii_dots(int((time.time() - A["t0"]) // 60))
+            if final:
+                annot(True)
+        A["done"] = final
+        out.flush()
+
+
+def ascii_clock():
+    """Estimating mode polls on its own: a pull that has gone quiet is exactly
+    the moment the reader most needs to see the minutes still ticking."""
+    while True:
+        time.sleep(2)
+        with lock:
+            if A["done"]:
+                return
+            ascii_dots(int((time.time() - A["t0"]) // 60))
+            out.flush()
+
+
+def ascii_report():
+    """Where the block stopped, for the caller's [OK]/[ERROR] tag."""
+    with lock:
+        A["done"] = True
+        out.flush()
+        if colfile:
+            try:
+                with open(colfile, "w") as fh:
+                    fh.write("%d\n" % A["col"])
+            except OSError:                     # never the reason a pull fails
+                pass
+
+
 def paint(final=False):
-    if quiet:
+    if ascii_mode:
+        paint_ascii(final)
         return
     now = time.time()
     if not final and now - state["last"] < 0.1:
@@ -3265,29 +3562,40 @@ def handle(o):
     paint()
 
 
-buf = ""
-for chunk in sys.stdin:
-    buf += chunk
-    while True:
-        buf = buf.lstrip()
-        if not buf:
-            break
-        try:
-            obj, idx = dec.raw_decode(buf)
-        except ValueError:
-            break
-        buf = buf[idx:]
-        handle(obj)
+if ascii_mode:
+    ascii_open()
+    if not fixed_total:
+        threading.Thread(target=ascii_clock, daemon=True).start()
 
-if not state["seen"]:
-    sys.stderr.write("pull API: no progress stream received\n")
-    sys.exit(1)
-paint(final=True)
+try:
+    buf = ""
+    for chunk in sys.stdin:
+        buf += chunk
+        while True:
+            buf = buf.lstrip()
+            if not buf:
+                break
+            try:
+                obj, idx = dec.raw_decode(buf)
+            except ValueError:
+                break
+            buf = buf[idx:]
+            handle(obj)
+
+    if not state["seen"]:
+        sys.stderr.write("pull API: no progress stream received\n")
+        sys.exit(1)
+    paint(final=True)
+finally:
+    # Reached on the error paths too: a half-drawn row still has to tell the
+    # caller which column its [ERROR] tag pads from.
+    if ascii_mode:
+        ascii_report()
 PY
 }
 
 pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
-  local box=$1 img repo tag short log manifest rc=0
+  local box=$1 img repo tag short log manifest colf col rc=0
   img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
   repo=${img%:*} tag=${img##*:}
   # The bar is labelled with the image, not with the registry and owner that
@@ -3307,15 +3615,31 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # ignored here as it is there.
   manifest=$(python3 -c "$(_pull_manifest_py)" "$repo" "$tag" 2>>"$log") \
     || manifest=""
+  # Where the --ascii block reports the column it stopped on. Beside the step
+  # log because that path is already per-box and already disposable.
+  colf="$log.col"
+  rm -f "$colf"
   # -N (--no-buffer): without it curl hands the JSON stream over in ~16 KB
   # blocks, so the aggregator below repaints in lurches no matter how often the
   # API reports. It is the whole "the bar only moves every few seconds" fix.
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$short:$tag..." "$(disp_width)" "$BAR_F" "$BAR_E" "$ASCII" "$manifest" \
+        "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$ASCII" "$manifest" \
+        "${img%:*}..." "$STATUS_W" "$colf" \
         2>>"$log" \
     || rc=$?
+  # --ascii drew its own block in place of the status line the caller would have
+  # opened, and left the cursor mid-row: hand the tag the column it stopped on
+  # (as a name-column offset, which is what status_head pads from) so [OK] still
+  # lands in the tag column. No file means nothing was drawn — leave the line
+  # closed and let status_head draw the head itself.
+  if [[ $ASCII -eq 1 && -s $colf ]] && read -r col < "$colf"; then
+    STATUS_COL=$(( col - 2 )); [[ $STATUS_COL -lt 0 ]] && STATUS_COL=0
+    STATUS_NAME="$img..."
+    STATUS_OPEN=1
+  fi
+  rm -f "$colf"
   return $rc
 }
 
@@ -3456,7 +3780,7 @@ execute() {
   # measured before the first of them is drawn.
   if [[ ${#ladder[@]} -gt 0 ]]; then
     for box in "${ladder[@]}"; do
-      [[ $RUNG != w ]] && all_names+=("${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}...")
+      [[ $RUNG != w ]] && all_names+=("$(img_disp "$box")...")
       [[ $RUNG == c || $RUNG == a ]] && all_names+=("$(box_ctr "$box")...")
     done
     for box in ${units[@]+"${units[@]}"}; do
@@ -3464,6 +3788,17 @@ execute() {
     done
     [[ ${#units[@]} -gt 0 ]] && all_names+=("loginctl enable-linger...")
     [[ ${#all_names[@]} -gt 0 ]] && status_width "${all_names[@]}"
+    # FLOOR for a section that will draw a pull bar. The bar is a fixed 100
+    # marks in two 50-mark rows, so its closing "]" always lands in column 52
+    # and the tag needs the room after it. Dropping ":latest" from the display
+    # took 7 columns off every name here, which would otherwise have pulled the
+    # tag column in on top of the bar; 53 puts it back at the 59 the drawings
+    # are built around. Never past what the terminal can show — a narrow
+    # terminal keeps the clamp status_width already applied.
+    if [[ $RUNG != w ]] && [[ $STATUS_W -lt 53 ]] \
+       && [[ $(( $(disp_width) - 2 - 7 )) -ge 53 ]]; then
+      STATUS_W=53
+    fi
   fi
   if [[ $RUNG != w && ${#ladder[@]} -gt 0 ]]; then
     exec_hdr "Pulling Images"
@@ -3476,13 +3811,17 @@ execute() {
       for box in "${ladder[@]}"; do
         rc=0
         # The line opens BEFORE the request: the registry can take seconds to
-        # answer, and until it does the aggregator has nothing to paint.
-        status_start "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..."
+        # answer, and until it does the aggregator has nothing to paint. In
+        # --ascii the aggregator opens its OWN header line (the s39 block stands
+        # in for this status line), so opening one here would print the ref
+        # twice; pull_image reports back where that block stopped instead.
+        [[ $ASCII -eq 1 ]] \
+          || status_start "$(img_disp "$box")..."
         pull_image "$box" || rc=$?
         if [[ $rc -eq 0 ]]; then
-          status_ok "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..."
+          status_ok "$(img_disp "$box")..."
         else
-          status_err "${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}..." "$(step_log pull "$box")"
+          status_err "$(img_disp "$box")..." "$(step_log pull "$box")"
         fi
       done
       pull_service_stop
@@ -3583,31 +3922,6 @@ write_notes() {
     printf '  kernels, SHARED by every box because their content is keyed by\n'
     printf '  version and architecture. compute-caches is safe to delete anytime;\n'
     printf '  kernels rebuild on next start. The installer never touches it.\n'
-    # The M-line (Jei s38): no migration, so a re-run simply stops reading the
-    # old paths and leaves them on disk. The last of the three is the delicate
-    # one — the old SHARED cache dir is the new PROGRAM CACHE root's default
-    # location, so what is safe to delete there depends on where this run just
-    # put its compute caches.
-    printf '\nUpgrading from an older droste? Nothing is migrated, on purpose:\n'
-    printf 'the old paths are simply no longer read, and all of them are safe to\n'
-    printf 'move or delete by hand once you have moved anything you want to keep\n'
-    printf 'into the data dir listed above.\n\n'
-    printf '    %s/<box>/data          the old per-box data dir\n' \
-      "$(home_disp "$EMIT_DIR")"
-    printf '    %s/finetuning/workspace\n' "$(home_disp "$EMIT_DIR")"
-    printf '    %s/caches              the old SHARED cache dir\n\n' \
-      "$(home_disp "$EMIT_DIR")"
-    if [[ $COMPUTE_CACHE == "$EMIT_DIR/caches" ]]; then
-      printf 'Careful with the last one: this install still keeps its compute\n'
-      printf 'caches there, so that directory is LIVE — only the per-box `data`\n'
-      printf 'trees above are leftovers.\n'
-    else
-      printf 'Careful with the last one: `%s/caches` is the program cache\n' \
-        "$(home_disp "$EMIT_DIR")"
-      printf 'root now. The leftovers in it are the old kernel caches (`miopen*`,\n'
-      printf '`triton`, `torch`, `vllm`); the per-box directories beside them are\n'
-      printf 'live.\n'
-    fi
     printf '\n## Day-to-day commands\n\n'
     printf '    podman start <name>        # start the box (+ its server)\n'
     printf '    podman stop <name>         # stop it\n'

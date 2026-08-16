@@ -214,6 +214,19 @@ AFTER mounts so seeds land on the bound destinations. The `/opt/models` marker
 body (`mount_shared_models_here`) lives in templates/ too, picked up by name by
 the OPTIONAL primitive, not by the manifest.
 
+Seeding runs as root, so in the **distrobox lane** the resolver passes
+`--owner "$DROSTE_USER"` down to `apply_templates.py` and the script chowns
+what it CREATED — the file counterpart of the `_mkuserdir`/`_own_dirs`
+deviation. Without it the seeded configs land owned by the container's root,
+which is a host subuid under `keep-id` (uid 100000), and "after first start
+they are yours to edit" is false: the user needs `sudo chown` first. The chown
+sits in the Python because only it knows the exact created set — a
+pre-existing dest dir (often a user bind, e.g. comfyui's `input/`) and
+anything already inside one are never touched, and nothing is chowned
+recursively past the copy that just happened. Server lane passes nothing: its
+service is root by design. Boxes seeded before this landed keep their
+root-owned copies — the fix is not retroactive (see the README bullet).
+
 ### Repo layout convention (per port)
 `targets/<port>/profile.d/` → `/etc/profile.d/` (interactive-lane shells);
 `targets/<port>/scripts/` → `/opt/resources/scripts/` (baked RO helpers on

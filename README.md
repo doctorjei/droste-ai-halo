@@ -260,33 +260,13 @@ deviations from a directly-run container: the HF cache gets no bind (the
 auto-bound real home already provides it), destinations under `/root/` remap
 to the box user's home, and directories the hook creates are chowned to the
 box user.
-**Upgrading from v0.1.0:** existing boxes must be recreated (`distrobox rm`
-then `distrobox assemble create`) to pick up the unified mounts. An install
-predating the merge also has a separate server container and compose file per
-box — those are superseded by the single box above; re-run `droste-setup.sh`,
-which writes the one ini and leaves your data dirs untouched.
-**Upgrading to the three-root layout:** nothing is migrated, on purpose. A
-re-run simply stops reading the old paths, and all of them are safe to move or
-delete by hand once you have moved anything you want to keep — the old per-box
-data dir `~/droste/<box>/data`, `~/droste/finetuning/workspace`, and the old
-shared cache dir `~/droste/caches`. Two traps live in that last one. (1)
-`~/droste/caches` is the per-box PROGRAM-CACHE root now, so only the old
-kernel caches inside it (`miopen*`, `triton`, `torch`, `vllm`) are leftovers —
-the per-box directories beside them are live; and because a modify run seeds
-its defaults from your old ini, the compute-cache question will offer you
-`~/droste/caches` — re-point it at `~/droste/compute-caches`. (2) a `ds4.env`
-seeded before the split still carries
-`DS4_DROSTE_KV_DISK_DIR=/opt/data/kv-disk` and keeps writing KV cache into the
-data root; seeded configs are never overwritten, so edit that line to
-`/opt/program-cache/kv-disk` yourself (see Troubleshooting).
 
 ### Troubleshooting
 
 - **`mount: <path>: permission denied` at startup** → the container lacks
   `CAP_SYS_ADMIN`, so the resolver cannot mount anything (overlays *or* plain
   binds). Fix: add `--cap-add sys_admin` to the run. In the distrobox lane the
-  v0.2.0 inis pass it via `additional_flags` — if a box hits this, it was
-  created from a v0.1.0 ini and must be recreated.
+  inis pass it via `additional_flags`.
 - **`wrong fs type, bad option, bad superblock`** (dmesg: `overlayfs: upper fs
   missing required features`) → `/opt/data` sits on an overlay-hostile
   filesystem (ecryptfs/NFS/virtiofs) that kernel overlayfs cannot use as an
@@ -335,6 +315,15 @@ data root; seeded configs are never overwritten, so edit that line to
   `ds4.env` seeded before the storage split still points
   `DS4_DROSTE_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
   persistent volume: repoint it to `/opt/program-cache/kv-disk`.
+- **A config file you cannot edit at all** — `vllm_config.yaml`, `ds4.env`,
+  `llama.env` under `~/droste/data/<box>/` owned by `100000`, unwritable from
+  the host *and* from inside the box → they were seeded by the container's
+  root before this was fixed, and `100000` is what that root maps to on the
+  host. Files seeded from now on are handed to you as they are created;
+  already-seeded ones are deliberately left alone (nothing rewrites ownership
+  you may have set yourself), so take them once, with the box stopped:
+  `sudo chown -R "$USER:$USER" ~/droste/data/<box>`. `.droste-resolve.log`
+  needs no such thing — the box takes care of that one on its next start.
 
 ## Host tools
 

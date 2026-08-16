@@ -701,10 +701,28 @@ resolve::ensure_pcache() {
 
 # ── Template seeding (both lanes) ───────────────────────────────────────────
 # Runs AFTER mounts so seeds land on the mounted destinations. No-op if no manifest.
+# OWNERSHIP (distrobox) — the FILE counterpart of the _mkuserdir/_own_dirs deviation,
+# and the one the seeding step was missing: this runs as root, so every seeded config
+# (vllm_config.yaml, ds4.env, llama.env, comfyui's extra_model_paths.yaml) landed
+# owned by the container's root — a subuid on the host under keep-id, i.e. uneditable
+# by the very user the docs tell to edit it ("after first start they are yours").
+# Same gate as every other deviation (distrobox lane + a derived box user; the server
+# lane's service IS root by design — see droste-serve.sh's privilege model — so there
+# is nobody else to hand these to there) and the same `chown <user>:` shape.
+# The chown ITSELF is done by apply_templates.py, which is the only thing that knows
+# exactly which paths it created: a pre-existing dest dir (routinely a user bind, e.g.
+# comfyui's input/) and anything already in it are never touched, and nothing is
+# chowned recursively beyond the copy that just happened. Passing the user down as an
+# argument keeps the POLICY here with the other lane deviations and the PRECISION
+# there — parsing the script's output back into chown targets would be neither.
 resolve::apply_templates() {
     local tdir=${1:-$RESOLVE_TEMPLATES_DIR}
     [ -f "$tdir/templates.yaml" ] || return 0
-    python3 "$RESOLVE_APPLY_TEMPLATES" "$tdir"
+    local owner=()
+    if [ "$DROSTE_LANE" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
+        owner=(--owner "$DROSTE_USER")
+    fi
+    python3 "$RESOLVE_APPLY_TEMPLATES" ${owner[@]+"${owner[@]}"} "$tdir"
 }
 
 # ── Orchestration ───────────────────────────────────────────────────────────

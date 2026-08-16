@@ -109,6 +109,15 @@ RESOLVE_LOG="${DROSTE_DATA_DIR:-/opt/data}/.droste-resolve.log"
 if ! ( : >>"$RESOLVE_LOG" ) 2>/dev/null; then
     RESOLVE_LOG="/tmp/droste-resolve.log"
 fi
+# Hand the log to the box user, exactly as droste-serve.sh does with its own log and
+# state record, and for the same reason: this hook is root, which under keep-id is a
+# host subuid, so a root-created log on the user's data dir is one they can read but
+# not rotate or delete. No lane test — this file IS the distrobox lane. Unconditional
+# rather than create-only: it also reclaims the root-owned logs earlier starts left
+# behind. Best-effort (`|| true`): a log we could not chown must never abort a start.
+if [ -n "${DROSTE_USER:-}" ]; then
+    chown "$DROSTE_USER:" "$RESOLVE_LOG" 2>/dev/null || true
+fi
 # On ANY non-zero exit (including resolve::critical's internal exit 1) dump the log
 # to stderr with a pointer; on success this is a no-op.
 trap 'ec=$?; if [ "$ec" -ne 0 ]; then { printf "droste-init-hook: resolver FAILED (exit %s). Detail (also saved to %s):\n" "$ec" "$RESOLVE_LOG"; tail -n 30 "$RESOLVE_LOG" 2>/dev/null; } >&2; fi' EXIT

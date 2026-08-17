@@ -2942,6 +2942,19 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # side effect of `eval`-ing the assembled command). So the line distrobox
     # acts on stays absolute, and the line that remembers what the user wrote
     # sits beside it. volume= WINS if they ever disagree (Jei s39).
+    #
+    # The reader of the ini meets that line too, so the file explains it:
+    # an undocumented machine-looking comment is exactly the kind of thing a
+    # hand-editor either maintains needlessly or deletes.
+    printf '# The sources above are spelled out in full because that is what podman\n'
+    printf '# binds: a source that does not begin with / or ./ is taken as the NAME\n'
+    printf '# of a named volume, so a ~ there would quietly stop being a bind. The\n'
+    printf '# line below records the same binds in the spelling you gave them —\n'
+    printf '# droste-setup.sh reads it back to show you your own paths on the next\n'
+    printf '# run, and rewrites it from your answers every time, so there is nothing\n'
+    printf '# to maintain by hand. Change a bind in volume= and it takes effect:\n'
+    printf '# volume= WINS when the two disagree, and the record below simply stops\n'
+    printf '# naming that directory.\n'
     printf '# droste-setup: spelled="%s"\n' "$spell"
     if [[ ${BOX_HAS_MODELS[$box]} -eq 1 ]]; then
       if [[ -n $MODELS_DIR ]]; then
@@ -4202,6 +4215,24 @@ write_notes() {
     printf 'is what makes in-box installs survive a recreate (pip packages ride\n'
     printf 'the environment overlay in the cache dir, custom nodes their own\n'
     printf 'overlay in the data dir).\n'
+    # The ini is the one generated file a user is invited to edit, and the
+    # spelling record is the one line in it that looks like machinery. Explain
+    # both here rather than leaving the reader to guess what may be touched.
+    printf '\n## Editing a box%s ini by hand\n\n' "'s"
+    printf 'Every bind a box has lives in the ONE `volume=` value of its ini:\n'
+    printf '`distrobox assemble` reads only the LAST `volume=` key, so a second\n'
+    printf 'line would silently drop the first. Its sources are written out in\n'
+    printf 'full because that is what podman binds — a source that does not begin\n'
+    printf 'with `/` or `./` is read as the NAME of a named volume, so a `~`\n'
+    printf 'there would quietly stop being a bind at all.\n\n'
+    printf 'Underneath it sits a record line, shaped like this:\n\n'
+    printf '    # droste-setup: spelled="~/droste/data/<box>:/opt/data ..."\n\n'
+    printf 'That is the same list of binds in the spelling you typed. It is what\n'
+    printf 'lets droste-setup.sh show you your own paths on the next run rather\n'
+    printf 'than a reconstruction of them, and it is rewritten from your answers\n'
+    printf 'every time, so there is nothing to maintain there by hand. Change a\n'
+    printf 'bind in `volume=` and it takes effect: `volume=` WINS when the two\n'
+    printf 'disagree, and the record simply stops naming that directory.\n'
     printf '\n## Start at host boot\n\n'
     printf 'Boxes you asked to start at host boot get a systemd USER unit:\n\n'
     printf '    systemctl --user status droste-<box>      # is it enabled/active\n'

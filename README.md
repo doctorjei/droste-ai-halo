@@ -351,6 +351,21 @@ servers. Boxes asked to start at host boot also get a systemd **user** unit
 (`~/.config/systemd/user/droste-<box>.service`) doing `podman start`, and the
 installer enables lingering for you (printing the `sudo` form if the session
 will not let it).
+**Paths are kept as you spell them.** What you type is what the installer
+stores, compares and shows you again on the next run: a `~` stays a `~`, since
+it means "wherever home is" and that is an answer rather than an abbreviation,
+and a symlink is followed by the kernel at mount time rather than resolved away
+into your files. The only answer that is changed is a relative one, made
+absolute against `$HOME` at the moment you give it, because a relative path
+cannot be resolved later without a directory to resolve it from. The one place
+a path is written out in full is each ini's `volume=` line, because that is the
+line podman acts on and podman reads a source that does not begin with `/` or
+`./` as the *name of a named volume* rather than as a bind; the spelling you
+gave is recorded beside it in a `# droste-setup: spelled="…"` comment. You
+never have to maintain that comment — every run rewrites it from your answers,
+and re-resolves it, so a home that moves is followed at the next write. If you
+hand-edit `volume=`, `volume=` wins: it is the line that takes effect, and the
+record simply stops naming the directory you repointed.
 **The storage questions** follow the three host roots. Two yes/no questions
 decide whether the program caches and the persistent data each sit under one
 common base — `Store program caches at common base path (e.g.,

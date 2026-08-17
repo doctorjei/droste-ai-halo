@@ -694,6 +694,61 @@ not a re-typing exercise. The one sharp edge is the compute-cache prompt, whose
 default seeds from the old ini's `/opt/caches` host path — which under the new
 names is the program-cache ROOT, and wants re-pointing at `compute-caches`.
 
+### 2026-08-17 — the spelling the user typed (and the ini's two path lines)
+
+`expand_path` did two jobs in one breath: it made a path absolute and it
+expanded `~` to `$HOME`. The second destroyed information. A path typed at a
+prompt or read back from an ini was stored expanded, so the installer could
+only ever show a path it had reconstructed, never the one its owner wrote —
+and `home_disp` then re-abbreviated that to `~`, which on a host whose home is
+reached by an unusual name displayed a spelling appearing nowhere in the user's
+files. The rule this round settles on (Jei): what the user types is ALWAYS what
+the program shows.
+
+- **The split.** `abs_path` absolutizes and is what STORAGE uses; `fs_path`
+  resolves, at the filesystem boundary and nowhere else — every mkdir, test,
+  glob, redirect and `volume=` source goes through it, and its result is never
+  stored, compared or printed. A relative answer is still made absolute against
+  `$HOME`, at input, because it is unresolvable later without a cwd the
+  installer refuses to guess; after that the absolute form IS what the user
+  typed. `~/foo` and `/srv/foo` are both resolvable as they stand, so both
+  survive verbatim. `home_disp` is deleted — nothing compresses `$HOME` to `~`
+  any more, and the factory defaults are literal `~` strings (`~/droste`,
+  `~/.cache/huggingface`) that disappear the moment the user types over them.
+- **A `~` is late binding**, so the spelling has to survive the FILE, not just
+  the session. `volume=` keeps resolved absolutes because that is what
+  distrobox and podman act on: podman 5.4.2 binds a source only when it starts
+  with `/` or `./`, anything else silently becomes a NAMED VOLUME of that name,
+  and distrobox 2.x expands nothing of its own (1.x expanded only as a side
+  effect of `eval`-ing the assembled command). The authored spelling is
+  therefore recorded beside it — same `<src>:<dest>` shape, in a
+  `# droste-setup: spelled="…"` comment — so the two lines read against each
+  other by destination.
+- **Precedence, ruled: `volume=` WINS.** It is authoritative for the value,
+  always; the comment only ever contributes a spelling, and only while it still
+  names the same directory (`same_dir`, so an aliased or symlinked home still
+  matches). When they disagree the comment is describing some other directory —
+  a hand-edited `volume=`, most likely — and the `volume=` string is taken
+  verbatim. Every write re-resolves from the spelling rather than copying the
+  previous expansion forward, so a home that moves is followed at the next write
+  or create (podman bakes the source absolutely at create time, so a run is the
+  only moment a `~` can be re-read).
+- **Machine decisions are spelling-independent.** Comparisons that were string
+  `==` are physical (`same_dir`) now: the program-cache wipe guard would not
+  have matched a HuggingFace cache recorded absolute against one spelled with a
+  `~`, and would have emptied it.
+- **A defect in generated advice, fixed.** An ini with no `/opt/models` bind
+  used to tell the reader to append `~/models:/opt/models:ro` to the `volume=`
+  value — which under the podman rule above is a named volume literally called
+  `~/models`, not a bind. It prints an absolute path now.
+- **Where the reader meets it.** The emitted ini explains the record line in
+  place (it is the one machine-looking comment in a file users are invited to
+  edit), NOTES.md gained an "Editing a box ini by hand" section, and the README
+  states the storage rule in the installer section.
+
+Migration: NONE. An ini written before this carries no `spelled=` line, so its
+`volume=` string is taken verbatim and the next write adds the record.
+
 ---
 
 ## Host adopt tooling — scripts/droste-hf-adopt.sh / scripts/droste-civitai-adopt.sh

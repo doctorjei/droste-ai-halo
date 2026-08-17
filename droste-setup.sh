@@ -692,12 +692,12 @@ clip() {   # text width
   _fp_cut "$t" $(( w - 3 ))
 }
 
-home_disp() {  # compress $HOME → ~ for display
-  local p=$1
-  if [[ $p == "$HOME" ]]; then printf '~'
-  elif [[ $p == "$HOME"/* ]]; then printf '~%s' "${p#"$HOME"}"
-  else printf '%s' "$p"; fi
-}
+# (home_disp, which compressed $HOME → ~ for display, is GONE as of s39. Every
+# path this installer shows is now shown as the person who chose it wrote it —
+# typed, read back out of their ini, or inherited from the root it hangs off —
+# and a factory default is spelled with a literal ~ to begin with. There is
+# nothing left for a re-speller to do, and keeping one would only offer a way
+# to put the bug back.)
 
 # ── Path fitting ─────────────────────────────────────────────────────────────
 # Shrink a path to a cell budget, surrendering detail in this order (the LAST
@@ -829,12 +829,32 @@ fit_note() {   # note budget → note
 # probe_fstype follows the link at probe time, and the kernel follows it at
 # mkdir / mount time (so a re-pointed link takes effect at the next box start,
 # which is the whole point of keeping it).
-expand_path() {  # ~ expansion + absolutize + lexical normalize (no symlinks)
-  local p=$1 q
+#
+# AND A ~ IS AN ANSWER TOO (Jei s39). This used to expand ~ in the same breath,
+# which meant a stored path could never say ~ again — the installer showed a
+# spelling the user had never typed, and on a host whose $HOME is reached by an
+# unusual name it showed one that appeared nowhere in their files. The two jobs
+# are separate and only one of them belongs to STORAGE:
+#
+#   "A relative path is different from a symbolic path. We can't deal in
+#    relative paths, so they have to be made absolute. But ~/foo and /srv are
+#    both absolute in terms of resolvability within a given context." — Jei
+#
+# So: relatives are absolutized HERE, at input, because they are unresolvable
+# without a cwd the installer refuses to guess (a bare word means $HOME, per the
+# note above) — and after that the absolute form IS what the user typed. A ~
+# spelling is already resolvable, so it is left exactly as written; fs_path
+# resolves it, transiently, for the kernel and for the volume= lines podman
+# binds. Nothing stores or displays the result of that.
+abs_path() {  # absolutize (relative → $HOME) + lexical normalize; ~ kept as ~
+  local p=$1 q tail
   # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
   case "$p" in
-    "~") p=$HOME ;;
-    "~/"*) p=$HOME/${p#\~/} ;;
+    "~"|"~/") printf '~'; return 0 ;;
+    # The tail is normalised as if it were rooted, then the ~ is put back:
+    # `realpath` has no idea what a ~ is and would read it as a directory name
+    # in the CWD, which is the one place this installer never resolves against.
+    "~/"*) tail=${p#\~/}; p=/$tail ;;
     /*) : ;;
     *) p=$HOME/$p ;;
   esac
@@ -842,18 +862,44 @@ expand_path() {  # ~ expansion + absolutize + lexical normalize (no symlinks)
   # any link. Assigned only on success: a host with no realpath(1) would
   # otherwise get an EMPTY path out of a substitution that failed.
   if q=$(realpath -m -s -- "$p" 2>/dev/null); then p=$q; fi
-  printf '%s' "$p"
+  # shellcheck disable=SC2088  # putting the LITERAL ~ back is the point
+  case "$1" in
+    # "~/.." normalises its tail down to "/", which as a tail means the home
+    # directory itself — the bare ~ spelling, not a trailing slash fs_path
+    # would then have to special-case.
+    "~/"*) if [[ $p == / ]]; then printf '~'; else printf '~%s' "$p"; fi ;;
+    *)     printf '%s' "$p" ;;
+  esac
+}
+
+# The transient other half: the path to hand the KERNEL (and podman). Called at
+# the filesystem boundary and nowhere else — every mkdir, test, glob, redirect
+# and volume= source goes through it, and its result is never stored, never
+# compared against a stored value and never printed.
+fs_path() {  # stored spelling → resolved path
+  local p=$1
+  # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
+  case "$p" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${p#\~/}" ;;
+    *) printf '%s' "$p" ;;
+  esac
 }
 
 # Do two spellings name the SAME directory? Walking symlinks is precisely what
-# expand_path refuses to do when STORING a path (a link is an answer, not a
+# abs_path refuses to do when STORING a path (a link is an answer, not a
 # detour), but a comparison is transient and has to see through them — the same
 # licence probe_fstype's `findmnt --target` takes. Falls back to a literal
 # compare on a host with no realpath(1).
+#
+# EVERY MACHINE DECISION IS SPELLING-INDEPENDENT: this is what lets ~/foo and
+# /srv/foo be recognised as one directory (they are, whatever the ini says), so
+# a difference in spelling can change what is DISPLAYED and nothing else.
 same_dir() {  # a b → 0 when both spellings resolve to one directory
   local a b
-  a=$(realpath -m -- "$1" 2>/dev/null) || a=$1
-  b=$(realpath -m -- "$2" 2>/dev/null) || b=$2
+  a=$(fs_path "$1"); b=$(fs_path "$2")
+  a=$(realpath -m -- "$a" 2>/dev/null) || a=$(fs_path "$1")
+  b=$(realpath -m -- "$b" 2>/dev/null) || b=$(fs_path "$2")
   [[ $a == "$b" ]]
 }
 
@@ -913,8 +959,8 @@ rl_prompt() {   # painted prompt → the same prompt, its colours fenced
 # check here covers ask_yn / ask_choice / ask_path_as / ask_port / the box
 # selection. It is armed by the notice printed after Preflight (nothing is
 # prompted before that), and it matches the RAW answer only — a user who really
-# does want a directory called "quit" writes "./quit", which expand_path
-# resolves (to $HOME/quit — never to the cwd) and this test never sees.
+# does want a directory called "quit" writes "./quit", which abs_path
+# absolutizes (to $HOME/quit — never to the cwd) and this test never sees.
 QUIT_ARMED=0
 quit_now() {
   printf '\n  %sExiting droste-setup.sh %s no further changes made.%s\n\n' \
@@ -1067,12 +1113,19 @@ ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower
 # The caller supplies the FULL prompt label; we append the "[default]: " suffix.
 # The old "-> /absolute/path" echo under the answer is gone (Jei s32): the path
 # is repeated in the summary box, and the echo doubled every prompt.
+#
+# ONE FORM, SHOWN AS WRITTEN. The default is printed exactly as it is held —
+# there is no display conversion left to do, because nothing on the way in
+# rewrote the user's spelling (abs_path only settles what a relative answer
+# means). A default that says ~/models says ~/models; one that says
+# /srv/models says /srv/models; and a factory default is the installer's own
+# construction, spelled ~ because that is how the installer would write it.
 ANS_PATH=""
-ask_path_as_raw() {  # "prompt label" default → ANS_PATH (absolute; NOT created)
+ask_path_as_raw() {  # "prompt label" default → ANS_PATH (absolute-or-~; NOT created)
   local label=$1 def=$2
-  ask_raw "$label $(dflt "$(home_disp "$def")"): "
+  ask_raw "$label $(dflt "$def"): "
   [[ -z $ANS ]] && ANS=$def
-  ANS_PATH=$(expand_path "$ANS")
+  ANS_PATH=$(abs_path "$ANS")
   return 0
 }
 
@@ -1082,15 +1135,20 @@ ask_path_as_raw() {  # "prompt label" default → ANS_PATH (absolute; NOT create
 # later missing directory into a silent mkdir.
 CREATE_ALL=0
 CREATE_ASKED=0
+# The DISCLOSURE the confirmation makes is the stored spelling itself, and it
+# needs no exception: a relative answer was already absolutized on the way in
+# (that is the one class of answer whose spelling would have hidden where it
+# lands), and every other answer is shown back the way it was written.
 ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
-  local p=$1 yn
-  [[ -d $p ]] && return 0
+  local p=$1 yn real
+  real=$(fs_path "$p")
+  [[ -d $real ]] && return 0
   if [[ $CREATE_ALL -eq 1 ]]; then
-    mkdir -p "$p" 2>/dev/null && return 0
+    mkdir -p "$real" 2>/dev/null && return 0
     warn "could not create $p"
     return 1
   fi
-  ask_yn "Create $(home_disp "$p")" Y
+  ask_yn "Create $p" Y
   yn=$ANS_YN
   # Offered once, and only after a YES: "do this for all" is meaningless as a
   # follow-up to a refusal (the path is about to be re-asked).
@@ -1100,7 +1158,7 @@ ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
     [[ $ANS_YN -eq 1 ]] && CREATE_ALL=1
   fi
   if [[ $yn -eq 1 ]]; then
-    mkdir -p "$p" 2>/dev/null && return 0
+    mkdir -p "$real" 2>/dev/null && return 0
     warn "could not create $p $EMD pick another location"
   fi
   return 1
@@ -1117,12 +1175,13 @@ ask_path_as() {  # "prompt label" default → ANS_PATH (existing dir, or confirm
 # path, so an empty answer leaves the bind switched off and anything else is a
 # path, confirmed/created exactly like a required one. It replaces the old
 # "bind X? [y/N]" toggle plus its follow-up path prompt — one prompt, one
-# answer. The literal word is matched BEFORE expand_path, which would otherwise
+# answer. The literal word is matched BEFORE abs_path, which would otherwise
 # turn a typed "None" into a directory called $HOME/None.
 ANS_OPT_PATH=""
 ask_path_or_none() {  # "prompt label" default("" = none) → ANS_OPT_PATH ("" = none)
-  local label=$1 def=$2 shown=None
-  [[ -n $def ]] && shown=$(home_disp "$def")
+  # $2 twice on purpose: bash expands the whole line before any of these
+  # assignments happen, so ${def:-None} here would always read the word.
+  local label=$1 def=$2 shown=${2:-None}
   while :; do
     ask_raw "$label $(dflt "$shown"): "
     [[ -z $ANS ]] && ANS=${def:-none}
@@ -1130,7 +1189,7 @@ ask_path_or_none() {  # "prompt label" default("" = none) → ANS_OPT_PATH ("" =
       ANS_OPT_PATH=""
       return 0
     fi
-    ANS_PATH=$(expand_path "$ANS")
+    ANS_PATH=$(abs_path "$ANS")
     if ensure_dir "$ANS_PATH"; then
       ANS_OPT_PATH=$ANS_PATH
       return 0
@@ -1170,9 +1229,13 @@ declare -A CFG_HSTSV         # box → 1|""  start the box at HOST BOOT (user un
 declare -A CFG_PORT          # box → host port the service binds
 declare -A CFG_MODE          # box → ""|fuse|copy|ignore  (overlay mitigation)
 declare -A CFG_FS            # box → probed fstype of the data dir
-declare -A PATHS             # "box:label" → absolute host path
+# EVERY PATH IN HERE IS HELD AS THE PERSON WHO CHOSE IT WROTE IT (s39): typed,
+# read back out of their ini, or — for a placement the installer derived — in
+# the spelling of the root it hangs off. Absolute or ~-rooted, never expanded;
+# fs_path resolves at the filesystem boundary and the result is never kept.
+declare -A PATHS             # "box:label" → host path, as spelled
 declare -A EX_INI EX_CTR     # detection (1/"" ; EX_CTR = container state)
-declare -A EXD_PATH          # "box:label" → parsed host path from the old ini
+declare -A EXD_PATH          # "box:label" → host path from the old ini, as spelled
 declare -A EXD_PORT EXD_BOXSV EXD_HSTSV EXD_MODE   # parsed defaults
 declare -A SESSION_STATE     # box → ACTIVE|STOPPED (what this run did)
 SELECTED=()                  # chosen boxes, canonical order
@@ -1456,9 +1519,26 @@ dest_to_label() {  # box dest → label ("" if unknown)
 # A path that does not fit the new <base>/<box> shape makes its family answer
 # "no common base" (family_base), which routes it to the per-box question — the
 # user is asked where it goes now rather than being moved without being told.
+#
+# TWO LINES CARRY THE PATHS, AND THEY ARE NOT PEERS (s39). `volume=` is what
+# distrobox and podman act on, so its sources are always resolved absolutes —
+# podman 5.4.2 binds a source only when it starts with / or ./, and anything
+# else silently becomes a NAMED VOLUME with that string for a name, so a ~ or a
+# $HOME on that line is not a bind at all. The SPELLING the user wrote is
+# therefore recorded beside it, in the `# droste-setup: spelled="..."` comment,
+# in the same "<src>:<dest>" shape so the two lines read against each other by
+# dest.
+#
+# PRECEDENCE, RULED (Jei s39): volume= WINS. It is authoritative for the value,
+# always; the comment only ever contributes a spelling, and only when it names
+# the same directory (same_dir, so a symlinked or aliased home still matches).
+# When they disagree, the comment is describing some other directory — a
+# hand-edited volume= line, most likely — and there is nothing left for it to
+# spell, so the volume= string is taken verbatim.
 parse_existing_ini() {  # box
   local box=$1 f line vols entry src dest label
-  f=$(ini_file "$box")
+  local -A vsrc=() spelled=()
+  f=$(fs_path "$(ini_file "$box")")
   [[ -f $f ]] || return 0
   while IFS= read -r line; do
     if [[ $line =~ ^volume=\"(.*)\"$ ]]; then
@@ -1466,10 +1546,22 @@ parse_existing_ini() {  # box
       for entry in $vols; do
         src=${entry%%:*}
         dest=${entry#*:}; dest=${dest%%:*}
-        src=$(expand_path "$src")
         label=$(dest_to_label "$box" "$dest")
-        [[ -n $label && -z "${EXD_PATH["$box:$label"]:-}" ]] \
-          && EXD_PATH["$box:$label"]=$src
+        # First entry per label wins, exactly as before. `if`, not `[[ … ]] &&`:
+        # a false test as the last command of a loop body is the status of the
+        # whole loop, and this script runs under `set -e`.
+        if [[ -n $label && -z "${vsrc[$label]:-}" ]]; then vsrc[$label]=$src; fi
+      done
+    elif [[ $line =~ ^#[[:space:]]*droste-setup:[[:space:]]*spelled=\"(.*)\"$ ]]; then
+      # The spelling record. Collected, not applied: the two lines may arrive in
+      # either order in a file someone has edited, so they are reconciled once
+      # the whole ini has been read.
+      vols=${BASH_REMATCH[1]}
+      for entry in $vols; do
+        src=${entry%%:*}
+        dest=${entry#*:}; dest=${dest%%:*}
+        label=$(dest_to_label "$box" "$dest")
+        if [[ -n $label && -z "${spelled[$label]:-}" ]]; then spelled[$label]=$src; fi
       done
     elif [[ $line =~ DROSTE_OVERLAY_MODE=([a-z]+) ]]; then
       # additional_flags carries --env DROSTE_OVERLAY_MODE=<mode>.
@@ -1483,6 +1575,16 @@ parse_existing_ini() {  # box
       [[ ${BASH_REMATCH[3]} == yes ]] && EXD_HSTSV[$box]=1
     fi
   done < "$f"
+  # Reconcile: the value comes from volume=, the spelling from the comment when
+  # it still names that same directory. abs_path gives whichever won the same
+  # lexical tidy a typed answer gets — and leaves a ~ alone.
+  for label in "${!vsrc[@]}"; do
+    src=${vsrc[$label]}
+    if [[ -n "${spelled[$label]:-}" ]] && same_dir "${spelled[$label]}" "$src"; then
+      src=${spelled[$label]}
+    fi
+    EXD_PATH["$box:$label"]=$(abs_path "$src")
+  done
   return 0
 }
 
@@ -1493,7 +1595,9 @@ parse_existing_ini() {  # box
 parse_serve_env() {  # box
   local box=$1 f line k v
   f=$(serve_env_file "$box") || return 0
-  [[ -n $f && -f $f && -r $f ]] || return 0
+  [[ -n $f ]] || return 0
+  f=$(fs_path "$f")      # a data dir the user spelled with ~ is still a dir
+  [[ -f $f && -r $f ]] || return 0
   while IFS= read -r line; do
     line=${line%%#*}
     [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
@@ -1528,7 +1632,7 @@ parse_host_unit() {  # box
 detect_existing() {
   local box state
   for box in "${BOXES[@]}"; do
-    [[ -f $(ini_file "$box") ]] && EX_INI[$box]=1
+    [[ -f $(fs_path "$(ini_file "$box")") ]] && EX_INI[$box]=1
     if [[ -n $RUNTIME ]]; then
       state=$("$RUNTIME" ps -a --filter "name=^$(box_ctr "$box")\$" \
               --format '{{.State}}' 2>/dev/null | head -n1) || state=""
@@ -1833,7 +1937,9 @@ family_example() {   # leaf... → "<box>: <path>" ("" when nothing is recorded)
     for leaf in "$@"; do
       p=${EXD_PATH["$box:$leaf"]:-}
       [[ -n $p ]] || continue
-      shown="$box: $(home_disp "$p")"
+      # It is quoting the user's own file back at them ("why am I being asked
+      # per box?"), and $p IS what their file says.
+      shown="$box: $p"
       if [[ -z $first ]]; then first=$shown; fi
       case "$leaf" in
         data|pcache)
@@ -1855,7 +1961,14 @@ seed_globals() {
   SEED_PORTS=Y
   SEED_SERVE=n SEED_HOST=n
   SEED_PCACHE_Q=Y SEED_DATA_Q=Y
-  SEED_HF=$HOME/.cache/huggingface
+  # A FACTORY DEFAULT IS SPELLED THE WAY THE INSTALLER WOULD WRITE IT: ~, not
+  # an expansion of it. Nobody authored this path, so there is no other
+  # spelling owed to anyone — and the moment it is offered and accepted, ~ is
+  # what the user chose, which is what every later line shows. (The other
+  # factory paths hang off the resource path and inherit ITS spelling, so a
+  # typed /srv/droste never grows a ~ anywhere below it.)
+  # shellcheck disable=SC2088  # a LITERAL ~, resolved by fs_path at use
+  SEED_HF="~/.cache/huggingface"
   # The compute cache is SHARED by every box (kernels are content-keyed), so it
   # sits beside the two per-box roots rather than inside either of them.
   SEED_COMPUTE=$EMIT_DIR/compute-caches
@@ -1866,6 +1979,9 @@ seed_globals() {
   SEED_DATA_BASE=$EMIT_DIR/data
   SEED_PCACHE_BASE=$EMIT_DIR/caches
   [[ ${#SEED_SRC[@]} -eq 0 ]] && return 0
+  # Each seed is the recorded path AS RECORDED — the prompt below offers that
+  # string, and an empty answer hands the same string back to abs_path, so a
+  # box that is left alone keeps the spelling it was set up with.
   for box in "${SEED_SRC[@]}"; do
     [[ -n "${EXD_PATH["$box:hf"]:-}" ]] && { SEED_HF=${EXD_PATH["$box:hf"]}; break; }
   done
@@ -1981,11 +2097,11 @@ general_setup() {
   # out here read as though the literal string were the answer. The base itself
   # is asked further down — only for a family that gets a common base at all.
   nobase_note "program cache dirs" "$SEED_NOBASE_PCACHE"
-  ask_yn "Store program caches at common base path (e.g., $(home_disp "$SEED_PCACHE_BASE"))" \
+  ask_yn "Store program caches at common base path (e.g., $SEED_PCACHE_BASE)" \
     "$SEED_PCACHE_Q"
   pcache_common=$ANS_YN
   nobase_note "data dirs" "$SEED_NOBASE_DATA"
-  ask_yn "Store persistent data at common base path (e.g., $(home_disp "$SEED_DATA_BASE"))" \
+  ask_yn "Store persistent data at common base path (e.g., $SEED_DATA_BASE)" \
     "$SEED_DATA_Q"
   data_common=$ANS_YN
   explain "Please provide host paths for data (persistent data, caches, models, etc)."
@@ -2031,7 +2147,8 @@ general_setup() {
 # ── Filesystem probe + overlay mitigation (the ecryptfs lesson) ──────────────
 FSTYPE=""
 probe_fstype() {  # dir → FSTYPE
-  local d=$1
+  local d
+  d=$(fs_path "$1")     # findmnt takes a path, not a spelling
   if [[ -n "${DROSTE_SETUP_FSTYPE:-}" ]]; then
     FSTYPE=$DROSTE_SETUP_FSTYPE
     return 0
@@ -2066,7 +2183,7 @@ data_mapping_menu() {  # dir [nested] → ANS_CH in {f,c,n,i}
   [[ $nested == nested ]] && say ""
   section "Data Mapping"
   say ""
-  prose "The filesystem for $(home_disp "$dir") is incompatible with droste's default tool, Linux's overlayfs. Note: if ignored, filesystem must be changed before any containers can load."
+  prose "The filesystem for $dir is incompatible with droste's default tool, Linux's overlayfs. Note: if ignored, filesystem must be changed before any containers can load."
   sub "Select an option to address filesystem incompatibility."
   opt_row F "use overlay" \
     "(app files ~30% slower; models OK)" 16 "$(isdef F "$letters")"
@@ -2109,17 +2226,19 @@ mitigate_path() {  # dir [nested]
   return 0
 }
 
-# The paths that exist before any box section, most primary first.
+# The paths that exist before any box section, most primary first. "Already
+# answered for" is same_dir, not ==: a root typed as ~/droste and a resource
+# path typed as /home/you/droste are one directory and one question.
 mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
   case "$1" in
     rc)      printf '%s' "$EMIT_DIR" ;;
-    data)    [[ -n $DATA_ROOT && $DATA_ROOT != "$EMIT_DIR" ]] \
+    data)    [[ -n $DATA_ROOT ]] && ! same_dir "$DATA_ROOT" "$EMIT_DIR" \
                && printf '%s' "$DATA_ROOT" ;;
     # The program-cache root is where the venv upper lands, so it has to accept
     # an overlay upper in its own right (P0 choice C) — probed unless it is one
     # of the paths already answered for.
-    pcache)  [[ -n $PCACHE_ROOT && $PCACHE_ROOT != "$EMIT_DIR" \
-               && $PCACHE_ROOT != "$(data_root)" ]] \
+    pcache)  [[ -n $PCACHE_ROOT ]] && ! same_dir "$PCACHE_ROOT" "$EMIT_DIR" \
+               && ! same_dir "$PCACHE_ROOT" "$(data_root)" \
                && printf '%s' "$PCACHE_ROOT" ;;
     compute) printf '%s' "$COMPUTE_CACHE" ;;
     hf)      printf '%s' "$HF_CACHE" ;;
@@ -2241,6 +2360,11 @@ path_derived() {  # box label → derived path
 # The DEFAULT a per-box prompt offers: a modify box's recorded path, else the
 # derived placement. Only ever a prompt default — an auto-placed family takes
 # path_derived instead, so an answer always beats a memory.
+#
+# Both branches hand back a spelling somebody chose: the recorded branch the
+# user's own, the derived one the resource path's (path_derived hangs the box
+# off a root that was itself typed or accepted). Nothing here needs a display
+# conversion, and nothing here may be handed to the filesystem without fs_path.
 path_default() {  # box label → default path (existing value > family base)
   local box=$1 label=$2
   if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then
@@ -2279,8 +2403,12 @@ set_bind_path() {  # box label
     PATHS["$box:$label"]=$ANS_PATH
     # Modify with the SAME path keeps the mitigation already recorded for it
     # (re-prompts default to current values); a changed path is re-decided.
-    if [[ $label == data && ${ACTION[$box]} == modify && -n "${EXD_MODE[$box]:-}" \
-          && $ANS_PATH == "${EXD_PATH["$box:data"]:-}" ]]; then
+    # "The SAME path" is a question about DIRECTORIES, so it is asked with
+    # same_dir: answering ~/appdata/comfyui where the ini said
+    # /home/you/appdata/comfyui has not moved anything and must not re-open the
+    # filesystem question.
+    if [[ $label == data && ${ACTION[$box]} == modify && -n "${EXD_MODE[$box]:-}" ]] \
+       && same_dir "$ANS_PATH" "${EXD_PATH["$box:data"]:-}"; then
       probe_fstype "$ANS_PATH"
       CFG_FS[$box]=$FSTYPE
       if overlay_hostile_fs "$FSTYPE"; then
@@ -2341,7 +2469,9 @@ set_bind_path() {  # box label
 # tested and never cleared: they are content-keyed and shared by every box.
 stale_pcache() {  # dir → 0 when it holds anything at all
   local d=$1 p
-  [[ -n $d && -d $d ]] || return 1
+  [[ -n $d ]] || return 1
+  d=$(fs_path "$d")
+  [[ -d $d ]] || return 1
   # Dotfiles count — `.work` is the overlay bookkeeping and is exactly the kind
   # of leftover this question is about.
   for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do
@@ -2369,16 +2499,22 @@ stale_any() {
 # dir, the three shared paths, and every other bind of every box (another box's
 # cache dir is not excluded: clearing a shared cache dir is what both of its
 # answers asked for). $HOME and / are refused outright.
+#
+# EVERY COMPARISON HERE IS same_dir, NOT ==: two spellings of one directory are
+# one directory, and a guard that only recognises its own spelling of a path is
+# a guard that can be walked around by writing ~ instead of /home/you.
 pcache_wipe_safe() {  # dir → 0 when nothing else in this install is that dir
   local dir=$1 key
-  case "$dir" in /|"$HOME") return 1 ;; esac
-  [[ $dir == "$EMIT_DIR" || $dir == "$(data_root)" || $dir == "$(pcache_root)" ]] && return 1
-  [[ -n $COMPUTE_CACHE && $dir == "$COMPUTE_CACHE" ]] && return 1
-  [[ -n $HF_CACHE && $dir == "$HF_CACHE" ]] && return 1
-  [[ -n $MODELS_DIR && $dir == "$MODELS_DIR" ]] && return 1
+  case "$(fs_path "$dir")" in /|"$HOME") return 1 ;; esac
+  same_dir "$dir" "$EMIT_DIR" && return 1
+  same_dir "$dir" "$(data_root)" && return 1
+  same_dir "$dir" "$(pcache_root)" && return 1
+  [[ -n $COMPUTE_CACHE ]] && same_dir "$dir" "$COMPUTE_CACHE" && return 1
+  [[ -n $HF_CACHE ]] && same_dir "$dir" "$HF_CACHE" && return 1
+  [[ -n $MODELS_DIR ]] && same_dir "$dir" "$MODELS_DIR" && return 1
   for key in "${!PATHS[@]}"; do
     [[ ${key##*:} == pcache ]] && continue
-    [[ ${PATHS[$key]} == "$dir" ]] && return 1
+    same_dir "${PATHS[$key]}" "$dir" && return 1
   done
   return 0
 }
@@ -2392,7 +2528,7 @@ stale_clearable() {  # box → 0 when the box has stale caches this may clear
   local dir=${PATHS["$box:pcache"]:-}
   stale_pcache "$dir" || return 1
   pcache_wipe_safe "$dir" && return 0
-  warn "$(home_disp "$dir") holds more than ${BOX_NAME[$box]}'s caches $EMD left alone"
+  warn "$dir holds more than ${BOX_NAME[$box]}'s caches $EMD left alone"
   return 1
 }
 
@@ -2406,16 +2542,17 @@ stale_clearable() {  # box → 0 when the box has stale caches this may clear
 # restarted for any fix to take anyway.
 clear_pcache() {  # box
   local box=$1
-  local dir=${PATHS["$box:pcache"]:-} p
+  local dir=${PATHS["$box:pcache"]:-} p real
   stale_clearable "$box" || return 0
   if [[ $(box_state "$box") == ACTIVE ]]; then
     subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to clear its caches."
     return 0
   fi
-  for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+  real=$(fs_path "$dir")
+  for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
     [[ -e $p || -L $p ]] || continue
     rm -rf "$p" && continue
-    warn "could not clear $(home_disp "$dir") $EMD empty it by hand, then re-run"
+    warn "could not clear $dir $EMD empty it by hand, then re-run"
     return 0
   done
   return 0
@@ -2557,10 +2694,14 @@ SUM_HDR_W=14       # "Start w Host: " is the longest header, and sets the column
 predict_card_inner() {  # box → inner width, capped at the screen
   local box=$1 pair label v w inner=0 avail
   local -a vals=()
-  vals+=("$(home_disp "$(path_default "$box" data)")")
+  # Measured in the spelling that will be PRINTED — which is the spelling that
+  # will be OFFERED, since the card and the prompt show the one stored string.
+  # A ~ is four columns narrower than the home it stands for, so measuring an
+  # expansion would have mis-sized the card the moment either could differ.
+  vals+=("$(path_default "$box" data)")
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
-    vals+=("$(home_disp "$(path_default "$box" "$label")")")
+    vals+=("$(path_default "$box" "$label")")
   done
   vals+=("${EXD_PORT[$box]:-${BOX_HOST_PORT[$box]}}")
   for v in "${vals[@]}"; do
@@ -2576,10 +2717,12 @@ summary_box() {  # box banner-width
   local box=$1 bw=$2 inner avail pair label
   local -a keys=() vals=() kind=()
   keys+=("Paths") vals+=("") kind+=(g)
-  keys+=("${BIND_ROW[data]}:") vals+=("$(home_disp "${PATHS["$box:data"]}")") kind+=(v)
+  # Verbatim: kept from the ini, typed at the prompt or derived from the
+  # resource path, PATHS holds the spelling that was chosen for it.
+  keys+=("${BIND_ROW[data]}:") vals+=("${PATHS["$box:data"]}") kind+=(v)
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
-    keys+=("${BIND_ROW[$label]}:") vals+=("$(home_disp "${PATHS["$box:$label"]}")") kind+=(v)
+    keys+=("${BIND_ROW[$label]}:") vals+=("${PATHS["$box:$label"]}") kind+=(v)
   done
   # One blank line between the groups (Jei) — pushed only when the Paths group
   # actually produced rows, so a box with nothing above it grows no leading gap.
@@ -2690,7 +2833,7 @@ ask_ladder() {
 
 # ── Emitters ─────────────────────────────────────────────────────────────────
 emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
-  local box=$1 f base pair label dest vols flags data
+  local box=$1 f base pair label dest vols spell flags data
   f=$(ini_file "$box")
   base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
   data=${PATHS["$box:data"]}
@@ -2700,7 +2843,7 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     printf '# Modeled on targets/%s/distrobox.ini (droste-ai-halo repo).\n' "$box"
     printf '# ONE container, two doors: "distrobox enter %s" for an\n' "$(box_ctr "$box")"
     printf '# interactive shell, "podman start %s" to bring the\n' "$(box_ctr "$box")"
-    printf '# service up (the init hook reads %s/server.env\n' "$(home_disp "$data")"
+    printf '# service up (the init hook reads %s/server.env\n' "$data"
     printf '# at every start and launches on the port recorded there).\n'
     # The record of what this installer last answered — read back on the next
     # run as the fallback for server.env (port, box start) and for the systemd
@@ -2743,20 +2886,31 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # CRITICAL: distrobox assemble reads only the LAST volume= key, so EVERY
     # bind must live in ONE space-separated volume= value. Accumulate them all
     # here and emit a single line.
-    vols="$data:/opt/data"
+    #
+    # TWO LINES ARE BUILT AT ONCE (s39): $vols carries the RESOLVED sources
+    # podman binds, $spell the SAME binds in the spelling their owner wrote.
+    # Every write re-resolves from the spelling rather than copying forward the
+    # last expansion, which is what makes "move home, re-run" land the binds in
+    # the new one — podman bakes the source absolutely at create time, so a run
+    # is the only moment a ~ can be re-read.
+    vols="$(fs_path "$data"):/opt/data"
+    spell="$data:/opt/data"
     # The box's PROGRAM CACHE root, right behind its data dir: the venv overlay
     # upper lives here, so without this bind the environment a `pip install`
     # writes lands in the container layer and dies with the next recreate. It is
     # not a BOX_EXTRA_BIND (nobody is asked about it as a work dir), so the bind
     # is written here, by name, for every box.
-    vols="$vols ${PATHS["$box:pcache"]}:/opt/program-cache"
+    vols="$vols $(fs_path "${PATHS["$box:pcache"]}"):/opt/program-cache"
+    spell="$spell ${PATHS["$box:pcache"]}:/opt/program-cache"
     for pair in ${BOX_EXTRA_BINDS[$box]}; do
       label=${pair%%:*} dest=${pair#*:}
-      vols="$vols ${PATHS["$box:$label"]}:$dest"
+      vols="$vols $(fs_path "${PATHS["$box:$label"]}"):$dest"
+      spell="$spell ${PATHS["$box:$label"]}:$dest"
     done
     # Shared compute cache (MIOpen/Triton/torch/vLLM kernels) — appended into
     # the same value (remove to keep caches per-box).
-    vols="$vols $COMPUTE_CACHE:/opt/caches"
+    vols="$vols $(fs_path "$COMPUTE_CACHE"):/opt/caches"
+    spell="$spell $COMPUTE_CACHE:/opt/caches"
     # A non-default HF cache (outside the auto-bound host home) needs an
     # explicit bind to the in-box expected location — also same value.
     # BOTH sides are compared PHYSICALLY: an aliased home makes
@@ -2764,12 +2918,16 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # directory spelled two ways, and binding a directory over itself under a
     # name the box does not have is worse than not binding it at all.
     if ! same_dir "$HF_CACHE" "$USER_HOME/.cache/huggingface"; then
-      vols="$vols $HF_CACHE:$USER_HOME/.cache/huggingface"
+      vols="$vols $(fs_path "$HF_CACHE"):$USER_HOME/.cache/huggingface"
+      spell="$spell $HF_CACHE:$USER_HOME/.cache/huggingface"
     fi
     # Opted-in read-only model collection: the dir was confirmed-or-created at
     # prompt time, so the :ro bind is safe (a bind to a missing dir would be
     # fatal to `distrobox assemble create`). It lands INSIDE the single volume=.
-    [[ -n $MODELS_DIR ]] && vols="$vols $MODELS_DIR:/opt/models:ro"
+    if [[ -n $MODELS_DIR ]]; then
+      vols="$vols $(fs_path "$MODELS_DIR"):/opt/models:ro"
+      spell="$spell $MODELS_DIR:/opt/models:ro"
+    fi
     printf '# /opt/data = this box%s PERSISTENT state (your work, the seeded\n' "'s"
     printf '# configs, server.env) — never wiped. /opt/program-cache = its PROGRAM\n'
     printf '# CACHE (venv upper, scratch, per-box caches) — the installer offers to\n'
@@ -2777,10 +2935,18 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     printf '# Shared compute caches across ALL droste boxes are folded into the\n'
     printf '# single volume= value below (distrobox reads only the LAST volume=).\n'
     printf 'volume="%s"\n' "$vols"
+    # The spelling record, read back by parse_existing_ini. It is a COMMENT on
+    # purpose: podman 5.4.2 binds a source only when it starts with / or ./ —
+    # anything else (a ~, a $HOME) becomes a NAMED VOLUME called that, and
+    # distrobox 2.x does no expansion of its own at all (1.x expanded only as a
+    # side effect of `eval`-ing the assembled command). So the line distrobox
+    # acts on stays absolute, and the line that remembers what the user wrote
+    # sits beside it. volume= WINS if they ever disagree (Jei s39).
+    printf '# droste-setup: spelled="%s"\n' "$spell"
     if [[ ${BOX_HAS_MODELS[$box]} -eq 1 ]]; then
       if [[ -n $MODELS_DIR ]]; then
         printf '# The read-only local model collection (%s -> /opt/models:ro)\n' \
-          "$(home_disp "$MODELS_DIR")"
+          "$MODELS_DIR"
         printf '# is already included in the single volume= value above.\n'
       else
         # Not opted in: the share has no default location (the prompt's default
@@ -2790,12 +2956,15 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
         printf '# Optional read-only local model collection (none configured — the\n'
         printf '# installer asks for a path, and None means no bind). To enable, name\n'
         printf '# YOUR collection and APPEND\n'
-        printf '#   %s:/opt/models:ro\n' "$(home_disp "$HOME/models")"
+        # ABSOLUTE on purpose: this line is copied INTO volume=, where podman
+        # 5.4.2 takes a source that does not start with / or ./ as the NAME of a
+        # named volume — a ~ here would silently stop being a bind mount.
+        printf '#   %s:/opt/models:ro\n' "$HOME/models"
         printf '# (space-separated) INSIDE the single volume= value above — do NOT add a\n'
         printf '# second volume= line (distrobox reads only the LAST, dropping the rest).\n'
       fi
     fi
-  } > "$f"
+  } > "$(fs_path "$f")"
   exec_file "$base"
   return 0
 }
@@ -2817,6 +2986,7 @@ emit_serve_env() {  # box
   local box=$1 f
   f=$(serve_env_file "$box") || return 0
   [[ -n $f ]] || return 0
+  f=$(fs_path "$f")      # the box's data dir, as the kernel needs it spelled
   mkdir -p "$(dirname "$f")" 2>/dev/null || :
   {
     printf '# server.env — read by droste-init-hook.sh at every container start.\n'
@@ -2845,7 +3015,7 @@ write_host_unit() {  # box → 0 when the unit file is in place
     printf '# %s — generated by droste-setup.sh on %s\n' "$(unit_name "$box")" "$(date +%F)"
     printf '[Unit]\n'
     printf 'Description=droste %s halo box (%s)\n' "$box" "$(box_ctr "$box")"
-    printf 'Documentation=file://%s/NOTES.md\n' "$EMIT_DIR"
+    printf 'Documentation=file://%s/NOTES.md\n' "$(fs_path "$EMIT_DIR")"
     printf '\n[Service]\n'
     printf 'Type=oneshot\n'
     printf 'RemainAfterExit=yes\n'
@@ -3003,7 +3173,7 @@ status_err() {   # name log-path
     [[ -z $line ]] && continue
     printf '    %s%s%s\n' "$C_TEXT" "$line" "$RESET"
   done < <(tail -n 3 "$log" 2>/dev/null)
-  printf '  %sfull log: %s%s\n' "$C_FILE" "$(home_disp "$log")" "$RESET"
+  printf '  %sfull log: %s%s\n' "$C_FILE" "$(emit_spelled "$log")" "$RESET"
   return 0
 }
 
@@ -3056,10 +3226,22 @@ run_step() {   # phase log command...
 # Per-step capture file under the resource path (whose stated purpose is
 # "(re)creation records, logs, & data"). Falls back to the temp dir if that
 # directory cannot be made, so a failed pull still has somewhere to say why.
+# The log is the installer's OWN artifact and is opened by a dozen writers, so
+# this hands back a RESOLVED path — the one place a stored spelling is
+# deliberately left behind. emit_spelled puts the user's spelling of the
+# resource path back on the front for the one line that shows one.
 step_log() {   # step name → path
-  local d=$EMIT_DIR/logs
+  local d
+  d=$(fs_path "$EMIT_DIR")/logs
   mkdir -p "$d" 2>/dev/null || d=${TMPDIR:-/tmp}
   printf '%s/%s-%s.log' "$d" "$1" "$2"
+}
+
+emit_spelled() {   # resolved path under the resource dir → the user's spelling
+  local p=$1 real
+  real=$(fs_path "$EMIT_DIR")
+  if [[ $p == "$real"/* ]]; then printf '%s/%s' "$EMIT_DIR" "${p#"$real"/}"
+  else printf '%s' "$p"; fi
 }
 
 # ── Image pull: podman REST API + one aggregated progress bar ────────────────
@@ -3667,7 +3849,7 @@ create_box() {  # box
   # per box that say what our one status line already says, so the whole
   # capture goes to the log instead.
   run_step "creating" "$log" \
-    distrobox assemble create --file "$(ini_file "$box")" || rc=$?
+    distrobox assemble create --file "$(fs_path "$(ini_file "$box")")" || rc=$?
   if [[ $rc -eq 0 ]]; then
     SESSION_STATE[$box]=STOPPED
     # The [A] rung starts only the boxes whose server is meant to come up with
@@ -3847,6 +4029,7 @@ execute() {
 # line by line.
 # shellcheck disable=SC2016
 write_notes() {
+  # $f is the spelling; only the redirect resolves it.
   local f=$EMIT_DIR/NOTES.md box port bs hs data pcache note
   {
     printf '# droste-halo setup notes\n\n'
@@ -4008,7 +4191,9 @@ write_notes() {
     done
     printf '\n## Recreate one-liners\n\n'
     for box in "${SELECTED[@]}"; do
-      if [[ -f $(ini_file "$box") ]]; then
+      # The test resolves; the line printed does NOT — it is a command the
+      # reader pastes into a shell, which expands a ~ itself.
+      if [[ -f $(fs_path "$(ini_file "$box")") ]]; then
         printf '    distrobox assemble create --file %s\n' "$(ini_file "$box")"
       fi
     done
@@ -4055,11 +4240,11 @@ write_notes() {
     printf '\n## Health check\n\n'
     printf 'On the GPU host, the repo'\''s `scaffolding/check-rocm.sh` validates\n'
     printf 'GPU access + per-box smoke across all images (see its --help).\n'
-  } > "$f"
+  } > "$(fs_path "$f")"
   # Jei's "---" is deliberate: a plain rule that says "that part is done",
   # closing the run's chattiest phase before the final report opens below.
   printf '\n%s---%s\n%sWrote %s.%s\n' \
-    "$C_TEXT" "$RESET" "$C_FILE" "$(home_disp "$f")" "$RESET"
+    "$C_TEXT" "$RESET" "$C_FILE" "$f" "$RESET"
   return 0
 }
 
@@ -4246,7 +4431,7 @@ dash_table() {   # with-on(0|1)
     n=$(( ncol - dw )); [[ $n -lt 0 ]] && n=0
     row+=$(printf '%*s' "$n" "")
     data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-}}"
-    note=${BOX_NOTE[$box]//@DATA@/$(home_disp "${data:-~/droste/$box/data}")}
+    note=${BOX_NOTE[$box]//@DATA@/${data:-~/droste/$box/data}}
     [[ -n $note ]] && row+=$C_TEXT$(fit_note "$note" "$budget")
     printf '%s%s\n' "$row" "$RESET"
   done
@@ -4294,7 +4479,7 @@ dash_footnote() {
 # command CREATES ("Create / Recreate"); in the full report it is the recovery
 # move for containers that already exist ("Recreate"). Same block either way.
 dash_recreate() {   # title
-  printf '%s%s%s\n' "$C_SUB" "$1 (files in $(home_disp "$EMIT_DIR"))" "$RESET"
+  printf '%s%s%s\n' "$C_SUB" "$1 (files in $EMIT_DIR)" "$RESET"
   printf '%s%s%-12s%s%s%s%s%s%s%s%s%s%s%s\n' "$C_TEXT" "$BULLET" "distrobox:" \
     "$C_EXE" "distrobox " "$C_CMD" "assemble create " \
     "$C_TGT" "--file " "$C_PH" "<box>" "$C_TGT" "-halo.ini" "$RESET"
@@ -4304,7 +4489,7 @@ dash_recreate() {   # title
 # The final pointer, the one line every run ends on.
 dash_pointer() {
   printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
-    "Definitions + full guide: $(home_disp "$EMIT_DIR") (ini, NOTES.md)" \
+    "Definitions + full guide: $EMIT_DIR (ini, NOTES.md)" \
     "$RESET"
   say ""
   return 0
@@ -4366,8 +4551,11 @@ main() {
   section "Box Selection & Setup" intro
   sub "Box configuration, settings, logs, & other resources" intro
   # A typo here fans out into every emitted file — ask_path_as confirms before
-  # creating (and re-asks if the user declines or the create fails).
-  ask_path_as "Identify a path for droste resource storage" "$HOME/droste"
+  # creating (and re-asks if the user declines or the create fails). The factory
+  # spelling is a literal ~ (see seed_globals): every path derived from the
+  # answer inherits whatever spelling the answer has.
+  # shellcheck disable=SC2088  # a LITERAL ~, resolved by fs_path at use
+  ask_path_as "Identify a path for droste resource storage" "~/droste"
   EMIT_DIR=$ANS_PATH
   DEFAULT_ROOT=$EMIT_DIR
   # The resource path is what makes the old definition files findable, so this

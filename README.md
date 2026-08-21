@@ -167,9 +167,15 @@ Mount contract (all ports):
 Those container paths come off **three host roots**, and what separates them is
 what may be thrown away:
 
-- **`~/droste/data/<box>`** — persistent, per box. Your work and everything you
-  authored; `droste-setup.sh` never deletes anything here. comfyui's
-  `input`/`output` and the finetuning `workspace` nest inside it by default.
+- **`~/droste/data/<box>/program`** — persistent, per box. Your work and
+  everything you authored; `droste-setup.sh` deletes nothing here unasked — the
+  one way it ever does is the `replace` answer to a move question, which names
+  the directory before offering it. It sits under a per-box directory
+  **beside** its siblings, not above them: comfyui's `input` and `output` and
+  the finetuning `workspace` are `~/droste/data/<box>/input` and so on. (Boxes
+  set up before this shape have their program data at `~/droste/data/<box>`
+  itself, with the others inside it; nothing rewrites them, and the installer
+  keeps using the paths their ini records.)
 - **`~/droste/caches/<box>`** — that box's program caches and nothing else: the
   venv overlay, llama's slots, ds4's KV disk, scratch temp, the seeded
   `extra_model_paths.yaml`. Emptied only on consent, at the installer's
@@ -366,21 +372,84 @@ never have to maintain that comment — every run rewrites it from your answers,
 and re-resolves it, so a home that moves is followed at the next write. If you
 hand-edit `volume=`, `volume=` wins: it is the line that takes effect, and the
 record simply stops naming the directory you repointed.
-**The storage questions** follow the three host roots. Two yes/no questions
-decide whether the program caches and the persistent data each sit under one
-common base — `Store program caches at common base path (e.g.,
-~/droste/caches)`, then the same for `~/droste/data`; decline either and that
-family is asked per box instead (`Please indicate the path for the
-program-specific caches`). Then the paths every box shares: the compute caches,
-the HF cache (labelled `"cache" - never wiped`, because it is the model store),
-and `Path to bind as read-only share /opt/models` — a path-or-**None** prompt,
-defaulting to None, since a local model collection has no default location
-(name one, e.g. `~/models`, and it is bound read-only everywhere). Finally, if
-it finds leftovers in a program-cache dir, it offers to clear them: once for
-the whole install (`Clear all old / stale caches`), then per box (🔶 `Clear
-stale caches`) for whatever a global "no" left behind. That clear is the ONLY
-deletion droste-setup.sh performs, it never reaches outside a box's
-program-cache dir, and it will not touch a box that is running.
+**The storage questions** open with two elections, under `Storage Paths`:
+whether the persistent data sits under one common base, then whether the
+program caches do. Everything each answer implies is then asked under its own
+subheader. `Host Data Paths` carries the data base path (only if you elected
+one, under an italic `*Data will be stored at <base>/<box>.`), the optional
+read-only model share — a path-or-**None** prompt, defaulting to None, since a
+local model collection has no default location — and the HF cache, labelled
+`"cache", never wiped`, because it is the model store. `Host Cache Paths`
+carries the cache base path, the shared compute caches, and, if it finds
+leftovers in a program-cache dir, the offer to clear them: once for the whole
+install (`Clear all old / stale caches`), then per box (🔶 `Clear stale
+caches`) for whatever a global "no" left behind. That clear never reaches
+outside a box's program-cache dir, and it will not touch a box that is running.
+Decline an election and that family is asked per box instead, in the box's own
+section (`Path for ComfyUI program data`, and so on).
+
+**Moving what is already there.** Placing a family at a base moves the
+*answer*, so the installer offers to move the *files* with it — and it offers
+the same when you type a new path per box. Once every path for a box is
+settled, it shows where that box's data is now:
+
+```
+  ComfyUI Paths
+  Current data file paths:
+  [comfyui program data: /srv/skidamarink]
+  [comfyui output: /srv/barbaz/output]
+  [comfyui input: /srv/foobar/input]
+
+  To use current, active data with new path(s), that data will need to be moved.
+  Move program data to new path (/srv/data/droste/comfyui/program) [Y/n]? y
+  Do this for all data paths for comfyui [Y/n]? y
+  Do this for all boxes [Y/n]? n
+```
+
+(Paths that already share one directory are listed as
+`Current data file paths in <dir>:` with just the bind names.) The first answer
+carries to the rest of the box's paths, and to every box, if you take those
+offers; decline the first and each remaining path is asked in turn.
+
+The moving is done by `mv`, so its behaviour and its messages are the ones you
+already know: a move within one filesystem is a rename, one that crosses
+filesystems copies and then removes the original, and a copy that dies partway
+leaves the source intact. Crossing a filesystem is named — both paths and the
+size — and asked about separately; if the destination has less room than the
+move needs, you are told the shortfall and the data stays put.
+
+Destinations that already have files in them raise a second question, once,
+covering all of them:
+
+```
+  There are existing files at new base path /srv/data/droste/comfyui:
+  [output, input]
+
+  Options
+  [M]erge existing, active data into new path (replace when overlapping)
+  [r]emove data at new path, then move existing, active data to new path
+  [u]se the data already at the new path (stop using existing data)
+  [k]eep old path as-is
+  *Warning: If you choose to keep the old path, this forgoes the shared base path.
+
+  Select a course of action for the output path [M/r/u/k]: M
+  Apply this decision to all overlapping new comfyui paths [Y/n]? y
+  Apply this decision to all boxes [Y/n]? n
+```
+
+**Merge** moves entry by entry: a same-named file is replaced, and a name
+colliding with a non-empty *directory* is reported and left where it is,
+because that is what `mv` does. **Remove** deletes what is at the new path
+first. The last two move nothing and differ in where the box ends up reading
+from — **use** points it at the files already there (naming the directory left
+behind), **keep** leaves the box exactly where it was. A running box is refused
+with the reason: stop it and re-run. **Program caches are never moved**: they
+regenerate, so they are re-pointed in silence, and the only question they raise
+is whether to delete the directory they left behind. Nothing is deleted without
+a yes to a question naming the directory — the stale cache clear, that vacated
+cache dir, and `remove` above are the three deletions droste-setup.sh can make,
+and none of them touches a running box.
+
 **Safe to re-run:** existing definition files, containers and boxes are
 detected and listed; per box you choose keep / recreate / modify — settings
 files are never silently clobbered. Its **preflight** reports the host state

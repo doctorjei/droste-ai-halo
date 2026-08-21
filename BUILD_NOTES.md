@@ -629,7 +629,7 @@ what a thing IS decides where it lives, and no consumer has to infer it again.
 
 Three roots, container-side (host defaults in parentheses):
 
-- **`/opt/data`** (`~/droste/data/<box>`) — per-box PERSISTENT. Configs
+- **`/opt/data`** (`~/droste/data/<box>/program`) — per-box PERSISTENT. Configs
   (`server.env`, `*.env`, `vllm_config.yaml`), comfyui `user/` + the
   custom_nodes upper + the model tree, ds4 `sessions/` + `cockpit/`, the
   finetuning workspace, the `.droste-*.log` files.
@@ -748,6 +748,128 @@ the program shows.
 
 Migration: NONE. An ini written before this carries no `spelled=` line, so its
 `volume=` string is taken verbatim and the next write adds the record.
+
+---
+
+### 2026-08-20 — moving the data when the answer moves (and why `mv` is the whole design)
+
+Answering yes to "store persistent data at a common base path" re-pointed every
+box's ini at `<base>/<box>` and left the bytes where they were: the box came up
+bound to an empty directory, and nothing said so. That the answer beats the
+recorded path is the earlier F8 fix and is correct — this is the other half,
+what happens to the files once it does. Jei: *"Don't do what is being done and
+(somehow) ignore what the user says."*
+
+- **The mover is `mv` itself, and its behaviour and its errors are ours.** Jei:
+  *"mv copies across boundaries and removes the old. We should do the same,
+  unless we know in advance that it will fail."* coreutils already does
+  `rename(2)`, falls back to copy+unlink on `EXDEV`, preserves mode and
+  timestamps, and leaves the source intact when a copy dies partway; a
+  hand-rolled copy-verify-delete would be a second, worse implementation of a
+  tool the user already knows. Refusals are printed in mv's own words rather
+  than paraphrased.
+- **`-T` is mandatory.** Plain `mv src dst` onto an existing directory moves src
+  *inside* it, so the whole feature would silently produce `<base>/<box>/<box>`
+  — a layout that then reads as the user's own mistake.
+- **What "merge" can mean, measured (coreutils 9.7).** `mv -T` onto a NON-EMPTY
+  directory is refused, same-device (`cannot overwrite 'x': Directory not
+  empty`) and cross-device (`inter-device move failed: …; unable to remove
+  target: …`) alike; onto an EMPTY one it succeeds. So merge is per-entry
+  `mv -T`: a file landing on a file is replaced silently, and a directory
+  landing on a non-empty directory is reported and left where it is. Recursing
+  into that collision and unioning it is a thing mv will not do, and for the
+  files inside it is indistinguishable from "replace". A merge that empties its
+  source `rmdir`s it, because that is the step mv would have taken.
+- **Two questions, not one, and the second one is the way out.** Jei's shape:
+  `Move <bind> to new path (<new>) [Y/n]?` — defaulting to YES, because it only
+  ever appears after the user has said where the family should live, so it
+  confirms a consequence of an answer already given — and then, only when a
+  destination has something in it, `There are existing files at new …` with four
+  courses of action: **M**erge existing, active data into new path (replace when
+  overlapping) · **r**emove data at new path, then move · **u**se the data
+  already at the new path (stop using existing data) · **k**eep old path as-is.
+  The last two move nothing and differ only in where the BOX ends up pointing,
+  which is what makes them the answer to a disclosure the reader could not have
+  seen when answering question one. An earlier "back the old one up as
+  `<name>.backup`" option was cut here, and with it the `.backup.1`/`.2` rule.
+- **Both questions batch, at two levels.** After the first answer:
+  `Do this for all data paths for <box>?` — carrying THAT answer, yes or no
+  alike — and then, only if that was taken, `Do this for all boxes?`. Decline the
+  box-wide one and each remaining path is asked in turn. The collision decision
+  has its own pair (`Apply this decision to all overlapping new <box> paths?` /
+  `… to all boxes?`). A box with a single data path is not asked the box-wide
+  question at all — a set of one has nothing to apply to — and goes straight to
+  the all-boxes offer.
+- **One pass per box, after every path of that box is settled.** Not one
+  question per bind as they are asked: when a base places the family the paths
+  are known before anything is asked, but when the base is DECLINED the new
+  paths ARE the answers to the per-box prompts, so the moves cannot be discussed
+  until those prompts are done. The pass opens by disclosing where the files are
+  now — `Current data file paths in <dir>:` with bind names when they share one
+  directory, one full path per line when they do not.
+- **Everything destructive is disclosed first.** A non-empty destination is
+  named with its size *and* with whether it is where that same box keeps its
+  other binds — which it usually is on the shape that produced this bug
+  (comfyui's data dir lands on the directory holding its own input and output),
+  and which decides what these four answers mean in practice. The destination
+  may belong to ANOTHER box; that is asked about, not vetoed (Jei: *"that's the
+  user's call"*), and the disclosure is the guard.
+- **Order matters where it costs data.** The device/space check sits AFTER the
+  four-way choice (two of those answers move nothing and would not have cared)
+  and BEFORE the `rm -rf` that `replace` performs, so a shortfall can never be
+  discovered once the old content is already gone. `replace` also gets credited
+  with the space it is about to free, or it would decline a move that fits.
+- **Refusals say why.** A cross-device move is priced before it is offered (size
+  of the source, free space at the destination) so a shortfall is stated up
+  front instead of discovered half a copy later — *"a reported shortfall is the
+  difference between 'left my data alone' and 'ignored me'"*. A running box is
+  refused with the reason, the same shape as the program-cache wipe.
+- **Program caches are exempt.** They regenerate, so they are re-pointed in
+  silence; the only question is whether to delete the vacated directory, and
+  that reuses the s38 consent-gated clear (same safety test, same running-box
+  refusal). The HF cache is NOT one of these — Jei excluded it explicitly
+  (*"I'm not counting huggingface here"*): it is the model store, and it takes
+  the ordinary move offer.
+- **The box is pointed where its data actually is.** Declined, refused, failed
+  outright, or a merge in which nothing moved: the box keeps its recorded path.
+  A partial merge takes the new path — what moved is there — and names the
+  directory the rest is still in.
+
+Same round, and part of the same defect: a family with no common base used to
+offer a FACTORY example at the base prompt while the inis knew perfectly well
+where the data lived, and the note explaining why the family would be asked per
+box printed a single well-formed path as its evidence. The prompt now offers the
+base most of the recorded paths agree on (Jei: the default has to match the
+file), and the note names both sides of the disagreement.
+
+Same round: **the nesting was an oversight** (Jei), so the box's data dir is no
+longer the parent of its siblings. `program` — short for "program data", which
+is what its prompt has always called it — joins `input`, `output` and
+`workspace` as a leaf under a per-box directory that is not itself a bind:
+
+    <data base>/<box>/program   → /opt/data
+    <data base>/<box>/input     → /opt/ComfyUI/input
+    <data base>/<box>/output    → /opt/ComfyUI/output
+
+Host side only; no container path moves. **Read tolerantly, write strictly:** a
+data path recorded as `<base>/<box>` is the older shape and still names a base,
+because reporting "these do not share a common base" about paths that plainly do
+would be a lie about the user's own file. Nothing rewrites it. A box in the old
+shape derives `<base>/<box>/program`, which is INSIDE its recorded path, and mv
+refuses to move a directory into its own subdirectory — so it is reported and
+left alone rather than asked about, since the only answer such a question could
+earn is an error. Migrating one means moving the contents of `<box>` into
+`<box>/program` while stepping around its other binds; Jei ruled that out of
+scope ("I can manually fix my boxes").
+
+Also this round, and visible before any of the above: **Storage Paths became
+three blocks** — the two elections (persistent data first, then program caches),
+then `Host Data Paths` (the data base, the model share, the HF cache) and `Host
+Cache Paths` (the cache base, the compute caches, the stale-cache offer). The
+old single run of prompts put the model share between two caches and left each
+base prompt three questions away from the election that decided it.
+
+Migration: NONE, and nothing moves that was not asked about by name.
 
 ---
 

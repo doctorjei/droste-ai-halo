@@ -77,7 +77,7 @@ declare -A BIND_TITLE=(
 
 # Summary-box row headers for the same families (shorter — the box is narrow).
 declare -A BIND_ROW=(
-  [data]="Data Path" [input]="Input" [output]="Output" [workspace]="Workspace"
+  [data]="Program Data" [input]="Input" [output]="Output" [workspace]="Workspace"
 )
 
 # A bind whose prompt is written OUT, instead of composed as "Path for <Box>
@@ -283,7 +283,7 @@ if [[ $ASCII -eq 1 ]]; then
   # Foreground-only palette (see the rework spec). EVERY color rides on one of
   # these variables so --ascii / dumb terminals stay byte-for-byte colorless.
   C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
-  C_BRK="" C_OKB="" C_OK="" C_BADB="" C_NOTB=""
+  C_BRK="" C_OKB="" C_OK="" C_BADB="" C_NOTB="" C_WARNI=""
   C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
   C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
   C_EXE="" C_CMD="" C_TGT="" C_PH=""
@@ -340,6 +340,10 @@ else
   # Reset-prefixed like every other entry so no shade inherits a neighbour's
   # weight; also worn by the one QUESTION that carries the caution sign.
   C_NOTB=$'\e[0;33m'                                      # preflight 🔶 row
+  # The one WARNING that rides under an option list: bold italic yellow (Jei's
+  # markup). Reset-prefixed like the rest, or it would inherit the weight of
+  # whatever drew last.
+  C_WARNI=$'\e[0;1;3;33m'
   C_TBRK=$'\e[0;34m' C_TIDX=$'\e[0;94m'  # table [N] + option-list, other rows
   C_ARROW=$'\e[1;91m'   # sub-notice `-> arrow
   C_SUBJ=$'\e[1;97m'    # sub-notice subject
@@ -1898,23 +1902,41 @@ seed_sources() {
   return 0
 }
 
+# What base does ONE recorded path imply, given the shape its family uses?
+# "-" when the path is not in that shape at all.
+#
+# The program cache root puts the box directly under the base (<base>/<box> IS
+# the cache dir); every data-family bind is a leaf beside its siblings
+# (<base>/<box>/<program|input|output|workspace>).
+#
+# READ TOLERANTLY, WRITE STRICTLY: a data path recorded as <base>/<box> is the
+# pre-s41 layout, from before the data dir became a `program` sibling of the
+# others. It still names a base, and saying otherwise would report "these do not
+# share a common base" about a set of paths that plainly do. The path is not
+# rewritten for it — an old box keeps what its ini says until its owner moves
+# it (Jei: "I can manually fix my boxes") — but it is understood.
+shape_base() {  # box leaf path → base | "-"
+  local box=$1 leaf=$2 p=$3 d
+  if [[ $leaf == pcache ]]; then
+    if [[ $p == */"$box" ]]; then printf '%s' "${p%/"$box"}"; else printf '-'; fi
+    return 0
+  fi
+  d=$(leaf_dir "$leaf")
+  if [[ $p == */"$box"/"$d" ]]; then printf '%s' "${p%/"$box"/"$d"}"; return 0; fi
+  if [[ $leaf == data && $p == */"$box" ]]; then printf '%s' "${p%/"$box"}"; return 0; fi
+  printf '-'
+  return 0
+}
+
 # The common base of a family of recorded paths, or "" when they do not share
-# the family's shape (or disagree about the base). TWO shapes since s38: the
-# two ROOTS put the box directly under the base (<base>/<box> — the box's data
-# dir and its program-cache dir ARE that directory), while the leaves that nest
-# inside the data dir keep the <base>/<box>/<leaf> shape.
+# the family's shape (or disagree about the base).
 family_base() {   # leaf...
   local leaf box p base first="" seen=0
   for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
     for leaf in "$@"; do
       p=${EXD_PATH["$box:$leaf"]:-}
       [[ -n $p ]] || continue
-      case "$leaf" in
-        data|pcache)
-          if [[ $p == */"$box" ]]; then base=${p%/"$box"}; else base="-"; fi ;;
-        *)
-          if [[ $p == */"$box"/"$leaf" ]]; then base=${p%/"$box"/"$leaf"}; else base="-"; fi ;;
-      esac
+      base=$(shape_base "$box" "$leaf" "$p")
       if [[ $seen -eq 0 ]]; then first=$base seen=1
       elif [[ $base != "$first" ]]; then printf '-'; return 0
       fi
@@ -1925,31 +1947,108 @@ family_base() {   # leaf...
   return 0
 }
 
-# The recorded path that best EXPLAINS a "-" from family_base: the first entry
-# whose shape this layout does not use, else simply the first recorded one (two
-# boxes can each be well-shaped and still disagree about the base). A separate
-# walk on purpose — family_base runs in a command substitution, so it cannot
-# hand anything back out of band, and widening its contract to two fields would
-# complicate the one thing every caller wants from it.
-family_example() {   # leaf... → "<box>: <path>" ("" when nothing is recorded)
-  local leaf box p first="" shown
+# The label as the note says it out loud. "pcache" is this script's word for
+# them, not the reader's.
+leaf_word() {  # label → display word
+  case "$1" in
+    pcache) printf 'program cache' ;;
+    data)   printf 'program data' ;;
+    *)      printf '%s' "$1" ;;
+  esac
+}
+
+# The DIRECTORY a bind takes under the box's own dir. The data bind is spelled
+# `program` there — short for "program data", which is what its prompt has
+# always called it ("Path for ComfyUI program data").
+#
+# ⭐ RULED (Jei, s41): THE NESTING WAS AN OVERSIGHT. The box's data dir used to
+# BE <base>/<box>, with input/output living INSIDE it; the three are siblings
+# now, under a box directory that is not itself a bind:
+#
+#     <data base>/<box>/program   → /opt/data
+#     <data base>/<box>/input     → /opt/ComfyUI/input
+#     <data base>/<box>/output    → /opt/ComfyUI/output
+#
+# Host side only — no container path changes. NO MIGRATION: existing boxes keep
+# the paths their ini records (Jei: "I can manually fix my boxes"), and only new
+# placements take the new shape.
+leaf_dir() {  # label → directory name
+  case "$1" in
+    data) printf 'program' ;;
+    *)    printf '%s' "$1" ;;
+  esac
+}
+
+# What EXPLAINS a "-" from family_base, in terms the reader can act on. TWO
+# different things produce that "-", and they do not have the same answer:
+#
+#   a MALFORMED path — a shape this layout does not use. One entry names it,
+#   and it explains itself.
+#
+#   a DISAGREEMENT — every path well-shaped, the bases simply differ. This was
+#   Jei's own case, and the old code fell through to "print the first recorded
+#   entry", which reads as a COUNTER-EXAMPLE to the claim it is supporting: one
+#   well-formed path, offered as evidence that the paths are not well-formed.
+#   Both sides are named instead (Jei, s40: "comfyui data: … vs comfyui input:
+#   …") — the disagreement is a relationship, so it takes two paths to show it.
+#
+# One line per entry, "<box> <leaf>: <path>"; nobase_note renders them. A
+# separate walk from family_base on purpose — that one runs in a command
+# substitution, so it cannot hand anything back out of band.
+family_example() {   # leaf... → 0, 1 or 2 lines ("" when nothing is recorded)
+  local leaf box p base first="" firstbase=""
   for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
     for leaf in "$@"; do
       p=${EXD_PATH["$box:$leaf"]:-}
       [[ -n $p ]] || continue
+      base=$(shape_base "$box" "$leaf" "$p")
       # It is quoting the user's own file back at them ("why am I being asked
       # per box?"), and $p IS what their file says.
-      shown="$box: $p"
-      if [[ -z $first ]]; then first=$shown; fi
-      case "$leaf" in
-        data|pcache)
-          if [[ $p != */"$box" ]]; then printf '%s' "$shown"; return 0; fi ;;
-        *)
-          if [[ $p != */"$box"/"$leaf" ]]; then printf '%s' "$shown"; return 0; fi ;;
-      esac
+      if [[ $base == "-" ]]; then
+        printf '%s %s: %s' "$box" "$(leaf_word "$leaf")" "$p"
+        return 0
+      fi
+      if [[ -z $first ]]; then
+        first="$box $(leaf_word "$leaf"): $p" firstbase=$base
+        continue
+      fi
+      if [[ $base != "$firstbase" ]]; then
+        printf '%s\n%s %s: %s' "$first" "$box" "$(leaf_word "$leaf")" "$p"
+        return 0
+      fi
     done
   done
   printf '%s' "$first"
+  return 0
+}
+
+# The base MOST of the recorded paths agree on — what to offer when a family has
+# no single base but the files still say plainly where most of them live. Jei's
+# standard is that a prompt default MATCHES THE FILE, and any recorded base
+# matches a file; the factory path this replaces matched nothing on the disk.
+# ⚠️ THE TIE-BREAK IS MINE, NOT RULED: on a dead heat (two boxes, two bases)
+# the FIRST recorded base wins, because box order is stable and an arbitrary
+# answer that is stable beats one that moves between runs. Either way the
+# outliers meet the move question, which is where they get settled.
+family_dominant() {  # leaf... → base ("" when nothing is well-shaped)
+  local leaf box p base best="" bestn=0 n
+  local -a order=()
+  local -A count=()
+  for box in ${SEED_SRC[@]+"${SEED_SRC[@]}"}; do
+    for leaf in "$@"; do
+      p=${EXD_PATH["$box:$leaf"]:-}
+      [[ -n $p ]] || continue
+      base=$(shape_base "$box" "$leaf" "$p")
+      [[ $base == "-" ]] && continue
+      if [[ -z ${count["$base"]:-} ]]; then order+=("$base"); fi
+      count["$base"]=$(( ${count["$base"]:-0} + 1 ))
+    done
+  done
+  for base in ${order[@]+"${order[@]}"}; do
+    n=${count["$base"]}
+    if [[ $n -gt $bestn ]]; then best=$base bestn=$n; fi
+  done
+  printf '%s' "$best"
   return 0
 }
 
@@ -2026,11 +2125,24 @@ seed_globals() {
   # (or a shape the layout does not use) → N, and the boxes are asked one by
   # one. Persistent data counts its nested leaves too, since they are the same
   # family: an input dir somewhere else means the base is NOT common.
+  #
+  # NO AGREEMENT IS NOT NO INFORMATION (G4, Jei s40): the question still defaults
+  # to N and the boxes are still asked one by one, but the base it OFFERS comes
+  # from the files rather than from the factory. On his run the data question
+  # offered ~/resources/droste/data — a path invented on the spot — while his
+  # inis put the data base at /srv/appdata/droste, and his ruling was that the
+  # default has to MATCH THE FILE (he refused a "(recorded)" marker: the value
+  # itself has to be right). Saying yes here now lands the family where most of
+  # it already is, and the outliers meet the move question in their own section.
   base=$(family_base data input output workspace)
   if [[ -n $base ]]; then
     if [[ $base == "-" ]]; then
       SEED_DATA_Q=N
       SEED_NOBASE_DATA=$(family_example data input output workspace)
+      # `if`, not `[[ … ]] &&`: a false test as the last command of a branch is
+      # the status of the whole compound, and this script runs under `set -e`.
+      base=$(family_dominant data input output workspace)
+      if [[ -n $base ]]; then SEED_DATA_BASE=$base; fi
     else
       SEED_DATA_BASE=$base
     fi
@@ -2040,6 +2152,8 @@ seed_globals() {
     if [[ $base == "-" ]]; then
       SEED_PCACHE_Q=N
       SEED_NOBASE_PCACHE=$(family_example pcache)
+      base=$(family_dominant pcache)
+      if [[ -n $base ]]; then SEED_PCACHE_BASE=$base; fi
     else
       SEED_PCACHE_BASE=$base
     fi
@@ -2051,10 +2165,30 @@ seed_globals() {
 # looks exactly like a failed read-back: the question flips to N and offers a
 # FACTORY example, while the user knows perfectly well where their files are.
 # Naming what was found turns a silent degrade into a statement.
-nobase_note() {   # "what" "<box>: <path>"
+# One entry keeps the drawn shape (a malformed path explains itself in a
+# parenthetical); a DISAGREEMENT takes two paths to show, and two paths do not
+# fit in one — they are listed under the sentence instead, one per line, where a
+# long path can wrap without breaking the line it is quoted inside.
+#
+# The sentence itself is written for the place it appears: this note fires
+# during GENERAL SETUP, and a bare "comfyui: …" under a global question read as
+# a stray box section (Jei: "this is not a comfyui section"). Naming the BIND on
+# each line — "comfyui data", "comfyui input" — makes them quotations from the
+# ini rather than a heading.
+nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
+  local line n=0
   [[ -n $2 ]] || return 0
-  printf '\n  %sExisting %s do not share a common base%s\n' "$C_QTXT" "$1" "$RESET"
-  printf '  %s(%s) - asking per box.%s\n' "$C_QTXT" "$2" "$RESET"
+  while IFS= read -r line; do n=$((n + 1)); done <<<"$2"
+  if [[ $n -le 1 ]]; then
+    printf '\n  %sExisting %s do not share a common base%s\n' "$C_QTXT" "$1" "$RESET"
+    printf '  %s(%s) - asking per box.%s\n' "$C_QTXT" "$2" "$RESET"
+    return 0
+  fi
+  printf '\n  %sExisting %s do not share a common base - asking per box:%s\n' \
+    "$C_QTXT" "$1" "$RESET"
+  while IFS= read -r line; do
+    printf '    %s%s%s\n' "$C_QTXT" "$line" "$RESET"
+  done <<<"$2"
   return 0
 }
 
@@ -2087,60 +2221,71 @@ general_setup() {
     c) HOST_MODE=c ;;
     *) HOST_MODE=n ;;
   esac
-  subhdr "Storage Paths"
-  # The two HOST ROOTS, one question each, program caches first: they are the
-  # disposable half of the install and the half most likely to be sent to
-  # another filesystem, so they are asked before the data people keep.
+  # ── Storage Paths: the two elections, then one block per family ────────────
+  # Jei's s41 layout. The two yes/no questions stand together under "Storage
+  # Paths" — PERSISTENT DATA FIRST, since it is the half people care about and
+  # the half the box sections then talk about — and everything each answer
+  # implies is asked under its own subheader, beside the shared paths that
+  # belong to the same family. The old single run of prompts put the model share
+  # between two caches and the base prompts three questions away from the
+  # question that decided them.
   #
-  # Each question names the BASE, not the templated leaf (Jei, live test): the
-  # per-box "<base>/<box>" shape is the installer's business, and spelling it
-  # out here read as though the literal string were the answer. The base itself
-  # is asked further down — only for a family that gets a common base at all.
-  nobase_note "program cache dirs" "$SEED_NOBASE_PCACHE"
-  ask_yn "Store program caches at common base path (e.g., $SEED_PCACHE_BASE)" \
-    "$SEED_PCACHE_Q"
-  pcache_common=$ANS_YN
+  # Each election names the BASE, not the templated leaf (Jei, live test): the
+  # per-box shape is the installer's business, and spelling it out here read as
+  # though the literal string were the answer. Where the family lands is said
+  # once, in the italic line under the subheader.
+  subhdr "Storage Paths"
   nobase_note "data dirs" "$SEED_NOBASE_DATA"
   ask_yn "Store persistent data at common base path (e.g., $SEED_DATA_BASE)" \
     "$SEED_DATA_Q"
   data_common=$ANS_YN
-  explain "Please provide host paths for data (persistent data, caches, models, etc)."
-  # The two SHARED caches (every box binds them; neither is per-box), then the
-  # optional read-only model share — a path-or-None prompt, so the bind and its
-  # location are one answer instead of a toggle plus a follow-up.
-  ask_path_as "Compute caches (MIOpen/Triton/torch)" "$SEED_COMPUTE"
-  COMPUTE_CACHE=$ANS_PATH
-  ask_path_as "HuggingFace models (\"cache\" - never wiped)" "$SEED_HF"
-  HF_CACHE=$ANS_PATH
-  ask_path_or_none "Path to bind as read-only share /opt/models" "$SEED_MODELS"
-  MODELS_DIR=$ANS_OPT_PATH
+  nobase_note "program cache dirs" "$SEED_NOBASE_PCACHE"
+  ask_yn "Store program caches at common base path (e.g., $SEED_PCACHE_BASE)" \
+    "$SEED_PCACHE_Q"
+  pcache_common=$ANS_YN
+
+  subhdr "Host Data Paths"
   # A base prompt renders ONLY for a family the user agreed to place at a common
   # base (Jei s38); declining routes that family to the per-box path question in
-  # the box's own section instead. Same order as the pair above.
-  if [[ $pcache_common -eq 1 ]]; then
-    ask_path_as "Program cache base path" "$SEED_PCACHE_BASE"
-    PCACHE_ROOT=$ANS_PATH
-    PCACHE_AUTO=1
-  fi
+  # the box's own section instead.
   if [[ $data_common -eq 1 ]]; then
+    prose "*Data will be stored at <base>/<box>." "$C_QTXT"
     ask_path_as "Persistent data base path" "$SEED_DATA_BASE"
     DATA_ROOT=$ANS_PATH
     DATA_AUTO=1
   fi
-  # Close the section the way a per-box section and the Data Mapping one close,
-  # so whatever follows (a rule, a banner) keeps the same two-line gap.
-  say ""
-  # THE STALE-CACHE QUESTION, install-wide and last: it is about the caches the
-  # answers above just placed, and it is asked ONLY when there is something to
-  # clear (the s37 run, with nothing stale, shows the blank line on its own).
-  # One YES settles every box; a NO hands the decision to the boxes that have
-  # something, in their own sections. Default YES — a stale cache is the box's
-  # most common cause of "it starts but misbehaves", and nothing in one is
-  # authored: everything in there is rebuilt on the next start.
+  # The optional read-only model share — a path-or-None prompt, so the bind and
+  # its location are one answer instead of a toggle plus a follow-up — and the
+  # HF cache, which is a MODEL STORE and never wiped, whatever its name says.
+  ask_path_or_none "Path to bind as read-only share /opt/models" "$SEED_MODELS"
+  MODELS_DIR=$ANS_OPT_PATH
+  ask_path_as "HuggingFace models (\"cache\", never wiped)" "$SEED_HF"
+  HF_CACHE=$ANS_PATH
+
+  subhdr "Host Cache Paths"
+  if [[ $pcache_common -eq 1 ]]; then
+    prose "*Caches will be stored at <base>/<box>." "$C_QTXT"
+    ask_path_as "Program caches base path" "$SEED_PCACHE_BASE"
+    PCACHE_ROOT=$ANS_PATH
+    PCACHE_AUTO=1
+  fi
+  # Shared by every box (kernels are content-keyed), which is why it sits here
+  # rather than inside either per-box root.
+  ask_path_as "Compute caches (MIOpen/Triton/torch)" "$SEED_COMPUTE"
+  COMPUTE_CACHE=$ANS_PATH
+  # THE STALE-CACHE QUESTION, install-wide and last in its own block: it is
+  # about the caches the answers above just placed, and it is asked ONLY when
+  # there is something to clear. One YES settles every box; a NO hands the
+  # decision to the boxes that have something, in their own sections. Default
+  # YES — a stale cache is the box's most common cause of "it starts but
+  # misbehaves", and nothing in one is authored.
   if stale_any; then
     ask_yn "Stale caches often cause malfunctions. Clear all old / stale caches" Y
     CLEAR_STALE_ALL=$ANS_YN
   fi
+  # Close the section the way a per-box section and the Data Mapping one close,
+  # so whatever follows (a rule, a banner) keeps the same two-line gap.
+  say ""
   return 0
 }
 
@@ -2165,11 +2310,14 @@ MIT_ASKED=0
 MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
 
 # One continuous block of prose, word-wrapped to the screen and indented two.
-prose() {   # text
-  local w line
+# The colour is a parameter because two voices use this same block: body text
+# for the Data Mapping explainer, and the quieter question-text grey for a note
+# that stands immediately above a prompt (nobase_note's voice).
+prose() {   # text [colour]
+  local w line col=${2:-$C_TEXT}
   w=$(( $(disp_width) - 2 ))
   while IFS= read -r line; do
-    printf '  %s%s%s\n' "$C_TEXT" "$line" "$RESET"
+    printf '  %s%s%s\n' "$col" "$line" "$RESET"
   done < <(printf '%s\n' "$1" | fold -s -w "$w" | sed 's/[[:space:]]*$//')
   return 0
 }
@@ -2348,11 +2496,18 @@ path_derived() {  # box label → derived path
   if [[ $label == pcache ]]; then
     printf '%s/%s' "$(pcache_root)" "$box"
   elif [[ $label == data ]]; then
-    printf '%s/%s' "$(data_root)" "$box"
+    printf '%s/%s/%s' "$(data_root)" "$box" "$(leaf_dir data)"
   else
-    # A leaf hangs off THIS box's data dir: the path just settled for it when it
-    # was asked, the derived one when General Setup placed the whole family.
-    root=${PATHS["$box:data"]:-$(data_root)/$box}
+    # Every data-family bind hangs off THIS BOX'S DIRECTORY, as a SIBLING of the
+    # others (s41: the old nesting was an oversight). That directory is the
+    # PARENT of the program dir once one has been settled this run — so a
+    # program path typed somewhere unexpected still takes input and output along
+    # with it, which is what the old code did back when they lived inside it.
+    if [[ -n "${PATHS["$box:data"]:-}" ]]; then
+      root=${PATHS["$box:data"]%/*}
+    else
+      root=$(data_root)/$box
+    fi
     printf '%s/%s' "$root" "$label"
   fi
 }
@@ -2392,13 +2547,28 @@ set_bind_path() {  # box label
       # (path_derived, not $def: $def is the per-box PROMPT default, which is
       # the recorded value on a modify box and would pin the box in place.)
       ANS_PATH=$(path_derived "$box" "$label")
-      ensure_dir "$ANS_PATH" || :
+      # Not created here when the move pass is going to offer to fill it: the
+      # move creates what it needs, and a declined one leaves nothing behind.
+      if ! relocatable "$box" "$label" "$ANS_PATH"; then
+        ensure_dir "$ANS_PATH" || :
+      fi
     else
       # No per-bind header: the prompt itself names the box + bind family —
       # unless the family writes its own prompt (BIND_PROMPT), which is how the
       # program-cache question gets its own wording without a second asker.
-      ask_path_as \
-        "${BIND_PROMPT[$label]:-Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}}" "$def"
+      #
+      # ask_path_as is unrolled here for ONE reason: a path the move pass is
+      # about to fill must not be confirmed into existence first. "Create
+      # <path>?" exists so nothing is made silently — but this one is not
+      # silent, it is named in the move question three lines further on, and
+      # creating it before that question is asked leaves an empty directory
+      # behind for a path the box does not use when the answer is no.
+      while :; do
+        ask_path_as_raw \
+          "${BIND_PROMPT[$label]:-Path for ${BOX_NAME[$box]} ${BIND_TITLE[$label],,}}" "$def"
+        relocatable "$box" "$label" "$ANS_PATH" && break
+        ensure_dir "$ANS_PATH" && break
+      done
     fi
     PATHS["$box:$label"]=$ANS_PATH
     # Modify with the SAME path keeps the mitigation already recorded for it
@@ -2452,6 +2622,11 @@ set_bind_path() {  # box label
   elif [[ $label == data ]]; then
     CFG_MODE[$box]=""
   fi
+  # A program cache that just moved leaves a directory behind. Asked HERE, not
+  # in the box's move pass: caches are never offered a move (they regenerate),
+  # so the only question they raise is what to do with the old directory — and
+  # it is asked about the path this answer settled on, typed or derived alike.
+  if [[ $label == pcache ]]; then relocate_pcache "$box" "$ANS_PATH"; fi
   return 0
 }
 
@@ -2467,13 +2642,18 @@ set_bind_path() {  # box label
 # is not tested for — "not worth the complexity" — and is covered by the docs
 # line naming the old paths safe to delete by hand. Compute caches are never
 # tested and never cleared: they are content-keyed and shared by every box.
-stale_pcache() {  # dir → 0 when it holds anything at all
+stale_pcache() { dir_has_content "$1"; }
+
+# Is there anything in this directory at all? Dotfiles count — `.work` is the
+# overlay bookkeeping and is exactly the kind of leftover the cache question is
+# about, and a data dir holding nothing but a `.gitkeep` is still a data dir
+# with something in it. A missing directory is not "empty": there is nothing
+# there to clear and nothing there to move.
+dir_has_content() {  # dir → 0 when it exists and holds anything at all
   local d=$1 p
   [[ -n $d ]] || return 1
   d=$(fs_path "$d")
   [[ -d $d ]] || return 1
-  # Dotfiles count — `.work` is the overlay bookkeeping and is exactly the kind
-  # of leftover this question is about.
   for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do
     [[ -e $p || -L $p ]] && return 0
   done
@@ -2576,6 +2756,555 @@ stale_cache_offer() {  # box
   return 0
 }
 
+# ── Moving existing data to a chosen base ────────────────────────────────────
+# THE DEFECT THIS CLOSES (Jei, s40 Loaf run): answering YES to "store persistent
+# data at a common base path" re-pointed every box's ini at <base>/<box> and
+# LEFT THE BYTES WHERE THEY WERE, so the box came up bound to an empty
+# directory, with nothing said. "Don't do what is being done and (somehow)
+# ignore what the user says." — Jei. That the ANSWER WINS is s39's F8 fix; this
+# is what happens to the data once it does.
+#
+# THE MOVER IS `mv` ITSELF, AND ITS BEHAVIOUR AND ITS ERRORS ARE OURS (Jei,
+# s41): "mv copies across boundaries and removes the old. We should do the same,
+# unless we know in advance that it will fail." coreutils already does
+# rename(2), falls back to copy+unlink on EXDEV, preserves mode and timestamps,
+# and leaves the SOURCE INTACT when a copy dies partway. So nothing here
+# hand-rolls copy-verify-delete, and nothing here paraphrases what mv says: a
+# refusal is printed in mv's own words.
+#
+# ⚠️ -T IS MANDATORY on every call: plain `mv src dst` onto an EXISTING
+# directory moves src INSIDE it, which would silently produce <base>/<box>/<box>
+# and then read as the user's own mistake.
+#
+# MEASURED (coreutils 9.7), because the whole flow is shaped by it:
+#   dst missing            rename
+#   dst an EMPTY dir       rename (mv rmdir's it first) — same across devices
+#   dst a NON-EMPTY dir    REFUSED, both same-device ("cannot overwrite 'x':
+#                          Directory not empty") and cross-device ("inter-device
+#                          move failed: …; unable to remove target: …")
+#   file onto file         overwritten, silently
+#   dir onto file, or      REFUSED ("cannot overwrite non-directory 'x' with
+#   file onto dir          directory 'y'", and its mirror)
+#   dst a SYMLINK to a dir REFUSED — it is not a directory to mv
+# The third line is why a non-empty destination has to be ASKED about rather
+# than handed to mv, and the fourth is why "merge" means what it means below.
+
+# KB → the shortest string that still says which order of magnitude it is.
+hsize() {  # kb → "18K" | "4.2M" | "1.4G"
+  local kb=$1 u=0 v=$1 t div=1
+  local -a units=(K M G T P)
+  [[ $kb =~ ^[0-9]+$ ]] || { printf '?'; return 0; }
+  while [[ $v -ge 1024 && $u -lt 4 ]]; do
+    v=$((v / 1024)); div=$((div * 1024)); u=$((u + 1))
+  done
+  if [[ $u -eq 0 ]]; then printf '%s%s' "$v" "${units[0]}"; return 0; fi
+  # One decimal, taken at the chosen scale rather than from the truncated value
+  # (1.4G, not 1G, when the difference is the point of printing it) and ROUNDED
+  # rather than cut: these numbers are read side by side in the won't-fit
+  # sentence, and 1.0G of free space against a 1.1G requirement is a sentence
+  # the reader would have to be told twice.
+  t=$(( (kb * 10 + div / 2) / div ))
+  printf '%s.%s%s' "$((t / 10))" "$((t % 10))" "${units[$u]}"
+}
+
+dir_kb() {  # dir → size in KB (0 when it cannot be measured)
+  local out kb
+  out=$(du -sk -- "$(fs_path "$1")" 2>/dev/null) || out=""
+  kb=${out%%[!0-9]*}
+  [[ -n $kb ]] || kb=0
+  printf '%s' "$kb"
+}
+
+# The closest ancestor that EXISTS — what a question about a not-yet-created
+# destination is really asking about (which filesystem, and how much room).
+nearest_existing() {  # resolved path → resolved path
+  local d=$1
+  while [[ ! -e $d && $d != / ]]; do d=$(dirname -- "$d"); done
+  printf '%s' "$d"
+}
+
+avail_kb() {  # dir → KB free where it lives ("" when it cannot be measured)
+  local d out fs blocks used avail
+  d=$(nearest_existing "$(fs_path "$1")")
+  # -P: POSIX output, one line per filesystem. Without it a long device name
+  # wraps onto a second line and the field this reads is not there.
+  out=$(df -Pk -- "$d" 2>/dev/null | tail -n1) || return 1
+  read -r fs blocks used avail _ <<<"$out" || return 1
+  : "$fs $blocks $used"
+  [[ $avail =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$avail"
+  return 0
+}
+
+# Would this be a rename or a copy? st_dev is what rename(2) itself compares, so
+# this answers the same question the kernel will. UNKNOWABLE COUNTS AS CROSSING:
+# a failed probe leads to the honest question ("this has to be copied") instead
+# of a silent assumption that it will be instant.
+same_device() {  # a b → 0 when both live on one filesystem
+  local x y
+  x=$(stat -c %d -- "$(nearest_existing "$(fs_path "$1")")" 2>/dev/null) || return 1
+  y=$(stat -c %d -- "$(nearest_existing "$(fs_path "$2")")" 2>/dev/null) || return 1
+  [[ $x == "$y" ]]
+}
+
+MV_ERR=""
+run_mv() {  # src dst → 0 on success; MV_ERR = mv's own message
+  local src dst
+  src=$(fs_path "$1") dst=$(fs_path "$2")
+  MV_ERR=""
+  if MV_ERR=$(mv -T -- "$src" "$dst" 2>&1); then return 0; fi
+  return 1
+}
+
+# mv's own words, indented under the answer that provoked them. NOT rephrased
+# and NOT prefixed with WARNING: the error the user gets is the error the tool
+# gives, which is the whole of the ruling.
+mv_said() {
+  local line
+  [[ -n $MV_ERR ]] || return 0
+  while IFS= read -r line; do
+    printf '  %s `-> %s%s%s\n' "$C_ARROW" "$C_TEXT" "$line" "$RESET"
+  done <<<"$MV_ERR"
+  printf '\n'
+  return 0
+}
+
+# MERGE is per-entry `mv -T`, because that is the only merge mv has. A file
+# landing on a file is overwritten silently; a directory landing on a NON-EMPTY
+# directory is REFUSED and stays where it is, named. That refusal is the
+# behaviour, not a gap in it (Jei, s41: same behaviours and errors as mv) — the
+# alternative, recursing into the collision and unioning it, is a thing mv will
+# not do and is indistinguishable from "replace" for the files inside.
+MERGE_MOVED=0
+MERGE_KEPT=0
+merge_into() {  # src dst → 0 when every entry landed
+  local src=$1 dst=$2 p name real
+  MERGE_MOVED=0 MERGE_KEPT=0
+  real=$(fs_path "$src")
+  for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
+    [[ -e $p || -L $p ]] || continue
+    name=${p##*/}
+    if run_mv "$p" "$dst/$name"; then
+      MERGE_MOVED=$((MERGE_MOVED + 1))
+    else
+      mv_said
+      MERGE_KEPT=$((MERGE_KEPT + 1))
+    fi
+  done
+  [[ $MERGE_KEPT -eq 0 ]] || return 1
+  # mv removes a source directory once it has emptied it; a per-entry merge has
+  # to take that last step itself, and only when nothing was left behind.
+  rmdir -- "$real" 2>/dev/null || :
+  return 0
+}
+
+# Where the family this bind belongs to was placed — the base for a root, the
+# box's own data dir for a leaf that nests inside it. It is the second half of
+# the sentence the move question opens with, so it names the place the user just
+# chose, not the one this bind is being compared against.
+family_place() {  # box label → path
+  case "$2" in
+    data)   data_root ;;
+    pcache) pcache_root ;;
+    *)      printf '%s' "${PATHS["$1:data"]:-$(data_root)/$1}" ;;
+  esac
+}
+
+# The one question a re-pointed PROGRAM CACHE raises. True caches are moved
+# nowhere and asked about nowhere — they regenerate, and re-pointing one costs
+# the user nothing (Jei) — but the directory it VACATED is still on the disk,
+# so: ask before deleting it, and if a running box blocks that, say so. This is
+# the s38 consent-gated clear aimed at the old path, not a parallel flow: the
+# same safety test decides whether the offer may be made at all.
+#
+# ⚠️ The HF cache is NOT one of these (Jei: "I'm not counting huggingface
+# here") — it is the model store, and it takes the ordinary data move offer.
+old_pcache_offer() {  # box old-dir
+  local box=$1 old=$2 real
+  dir_has_content "$old" || return 0
+  if ! pcache_wipe_safe "$old"; then
+    warn "$old holds more than ${BOX_NAME[$box]}'s caches $EMD left alone"
+    return 0
+  fi
+  if [[ $(box_state "$box") == ACTIVE ]]; then
+    subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to remove $old."
+    return 0
+  fi
+  say ""
+  prose "${BOX_NAME[$box]}'s program caches are now at $(family_place "$box" pcache)/$box $EMD $old was left behind, and holds $(hsize "$(dir_kb "$old")") of caches." "$C_QTXT"
+  ask_yn "Delete the old program cache dir" Y
+  [[ $ANS_YN -eq 1 ]] || return 0
+  real=$(fs_path "$old")
+  rm -rf -- "$real" || warn "could not delete $old $EMD remove it by hand"
+  return 0
+}
+
+# Is one directory inside another? Both sides are resolved, because this decides
+# what a sentence CLAIMS about the disk, not how anything is spelled.
+dir_within() {  # inner outer → 0 when inner is at or below outer
+  local a b
+  a=$(realpath -m -- "$(fs_path "$1")" 2>/dev/null) || return 1
+  b=$(realpath -m -- "$(fs_path "$2")" 2>/dev/null) || return 1
+  [[ $a == "$b" || $a == "$b"/* ]]
+}
+
+# "Size at minimum" was Jei's floor for the disclosure, not its ceiling — and
+# there is one thing worth more than the size here: the destination may be where
+# THIS BOX'S OTHER BINDS already live. On the shape that produced G1 it usually
+# is (comfyui's data lands on the directory holding its own input and output),
+# and the consequence is invisible otherwise: MERGE and "use old content" leave
+# those dirs exactly where they are, while REPLACE deletes them — after which
+# the leaf that follows finds nothing at its recorded path and is offered as a
+# fresh empty directory. That is a real answer to a real question, but only if
+# it is asked with this on screen.
+dest_holds_note() {  # box label dest → " It also holds …" ("" when it does not)
+  local box=$1 skip=$2 dest=$3 key label p out=""
+  local -a named=()
+  for key in "${!EXD_PATH[@]}"; do
+    [[ ${key%%:*} == "$box" ]] || continue
+    label=${key##*:}
+    [[ $label == "$skip" ]] && continue
+    p=${EXD_PATH[$key]}
+    [[ -n $p ]] || continue
+    dir_within "$p" "$dest" || continue
+    dir_has_content "$p" || continue
+    named+=("$(leaf_word "$label")")
+  done
+  [[ ${#named[@]} -gt 0 ]] || return 0
+  # Joined by hand rather than with name_list: this text is handed to prose(),
+  # which FOLDS it to the screen, and fold counts an SGR escape as width.
+  local i=0 last=$(( ${#named[@]} - 1 ))
+  for label in "${named[@]}"; do
+    if [[ $i -eq 0 ]]; then out=$label
+    elif [[ $i -eq $last ]]; then out="$out and $label"
+    else out="$out, $label"
+    fi
+    i=$((i + 1))
+  done
+  printf ' It is where %s keeps its %s.' "${BOX_NAME[$box]}" "$out"
+  return 0
+}
+
+# A program cache that moved: no offer, no question about the DATA (it
+# regenerates), only the one about the directory it vacated.
+relocate_pcache() {  # box new
+  local box=$1 new=$2 old
+  [[ ${ACTION[$box]} == modify ]] || return 0
+  old=${EXD_PATH["$box:pcache"]:-}
+  [[ -n $old ]] || return 0
+  same_dir "$old" "$new" && return 0
+  old_pcache_offer "$box" "$old"
+  return 0
+}
+
+# ── Relocating a box's data (Jei's s41 flow) ─────────────────────────────────
+# ONE PASS PER BOX, after every one of its paths is settled — not one question
+# per bind as they are asked. That order is what his two examples show and it is
+# the only order that works for both of them: when a common base places the
+# family the paths are known before anything is asked, but when the base is
+# DECLINED the new paths are the answers to the per-box prompts, so the moves
+# cannot be discussed until those prompts are done.
+#
+# The shape of the pass:
+#   1. what is being asked about, disclosed as a block (two forms, below)
+#   2. one move question per bind, with two levels of "do this for all"
+#   3. one collision block for the destinations that are not empty, with the
+#      four courses of action and its own two levels of "apply this to all"
+#   4. the moves themselves
+#
+# THE RULE BEHIND EVERY OUTCOME: the box is pointed where its data actually IS.
+# Declined, refused, failed, or "keep old path as-is" all leave PATHS holding
+# the recorded path; "use the data already at the new path" is the one answer
+# that takes the new path without moving a byte.
+MOVE_ALL_BOXES=""     # y|n      — "Do this for all boxes" (the move question)
+COLL_ALL_BOXES=""     # m|r|u|k  — "Apply this decision to all boxes"
+
+# Is this bind one the move pass is going to ask about? Both callers need the
+# same answer: relocate_box, to build its list, and set_bind_path, which must
+# NOT create the destination for one of them — the move makes what it needs,
+# and a declined move would otherwise leave an empty directory behind at a path
+# the box does not even use.
+relocatable() {  # box label new → 0 when the move pass will handle it
+  local box=$1 label=$2 new=$3 old
+  [[ ${ACTION[$box]:-} == modify ]] || return 1
+  [[ $label != pcache ]] || return 1
+  old=${EXD_PATH["$box:$label"]:-}
+  [[ -n $old ]] || return 1
+  same_dir "$old" "$new" && return 1
+  dir_has_content "$old" || return 1
+  # The pre-s41 case (new path inside the old one) counts as OWNED even though
+  # it cannot be moved: the pass reports it and puts the bind back on its
+  # recorded path, so the destination must not be created here either.
+  return 0
+}
+
+box_labels() {  # box → its data-family labels, in bind order
+  local box=$1 pair
+  printf 'data'
+  for pair in ${BOX_EXTRA_BINDS[$box]}; do printf ' %s' "${pair%%:*}"; done
+  return 0
+}
+
+# A disclosure header: bold bright white, underlined, and NO leading blank line
+# — it opens a block that sits directly under the subheader above it.
+disc_hdr() { printf '  %s%s%s\n' "$C_HDR" "$1" "$RESET"; }
+disc_row() { printf '  %s[%s%s%s]%s\n' "$C_TBRK" "$C_DETN" "$1" "$C_TBRK" "$RESET"; }
+
+leaf_list() {  # label... → "program, output, input"
+  local out="" l
+  for l in "$@"; do
+    if [[ -n $out ]]; then out+=", "; fi
+    out+=$(leaf_dir "$l")
+  done
+  printf '%s' "$out"
+  return 0
+}
+
+# Do these paths all live in ONE directory? A block that can name their shared
+# parent says it once and then lists bind names; otherwise every line has to
+# carry its own path. Both disclosures below take this fork, which is why the
+# two forms exist at all — Jei drew both.
+common_parent() {  # path... → the shared parent, or ""
+  local p first="" d
+  for p in "$@"; do
+    d=${p%/*}
+    [[ -n $d ]] || d=/
+    if [[ -z $first ]]; then first=$d; continue; fi
+    same_dir "$d" "$first" || return 0
+  done
+  printf '%s' "$first"
+  return 0
+}
+
+# Put a bind back on the path its ini records — and, for the data dir, back on
+# the filesystem answer that path already earned, since the probe that ran
+# while it was pointed somewhere else was answering a different question.
+revert_path() {  # box label old
+  local box=$1 label=$2 old=$3
+  PATHS["$box:$label"]=$old
+  [[ $label == data ]] || return 0
+  probe_fstype "$old"
+  CFG_FS[$box]=$FSTYPE
+  if [[ -n "${EXD_MODE[$box]:-}" ]] && overlay_hostile_fs "$FSTYPE"; then
+    CFG_MODE[$box]=${EXD_MODE[$box]}
+  fi
+  return 0
+}
+
+# One accepted move, carried out. Returns 1 when the data did not (all) get
+# there, which is the caller's signal to leave the box on its old path.
+move_one() {  # box label old new mode(plain|m|r) → 0 = the box may take new
+  local box=$1 label=$2 old=$3 new=$4 mode=$5
+  local kb avail dstreal
+  : "$box $label"
+  # CROSSING A DEVICE: tell them, name both sides, ask (Jei). Priced BEFORE the
+  # destructive step below, so a shortfall can never be discovered once the old
+  # content is already gone.
+  if ! same_device "$old" "$new"; then
+    kb=$(dir_kb "$old")
+    avail=$(avail_kb "$new") || avail=""
+    # "remove data at new path" frees what it deletes, so the room that answer
+    # really has is the free space PLUS the content it is about to remove.
+    # Refusing on the pre-delete figure would decline a move that fits.
+    if [[ -n $avail && $mode == r ]]; then
+      avail=$(( avail + $(dir_kb "$new") ))
+    fi
+    if [[ -n $avail && $avail -lt $kb ]]; then
+      prose "$new is on another filesystem with $(hsize "$avail") free, and $old holds $(hsize "$kb") $EMD left where it is." "$C_QTXT"
+      say ""
+      return 1
+    fi
+    prose "$old and $new are on different filesystems, so $(hsize "$kb") has to be copied across rather than renamed." "$C_QTXT"
+    ask_yn "Copy it across" Y
+    [[ $ANS_YN -eq 1 ]] || return 1
+  fi
+  dstreal=$(fs_path "$new")
+  # The parent has to exist for a rename to land in it; creating it is implied
+  # by the move that was just accepted, and by nothing else.
+  mkdir -p -- "${dstreal%/*}" 2>/dev/null || :
+  case "$mode" in
+    m)
+      merge_into "$old" "$new" || :
+      # Nothing moved at all → the data is still where it was, and so is the
+      # box. Anything moved → the box follows it, and whatever mv refused is
+      # named along with the directory it is still in.
+      [[ $MERGE_MOVED -eq 0 ]] && return 1
+      [[ $MERGE_KEPT -eq 0 ]] || subnote "the rest is still in $old"
+      return 0 ;;
+    r)
+      # The only destructive branch. $HOME and / are refused outright, the same
+      # two the cache wipe refuses, and for the same reason.
+      case "$dstreal" in
+        /|"$HOME") subnote "refusing to remove the data at $new"; return 1 ;;
+      esac
+      if ! rm -rf -- "$dstreal"; then
+        warn "could not empty $new $EMD left where it is"
+        return 1
+      fi ;;
+  esac
+  # An empty (or vacated) destination takes ONE whole-directory move.
+  if ! run_mv "$old" "$new"; then
+    mv_said
+    return 1
+  fi
+  return 0
+}
+
+relocate_box() {  # box
+  local box=$1 label old new i n parent ans first
+  local box_ans="" box_coll=""      # this box's two batched answers
+  local -a labels=() olds=() news=() moving=() coll=() dec=()
+  [[ ${ACTION[$box]} == modify ]] || return 0
+  # Which binds have their files somewhere other than where the box will now
+  # read them from? Spelling never decides this: ~/appdata/comfyui and
+  # /home/you/appdata/comfyui are one directory.
+  for label in $(box_labels "$box"); do
+    old=${EXD_PATH["$box:$label"]:-}
+    new=${PATHS["$box:$label"]:-}
+    [[ -n $old && -n $new ]] || continue
+    # THE PRE-s41 LAYOUT WALKS INTO THIS: a box whose data dir IS <base>/<box>
+    # derives <base>/<box>/program, which is INSIDE it — and `mv` refuses to
+    # move a directory into its own subdirectory (measured: "cannot move 'x' to
+    # a subdirectory of itself"). Reported BEFORE any question, because the only
+    # answer a question here could earn is an error message. What it actually
+    # needs is a per-entry move that steps around the box's other binds, and
+    # Jei ruled that out of scope: "I can manually fix my boxes."
+    relocatable "$box" "$label" "$new" || continue
+    if dir_within "$new" "$old"; then
+      subnote "$new is inside $old $EMD left as it is (move it by hand to split them)."
+      revert_path "$box" "$label" "$old"
+      continue
+    fi
+    labels+=("$label") olds+=("$old") news+=("$new")
+  done
+  n=${#labels[@]}
+  [[ $n -gt 0 ]] || return 0
+  # A RUNNING box is refused with the reason — "same as cache" (Jei) — once, for
+  # the whole box. Its data is under a live mount, and every fix needs the box
+  # restarted anyway.
+  if [[ $(box_state "$box") == ACTIVE ]]; then
+    subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to move its data."
+    for (( i = 0; i < n; i = i + 1 )); do revert_path "$box" "${labels[i]}" "${olds[i]}"; done
+    return 0
+  fi
+
+  # ── 1. Where those files are now ──────────────────────────────────────────
+  # The subheader when this pass is the first thing the box asks about (a placed
+  # family answers every path question before the box section opens); otherwise
+  # the path prompts above already printed it, and the block just needs air.
+  if [[ ${PATHS_HDR:-0} -eq 0 ]]; then
+    subhdr "${BOX_NAME[$box]} Paths"
+    PATHS_HDR=1
+  else
+    say ""
+  fi
+  parent=$(common_parent "${olds[@]}")
+  if [[ -n $parent ]]; then
+    disc_hdr "Current data file paths in $parent:"
+    disc_row "$(leaf_list "${labels[@]}")"
+  else
+    disc_hdr "Current data file paths:"
+    for (( i = 0; i < n; i = i + 1 )); do
+      disc_row "$box $(leaf_word "${labels[i]}"): ${olds[i]}"
+    done
+  fi
+  say ""
+  prose "To use current, active data with new path(s), that data will need to be moved." "$C_QTXT"
+
+  # ── 2. The move questions ─────────────────────────────────────────────────
+  # The two batch questions are offered ONCE, straight after the first answer,
+  # and they carry THAT answer — yes or no alike (Jei: "even a 'no' above
+  # propagates"). "all boxes" is only reached when the box-wide one was taken.
+  for (( i = 0; i < n; i = i + 1 )); do
+    if [[ -n $box_ans ]]; then moving+=("$box_ans"); continue; fi
+    if [[ -n $MOVE_ALL_BOXES ]]; then moving+=("$MOVE_ALL_BOXES"); continue; fi
+    ask_yn "Move $(leaf_word "${labels[i]}") to new path (${news[i]})" Y
+    ans=$ANS_YN
+    moving+=("$ans")
+    [[ $i -eq 0 ]] || continue
+    if [[ $n -gt 1 ]]; then
+      # A box with ONE data path has nothing to apply this to, so it is not
+      # asked — the all-boxes question below is offered on its own instead.
+      ask_yn "Do this for all data paths for $box" Y
+      [[ $ANS_YN -eq 1 ]] || continue
+      box_ans=$ans
+    fi
+    ask_yn "Do this for all boxes" Y
+    [[ $ANS_YN -eq 1 ]] && MOVE_ALL_BOXES=$ans
+  done
+
+  # ── 3. The destinations that are not empty ────────────────────────────────
+  for (( i = 0; i < n; i = i + 1 )); do
+    [[ ${moving[i]} -eq 1 ]] || continue
+    dir_has_content "${news[i]}" && coll+=("$i")
+  done
+  if [[ ${#coll[@]} -gt 0 ]]; then
+    local -a cpaths=() clabels=()
+    for i in "${coll[@]}"; do cpaths+=("${news[i]}") clabels+=("${labels[i]}"); done
+    say ""
+    parent=$(common_parent "${cpaths[@]}")
+    # "new BASE path" is only the right words for the directory the family was
+    # actually placed at. Two typed paths can share a parent by accident —
+    # /srv/input and /srv/output share /srv — and calling that a base path would
+    # name something the user never chose (Jei's second example lists those two
+    # separately). So the shared form is used only for the box's own directory.
+    if [[ -n $parent ]] && same_dir "$parent" "$(data_root)/$box"; then
+      disc_hdr "There are existing files at new base path $parent:"
+      disc_row "$(leaf_list "${clabels[@]}")"
+    else
+      disc_hdr "There are existing files at new path(s):"
+      for i in "${coll[@]}"; do
+        disc_row "$box $(leaf_word "${labels[i]}"): ${news[i]}"
+      done
+    fi
+    say ""
+    # ⚠️ What is there may belong to ANOTHER BOX — asked about, never vetoed:
+    # "that's the user's call" (Jei). The disclosure above IS the guard.
+    disc_hdr "Options"
+    opt_row M "erge existing, active data into new path (replace when overlapping)" "" 0 "$(isdef M Mruk)"
+    opt_row r "emove data at new path, then move existing, active data to new path" "" 0 "$(isdef r Mruk)"
+    opt_row u "se the data already at the new path (stop using existing data)" "" 0 "$(isdef u Mruk)"
+    opt_row k "eep old path as-is" "" 0 "$(isdef k Mruk)"
+    # Only when a base was elected is there a shared base to forgo (Jei).
+    if [[ $DATA_AUTO -eq 1 ]]; then
+      prose "*Warning: If you choose to keep the old path, this forgoes the shared base path." "$C_WARNI"
+    fi
+    say ""
+    first=1
+    for i in "${coll[@]}"; do
+      if [[ -n $box_coll ]]; then dec[i]=$box_coll; continue; fi
+      if [[ -n $COLL_ALL_BOXES ]]; then dec[i]=$COLL_ALL_BOXES; continue; fi
+      ask_choice "Select a course of action for the $(leaf_word "${labels[i]}") path [M/r/u/k]" "Mruk"
+      dec[i]=$ANS_CH
+      [[ $first -eq 1 ]] || continue
+      first=0
+      if [[ ${#coll[@]} -gt 1 ]]; then
+        ask_yn "Apply this decision to all overlapping new $box paths" Y
+        [[ $ANS_YN -eq 1 ]] || continue
+        box_coll=${dec[i]}
+      fi
+      ask_yn "Apply this decision to all boxes" Y
+      [[ $ANS_YN -eq 1 ]] && COLL_ALL_BOXES=${dec[i]}
+    done
+  fi
+
+  # ── 4. The moves ──────────────────────────────────────────────────────────
+  for (( i = 0; i < n; i = i + 1 )); do
+    label=${labels[i]} old=${olds[i]} new=${news[i]}
+    if [[ ${moving[i]} -ne 1 ]]; then revert_path "$box" "$label" "$old"; continue; fi
+    case "${dec[i]:-plain}" in
+      # Nothing moves. The box reads the directory that is already there — and
+      # the directory it came from is NAMED, because a bind quietly pointed away
+      # from a full data dir is the whole bug this feature exists to fix.
+      u) subnote "$old is left where it is $EMD nothing was moved." ;;
+      k) revert_path "$box" "$label" "$old" ;;
+      *) move_one "$box" "$label" "$old" "$new" "${dec[i]:-plain}" \
+           || revert_path "$box" "$label" "$old" ;;
+    esac
+  done
+  return 0
+}
+
 # ── Per-box configuration ────────────────────────────────────────────────────
 # ONE section per box now ("Box Settings"), carrying whatever General Setup left
 # unanswered for it: a Networking subheader (its port, and the two start
@@ -2585,6 +3314,10 @@ stale_cache_offer() {  # box
 configure_box() {  # box
   local box=$1 pair label dest
   local asked=0 bw sv_def=N hs_def=N pdef
+  # The "<Box> Paths" subheader belongs to whichever of the two asks first: the
+  # path prompts when the family was NOT placed, the move questions when it was
+  # (a box can have nothing to ask about its paths and still have files to move).
+  PATHS_HDR=0
   # The banner is drawn before the box is asked anything, so it asks the
   # DEFAULTS what its summary box is going to need and widens to match (choice
   # L) — the two stack, and the pair is read as one object.
@@ -2655,6 +3388,7 @@ configure_box() {  # box
       section "Box Settings"
     fi
     subhdr "${BOX_NAME[$box]} Paths"
+    PATHS_HDR=1
   fi
   set_bind_path "$box" data
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
@@ -2666,6 +3400,10 @@ configure_box() {  # box
   # path that was just settled, and the cache question is the one the stale
   # offer below depends on (it asks about the dir this answer names).
   set_bind_path "$box" pcache
+  # EVERY path of this box is settled now, which is the only moment the move
+  # questions can be asked as one block: when the base was declined, the new
+  # paths ARE the answers to the prompts above (Jei's second example).
+  relocate_box "$box"
   stale_cache_offer "$box"
 
   [[ $asked -eq 1 ]] && say ""
@@ -4104,8 +4842,10 @@ write_notes() {
     printf '  everything you authored: the seeded config you edited, the model\n'
     printf '  tree, ComfyUI%s `user/` and custom nodes, ds4%s saved sessions, the\n' \
       "'s" "'s"
-    printf '  finetuning workspace, `server.env`. droste-setup.sh never deletes\n'
-    printf '  anything here.\n'
+    printf '  finetuning workspace, `server.env`. droste-setup.sh deletes\n'
+    printf '  nothing here unasked: the one way it ever does is the "replace"\n'
+    printf '  answer when a move you accepted lands on a directory that already\n'
+    printf '  has something in it, and that question names the directory first.\n'
     printf -- '- **Cache dir** (`caches/<box>` by default) — PROGRAM CACHES, and\n'
     printf '  nothing else: the Python environment overlay and its work dir,\n'
     printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, the seeded\n' \

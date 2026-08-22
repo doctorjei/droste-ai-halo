@@ -10,7 +10,17 @@ ARG BASE_IMAGE=localhost/${SERIES_NAME}-torch-base-${ARCH_NAME}
 
 # Overrideable Arguemnts - non-ROCm pins. The ROCm/torch versions are NOT ARGs: they
 # come from /etc/droste/rocm-version.env, inherited from the torch base.
-ARG TRANSFORMERS_VERSION=4.56.2
+# ⚠️ TRANSFORMERS: a ComfyUI NODE requires >=4.57.0,<=5.8.1 (Jei, 2026-08-22), which
+# EXCLUDES the 4.56.2 this was pinned to. Pinned to the range FLOOR deliberately:
+# 4.56.2 is the version verified with 0.33.3 on gfx1151, nothing in the 5.x range has
+# been tested here, and the upper bound reads as a safety ceiling rather than a
+# preference for newest. The RANGE (not this exact number) is what gets appended to
+# the constraints file below, so a later in-box install may move within it.
+# ⚠️ finetuning has its OWN unpinned transformers and is deliberately NOT changed —
+# this bound comes from a comfyui node.
+ARG TRANSFORMERS_VERSION=4.57.0
+ARG TRANSFORMERS_BOUND=">=4.57.0,<=5.8.1"
+ARG ACCELERATE_VERSION=1.14.0
 
 ## ComfyUI & Custom Nodes (ComfyUI repinned 2026-08-22; nodes still 2026-07-05)
 #### COMFYUI_REF: comfyanonymous/ComfyUI        ESSENTIALS_REF: cubiq/ComfyUI_essentials
@@ -29,12 +39,17 @@ ARG COMFYUI_REF=4da9e2dbead52fc1e68beae33fe3d7ad63b63241
 ARG ESSENTIALS_REF=9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
 ARG AMDGPUMONITOR_REF=0c584ed28ed3678d96f631a6eff91be397c0baa4
 ARG GGUF_REF=6ea2651e7df66d7585f6ffee804b20e92fb38b8a
+# ComfyUI-Manager. ⚠️ PIN BY COMMIT, NOT BY TAG: the repo's git tags (4.2.x) are NOT
+# the node's version — main declares `version = "3.41"` in pyproject.toml and reports
+# V3.41 at load. Canonical repo is Comfy-Org/ComfyUI-Manager (ltdrdata redirects).
+ARG MANAGER_REF=f39cbd56fecae0b27a446c0cd450cd591f3a8bea
 
 # --- IMAGE BUILD BEGINS HERE ---
 FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
 ARG TRANSFORMERS_VERSION
-ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF
+ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF MANAGER_REF
+ARG TRANSFORMERS_BOUND ACCELERATE_VERSION
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
 ## Dependencies: General / Media & Triton JIT (required at runtime)
@@ -53,7 +68,14 @@ RUN . /etc/droste/rocm-version.env && \
     pip install --pre --index-url ${ROCM_INDEX_URL} \
        "torchvision${TORCHVISION_VERSION:+==${TORCHVISION_VERSION}}" \
        "torchaudio${TORCHAUDIO_VERSION:+==${TORCHAUDIO_VERSION}}" && \
-    pip install gguf "transformers==${TRANSFORMERS_VERSION}"
+    pip install gguf "transformers==${TRANSFORMERS_VERSION}" \
+       "accelerate==${ACCELERATE_VERSION}" && \
+    printf 'transformers%s\n' "${TRANSFORMERS_BOUND}" >> /etc/droste/rocm-constraints.txt && \
+    /opt/resources/resolve/assert-rocm-pins.sh torch torchvision torchaudio
+# ^ accelerate DECLARES a torch dependency, which is exactly why the constraints file
+# exists: it was harmless here only because torch was already satisfied. The
+# transformers BOUND (not the exact pin) is appended to the shared constraints file so
+# the node's requirement is enforced against later in-box installs too, by pip AND uv.
 
 # ComfyUI (core)
 RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI \
@@ -92,6 +114,19 @@ RUN git clone --depth=1 https://github.com/city96/ComfyUI-GGUF /opt/ComfyUI/cust
          git -C /opt/ComfyUI/custom_nodes/ComfyUI-GGUF fetch --depth=1 origin "${GGUF_REF}" \
          && git -C /opt/ComfyUI/custom_nodes/ComfyUI-GGUF checkout "${GGUF_REF}"; \
        fi
+# ComfyUI-Manager. Requirements are torch-free (GitPython, pygit2, PyGithub,
+# transformers, huggingface-hub, typer, rich, typing-extensions, toml, uv, chardet) —
+# `transformers` and `huggingface-hub` are unpinned there and would otherwise be free to
+# move ours, which the constraints file now prevents.
+# ⚠️ Manager installs custom nodes with **uv**, not pip. That is the whole reason
+# UV_CONSTRAINT/UV_BUILD_CONSTRAINT are set beside PIP_CONSTRAINT in the runtime base:
+# a pip-only guard would be bypassed by every node a user installs through the UI.
+RUN git clone --depth=1 https://github.com/Comfy-Org/ComfyUI-Manager /opt/ComfyUI/custom_nodes/comfyui-manager \
+    && if [ -n "${MANAGER_REF}" ]; then \
+         git -C /opt/ComfyUI/custom_nodes/comfyui-manager fetch --depth=1 origin "${MANAGER_REF}" \
+         && git -C /opt/ComfyUI/custom_nodes/comfyui-manager checkout "${MANAGER_REF}"; \
+       fi \
+    && pip install -r /opt/ComfyUI/custom_nodes/comfyui-manager/requirements.txt
 
 # Relocate the 11 baked SD/SD2 config yamls OUT of the models tree (the runtime
 # model-tree bind replaces models/); they register back via the seeded

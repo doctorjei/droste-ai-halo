@@ -43,4 +43,5 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 # ROCM / Torch pin: read from the file the runtime base baked in, so this layer is
 # pinned by its own base and can never drift from it.
 RUN . /etc/droste/rocm-version.env \
-    && pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
+    && pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" \
+    && /opt/resources/resolve/assert-rocm-pins.sh torch

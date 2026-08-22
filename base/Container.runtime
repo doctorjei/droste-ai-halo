@@ -60,6 +60,38 @@ RUN . /etc/droste/rocm-version.env \
     && pip install --index-url ${ROCM_INDEX_URL} \
        "rocm[libraries]==${ROCM_SDK_LIBRARIES_VERSION}"
 
+# ── The ROCm stack guard ─────────────────────────────────────────────────────
+# NOTHING may move torch/torchvision/torchaudio, by any installer, at build time
+# or afterwards. A generic PyPI torch silently replacing the ROCm build is the
+# single worst failure this project has: the image still builds, still starts,
+# and simply has no GPU.
+#
+# GENERATED from rocm-version.env, never hand-written — that file is the one
+# place the version truth lives, so a constraints file transcribed by hand could
+# drift from it, which is the whole class of bug the pin file exists to prevent.
+#
+# uv is installed HERE, at the root of the FROM tree, because it is the single
+# common ancestor of every target AND every build stage — one line covers all of
+# them. ComfyUI-Manager also installs with uv at RUNTIME, so a pip-only guard
+# would be bypassed by the node-install path entirely.
+#
+# ⚠️ ALL THREE VARIABLES ARE REQUIRED, and they are not redundant:
+#   PIP_CONSTRAINT       pip. Also covers build dependencies.
+#   UV_CONSTRAINT        uv does NOT read PIP_CONSTRAINT — refused upstream
+#                        (astral-sh/uv#10686), deliberately, to avoid bug-for-bug
+#                        compatibility with another tool's config.
+#   UV_BUILD_CONSTRAINT  uv does NOT apply --constraint to source builds; that is
+#                        a separate setting. (pip does, via PIP_CONSTRAINT.)
+# Ports APPEND their own bounds to this file (comfyui: transformers).
+RUN . /etc/droste/rocm-version.env \
+    && printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' \
+         "${TORCH_VERSION}" "${TORCHVISION_VERSION}" "${TORCHAUDIO_VERSION}" \
+         > /etc/droste/rocm-constraints.txt \
+    && pip install uv
+ENV PIP_CONSTRAINT=/etc/droste/rocm-constraints.txt \
+    UV_CONSTRAINT=/etc/droste/rocm-constraints.txt \
+    UV_BUILD_CONSTRAINT=/etc/droste/rocm-constraints.txt
+
 # Group-writable venv pass: make /opt/venv DIRECTORIES group-owned by droste,
 # group-writable, and setgid. Dirs carry no data payload, so overlay copy-up of a
 # g+w+setgid dir is metadata-only (cheap) even without metacopy; pip add/remove/replace
@@ -88,6 +120,9 @@ RUN printf '%s\n' \
     'export ROCM_PATH HIP_PATH="$ROCM_PATH"' \
     'export PATH="/opt/resources/scripts:$ROCM_PATH/bin:/opt/venv/bin:$PATH"' \
     'export LD_LIBRARY_PATH="$ROCM_PATH/lib:$ROCM_PATH/lib64:$LD_LIBRARY_PATH"' \
+    'export PIP_CONSTRAINT=/etc/droste/rocm-constraints.txt' \
+    'export UV_CONSTRAINT=/etc/droste/rocm-constraints.txt' \
+    'export UV_BUILD_CONSTRAINT=/etc/droste/rocm-constraints.txt' \
     > /etc/profile.d/rocm.sh
 
 # Shared runtime resolver + entrypoint + launch library + healthcheck + template
@@ -100,8 +135,10 @@ RUN printf '%s\n' \
 COPY resolve/droste-resolve.sh resolve/droste-entrypoint.sh \
      resolve/droste-init-hook.sh resolve/droste-serve.sh \
      resolve/droste-healthcheck.sh resolve/apply_templates.py \
+     resolve/assert-rocm-pins.sh \
      /opt/resources/resolve/
-RUN chmod +x /opt/resources/resolve/droste-entrypoint.sh \
+RUN chmod +x /opt/resources/resolve/assert-rocm-pins.sh \
+             /opt/resources/resolve/droste-entrypoint.sh \
              /opt/resources/resolve/droste-init-hook.sh \
              /opt/resources/resolve/droste-healthcheck.sh \
              /opt/resources/resolve/apply_templates.py

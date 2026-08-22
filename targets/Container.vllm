@@ -121,6 +121,7 @@ RUN . /etc/droste/rocm-version.env \
     && pip install pybind11 pycountry \
     && pip install --no-deps --force-reinstall --index-url ${ROCM_INDEX_URL} \
          "torchvision==${TORCHVISION_VERSION}" \
+    && /opt/resources/resolve/assert-rocm-pins.sh torch torchvision \
     && rm -rf /tmp/wheels /tmp/aiter-jit /root/.cache/pip \
     && rm -rf /opt/fp8/bench /opt/fp8/docs /opt/fp8/README.md /opt/fp8/serve_*.sh /opt/fp8/.gitignore
 

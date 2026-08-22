@@ -65,6 +65,25 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     importing aiter here would fire the very JIT this copy exists to avoid. The `test -f`
 #     then proves module_aiter_enum.so actually landed, so a silent misplacement cannot go
 #     green (same idiom as the build stage's staging check).
+#  2b. UNSET PIP_CONSTRAINT for this RUN ONLY, and rely on the assertion at the end.
+#     The runtime base exports it globally so nothing can move the ROCm stack, but this
+#     step is INCOMPATIBLE with it by design, and the reason is step 3 below: the vLLM
+#     wheel is installed WITH deps on purpose, torchvision is one of them, and it is not
+#     installed yet at that moment. The intended sequence lets a PyPI torchvision arrive
+#     as a dependency and then REPLACES it from the ROCm index (the --force-reinstall
+#     line further down) -- so a constraint demanding `torchvision==<ver>+rocm...` fails
+#     resolution against PyPI before the replacement can ever happen. Measured, CI run
+#     32592572365: `Could not find a version that satisfies torchvision==0.24.0+rocm...
+#     (from -c rocm-constraints.txt line 2) (from versions: 0.1.6 ... 0.28.0)` -- that
+#     candidate list is PyPI's, with no +rocm builds in it.
+#     ⚠️ torch is NOT affected and that asymmetry is not luck: vLLM pins `torch==2.9.1`,
+#     which our local version satisfies by PEP 440 (see the NB in step 5), so torch is
+#     already installed and never re-resolved. torchvision has no such head start.
+#     ⚠️ DO NOT "fix" this by re-adding the constraint or by adding the ROCm index to the
+#     PyPI-facing installs: the first breaks the build, the second widens every package
+#     in this step to an index that should only ever serve the torch stack.
+#     The guard's CATCHING half is untouched -- assert-rocm-pins.sh runs at the end of
+#     this same chain and fails the build if torch or torchvision is not exactly the pin.
 #  3. vLLM wheel WITH deps so pip resolves transformers/etc. from PyPI (torch already satisfied).
 #     Use the legacy resolver for this RUN: vLLM pins `torch==2.9.1` while the installed wheel is
 #     `2.9.1+rocm7.13.0a20260501`, and the new resolvelib backtracker explores an exploding search
@@ -110,6 +129,7 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
 RUN . /etc/droste/rocm-version.env \
     && export PIP_USE_DEPRECATED=legacy-resolver \
+    && unset PIP_CONSTRAINT \
     && pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
     && python /opt/resources/scripts/patch_aiter_headers.py \
     && AITER_JIT_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/aiter/jit" \

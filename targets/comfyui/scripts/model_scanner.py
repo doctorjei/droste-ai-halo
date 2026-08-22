@@ -946,6 +946,51 @@ def _signals_or_raise(keys: set, modules: set, what: str) -> tuple[set, set]:
     return keys, modules
 
 
+def checkpoint_packaged_vae(keys) -> bool:
+    """A VAE still wearing a checkpoint's packaging: `first_stage_model.`, no denoiser.
+
+    ⭐ MEASURED (s43), because the rule this warns about was inferred from loader source
+    before anybody had seen a specimen. `first_stage_model.` is a CHECKPOINT's name for
+    its VAE section -- ComfyUI's `vae_key_prefix` base default
+    (supported_models_base.py:45), stripped out of a checkpoint on load (sd.py:2210) and
+    added back on save. `comfy.sd.VAE.__init__` wants BARE `encoder.`/`decoder.` keys and
+    the string `first_stage_model.` appears nowhere in sd.py, so a STANDALONE file that
+    kept the prefix would classify correctly here and still not open in VAELoader.
+
+    ⚠️ NO SPECIMEN EXISTS in anything we have looked at: seven real standalone VAEs were
+    header-read across three eras (sd-vae-ft-mse, sdxl-vae x2, sdxl-vae-fp16-fix, Flux
+    ae, Wan 2.1, Qwen-Image) and every one is BARE. Jei ruled it accordingly:
+    *"If they are that rare, then let's just consider it an edge case, warn, and do
+    nothing with it."* So this is a REPORT and nothing else -- the file is still filed
+    under `vae/`, still never modified, still never converted.
+    """
+    keys = strip_dataparallel(keys)   # same normalization the classifier ran on
+    return (any(k.startswith("first_stage_model.") for k in keys)
+            and not any(k.startswith("model.diffusion_model.") for k in keys))
+
+
+def warn_if_packaged_vae(display: str, cat: str | None, seen: bool) -> None:
+    """The whole of Jei's "warn and do nothing".
+
+    ⚠️ TWO PLACEMENT CONSTRAINTS, both found by tests rather than by thinking:
+      * it must run on the DECIDED category, not inside the ladder. The ladder tests
+        names before contents, and the realistic specimen here is a file with `vae` in
+        its NAME -- classify_by_filename claims it and returns before any header is
+        read, so a warn hung off the header rung would miss exactly the files it is for.
+      * it must not read anything. `gather_votes` already reads the header (it never
+        short-circuits, which is why it is the right observer), and a NEW file is
+        asserted to cost exactly two content reads. Hence `seen`, handed over from
+        there, instead of a third read here.
+
+    Guarded on `cat` so it stays quiet where the file is not a vae at all: the lora,
+    controlnet and animatediff rules all outrank the `first_stage_model.` test.
+    """
+    if cat == "vae" and seen:
+        log(f"WARN  {display} is a VAE carrying a checkpoint's `first_stage_model.` "
+            f"prefix; ComfyUI's VAELoader expects bare `encoder.`/`decoder.` keys and "
+            f"will not load it as-is. Filed under vae/ regardless; nothing is modified.")
+
+
 def read_pickle_signals(path: Path) -> tuple[set, set]:
     """(state-dict keys, referenced module paths) for a pickled checkpoint.
 
@@ -1100,7 +1145,7 @@ def rate_pickle(keys: set, modules: set) -> tuple[str, float] | None:
     return None
 
 
-def gather_votes(src: SourceFile) -> list[dict]:
+def gather_votes(src: SourceFile, notes: dict | None = None) -> list[dict]:
     """Run EVERY applicable measure and collect its judgement.
 
     Since Step 2 these votes DECIDE the category (see sync()); the ladder is only a
@@ -1135,9 +1180,13 @@ def gather_votes(src: SourceFile) -> list[dict]:
     ext = Path(src.link_name).suffix.lower()
     if ext == ".safetensors":
         try:
-            rated = rate_safetensors(read_safetensors_header(src.path))
+            header = read_safetensors_header(src.path)
+            rated = rate_safetensors(header)
             if rated:
                 add("safetensors", rated[0], rated[1])
+            if notes is not None and checkpoint_packaged_vae(
+                    k for k in header if k != "__metadata__"):
+                notes["packaged_vae"] = True
         except (OSError, ValueError, json.JSONDecodeError):
             pass
     cfg = src.config_dir / "config.json"
@@ -1148,9 +1197,12 @@ def gather_votes(src: SourceFile) -> list[dict]:
             pass
     if ext in PICKLE_EXTS:
         try:
-            rated = rate_pickle(*read_pickle_signals(src.path))
+            pkeys, pmods = read_pickle_signals(src.path)
+            rated = rate_pickle(pkeys, pmods)
             if rated:
                 add("pickle", rated[0], rated[1])
+            if notes is not None and checkpoint_packaged_vae(pkeys):
+                notes["packaged_vae"] = True
         except (OSError, ValueError, EOFError, pickle.UnpicklingError,
                 zipfile.BadZipFile, AttributeError, ImportError, IndexError):
             pass
@@ -1541,10 +1593,16 @@ def cmd_sync(args) -> int:
             # ladder signal has a vote counterpart -- so promoting the score cannot LOSE a
             # classification, only reorder precedence. `or ladder` is belt-and-braces.
             ladder = classify(src)
-            votes = gather_votes(src)
+            notes: dict = {}
+            votes = gather_votes(src, notes)
             winner, _, scores = score_votes(votes)
             cat = winner or ladder
             categories[src.identity] = cat
+            # Classification-time only, deliberately: this branch is the one a NEW or
+            # CHANGED identity takes, so the finding is reported when it is discovered
+            # rather than re-announced at every container start for a file the user
+            # cannot fix without repacking it.
+            warn_if_packaged_vae(src.display, cat, notes.get("packaged_vae", False))
             formats[src.identity] = detect_format(src)
             if votes:
                 info = {"confidence": scores.get(cat, 0.0),

@@ -141,7 +141,12 @@ def diffusers_vae_keys() -> list:
 # post_quant_conv anywhere in the file, so the ldm/diffusers anatomy finds nothing to
 # match. Its top-level prefixes are `conv1, conv2, decoder, encoder`, hence the bare
 # root convs here. PROVENANCE: the `decoder.upsamples.` keys are verbatim from the dump;
-# `encoder.downsamples.` is the symmetric encoder spelling, inferred, not yet confirmed.
+# `encoder.downsamples.` was the symmetric encoder spelling, inferred --
+# ✅ CONFIRMED s43 by range-reading the real header from
+# Comfy-Org/Wan_2.1_ComfyUI_repackaged split_files/vae/wan_2.1_vae.safetensors:
+# 194 tensors, prefixes exactly `conv1. conv2. decoder. encoder.`, and 62 keys under
+# `encoder.downsamples.` (`encoder.downsamples.0.residual.0.gamma`, ...). The same read
+# showed Qwen-Image's VAE is the IDENTICAL layout, so this is a family, not one file.
 def wan_vae_keys() -> list:
     return ["conv1.weight", "conv2.weight",
             "decoder.upsamples.0.residual.0.gamma",
@@ -927,7 +932,10 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(entry["category"], "vae")
         self.assertTrue(any(s.startswith("pickle=vae@") for s in entry["signals"]),
                         entry["signals"])
-        self.assertNotIn("WARN", out)
+        # What this line has always meant is "the READER did not complain". Narrowed in
+        # s43 because the fixture -- `first_stage_model.` and nothing else -- is itself an
+        # instance of the checkpoint-packaged VAE, so it now draws that warn legitimately.
+        self.assertNotIn("unreadable", out)
 
     def test_a_read_that_yields_nothing_is_reported_not_hidden(self):
         """`(none)` on a 150 MB file is the failure mode. Whatever the reason -- a
@@ -2188,6 +2196,53 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("BROKEN  vae/ae.safetensors", out)
         self.assertIn("MISSING  loras/local-thing.safetensors", out)
         self.assertIn("1 broken / 1 missing,", out)
+
+    def test_checkpoint_packaged_vae_warns_and_changes_nothing(self):
+        """Jei's ruling on the edge case (s43): "warn, and do nothing with it". A VAE that
+        kept a checkpoint's `first_stage_model.` prefix still classifies as a vae and is
+        still linked into vae/ -- the warn exists because ComfyUI's VAELoader wants bare
+        encoder./decoder. keys and would not open the file as-is."""
+        self.fx.add_local_file("odd/packaged-vae.safetensors",
+                               safetensors_bytes(["first_stage_model.decoder.conv_in.weight",
+                                                  "first_stage_model.encoder.conv_in.weight"]))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertIn("carrying a checkpoint's `first_stage_model.` prefix", out)
+        # ...and DID NOTHING: still a vae, still linked, still byte-identical on disk
+        self.assertIn("vae/packaged-vae.safetensors", tree_links(self.fx.tree))
+        self.assertEqual(
+            (self.fx.models / "odd" / "packaged-vae.safetensors").read_bytes(),
+            safetensors_bytes(["first_stage_model.decoder.conv_in.weight",
+                               "first_stage_model.encoder.conv_in.weight"]))
+
+    def test_a_full_checkpoint_never_triggers_the_packaged_vae_warn(self):
+        """The co-occurrence rule, which is what makes the warn safe: `first_stage_model.`
+        WITH `model.diffusion_model.` is a checkpoint and the VAE is an attribute of it.
+        Verified against the real SD1.5 header (s43): prefixes are exactly
+        `cond_stage_model. / first_stage_model. / model. / model_ema.`."""
+        self.fx.add_local_file("ckpt/sd15-ish.safetensors",
+                               safetensors_bytes([
+                                   "model.diffusion_model.input_blocks.0.0.weight",
+                                   "first_stage_model.decoder.conv_in.weight",
+                                   "cond_stage_model.transformer.x.weight"]))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("first_stage_model.` prefix", out)
+        self.assertIn("checkpoints/sd15-ish.safetensors", tree_links(self.fx.tree))
+
+    def test_packaged_vae_predicate_is_not_fooled_by_an_earlier_rule(self):
+        """`warn_if_packaged_vae` is guarded on the CATEGORY as well as the keys: a LoRA
+        that happens to mention first_stage_model. is claimed by the lora rule long before
+        the vae rule, and warning about it would be noise about the wrong file."""
+        keys = ["lora_unet_x.lora_down.weight", "first_stage_model.decoder.w"]
+        self.assertTrue(ms.checkpoint_packaged_vae(keys))       # keys alone say yes...
+        self.assertEqual(ms.classify_safetensors_header(
+            {k: {} for k in keys}), "loras")   # ...the classifier says lora
+        # and the guard is the category, so nothing is said about a lora
+        self.fx.add_local_file("loras/odd-one.safetensors", safetensors_bytes(keys))
+        rc, out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("first_stage_model.` prefix", out)
 
     # ------------------------------------------------------------ name collisions
     def test_name_collision_gets_disambiguated(self):

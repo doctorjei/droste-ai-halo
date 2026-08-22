@@ -269,8 +269,10 @@ left behind by a pre-merge install. The reclaim stays precisely because those
 dirs exist in the field, and it costs a no-op walk when they do not.)
 
 ### Model classification: signals and confidence
-`model_scanner.py` classifies by a ladder, but the evidence it uses is not all
-worth the same, and the registry now records how well-supported each answer is.
+`model_scanner.py` asks every applicable measure and lets the weighted score
+pick the answer, because the evidence it uses is not all worth the same; the
+heuristic ladder it used to classify by is retained for two narrower jobs, and
+the registry records how well-supported each answer is.
 
 Evidence splits in two. **Embedded** signals live inside the weight file —
 safetensors header, GGUF KV block, pickle opcodes — and cannot be changed
@@ -280,30 +282,50 @@ names (path segments, filename, repo name). Sidecars are independently
 editable and *are* edited — someone forcing a class name to make a loader
 accept a file produces a sidecar that points confidently at the wrong answer,
 which is worse than no sidecar at all. LoFi ratings are therefore capped at
-0.6: they may hint, never certify. The naming signals are also **not
-independent** of each other — a mislabelled file usually has a matching bad
-path and repo — so their unanimity is worth about as much as one of them.
+0.3 (`LOFI_MAX_RATING`, lowered from 0.6 by owner decision): they may hint,
+never certify, and the cap is on the RATING — how sure this instance is — not
+on the parts, so every LoFi measure still votes and is still recorded in
+`signals`. The naming signals are also **not independent** of each other — a
+mislabelled file usually has a matching bad path and repo — so their unanimity
+is not six separate confirmations, and the ceiling is what keeps their
+agreement below any single reading of the file's own bytes.
 
 Each applicable measure votes with a rating; scores are computed **per
 candidate category** (`Σ(parts × rating) ÷ Σ applicable parts`), since measures
 vote for different answers and a pooled sum would only say how much evidence
-exists. Parts: safetensors 30, pickle 20, GGUF 20, each LoFi measure 5. All six
-LoFi agreeing reaches 18, while any single embedded measure at ≥0.9 reaches
-18–29.7 — confident embedded evidence always wins, and names decide only where
-embedded evidence is weak or absent.
+exists. Parts (`MEASURE_PARTS`): safetensors 30, pickle 20, GGUF 20, each LoFi
+measure 5. All six LoFi agreeing therefore tops out at 6 × 5 × 0.3 = 9, while
+the weakest embedded vote a file can carry — a pickle rated at the generic 0.6
+— already reaches 12, and a safetensors read runs from 18 (the generic
+encoder+decoder inference) to 29.7 (a tensor prefix that names the model
+outright). Embedded evidence consequently wins wherever it exists, and names
+decide only where nothing embedded could be read.
 
-The ladder still picks the recorded category; the score only describes it and
-flags disagreement as **DISPUTED**, the companion report to UNCLASSIFIED.
-Misclassification hides precisely where UNCLASSIFIED cannot look, because those
-files appear settled.
+The score picks the recorded category. The ladder is kept for exactly two jobs:
+a fallback for a file no measure could judge, and the naming-vs-content
+comparison — a ladder answer that differs from the winner is recorded as
+**DISPUTED**, the companion report to UNCLASSIFIED. A dispute no longer means
+the recorded answer is doubtful; it means the names and the data disagreed and
+the names lost. It stays the most useful report we have, because that is where a
+confident-but-wrong embedded reading surfaces — a multimodal LLM's vision tower
+reads as `clip_vision` at 0.99, since the rule cannot tell "HAS a vision
+encoder" from "IS one" — and such a file hides precisely where UNCLASSIFIED
+cannot look, because it appears settled.
 
-`.pt`/`.pth`/`.ckpt`/`.bin` are content-sniffed via `read_pickle_signals`, which
-**never executes the payload**: `find_class` imports nothing, returning an inert
-stub and recording the module path — itself the strongest signal for
-object-pickles like Ultralytics detectors, which carry no tensor keys at all.
-Only the pickle *structure* is read (the zip's `data.pkl`, or up to the legacy
-format's STOP opcode), so cost is bounded regardless of file size. State-dict
-keys reuse the safetensors classifier rather than growing parallel prefix rules.
+`.pt`/`.pth`/`.ckpt`/`.bin` are content-sniffed via `read_pickle_signals`, whose
+reading is `model_formats.read_torch_container` — the one execution-free reader
+the scanner and the two adopt tools share — and which **never executes the
+payload**: `find_class` imports nothing, returning an inert stub type and
+recording the module path, itself the strongest signal for object-pickles like
+Ultralytics detectors, which carry no tensor keys at all. Only the pickle
+*structure* is read — the zip's `data.pkl`, or, for the legacy non-zip
+container, its leading pickles, stopping at the first payload that yields keys
+and never past the storage-key list into the raw tensor bytes — so cost is
+bounded regardless of file size. What stays in the scanner is its POLICY on the
+result (`_signals_or_raise`): a read that succeeds and harvests nothing is a
+finding rather than an absence, where the adopt tools want the opposite.
+State-dict keys reuse the safetensors classifier rather than growing parallel
+prefix rules.
 
 ### Per-port notes (bucket-B rework rationale)
 - **comfyui** — the wan/qwen "studio" pip stacks were DROPPED with the studios
@@ -808,32 +830,72 @@ what happens to the files once it does. Jei: *"Don't do what is being done and
   now — `Current data file paths in <dir>:` with bind names when they share one
   directory, one full path per line when they do not.
 - **Everything destructive is disclosed first.** A non-empty destination is
-  named with its size *and* with whether it is where that same box keeps its
-  other binds — which it usually is on the shape that produced this bug
+  named with WHAT IS IN IT — the bind names, or one full path per line when they
+  do not share a directory — *and* with whether it is where that same box keeps
+  its other binds — which it usually is on the shape that produced this bug
   (comfyui's data dir lands on the directory holding its own input and output),
   and which decides what these four answers mean in practice. The destination
   may belong to ANOTHER box; that is asked about, not vetoed (Jei: *"that's the
   user's call"*), and the disclosure is the guard.
 - **Order matters where it costs data.** The device/space check sits AFTER the
   four-way choice (two of those answers move nothing and would not have cared)
-  and BEFORE the `rm -rf` that `replace` performs, so a shortfall can never be
-  discovered once the old content is already gone. `replace` also gets credited
+  and BEFORE the `rm -rf` that `remove` performs, so a shortfall can never be
+  discovered once the old content is already gone. `remove` also gets credited
   with the space it is about to free, or it would decline a move that fits.
 - **Refusals say why.** A cross-device move is priced before it is offered (size
   of the source, free space at the destination) so a shortfall is stated up
   front instead of discovered half a copy later — *"a reported shortfall is the
   difference between 'left my data alone' and 'ignored me'"*. A running box is
   refused with the reason, the same shape as the program-cache wipe.
+- **s42: the two questions are independent, and only one of them needs a
+  record.** "Your data is at X, the box will read from Y — move it?" needs
+  something recorded to move. "There are files where the box will now read"
+  needs only a destination, so it applies to a **first install** as much as to a
+  modify. Both used to live behind one `ACTION == modify` gate, and the
+  collision walk was scoped to accepted moves — so a fresh create silently
+  adopted a directory full of somebody's models, a recreate silently orphaned a
+  box's data at its old path, and declining a move skipped the destination check
+  entirely. **Declining a move therefore no longer means "keep the old path"
+  unconditionally**: an empty destination keeps it, a destination with content
+  earns the shorter `[U]se` / `[c]hange` question.
+- **s42: fresh, recreate and modify ask the same questions on the same path.**
+  The only thing that differs is where a prompt's DEFAULT comes from — a
+  recreate follows the fresh-create defaults, a modify follows what was recorded
+  and falls back to fresh. One function keeps that distinction; nothing else
+  gates on the run type.
+- **s42: the block is drawn if and only if a prompt will follow it.** The
+  collision menu used to be printed unconditionally while the "already answered,
+  carry it" short-circuits sat in the loop below, so a box carried by the batch
+  got the whole four-option menu with no prompt, no selector line and no echoed
+  answer — in colour indistinguishable from a live menu, default highlight and
+  all. Writing the rule as a property rather than patching the reported case
+  also closed the same hole in the shorter form, where a box-wide answer settled
+  in an earlier round was missed. A carried box now gets a receipt naming what
+  was decided, which is what the move question already did.
+- **s42: `[c]hange` re-enters the ordinary path route.** It is not a bespoke
+  re-ask: the answer goes through the same settle-and-check the box takes when a
+  family base was declined, so a newly typed path that also holds data asks
+  again. Changing the program-data path re-derives its siblings, which are then
+  re-checked too. Moves are deferred until every round is done — a move executed
+  in an early round could be aimed at a destination a later one walks away from.
+  The batching questions are suppressed after a change, because "apply this
+  decision to all boxes" has no meaning for a decision that needs a different
+  answer per box.
 - **Program caches are exempt.** They regenerate, so they are re-pointed in
   silence; the only question is whether to delete the vacated directory, and
   that reuses the s38 consent-gated clear (same safety test, same running-box
   refusal). The HF cache is NOT one of these — Jei excluded it explicitly
   (*"I'm not counting huggingface here"*): it is the model store, and it takes
   the ordinary move offer.
-- **The box is pointed where its data actually is.** Declined, refused, failed
-  outright, or a merge in which nothing moved: the box keeps its recorded path.
-  A partial merge takes the new path — what moved is there — and names the
-  directory the rest is still in.
+- **The box is pointed where its data actually is.** Refused, failed outright,
+  or a merge in which nothing moved: the box keeps its recorded path. A partial
+  merge takes the new path — what moved is there — and names the directory the
+  rest is still in. ⚠️ **s42 refined the "declined" case, and the principle is
+  what forced it:** declining the move leaves the files at the old path, so the
+  box keeps that path — UNLESS the new location has files of its own, in which
+  case the user is asked which set the box should use, and answering `[U]se`
+  points it at the new path. The box still follows the data; there is simply
+  more than one set of it to follow.
 
 Same round, and part of the same defect: a family with no common base used to
 offer a FACTORY example at the base prompt while the inis knew perfectly well
@@ -875,10 +937,13 @@ Migration: NONE, and nothing moves that was not asked about by name.
 
 ## Host adopt tooling — scripts/droste-hf-adopt.sh / scripts/droste-civitai-adopt.sh
 
-The two adopt tools under `scripts/` move already-downloaded model files into the
-shared stores the containers mount — the HF hub cache, and a webui-style
-CivitAI tree suited to the `/opt/models` bind. Both are host-side,
-stdlib-only, dry-run by default. The design rationale:
+The two adopt tools move already-downloaded model files into the shared stores
+the containers mount — the HF hub cache, and a webui-style CivitAI tree suited
+to the `/opt/models` bind. Both are host-side, stdlib-only, dry-run by default.
+Both live at `targets/comfyui/scripts/`, beside `model_scanner.py` and the
+`model_formats.py` execution-free readers all three share, and ride into the
+comfyui image with them; the two files under `scripts/` are forwarding stubs
+that keep the documented host invocation working. The design rationale:
 
 ### The hash-proof adoption gate
 - Content enters a shared store ONLY on cryptographic proof, NEVER on
@@ -890,10 +955,14 @@ stdlib-only, dry-run by default. The design rationale:
   (`blobId`) for small ones; one streamed pass computes both). scripts/droste-civitai-adopt.sh matches sha256 via the
   CivitAI batch by-hash API (one round trip per directory).
 - IDENTIFICATION is exactly as strict as a claimed identity. Without
-  `--repo` (HF) the search API only proposes candidate repos — the published
-  hashes decide; a CivitAI `--version-id` (the escape hatch for old uploads
-  CivitAI never hashed) is accepted only if our sha256 appears in that
-  version's file list. Refused files are not failures to fix by hand-placing
+  `--repo` (HF) four signals, tried in priority order, only PROPOSE candidate
+  repos — a sibling transformers `config.json` carrying an absolute
+  `_name_or_path`, the curated `ECOSYSTEM_MAP` of ubiquitous ComfyUI aux-model
+  filenames a name search cannot find, provenance embedded in a GGUF header,
+  and finally the HF model-search API fed terms derived from the filename — and
+  the published hashes decide; a CivitAI `--version-id` (the escape hatch for
+  old uploads CivitAI never hashed) is accepted only if our sha256 appears in
+  that version's file list. Refused files are not failures to fix by hand-placing
   them in the cache — their home is the `/opt/models` bind.
 - Never partial, never destructive: placements stage as `.tmp-*` and rename
   into place; existing content is never overwritten (identical content =

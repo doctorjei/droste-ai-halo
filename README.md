@@ -7,6 +7,47 @@ Fedora → Debian/gemet port of the [Strix Halo ROCm toolboxes](https://github.c
 A branch of the [droste](https://github.com/doctorjei/droste) project (droste-core is the
 central branch) under the kento → gemet → * umbrella; consumes the same gemet bases.
 
+## Quick start
+
+On a Strix Halo machine with podman and distrobox installed:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/doctorjei/droste-ai-halo/main/droste-setup.sh
+bash droste-setup.sh
+```
+
+It checks the machine before it touches anything — GPU devices, your `render`
+and `video` group membership, the subordinate id ranges podman needs, and each
+dependency it is about to use — and prints the fix for whatever is missing.
+
+Then it asks which boxes you want (ComfyUI, llama.cpp, ds4, vLLM, finetuning),
+where each keeps its data, which port it serves on, and whether it starts with
+the machine. The last question is how far to go:
+
+```
+  [w] Write definition(s) only (ini)
+  [p] Write definition(s) & pull image(s)
+  [c] Write, pull, & create box(es)
+  [A] All of the above, and start enabled server(s)
+```
+
+What you are left with, all written from your answers — two records per box,
+and one guide for the install:
+
+| File | What it is |
+|---|---|
+| `~/droste/<box>-halo.ini` | that box's whole definition — `distrobox assemble create --file` it to rebuild |
+| `server.env` (in the box's data dir) | that box's `SERVE` and `PORT`, re-read at every start |
+| `~/droste/NOTES.md` | one guide for the whole install, with your own paths in it |
+
+Re-run the installer whenever you like — it reads back what you chose last
+time, so you only answer what you want to change. Full documentation of it,
+including the storage questions and what it will and will not delete, is under
+[droste-setup.sh — interactive installer](#droste-setupsh--interactive-installer).
+
+Everything below is reference: what the images are, the mount contract behind
+them, and the two tools that import models into the shared stores.
+
 ## Unified ROCm pin
 
 Everything builds against **one** pinned TheRock nightly, installed via pip `rocm-sdk-*`
@@ -169,7 +210,8 @@ what may be thrown away:
 
 - **`~/droste/data/<box>/program`** — persistent, per box. Your work and
   everything you authored; `droste-setup.sh` deletes nothing here unasked — the
-  one way it ever does is the `replace` answer to a move question, which names
+  one way it ever does is the `remove data at new path` answer to a move
+  question, which names
   the directory before offering it. It sits under a per-box directory
   **beside** its siblings, not above them: comfyui's `input` and `output` and
   the finetuning `workspace` are `~/droste/data/<box>/input` and so on. (Boxes
@@ -184,6 +226,9 @@ what may be thrown away:
 - **`~/droste/compute-caches`** — the compiled GPU kernels, shared by every box
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.
+
+Driven by hand, that contract reads as follows — `droste-setup.sh` asks for the
+same paths and writes them into the box's ini for you:
 
 ```bash
 podman run -d -p 8188:8188 --device /dev/kfd --device /dev/dri \
@@ -218,13 +263,16 @@ pulls into the shared cache appear in ComfyUI's pickers automatically.
 
 The scanner reads the files themselves wherever it can — safetensors headers,
 GGUF metadata, and pickle structure for `.pt`/`.pth` (without ever executing
-them) — and falls back to names only when there is nothing embedded to read.
-Because that evidence is not equally trustworthy, each classification is
-recorded with a **confidence** score and the signals behind it; files whose
-signals disagree are reported as **DISPUTED**, so a wrong answer that looks
-settled is still visible. Names and sidecar files such as `config.json` are
-deliberately capped low — they are editable, and an edited one points
-confidently at the wrong answer.
+them). Every signal it can collect votes, names included, but they are not
+weighed equally: what is embedded in the file outweighs what merely sits beside
+it, so names decide only where there was nothing embedded to read. Each
+classification is recorded with a **confidence** score and the signals behind
+it, and a file whose name says one thing while its contents say another is
+reported as **DISPUTED** — the contents are what gets recorded, and the
+disagreement is kept precisely so that a wrong answer which looks settled is
+still visible. Names and sidecar files such as `config.json` are deliberately
+capped low — they are editable, and an edited one points confidently at the
+wrong answer.
 
 **One box, two doors:** the same images double as `$HOME`-native interactive
 toolboxes, and that is not a second container. Each app is ONE container,
@@ -333,16 +381,27 @@ box user.
 
 ## Host tools
 
-Three helpers ship with the repo — `droste-setup.sh` at the root,
-the two adopt tools under `scripts/`. They run on the **host** (plain bash /
+Three helpers ship with the repo — `droste-setup.sh` at the root, the two adopt
+tools invoked from `scripts/`. They run on the **host** (plain bash /
 python3, stdlib only — no container, no pip installs) and feed the mount
 contract above: `droste-setup.sh` writes the run records; the two `*-adopt` tools
-populate the shared model stores the containers mount.
+populate the shared model stores the containers mount. The adopt tools
+themselves live at `targets/comfyui/scripts/`, beside the model scanner they
+share their execution-free file readers with, and ride into the comfyui image
+with it; what sits under `scripts/` is a forwarding stub for each, so the
+commands below work from a checkout unchanged.
 
 ### droste-setup.sh — interactive installer
 
-One self-contained bash script with zero repo-checkout dependencies (safe as
-`curl <url> | bash`). It guides which boxes you want, every bind in the mount
+One self-contained bash script with zero repo-checkout dependencies — safe to
+pipe straight from the raw URL, which is how [Quick start](#quick-start)
+installs it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/doctorjei/droste-ai-halo/main/droste-setup.sh | bash
+```
+
+It guides which boxes you want, every bind in the mount
 contract, the port each service binds — ds4 and vllm both default to 8000, so
 ds4's is nudged to **8001** and the two run side by side out of the box — and
 whether each box serves when it starts and whether it starts at host boot. It
@@ -437,6 +496,32 @@ covering all of them:
   Apply this decision to all boxes [Y/n]? n
 ```
 
+**On a first install there is nothing to move, and the question is shorter.**
+The same thing prompts it — files already sitting where a box is about to
+read — but with no data of its own in play there are only two answers, and
+the same two batching questions follow:
+
+```
+  There are existing files at new base path /srv/data/droste/comfyui:
+  [output, input]
+
+  Options
+  [U]se this path anyway (data will be used / changed by the box)
+  [c]hange to a different path
+  *Warning: If you change to another path, this forgoes the shared base path.
+
+  Select a course of action for the output path [U/c]: U
+```
+
+**Use** is the common answer and usually the reason the path was typed: an
+existing model collection or output tree, adopted as it stands. **Change**
+asks for another path and re-checks that one the same way. You will meet this
+on any run, not just a first install — it is also what you get when you
+decline to move a box's data and the new location turns out to have files of
+its own. Declining the move is not the same as staying put: if the new path is
+empty the box keeps the one it had, and if it is not, you are asked which set
+of files the box should use.
+
 **Merge** moves entry by entry: a same-named file is replaced, and a name
 colliding with a non-empty *directory* is reported and left where it is,
 because that is what `mv` does. **Remove** deletes what is at the new path
@@ -460,10 +545,13 @@ session distrobox will refuse — see [Troubleshooting](#troubleshooting) for
 both cures.
 
 ```bash
-./droste-setup.sh                  # interactive menu over all five boxes
-./droste-setup.sh comfyui llama    # direct-to-box shortcut
-./droste-setup.sh --ascii          # ASCII-only output (no emoji / ANSI)
+bash droste-setup.sh                  # interactive menu over all five boxes
+bash droste-setup.sh comfyui llama    # direct-to-box shortcut
+bash droste-setup.sh --ascii          # ASCII-only output (no emoji / ANSI)
 ```
+
+(A file fetched with `curl -O` is not executable, so these say `bash` rather
+than `./`; from a checkout, either works.)
 
 ### scripts/droste-hf-adopt.sh — local downloads → the shared HF cache
 
@@ -473,12 +561,15 @@ contract — with **no re-download**, stored exactly the way `hf download` would
 have stored them. Adoption is **hash-proven**: only files byte-identical to
 the repo's published content (per the HF API manifest) are adopted; everything
 else is refused with a reason — its home is the `/opt/models` bind instead.
-`--repo` is optional: without it each file is **identified** via the HF search
-API, still hash-gated (a repo is only accepted when its published hashes prove
-it contains this exact content, never on name similarity). **Dry-run by
-default** — pass `--apply` to change the cache. Hardlink is the default
-placement (`--copy` / `--move` alternatives); small repo files you don't have
-locally are reported as GAP, filled cheaply by a later `hf download <repo>`.
+`--repo` is optional: without it each file is **identified** from a sibling
+`config.json`, a curated map of well-known aux-model filenames, provenance
+embedded in a GGUF header, and finally the HF search API — all of them
+proposals only, still hash-gated (a repo is only accepted when its published
+hashes prove it contains this exact content, never on name similarity).
+**Dry-run by default** — pass `--apply` to change the cache. Hardlink is the
+default placement (`--copy` / `--move` alternatives); small repo files you
+don't have locally are reported as GAP, filled cheaply by a later
+`hf download <repo>`.
 
 ```bash
 # Adopt a GGUF you fetched with wget into the shared cache (dry-run first):
@@ -488,7 +579,8 @@ locally are reported as GAP, filled cheaply by a later `hf download <repo>`.
     ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 # Don't know (or trust) the repo? Omit --repo: each file is IDENTIFIED
-# via the HF search API and adopted only on hash proof:
+# (sibling config.json, ecosystem map, GGUF provenance, HF search) and
+# adopted only on hash proof:
 ./scripts/droste-hf-adopt.sh ~/Downloads/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 # Adopt a whole diffusers checkout (nested dirs need --recursive),
@@ -505,12 +597,12 @@ HF cache — including ComfyUI's pickers, via the model scanner.
 Sibling to `scripts/droste-hf-adopt.sh`, same invariant, for CivitAI content (checkpoints,
 LoRAs, VAEs, embeddings, …): each file is identified by its **sha256** via the
 CivitAI API and adopted **only on hash proof**, into a cache dir laid out like
-a webui root (default `$DROSTE_CIVITAI_CACHE` or `~/.cache/civitai`). During
-the same hash pass the file's **content is sniffed** (safetensors header, or
-state-dict keys via a restricted execution-free unpickler) to route it to a
-fine-grained directory — ControlNet vs T2IAdapter, upscaler by architecture,
-LyCORIS/DoRA split out of Lora, unknown types to `other/<Type>/`. Files are
-placed under a normalized **`<Model>_<Version>`** name with **three sidecars**:
+a webui root (`--cache`, else `$DROSTE_CIVITAI_CACHE`, else
+`~/.cache/civitai`). During the same hash pass the file's **content is
+sniffed** (safetensors header, or state-dict keys via a restricted
+execution-free unpickler) to route it to a fine-grained directory — ControlNet
+vs T2IAdapter, upscaler by architecture, LyCORIS/DoRA split out of Lora,
+unknown types to `other/<Type>/`. Files are placed under a normalized **`<Model>_<Version>`** name with **three sidecars**:
 `.civitai.info` (the CivitAI API response, kept shareable), `.meta.droste`
 (our objective block: sha256, routing, sniff verdicts), and `.user.droste`
 (your curation — notes, trigger-word/tag deltas, a `--rename` choice — written

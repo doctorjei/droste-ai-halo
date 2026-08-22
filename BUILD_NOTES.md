@@ -872,6 +872,18 @@ what happens to the files once it does. Jei: *"Don't do what is being done and
   also closed the same hole in the shorter form, where a box-wide answer settled
   in an earlier round was missed. A carried box now gets a receipt naming what
   was decided, which is what the move question already did.
+- **s43: what that receipt says.** One line per bind, naming the decision and
+  the path it came from — `Merging current <leaf> path [<old>] into new path.`,
+  `Replacing new path with current <leaf> path [<old>].`, `Using data at new
+  path for <leaf>; leaving old path as-is.`, `Continuing to use current <leaf>
+  path [<old>] as-is.` No box name (the box banner is a few lines up), no new
+  path (the summary block prints it just below), and no separate "will be moved
+  to" line — each sentence names the old path itself, and for *use* and *keep* a
+  move line would be false. `use` is the one decision the move pass also reports
+  on, so its clause stays generic and that report does the naming; the asymmetry
+  with the other three is deliberate. The shorter form's receipt is the same
+  sentence without the trailing clause, because nothing is moving onto that
+  destination and a fresh install has no old path to leave behind.
 - **s42: `[c]hange` re-enters the ordinary path route.** It is not a bespoke
   re-ask: the answer goes through the same settle-and-check the box takes when a
   family base was declined, so a newly typed path that also holds data asks

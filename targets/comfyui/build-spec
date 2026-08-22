@@ -41,13 +41,25 @@ OVERLAYS=(
 # ── SURFACES — <src>:<dest> ──────────────────────────────────────────────────
 # model-tree = the scanner's symlink tree (+ user drop-ins), surfaced over the
 # marker-only baked models/. user/ = ComfyUI state (db/settings/workflows),
-# seeded if_empty by templates.yaml after the mount. Both are DATA. temp/ is the
-# one SCRATCH surface — preview/intermediate files ComfyUI writes and never
-# re-reads across starts — so it comes off /opt/program-cache (see PRE_LAUNCH,
-# which makes the mounted dir sticky world-writable for both lanes).
+# seeded if_empty by templates.yaml after the mount. datasets/ = training data
+# for ComfyUI's own fine-tune nodes (0.33+): image / image+text / video sets,
+# each a subfolder with a metadata.json or safetensors shards. All three are
+# DATA. temp/ is the one SCRATCH surface — preview/intermediate files ComfyUI
+# writes and never re-reads across starts — so it comes off /opt/program-cache
+# (see PRE_LAUNCH, which makes the mounted dir sticky world-writable for both
+# lanes).
+#
+# ⚠️ datasets/ MUST be surfaced at the baked path, not redirected. ComfyUI's
+# save node writes to folder_paths.get_folder_paths("datasets")[0] — index 0,
+# not a search — and an extra_model_paths.yaml entry only reaches index 0 when
+# it carries `is_default: true` (add_model_folder_path appends otherwise).
+# Surfacing keeps the built-in path BOTH first and persistent, so the ordering
+# question never arises. Unbound, a user's saved training set would live in the
+# container and die on the next recreate.
 SURFACES=(
     "/opt/data/model-tree:/opt/ComfyUI/models"
     "/opt/data/user:/opt/ComfyUI/user"
+    "/opt/data/datasets:/opt/ComfyUI/datasets"
     "/opt/program-cache/tmp:/opt/ComfyUI/temp"
 )
 

@@ -12,10 +12,20 @@ ARG BASE_IMAGE=localhost/${SERIES_NAME}-torch-base-${ARCH_NAME}
 # come from /etc/droste/rocm-version.env, inherited from the torch base.
 ARG TRANSFORMERS_VERSION=4.56.2
 
-## ComfyUI & Custom Nodes (Pinned 2026-07-05)
+## ComfyUI & Custom Nodes (ComfyUI repinned 2026-08-22; nodes still 2026-07-05)
 #### COMFYUI_REF: comfyanonymous/ComfyUI        ESSENTIALS_REF: cubiq/ComfyUI_essentials
 #### GGUF_REF: city96/ComfyUI-GGUF              AMDGPUMONITOR_REF: kyuz0/ComfyUI-AMDGPUMonitor
-ARG COMFYUI_REF=985fb9d6adc974df9783d3d355cf86b992956212
+# COMFYUI_REF is the commit tagged v0.33.3 (was 985fb9d6 = v0.27.0). Upstream moved to
+# Comfy-Org/ComfyUI; the comfyanonymous URL below still redirects, so it is left alone.
+# ⚠️ gfx1151 NOTE: 0.33 keeps gfx1151 in the enable-pytorch-attention list unchanged, but
+# probes aotriton differently — a runtime can_use_flash_attention() call instead of listing
+# torch/lib/aotriton.images. Both are inside try/except, so a miss degrades to non-flash
+# attention rather than failing; it can still FLIP our attention backend. Check the
+# "AMD arch:" / attention lines at startup after any bump.
+# ⚠️ NEVER install comfy-kitchen[cublas] — nvidia-cublas is CUDA-only and useless here
+# (rocBLAS/hipBLASLt come from rocm-sdk-libraries-gfx1151). requirements.txt asks for the
+# plain package, which is why the extra stays uninstalled.
+ARG COMFYUI_REF=4da9e2dbead52fc1e68beae33fe3d7ad63b63241
 ARG ESSENTIALS_REF=9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
 ARG AMDGPUMONITOR_REF=0c584ed28ed3678d96f631a6eff91be397c0baa4
 ARG GGUF_REF=6ea2651e7df66d7585f6ffee804b20e92fb38b8a
@@ -50,7 +60,15 @@ RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/Comfy
     && if [ -n "${COMFYUI_REF}" ]; then \
          git -C /opt/ComfyUI fetch --depth=1 origin "${COMFYUI_REF}" \
          && git -C /opt/ComfyUI checkout "${COMFYUI_REF}"; \
-       fi
+       fi \
+    && git config --system --add safe.directory /opt/ComfyUI
+# ^ The repo stays ROOT-owned on purpose (writes belong in the overlay uppers), but
+# the service runs as the box user via setpriv — so git's dubious-ownership guard
+# refuses every command against it. Observed on Loaf 2026-08-22: ComfyUI-Manager
+# reported "ComfyUI Revision: UNKNOWN (The currently installed ComfyUI is not a Git
+# repository)" and lost the version it uses for node-compatibility checks. --system
+# (i.e. /etc/gitconfig) rather than --global: the box user's HOME varies by lane.
+# Safe here in the sense the guard intends — the path is baked by us, not shared.
 WORKDIR /opt/ComfyUI
 RUN pip install -r requirements.txt \
     && pip install --prefer-binary \

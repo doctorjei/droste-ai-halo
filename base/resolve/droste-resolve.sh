@@ -398,9 +398,38 @@ resolve::overlay() {
     fi
 
     # KERNEL attempt (auto's first choice; forced by mode=kernel).
+    #
+    # userxattr FIRST, and it is load-bearing, not a tuning knob. To hide a lower
+    # entry (any delete of baked content) overlayfs must record a whiteout/opaque
+    # marker, and by default it writes those under `trusted.overlay.*` — a
+    # namespace that CANNOT be set from inside a user namespace. Rootless podman
+    # gives us exactly that, so the setxattr returns EPERM and overlayfs hands the
+    # caller EIO. `userxattr` (kernel 5.11+) moves the markers to `user.overlay.*`,
+    # which we CAN write. Podman's own container-root overlay on the same host
+    # already mounts with it; we were the odd one out.
+    #
+    # MEASURED on Loaf, 2026-08-22, same btrfs upper, identical shapes:
+    #   without userxattr → `rm -rf <lower-origin dir>` = EIO, rc=1
+    #   with    userxattr → rc=0
+    # Symptom this fixes: `pip install` of anything already baked in /opt/venv
+    # dies mid-uninstall ("[Errno 5] Input/output error" on the dist-info), having
+    # already staged its `~name` copy — so the tree is left holding both. Same
+    # wall hits a user pip-installing into the custom_nodes overlay.
+    #
+    # An older kernel REJECTS the option outright, so fall back to the bare form
+    # rather than letting a good kernel-overlay host drop to fuse. That fallback
+    # is today's exact behaviour, deletes-of-baked-content included, so it warns.
     if [ "$mode" = auto ] || [ "$mode" = kernel ]; then
+        local ux_err=""
+        if resolve::_try_mount mount -t overlay overlay \
+               -o "lowerdir=$lower,upperdir=$upper,workdir=$work,userxattr" "$lower"; then
+            resolve::_own_dirs "$lower"
+            return 0
+        fi
+        ux_err=$RESOLVE_MOUNT_ERR
         if resolve::_try_mount mount -t overlay overlay \
                -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$lower"; then
+            resolve::warn "overlay $lower mounted WITHOUT userxattr (the kernel rejected it: ${ux_err:-unknown error}) — needs 5.11+. Inside this box, deleting or upgrading anything baked into the image will fail with EIO: overlayfs cannot write the whiteout marker from a user namespace without it."
             resolve::_own_dirs "$lower"
             return 0
         fi

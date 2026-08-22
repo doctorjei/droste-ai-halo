@@ -2067,6 +2067,67 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("0 new, 0 gone", out)   # unit is stable across runs
         self.assertNotIn("UNCLASSIFIED", out)
 
+    # ------------------------------------------------ status: the real-file row split
+    # A real file in the tree (weights that exist nowhere else) and an unowned symlink
+    # (a link somebody else made) are different findings, and `status` used to add them
+    # up into one "N files+links". The number sync's census reports as "N real files in
+    # tree" was therefore unreadable from `status` -- it now has its own component.
+    def test_status_splits_real_files_from_unowned_links(self):
+        populate_standard(self.fx)
+        self.fx.sync()
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("user items: 0 real files + 0 links, 0 broken", out)
+
+        dropin = self.fx.tree / "checkpoints" / "my-manual.safetensors"
+        dropin.write_bytes(b"pulled in-box by a custom node")
+        theirs = self.fx.tree / "vae" / "their-own-link.safetensors"
+        theirs.symlink_to(self.fx.models / "loras" / "local-thing.safetensors")
+        dangling = self.fx.tree / "vae" / "old-broken-link.safetensors"
+        dangling.symlink_to(self.fx.root / "nowhere.safetensors")
+
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("user items: 1 real files + 1 links, 1 broken", out)
+        # ...and each row says WHICH it is, so the counts can be read off the detail
+        self.assertIn("USER  checkpoints/my-manual.safetensors "
+                      "(real file, not ours; never touched)", out)
+        self.assertIn("USER  vae/their-own-link.safetensors "
+                      "(link, not ours; never touched)", out)
+        self.assertIn("broken unowned symlink (left alone): "
+                      "vae/old-broken-link.safetensors", out)
+
+    def test_status_real_file_count_agrees_with_the_sync_census(self):
+        """Two reports, one tree: the split exists so the same walk reports the same
+        number in both verbs. A `status` real-file count that disagreed with the census
+        would mean one of them is counting links."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        (self.fx.tree / "loras" / "manager-downloaded.safetensors").write_bytes(b"in-box")
+        (self.fx.tree / "loras" / "manager-two.safetensors").write_bytes(b"in-box again")
+        (self.fx.tree / "vae" / "their-own-link.safetensors").symlink_to(
+            self.fx.models / "loras" / "local-thing.safetensors")
+
+        rc, sync_out = self.fx.sync()
+        self.assertEqual(rc, 0)
+        self.assertIn("2 real files in tree", sync_out)
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("user items: 2 real files + 1 links,", out)
+
+    def test_status_does_not_report_owned_hardlinks_as_real_files(self):
+        """The census tests ownership before realness so --hardlink does not make the
+        scanner accuse itself; status walks the same tree and owes the same answer."""
+        populate_standard(self.fx)
+        self.fx.sync("--hardlink")
+        hard = self.fx.tree / "vae" / "ae.safetensors"
+        self.assertTrue(hard.is_file())
+        self.assertFalse(hard.is_symlink())
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("user items: 0 real files + 0 links, 0 broken", out)
+        self.assertNotIn("USER  ", out)
+
     # ------------------------------------------------------------ name collisions
     def test_name_collision_gets_disambiguated(self):
         self.fx.add_hf_file("acme/pack-one", "vae/dup.safetensors",

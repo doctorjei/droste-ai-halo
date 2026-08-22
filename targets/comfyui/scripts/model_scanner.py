@@ -29,10 +29,11 @@ Path overrides: --cache-dir, --models-dir, --tree, --registry.
 TREE AWARENESS -- the tree is a LINK tree, but it is bind-mounted onto
 /opt/ComfyUI/models and in-box downloaders (ComfyUI-Manager and friends) write REAL
 FILES straight into it. Those are INVENTORIED by every sync (census component "N real
-files in tree", one REALFILE line each) and otherwise left completely alone: never
-linked over, never moved, never pruned, never claimed in the registry. Report-only is
-the whole policy -- a real file in the link tree is somebody else's decision, and the
-only thing the scanner owes it is visibility.
+files in tree", one REALFILE line each) and by `status` (counted on their own, apart
+from unowned links: "user items: N real files + M links"), and otherwise left
+completely alone: never linked over, never moved, never pruned, never claimed in the
+registry. Report-only is the whole policy -- a real file in the link tree is somebody
+else's decision, and the only thing the scanner owes it is visibility.
 
 DESIGN NOTES / REGISTRY SCHEMA
 ==============================
@@ -990,8 +991,8 @@ def classify_pickle(keys: set, modules: set) -> str | None:
 #   model_index.json, CT2 vocabulary siblings) and names (path segments, filename, repo).
 #   All independently editable, and routinely edited -- someone forcing a class name to
 #   make a loader accept a file produces a sidecar that points confidently at the WRONG
-#   answer, which is worse than no sidecar at all. Hence the hard 0.6 ceiling: LoFi is
-#   never permitted to express certainty.
+#   answer, which is worse than no sidecar at all. Hence the hard ceiling
+#   (LOFI_MAX_RATING, below): LoFi is never permitted to express certainty.
 #
 # Score is computed PER CANDIDATE CATEGORY -- measures vote for different categories, so
 # one pooled sum would answer "how much evidence exists" rather than "which answer is
@@ -1000,8 +1001,9 @@ def classify_pickle(keys: set, modules: set) -> str | None:
 #
 # Weights are Jei's, from his judgement of trustworthiness. The arithmetic they produce
 # (since Step 2 lowered LOFI_MAX_RATING to 0.3): all six LoFi measures agreeing tops out
-# at 6*5*0.3 = 9, while any single embedded measure reaches 18-29.7 even at the generic
-# 0.6 rating -- so content always wins, and names decide only where content is absent.
+# at 6*5*0.3 = 9, while the WEAKEST single embedded vote -- a pickle or GGUF read at the
+# generic 0.6 -- already reaches 20*0.6 = 12, and a safetensors read runs 18 to 29.7. So
+# content always wins, and names decide only where content is absent.
 MEASURE_PARTS = {
     "safetensors": 30,   # embedded
     "pickle": 20,        # embedded
@@ -1020,8 +1022,10 @@ LOFI_MEASURES = {"ct2", "config", "component", "segments", "filename", "repo"}
 # still VOTE and are all still recorded in `signals` -- only what they may CLAIM drops. Parts
 # (how much we listen to a KIND of evidence) are untouched; the rating (how sure this instance
 # is) is where a "slight bias toward truth" belongs. Effect: six LoFi measures in unanimous
-# agreement now total 30x0.3 = 9.0 against a single GENERIC content read at 30x0.6 = 18.0 --
-# content wins 2:1 where it used to tie. One constant; retune here if a re-scan argues for it.
+# agreement now total 30x0.3 = 9.0 (30 = their PARTS, 6x5) against a generic safetensors read
+# at 30x0.6 = 18.0 -- content wins 2:1 there where it used to tie, and still wins on the
+# weakest embedded read there is (a generic pickle/GGUF, 20x0.6 = 12.0). One constant;
+# retune here if a re-scan argues for it.
 LOFI_MAX_RATING = 0.3
 EMBEDDED_MAX_RATING = 0.99   # nor may anything else claim absolute certainty
 
@@ -1880,7 +1884,14 @@ def cmd_status(args) -> int:
             log(f"UNCLASSIFIED  {entry.get('display', ident)}"
                 f"{'' if ident in displays else ' (source gone)'}")
 
-    n_user_files = n_user_broken = 0
+    # TREE AWARENESS -- the same walk the sync census does, and it has to answer the same
+    # question the same way. A REAL FILE in the tree (an in-box downloader's work, weights
+    # that exist nowhere else) is not an unowned SYMLINK (a link somebody else made, whose
+    # data lives elsewhere), and one count covering both said neither: the number sync
+    # reports as "N real files in tree" could not be found in `status` at all. Split at
+    # the same place sync splits it -- ownership first, so a --hardlink tree does not
+    # report our own regular files as somebody else's.
+    n_user_real = n_user_links = n_user_broken = 0
     if tree.is_dir():
         for p in sorted(tree.rglob("*")):
             if p.is_dir():
@@ -1888,12 +1899,15 @@ def cmd_status(args) -> int:
             rel = str(p.relative_to(tree))
             if rel in owned:
                 continue
-            if p.is_symlink() and not p.exists():
+            if not p.is_symlink():
+                n_user_real += 1
+                log(f"USER  {rel} (real file, not ours; never touched)")
+            elif not p.exists():
                 n_user_broken += 1
                 log(f"NOTE  broken unowned symlink (left alone): {rel}")
             else:
-                n_user_files += 1
-                log(f"USER  {rel} (not ours; never touched)")
+                n_user_links += 1
+                log(f"USER  {rel} (link, not ours; never touched)")
 
     for i in new:
         log(f"NEW  {displays[i]} (will classify on next sync)")
@@ -1904,7 +1918,8 @@ def cmd_status(args) -> int:
     log(f"model-scanner status: {len(files)} files + {len(units)} repo units "
         f"({len(new)} new, {len(gone)} gone from registry), "
         f"links: {n_ok} ok / {n_broken} broken / {n_missing} missing, "
-        f"user items: {n_user_files} files+links, {n_user_broken} broken")
+        f"user items: {n_user_real} real files + {n_user_links} links, "
+        f"{n_user_broken} broken")
     return 0
 
 

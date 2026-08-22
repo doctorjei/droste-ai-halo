@@ -2128,6 +2128,67 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("user items: 0 real files + 0 links, 0 broken", out)
         self.assertNotIn("USER  ", out)
 
+    def test_status_reports_a_real_file_at_an_owned_path_as_replaced(self):
+        """The defect this pins: `status` called a REGULAR FILE at an owned path a
+        healthy owned link, and its ownership skip then kept that same file out of the
+        real-file count -- wrong twice, in one line. The window is exactly "registry
+        stale relative to the tree": sync disowns the path on its next run (ensure_link
+        -> conflict, rel left out of the rebuilt entry) and the two reports agree again,
+        so status has to be right BEFORE that happens, not after."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        link = self.fx.tree / "loras" / "local-thing.safetensors"
+        self.assertTrue(link.is_symlink())
+        link.unlink()
+        link.write_bytes(b"a real file where our link used to be")
+
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("REPLACED  loras/local-thing.safetensors", out)
+        self.assertNotIn("links: 8 ok", out)
+        self.assertIn("/ 1 replaced", out)
+        # and it is counted where sync counts it -- the two verbs, one tree, one number
+        self.assertIn("user items: 1 real files", out)
+        rc, sync_out = self.fx.sync("-n")
+        self.assertEqual(rc, 0)
+        self.assertIn("1 real files in tree", sync_out)
+        # named once: REPLACED explains it, the inventory must not repeat it as USER
+        self.assertNotIn("USER  loras/local-thing.safetensors", out)
+
+    def test_status_accepts_an_owned_hardlink_as_ok_without_being_told(self):
+        """Hardlink-awareness, and why the INODE has to decide it: under --hardlink every
+        owned link is a regular file, and `status` takes no --hardlink flag -- it reads a
+        tree somebody else built. Mode cannot answer the question; identity can."""
+        populate_standard(self.fx)
+        self.fx.sync("--hardlink")
+        hard = self.fx.tree / "vae" / "ae.safetensors"
+        self.assertTrue(hard.is_file() and not hard.is_symlink())
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("REPLACED", out)
+        self.assertNotIn("replaced", out)
+        self.assertIn("0 broken / 0 missing,", out)
+
+    def test_status_ok_broken_and_missing_are_unchanged(self):
+        """The three states that were already right stay right -- the fix changes what
+        `ok` MEANS, so the other three buckets are the regression surface."""
+        populate_standard(self.fx)
+        self.fx.sync()
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("0 broken / 0 missing,", out)
+        self.assertNotIn("replaced", out)   # the bucket is silent when it is empty
+
+        (self.fx.tree / "loras" / "local-thing.safetensors").unlink()
+        broken = self.fx.tree / "vae" / "ae.safetensors"
+        broken.unlink()
+        broken.symlink_to(self.fx.root / "nowhere.safetensors")
+        rc, out = self.fx.status()
+        self.assertEqual(rc, 0)
+        self.assertIn("BROKEN  vae/ae.safetensors", out)
+        self.assertIn("MISSING  loras/local-thing.safetensors", out)
+        self.assertIn("1 broken / 1 missing,", out)
+
     # ------------------------------------------------------------ name collisions
     def test_name_collision_gets_disambiguated(self):
         self.fx.add_hf_file("acme/pack-one", "vae/dup.safetensors",

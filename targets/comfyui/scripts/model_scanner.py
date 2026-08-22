@@ -35,6 +35,13 @@ completely alone: never linked over, never moved, never pruned, never claimed in
 registry. Report-only is the whole policy -- a real file in the link tree is somebody
 else's decision, and the only thing the scanner owes it is visibility.
 
+That holds even at a path the registry OWNS. A real file written over one of our links
+is `status`'s "N replaced" (one REPLACED line each) and is counted among the real files,
+which is how the two verbs report the same number for the same tree; sync reaches the
+same place by a different route, as a conflict that drops the path from the registry.
+What is at an owned path is decided by INODE, never by --hardlink: our own hardlinks are
+regular files too, and `status` is never told which mode built the tree.
+
 DESIGN NOTES / REGISTRY SCHEMA
 ==============================
 One YAML store (default /opt/data/model-registry.yaml) plays TWO roles:
@@ -1857,6 +1864,38 @@ def cmd_inspect(args) -> int:
     return 0
 
 
+def owned_link_state(dst: Path, source: str | None) -> str:
+    """What is ACTUALLY at an owned tree path: ok | broken | missing | replaced.
+
+    `replaced` is the state that used to be invisible. A REGULAR FILE at a path the
+    registry owns is not our link -- an in-box downloader wrote through the bind, or the
+    user dropped a file over it -- and sync already knows this: ensure_link returns
+    `conflict`, the path is left out of the rebuilt entry's `links`, and the census
+    counts it under "N real files in tree". Only `status` disagreed, because its test was
+    "not a broken symlink" and a regular file passes that.
+
+    ⚠️ THE MODE CANNOT DECIDE THIS. Under --hardlink our own link IS a regular file, and
+    `status` takes no --hardlink flag -- it reads a tree somebody else built. So the
+    INODE decides, the same question link_matches asks: same file as the source we
+    recorded => our link, whatever mode made it. (st_dev too, since an inode number is
+    only unique within a device; a genuine hardlink shares both, so this never rejects
+    one.) No source recorded, or the source is gone => not verifiable as ours, and sync
+    would disown it on the next prune anyway.
+    """
+    if dst.is_symlink():
+        return "ok" if dst.exists() else "broken"
+    if not dst.exists():
+        return "missing"
+    if source:
+        try:
+            a, b = dst.stat(), Path(source).stat()
+            if (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino):
+                return "ok"
+        except OSError:
+            pass
+    return "replaced"
+
+
 def cmd_status(args) -> int:
     tree: Path = args.tree
     reg = load_registry(args.registry)
@@ -1868,16 +1907,25 @@ def cmd_status(args) -> int:
     gone = [i for i in reg.entries if i not in displays]
     owned = reg.owned_links()
 
-    n_ok = n_broken = n_missing = 0
+    # Tree paths this report has ALREADY explained on their own line, so the real-file
+    # inventory below can COUNT them without saying so twice -- the same bargain sync
+    # strikes with its `named_rels`.
+    named_rels: set[str] = set()
+    n_ok = n_broken = n_missing = n_replaced = 0
     for ident, entry in reg.entries.items():
         for rel in entry.get("links") or []:
-            dst = tree / rel
-            if not (dst.is_symlink() or dst.exists()):
+            state = owned_link_state(tree / rel, entry.get("source"))
+            if state == "missing":
                 n_missing += 1
                 log(f"MISSING  {rel} (owned link absent; sync will recreate)")
-            elif dst.is_symlink() and not dst.exists():
+            elif state == "broken":
                 n_broken += 1
                 log(f"BROKEN  {rel} (owned; sync --prune will remove)")
+            elif state == "replaced":
+                n_replaced += 1
+                named_rels.add(rel)
+                log(f"REPLACED  {rel} (real file where our link was; never touched -- "
+                    f"sync reports a conflict and drops the path from the registry)")
             else:
                 n_ok += 1
         if entry.get("category") == UNCLASSIFIED:
@@ -1897,11 +1945,17 @@ def cmd_status(args) -> int:
             if p.is_dir():
                 continue
             rel = str(p.relative_to(tree))
-            if rel in owned:
+            # A REPLACED path is owned by the registry and is NOT ours in the tree, so
+            # the ownership skip has to let it through -- otherwise the count that is
+            # supposed to agree with sync's "N real files in tree" silently omits the
+            # one file sync is about to disown. It is already named above, so it is
+            # counted here and not re-announced.
+            if rel in owned and rel not in named_rels:
                 continue
             if not p.is_symlink():
                 n_user_real += 1
-                log(f"USER  {rel} (real file, not ours; never touched)")
+                if rel not in named_rels:
+                    log(f"USER  {rel} (real file, not ours; never touched)")
             elif not p.exists():
                 n_user_broken += 1
                 log(f"NOTE  broken unowned symlink (left alone): {rel}")
@@ -1917,7 +1971,8 @@ def cmd_status(args) -> int:
 
     log(f"model-scanner status: {len(files)} files + {len(units)} repo units "
         f"({len(new)} new, {len(gone)} gone from registry), "
-        f"links: {n_ok} ok / {n_broken} broken / {n_missing} missing, "
+        f"links: {n_ok} ok / {n_broken} broken / {n_missing} missing"
+        f"{f' / {n_replaced} replaced' if n_replaced else ''}, "
         f"user items: {n_user_real} real files + {n_user_links} links, "
         f"{n_user_broken} broken")
     return 0

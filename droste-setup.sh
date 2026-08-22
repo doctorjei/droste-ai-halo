@@ -293,6 +293,7 @@ if [[ $ASCII -eq 1 ]]; then
   C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_SGRP="" C_MOPT="" C_MCAT=""
   C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP=""
   C_PATHB="" C_PATHG=""
+  C_EMLBL="" C_EMBOX="" C_EMPTH=""
   # Repaint plumbing for the pull progress bar. Empty here on purpose: --ascii
   # (and any dumb terminal) gets the APPEND-ONLY bar instead — a drawing that
   # only ever grows to the right and down, so the section stays byte-for-byte
@@ -399,6 +400,22 @@ else
   C_SELP=$'\e[1;3;95m'  # "Select the boxes you wish to edit, modify, or rebuild."
   C_PATHB=$'\e[1;94m'   # inline emphasis, bold bright blue (paths / keywords)
   C_PATHG=$'\e[1;92m'   # inline emphasis, bold bright green (paths)
+  # The three fragments Jei marked up BY NAME in his s41 move-flow examples
+  # (droste-s41-move-{with,without}-base-files.txt). Each is derived from a
+  # weight that already exists in this palette rather than invented, and each is
+  # reset-prefixed — they open INSIDE a prompt line, after other painted
+  # fragments, so without the leading 0; they would inherit whatever ran last.
+  #   C_EMLBL  "<label> path", the subject of the course-of-action question:
+  #            "bold, italic, bright purple". Bright purple is 95, the shade
+  #            C_SELP/C_DETH already use for a line addressed AT the reader.
+  #   C_EMBOX  "all boxes", in both batch questions: "bold, italic, dark
+  #            yellow" — the same three attributes as C_WARNI (0;1;3;33), which
+  #            is the *Warning: line rendered directly above it.
+  #   C_EMPTH  "all data paths": "bold, italic" with no colour named, so it
+  #            keeps body text's own grey (C_TEXT is 0;37) and adds 1;3.
+  C_EMLBL=$'\e[0;1;3;95m'
+  C_EMBOX=$'\e[0;1;3;33m'
+  C_EMPTH=$'\e[0;1;3;37m'
   # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
   # (the bar can be wider than the status line that replaces it).
   CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
@@ -611,6 +628,12 @@ name_list() {   # colour name...
 # prompt's body colour is restored after it (ask_raw opened the line in C_TEXT).
 emph()  { printf '%s%s%s' "$C_PATHB" "$1" "$C_TEXT"; }
 emphg() { printf '%s%s%s' "$C_PATHG" "$1" "$C_TEXT"; }
+# The same thing in a colour the caller names — for the marked-up fragments that
+# have one entry each rather than one shared "emphasis" shade. Restoring C_TEXT
+# (0;37, reset-prefixed) is what CLEARS the bold and the italic again: the hint
+# cluster that follows opens on C_PBRK (1;97), which sets no reset of its own,
+# so an unrestored italic would slant the "[Y/n]?" too.
+emphc() { printf '%s%s%s' "$1" "$2" "$C_TEXT"; }
 
 # Underlined subtitle printed under a section divider (blank line, then indent).
 # "intro" = the Resource Path subtitle, drawn a shade dimmer in the mockup.
@@ -2537,8 +2560,12 @@ declare -A MIT_LABELS MIT_FS
 # make sure it exists, and answer its filesystem question. Sets PATHS[box:label]
 # — plus CFG_FS/CFG_MODE when the label is the data dir, since /opt/data is the
 # bind the in-box overlay is actually built on.
-set_bind_path() {  # box label
-  local box=$1 label=$2 def rc force=0
+# $3 forces the PROMPT even for an auto-placed family. Its one caller is
+# relocate_box's [c]hange, which is by ruling "the ordinary single-path settle
+# route" and not a bespoke re-ask — so it re-enters this function rather than
+# growing a second asker beside it.
+set_bind_path() {  # box label [force-prompt]
+  local box=$1 label=$2 def rc force=${3:-0}
   while :; do
     def=$(path_default "$box" "$label")
     if [[ $force -eq 0 ]] && auto_label "$label"; then
@@ -2549,7 +2576,10 @@ set_bind_path() {  # box label
       ANS_PATH=$(path_derived "$box" "$label")
       # Not created here when the move pass is going to offer to fill it: the
       # move creates what it needs, and a declined one leaves nothing behind.
-      if ! relocatable "$box" "$label" "$ANS_PATH"; then
+      # Nor while a [c]hange is re-deriving the box's other binds: that path may
+      # be abandoned by the very next answer, and relocate_box makes what is
+      # left standing once the rounds are over.
+      if [[ $RELOC_NO_CREATE -eq 0 ]] && ! relocatable "$box" "$label" "$ANS_PATH"; then
         ensure_dir "$ANS_PATH" || :
       fi
     else
@@ -2874,7 +2904,8 @@ mv_said() {
 # directory is REFUSED and stays where it is, named. That refusal is the
 # behaviour, not a gap in it (Jei, s41: same behaviours and errors as mv) — the
 # alternative, recursing into the collision and unioning it, is a thing mv will
-# not do and is indistinguishable from "replace" for the files inside.
+# not do and is indistinguishable from "remove data at new path" for the files
+# inside.
 MERGE_MOVED=0
 MERGE_KEPT=0
 merge_into() {  # src dst → 0 when every entry landed
@@ -2948,48 +2979,27 @@ dir_within() {  # inner outer → 0 when inner is at or below outer
   [[ $a == "$b" || $a == "$b"/* ]]
 }
 
-# "Size at minimum" was Jei's floor for the disclosure, not its ceiling — and
-# there is one thing worth more than the size here: the destination may be where
-# THIS BOX'S OTHER BINDS already live. On the shape that produced G1 it usually
-# is (comfyui's data lands on the directory holding its own input and output),
-# and the consequence is invisible otherwise: MERGE and "use old content" leave
-# those dirs exactly where they are, while REPLACE deletes them — after which
-# the leaf that follows finds nothing at its recorded path and is offered as a
-# fresh empty directory. That is a real answer to a real question, but only if
-# it is asked with this on screen.
-dest_holds_note() {  # box label dest → " It also holds …" ("" when it does not)
-  local box=$1 skip=$2 dest=$3 key label p out=""
-  local -a named=()
-  for key in "${!EXD_PATH[@]}"; do
-    [[ ${key%%:*} == "$box" ]] || continue
-    label=${key##*:}
-    [[ $label == "$skip" ]] && continue
-    p=${EXD_PATH[$key]}
-    [[ -n $p ]] || continue
-    dir_within "$p" "$dest" || continue
-    dir_has_content "$p" || continue
-    named+=("$(leaf_word "$label")")
-  done
-  [[ ${#named[@]} -gt 0 ]] || return 0
-  # Joined by hand rather than with name_list: this text is handed to prose(),
-  # which FOLDS it to the screen, and fold counts an SGR escape as width.
-  local i=0 last=$(( ${#named[@]} - 1 ))
-  for label in "${named[@]}"; do
-    if [[ $i -eq 0 ]]; then out=$label
-    elif [[ $i -eq $last ]]; then out="$out and $label"
-    else out="$out, $label"
-    fi
-    i=$((i + 1))
-  done
-  printf ' It is where %s keeps its %s.' "${BOX_NAME[$box]}" "$out"
-  return 0
-}
-
 # A program cache that moved: no offer, no question about the DATA (it
 # regenerates), only the one about the directory it vacated.
+#
+# ⭐ NO ACTION TEST (Jei s42, and the same reasoning as `relocatable`'s). s42
+# dropped that gate from `relocatable` and `relocate_box` so a recreate gets the
+# data questions; this function kept a private copy of it, which left a RECREATE
+# box that re-points its program cache silently orphaning the old cache dir —
+# offered the data move, but never the clear. The record is what earns the
+# question, not which of K/m/r was chosen, and `EXD_PATH` is the record: a fresh
+# create has none (line below returns), a keep box re-settles on the same
+# directory (same_dir returns), so dropping the test reaches recreate and
+# nothing else.
+#
+# ⚠️ The program cache's EXEMPTION is untouched: it is still silently
+# re-pointed, still asked no move question and no [U]se/[c]hange question. The
+# only thing this reaches is the s38 consent-gated clear, aimed at the VACATED
+# directory, and old_pcache_offer still owns both of its safety rules —
+# pcache_wipe_safe (never a directory another bind of this install also uses)
+# and the running-box refusal.
 relocate_pcache() {  # box new
   local box=$1 new=$2 old
-  [[ ${ACTION[$box]} == modify ]] || return 0
   old=${EXD_PATH["$box:pcache"]:-}
   [[ -n $old ]] || return 0
   same_dir "$old" "$new" && return 0
@@ -3016,17 +3026,58 @@ relocate_pcache() {  # box new
 # Declined, refused, failed, or "keep old path as-is" all leave PATHS holding
 # the recorded path; "use the data already at the new path" is the one answer
 # that takes the new path without moving a byte.
+#
+# ⭐ TWO INDEPENDENT QUESTIONS (Jei s42). They were welded together until s42,
+# both behind one `ACTION == modify` gate:
+#
+#   A  a recorded path holds content and the box will now read elsewhere
+#      → "move it?"   Needs a RECORD, so: recreate and modify, never a fresh
+#      create.
+#   B  the path the box will now READ holds content
+#      → "what should happen to what is there?"   Needs only a DESTINATION, so
+#      it applies to a fresh create exactly as much as to a modify.
+#
+# B has two forms, chosen by whether data is landing on that destination:
+#
+#   form 1  [M]erge / [r]emove / [u]se / [k]eep — a move was accepted onto it.
+#   form 2  [U]se / [c]hange                    — nothing is moving onto it: a
+#           fresh create, or a path whose move was declined.
+#
+# ⭐ The disclosure above the question and the two batch questions below it are
+# THE SAME in both forms, and Jei notes that is not an accident — only the
+# middle changes. Declining a move therefore stops meaning "keep the old path"
+# unconditionally: it means "do not carry the files over", and then an empty
+# destination keeps the recorded path (the s41 invariant) while a destination
+# with content earns form 2.
 MOVE_ALL_BOXES=""     # y|n      — "Do this for all boxes" (the move question)
-COLL_ALL_BOXES=""     # m|r|u|k  — "Apply this decision to all boxes"
+COLL_ALL_BOXES=""     # m|r|u|k  — "Apply this decision to all boxes" (form 1)
+USE_ALL_BOXES=""      # u|c      — "Apply this decision to all boxes" (form 2)
+
+# Set while relocate_box re-settles the binds a [c]hange unsettled: an
+# AUTO-PLACED path is derived without a question, so creating it there would
+# leave an empty directory behind every time the user changes their mind again.
+# The paths that survive the last round are created by relocate_box itself, once
+# nothing more can move. (Same reason set_bind_path already skips a destination
+# the move pass is going to fill.)
+RELOC_NO_CREATE=0
 
 # Is this bind one the move pass is going to ask about? Both callers need the
 # same answer: relocate_box, to build its list, and set_bind_path, which must
 # NOT create the destination for one of them — the move makes what it needs,
 # and a declined move would otherwise leave an empty directory behind at a path
 # the box does not even use.
+#
+# ⭐ NO ACTION TEST (Jei s42, ruling 3). The question this answers is "is there
+# recorded data somewhere other than where the box will now read?", and that is
+# a question about a RECORD, not about which of K/m/r was chosen: a RECREATE box
+# has the same ini behind it and the same bytes on the disk, so it earns the
+# same question. `EXD_PATH` is the record, and detect_existing fills it for
+# every box before any of that is asked — a fresh create simply has none, which
+# is why ruling 2 ("A never applies to a fresh create") needs no test of its own.
+# The one gate that stays is path_default's: THAT test is the recreate/modify
+# divergence, and it is the whole of it.
 relocatable() {  # box label new → 0 when the move pass will handle it
   local box=$1 label=$2 new=$3 old
-  [[ ${ACTION[$box]:-} == modify ]] || return 1
   [[ $label != pcache ]] || return 1
   old=${EXD_PATH["$box:$label"]:-}
   [[ -n $old ]] || return 1
@@ -3048,6 +3099,19 @@ box_labels() {  # box → its data-family labels, in bind order
 # A disclosure header: bold bright white, underlined, and NO leading blank line
 # — it opens a block that sits directly under the subheader above it.
 disc_hdr() { printf '  %s%s%s\n' "$C_HDR" "$1" "$RESET"; }
+
+# The "<Box> Paths" subheader, printed by whichever of the two asks first: the
+# path prompts when the family was not placed, this pass when it was. Called
+# more than once per box on purpose — only the first call draws anything.
+paths_hdr() {  # box
+  if [[ ${PATHS_HDR:-0} -eq 0 ]]; then
+    subhdr "${BOX_NAME[$1]} Paths"
+    PATHS_HDR=1
+  else
+    say ""
+  fi
+  return 0
+}
 disc_row() { printf '  %s[%s%s%s]%s\n' "$C_TBRK" "$C_DETN" "$1" "$C_TBRK" "$RESET"; }
 
 leaf_list() {  # label... → "program, output, input"
@@ -3150,15 +3214,37 @@ move_one() {  # box label old new mode(plain|m|r) → 0 = the box may take new
   return 0
 }
 
+# ⭐ RE-ENTERABLE, not a straight-line pass (Jei s42). [c]hange drops a path
+# back into the ordinary settle route, and path_derived hangs every other bind
+# of the box off the parent of its program dir — so changing that one path
+# UNSETTLES the rest, and they have to come back round for the same questions.
+# Hence rounds: a round asks about the labels in scope, and a [c]hange puts what
+# it unsettled into the next round's scope. Nothing accumulates per round (the
+# re-derived paths are not created until the rounds are over — RELOC_NO_CREATE),
+# and nothing MOVES until they are either, because a move executed in round 1
+# could be aimed at a destination round 2 walks away from.
 relocate_box() {  # box
-  local box=$1 label old new i n parent ans first
-  local box_ans="" box_coll=""      # this box's two batched answers
+  local box=$1 label old new i n parent ans first word askall ask_use in_scope in_chg
+  local ask_coll carried_dec dec_i leaf
+  local box_ans="" box_coll="" box_use=""   # this box's batched answers
   local -a labels=() olds=() news=() moving=() coll=() dec=()
-  [[ ${ACTION[$box]} == modify ]] || return 0
+  local -a scope=() nextscope=() chg=() b2=() bpaths=() mkq=()
+  local -A COLL_AT=()   # index → 1 for the binds whose destination has files
+  # Carried ACROSS rounds, keyed by label: the move answer and the two paths it
+  # is about (M_*), form 1's course of action (M_DEC), form 2's [U]se (B_NEW),
+  # and which labels the user has already changed once (CHANGED — a batched
+  # [c]hange must never auto-answer a path it already changed, or "apply to all"
+  # becomes a loop with no way out of it).
+  local -A A_MOVE=() M_OLD=() M_NEW=() M_DEC=() B_NEW=() CHANGED=()
+  local ask_moves=1
+  for label in $(box_labels "$box"); do scope+=("$label"); done
+
+ while [[ ${#scope[@]} -gt 0 ]]; do
+  labels=() olds=() news=() moving=() coll=() dec=() b2=() nextscope=() COLL_AT=()
   # Which binds have their files somewhere other than where the box will now
   # read them from? Spelling never decides this: ~/appdata/comfyui and
   # /home/you/appdata/comfyui are one directory.
-  for label in $(box_labels "$box"); do
+  for label in "${scope[@]}"; do
     old=${EXD_PATH["$box:$label"]:-}
     new=${PATHS["$box:$label"]:-}
     [[ -n $old && -n $new ]] || continue
@@ -3178,38 +3264,47 @@ relocate_box() {  # box
     labels+=("$label") olds+=("$old") news+=("$new")
   done
   n=${#labels[@]}
-  [[ $n -gt 0 ]] || return 0
   # A RUNNING box is refused with the reason — "same as cache" (Jei) — once, for
   # the whole box. Its data is under a live mount, and every fix needs the box
-  # restarted anyway.
-  if [[ $(box_state "$box") == ACTIVE ]]; then
+  # restarted anyway. Asked only when there is something to move: question B
+  # moves no bytes, so a running box is no reason to withhold it.
+  if [[ $n -gt 0 ]] && [[ $(box_state "$box") == ACTIVE ]]; then
     subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to move its data."
     for (( i = 0; i < n; i = i + 1 )); do revert_path "$box" "${labels[i]}" "${olds[i]}"; done
     return 0
   fi
 
   # ── 1. Where those files are now ──────────────────────────────────────────
-  # The subheader when this pass is the first thing the box asks about (a placed
-  # family answers every path question before the box section opens); otherwise
-  # the path prompts above already printed it, and the block just needs air.
-  if [[ ${PATHS_HDR:-0} -eq 0 ]]; then
-    subhdr "${BOX_NAME[$box]} Paths"
-    PATHS_HDR=1
-  else
+  # A box whose answer was settled by an earlier "Do this for all boxes" is
+  # asked NOTHING here, and everything that block exists for goes with the
+  # question: disclosing where the files are and explaining that a move is
+  # needed are both setups for a decision this box does not get to make (Jei:
+  # "if we are skipping because it's already answered, we really shouldn't be
+  # showing any of that; it all becomes irrelevant"). What survives is a
+  # RECEIPT — one line per bind, naming what moved and where — printed after
+  # the questions that would have been asked, further down.
+  # box_ans joins MOVE_ALL_BOXES here for the same reason and by the same rule:
+  # in a LATER round (a [c]hange re-settled something) the box-wide batch has
+  # already answered for whatever came back round, so the disclosure and the
+  # sentence above it are setups for a question that will not be asked. It is
+  # always empty on the first round, where this reads exactly as it always did.
+  ask_moves=1
+  [[ -z $MOVE_ALL_BOXES && -z $box_ans ]] || ask_moves=0
+  if [[ $n -gt 0 && $ask_moves -eq 1 ]]; then
+    paths_hdr "$box"
+    parent=$(common_parent "${olds[@]}")
+    if [[ -n $parent ]]; then
+      disc_hdr "Current data file paths in $parent:"
+      disc_row "$(leaf_list "${labels[@]}")"
+    else
+      disc_hdr "Current data file paths:"
+      for (( i = 0; i < n; i = i + 1 )); do
+        disc_row "$box $(leaf_word "${labels[i]}"): ${olds[i]}"
+      done
+    fi
     say ""
+    prose "To use current, active data with new path(s), that data will need to be moved." "$C_QTXT"
   fi
-  parent=$(common_parent "${olds[@]}")
-  if [[ -n $parent ]]; then
-    disc_hdr "Current data file paths in $parent:"
-    disc_row "$(leaf_list "${labels[@]}")"
-  else
-    disc_hdr "Current data file paths:"
-    for (( i = 0; i < n; i = i + 1 )); do
-      disc_row "$box $(leaf_word "${labels[i]}"): ${olds[i]}"
-    done
-  fi
-  say ""
-  prose "To use current, active data with new path(s), that data will need to be moved." "$C_QTXT"
 
   # ── 2. The move questions ─────────────────────────────────────────────────
   # The two batch questions are offered ONCE, straight after the first answer,
@@ -3225,20 +3320,111 @@ relocate_box() {  # box
     if [[ $n -gt 1 ]]; then
       # A box with ONE data path has nothing to apply this to, so it is not
       # asked — the all-boxes question below is offered on its own instead.
-      ask_yn "Do this for all data paths for $box" Y
+      ask_yn "Do this for $(emphc "$C_EMPTH" "all data paths") for $box" Y
       [[ $ANS_YN -eq 1 ]] || continue
       box_ans=$ans
     fi
-    ask_yn "Do this for all boxes" Y
+    # Jei marked "all boxes" up ONCE, on the collision batch, and this line
+    # carries the identical phrase for the identical purpose — so it gets the
+    # identical shade rather than a second, unnamed one.
+    ask_yn "Do this for $(emphc "$C_EMBOX" "all boxes")" Y
     [[ $ANS_YN -eq 1 ]] && MOVE_ALL_BOXES=$ans
   done
+  # Carried out of the round, because nothing is moved until every round is
+  # over: a [c]hange in the block below can re-derive a destination this round
+  # already asked about, and a move already made cannot be re-aimed.
+  for (( i = 0; i < n; i = i + 1 )); do
+    A_MOVE[${labels[i]}]=${moving[i]}
+    M_OLD[${labels[i]}]=${olds[i]}
+    M_NEW[${labels[i]}]=${news[i]}
+  done
 
-  # ── 3. The destinations that are not empty ────────────────────────────────
+  # ── 3. FORM 1: destinations that are not empty, WITH data landing on them ──
+  # The `moving` scope is the whole difference between the two forms — it is
+  # what earns the four-way menu, because there are two sets of files to
+  # reconcile. Everything it excludes is form 2's, below: a path with content
+  # and nothing coming to meet it.
+  #
+  # Found HERE, ABOVE the receipt rather than down in the block it feeds: a
+  # course of action that is ALREADY DECIDED changes what the receipt has to
+  # say, and [u]se and [k]eep reverse the move outright.
   for (( i = 0; i < n; i = i + 1 )); do
     [[ ${moving[i]} -eq 1 ]] || continue
-    dir_has_content "${news[i]}" && coll+=("$i")
+    if dir_has_content "${news[i]}"; then coll+=("$i"); COLL_AT[$i]=1; fi
   done
+  # ⭐ THE BLOCK IS DRAWN IF, AND ONLY IF, A PROMPT WILL FOLLOW IT. Everything
+  # in it — the disclosure, the Options list, the warning — exists to set up a
+  # question, so when an earlier batch has already answered for every entry
+  # there is nothing to set up and "it all becomes irrelevant" (Jei s41, ruling
+  # on the move block; the collision batch could not carry a box yet when he
+  # said it). Drawn anyway it is byte-identical to a live menu that then asks
+  # nothing at all — the defect shipped in `f06118f`. Two cases, one code path:
+  # a box carried by the MOVE batch is NOT decided here and must still be asked
+  # (verified before this change: it always was), while a box carried by the
+  # COLLISION batch is decided and gets the receipt below instead.
+  ask_coll=1
+  carried_dec=""
+  if [[ ${#coll[@]} -gt 0 && ( -n $box_coll || -n $COLL_ALL_BOXES ) ]]; then
+    ask_coll=0
+    carried_dec=${box_coll:-$COLL_ALL_BOXES}
+  fi
+
+  # ── 3b. The receipt for whatever this box was not asked (Jei's line) ──────
+  # One line per bind, naming the decision that was made for it:
+  #   ask_moves 0 → the move answer came from an earlier box — what is moving
+  #   ask_coll  0 → the course of action did too — what happens where it lands
+  # A bind can be owed both, and a DECIDED course of action subsumes the move
+  # line rather than following it: each of the four sentences below names the
+  # old path itself, so printing "will be moved to <new>" above it would say
+  # the same thing twice — and for [u]se / [k]eep it would be false outright,
+  # since both reverse the move.
+  #
+  # ⭐ WORDING RULED BY JEI (s43), and the three things he cut are the point:
+  #   no box name   — "there's a giant banner a few lines up" (the box header
+  #                   is on screen, and paths_hdr repeats it directly above)
+  #   no new path   — it is named in the summary box a few lines below, and in
+  #                   the question itself for the box that was actually asked
+  #   the leaf, not the display word — `program`, `output`, `input`, the same
+  #                   tokens leaf_list uses in the disclosure this refers back
+  #                   to. So it is leaf_dir here, NOT leaf_word ("program data"
+  #                   would read "program data path").
+  if [[ $ask_moves -eq 0 || $ask_coll -eq 0 ]]; then
+    first=1
+    for (( i = 0; i < n; i = i + 1 )); do
+      [[ ${moving[i]} -eq 1 ]] || continue
+      dec_i=${COLL_AT[$i]:+$carried_dec}
+      # Nothing owed: the move question was asked and this destination is empty.
+      [[ $ask_moves -eq 0 || -n $dec_i ]] || continue
+      # The header once, above the first line — not between every pair of them.
+      if [[ $first -eq 1 ]]; then first=0; paths_hdr "$box"; fi
+      leaf=$(leaf_dir "${labels[i]}")
+      # ⚠️ ask_choice hands back the LOWERCASE letter, "Mruk" default included:
+      # the four decisions are m/r/u/k here, not M/r/u/k as the menu spells them.
+      case "$dec_i" in
+        m) prose "Merging current $leaf path [${olds[i]}] into new path." "$C_QTXT"
+           continue ;;
+        r) prose "Replacing new path with current $leaf path [${olds[i]}]." "$C_QTXT"
+           continue ;;
+        # ⚠️ [u]se is the ONE decision the move pass also reports on, with a
+        # `-> <old> is left where it is` outcome line a few lines below. Naming
+        # the path here too said it twice, so this clause stays generic and the
+        # outcome line does the naming (Jei, s43).
+        u) prose "Using data at new path for $leaf; leaving old path as-is." "$C_QTXT"
+           continue ;;
+        k) prose "Continuing to use current $leaf path [${olds[i]}] as-is." "$C_QTXT"
+           continue ;;
+      esac
+      # Only the move was carried; the collision (if any) is still asked below.
+      # This is the line Jei ruled in s41 and it is deliberately untouched.
+      if [[ $ask_moves -eq 0 ]]; then
+        word=$(leaf_word "${labels[i]}")
+        prose "${word^} for $box will be moved to ${news[i]}." "$C_QTXT"
+      fi
+    done
+  fi
+
   if [[ ${#coll[@]} -gt 0 ]]; then
+   if [[ $ask_coll -eq 1 ]]; then
     local -a cpaths=() clabels=()
     for i in "${coll[@]}"; do cpaths+=("${news[i]}") clabels+=("${labels[i]}"); done
     say ""
@@ -3270,11 +3456,12 @@ relocate_box() {  # box
       prose "*Warning: If you choose to keep the old path, this forgoes the shared base path." "$C_WARNI"
     fi
     say ""
+   fi
     first=1
     for i in "${coll[@]}"; do
       if [[ -n $box_coll ]]; then dec[i]=$box_coll; continue; fi
       if [[ -n $COLL_ALL_BOXES ]]; then dec[i]=$COLL_ALL_BOXES; continue; fi
-      ask_choice "Select a course of action for the $(leaf_word "${labels[i]}") path [M/r/u/k]" "Mruk"
+      ask_choice "Select a course of action for the $(emphc "$C_EMLBL" "$(leaf_word "${labels[i]}") path") [M/r/u/k]" "Mruk"
       dec[i]=$ANS_CH
       [[ $first -eq 1 ]] || continue
       first=0
@@ -3283,24 +3470,225 @@ relocate_box() {  # box
         [[ $ANS_YN -eq 1 ]] || continue
         box_coll=${dec[i]}
       fi
-      ask_yn "Apply this decision to all boxes" Y
+      ask_yn "Apply this decision to $(emphc "$C_EMBOX" "all boxes")" Y
       [[ $ANS_YN -eq 1 ]] && COLL_ALL_BOXES=${dec[i]}
+    done
+    for i in "${coll[@]}"; do M_DEC[${labels[i]}]=${dec[i]}; done
+  fi
+
+  # ── 4. FORM 2: a path the box will now read that already holds data, with
+  #       nothing moving onto it ────────────────────────────────────────────
+  # Every settled path of the box is in view here, not just the ones a move was
+  # accepted for — that scope is exactly what s41 got wrong. Three tests, in the
+  # order they cost:
+  #   · a move is landing on it → form 1 asked already (or the destination was
+  #     empty, and there was nothing to ask)
+  #   · the box already reads it → nothing is "new" about this path, and a keep
+  #     box (whose PATHS are seeded straight from EXD_PATH) never gets past here
+  #   · it has content → otherwise there is nothing to decide about
+  for label in "${scope[@]}"; do
+    new=${PATHS["$box:$label"]:-}
+    [[ -n $new ]] || continue
+    if [[ ${A_MOVE[$label]:-0} -eq 1 ]]; then continue; fi
+    old=${EXD_PATH["$box:$label"]:-}
+    if [[ -n $old ]] && same_dir "$old" "$new"; then continue; fi
+    dir_has_content "$new" || continue
+    b2+=("$label")
+  done
+  if [[ ${#b2[@]} -gt 0 ]]; then
+    bpaths=()
+    for label in "${b2[@]}"; do bpaths+=("${PATHS["$box:$label"]}"); done
+    # ❓ OPEN IN THE PLAN, decided here the way a carried MOVE already goes and
+    # FLAGGED FOR JEI: a box whose answer an earlier "all boxes" already gave is
+    # asked nothing, so the block that sets that question up "all becomes
+    # irrelevant" (his s41 words) and a one-line receipt per bind stands in for
+    # it. A carried [c]hange prints none, exactly as a carried "no" to the move
+    # question prints none — the path prompt that follows says it itself.
+    # FORM 1 NOW AGREES: it draws its block on the same rule, below the same
+    # kind of receipt.
+    #
+    # ⭐ THE RULE, stated as a property rather than as a list of cases: draw the
+    # block if and only if a prompt will follow it. An entry is prompted when
+    # the user CHANGED it once already (a batched answer must never re-answer
+    # that, or a carried [c]hange loops with no way out) or when neither batch
+    # holds an answer yet. `box_use` counts towards that and the earlier
+    # USE_ALL_BOXES-only test missed it — a box-wide batch settled in an
+    # earlier round could draw the block and then ask nothing, which is exactly
+    # form 1's defect wearing form 2's clothes.
+    ask_use=0
+    for label in "${b2[@]}"; do
+      if [[ -n ${CHANGED[$label]:-} ]]; then ask_use=1; continue; fi
+      [[ -n $box_use || -n $USE_ALL_BOXES ]] || ask_use=1
+    done
+    if [[ $ask_use -eq 0 && ${box_use:-$USE_ALL_BOXES} == u ]]; then
+      first=1
+      for label in "${b2[@]}"; do
+        if [[ $first -eq 1 ]]; then first=0; paths_hdr "$box"; fi
+        # Form 1's [u]se sentence MINUS its trailing clause. Same decision, but
+        # nothing is moving onto this destination, so there is no "current"
+        # path being left behind to name — on a fresh create there is no old
+        # path at all. ⚠️ NOT ruled: Jei's s43 wording was given for form 1.
+        # The two forms are meant to read alike, so this follows it; the clause
+        # is the one part that cannot be true here.
+        leaf=$(leaf_dir "$label")
+        prose "Using data at new path for $leaf." "$C_QTXT"
+      done
+    fi
+    if [[ $ask_use -eq 1 ]]; then
+      # ⭐ THE TOP AND THE BOTTOM ARE FORM 1'S, VERBATIM (Jei: "that is not an
+      # accident"). Same two disclosure shapes on the same base-vs-parent test,
+      # same Options header, same "Select a course of action for the <label>
+      # path" line, same two batch questions. Only the menu between is new.
+      paths_hdr "$box"
+      parent=$(common_parent "${bpaths[@]}")
+      if [[ -n $parent ]] && same_dir "$parent" "$(data_root)/$box"; then
+        disc_hdr "There are existing files at new base path $parent:"
+        disc_row "$(leaf_list "${b2[@]}")"
+      else
+        disc_hdr "There are existing files at new path(s):"
+        for label in "${b2[@]}"; do
+          disc_row "$box $(leaf_word "$label"): ${PATHS["$box:$label"]}"
+        done
+      fi
+      say ""
+      disc_hdr "Options"
+      opt_row U "se this path anyway (data will be used / changed by the box)" "" 0 "$(isdef U Uc)"
+      opt_row c "hange to a different path" "" 0 "$(isdef c Uc)"
+      # Same rule as form 1's warning — only an ELECTED base can be forgone —
+      # and only the clause naming the option that would forgo it differs.
+      if [[ $DATA_AUTO -eq 1 ]]; then
+        prose "*Warning: If you change to another path, this forgoes the shared base path." "$C_WARNI"
+      fi
+      say ""
+    fi
+    first=1
+    for label in "${b2[@]}"; do
+      ans=""
+      # A batched answer never auto-answers a path THIS USER ALREADY CHANGED:
+      # a carried [c]hange would otherwise re-ask that path for ever, with no
+      # prompt left that could say "stop, use it".
+      if [[ -z ${CHANGED[$label]:-} ]]; then
+        if [[ -n $box_use ]]; then
+          ans=$box_use
+        elif [[ -n $USE_ALL_BOXES ]]; then
+          ans=$USE_ALL_BOXES
+        fi
+      fi
+      if [[ -z $ans ]]; then
+        ask_choice "Select a course of action for the $(emphc "$C_EMLBL" "$(leaf_word "$label") path") [U/c]" "Uc"
+        ans=$ANS_CH
+        # ⚠️ NOT RULED BY JEI — ours (s42), flagged in the report for him.
+        # "Change to a different path" cannot be applied to a SET: every path
+        # needs its own new answer, and every box needs its own again. So
+        # neither batch question is offered after a [c]hange. `first` is not
+        # spent either — the offer moves to the first answer that CAN be
+        # batched, rather than being lost because a [c]hange came first.
+        if [[ $first -eq 1 && $ans != c ]]; then
+          first=0
+          askall=1
+          if [[ ${#b2[@]} -gt 1 ]]; then
+            ask_yn "Apply this decision to all overlapping new $box paths" Y
+            if [[ $ANS_YN -eq 1 ]]; then box_use=$ans; else askall=0; fi
+          fi
+          if [[ $askall -eq 1 ]]; then
+            ask_yn "Apply this decision to $(emphc "$C_EMBOX" "all boxes")" Y
+            if [[ $ANS_YN -eq 1 ]]; then USE_ALL_BOXES=$ans; fi
+          fi
+        fi
+      fi
+      if [[ $ans == c ]]; then
+        CHANGED[$label]=1
+        nextscope+=("$label")
+      else
+        B_NEW[$label]=1
+      fi
     done
   fi
 
-  # ── 4. The moves ──────────────────────────────────────────────────────────
-  for (( i = 0; i < n; i = i + 1 )); do
-    label=${labels[i]} old=${olds[i]} new=${news[i]}
-    if [[ ${moving[i]} -ne 1 ]]; then revert_path "$box" "$label" "$old"; continue; fi
-    case "${dec[i]:-plain}" in
+  # ── 5. What a [c]hange unsettled ──────────────────────────────────────────
+  # ⭐ "Paths", PLURAL, is load-bearing (Jei): path_derived hangs every other
+  # bind of the box off the parent of its settled program dir, so changing the
+  # program path re-derives input/output/workspace — they are unsettled too, and
+  # every answer already given about them is about a path that no longer exists
+  # as an answer. So they go back in scope with their state dropped.
+  chg=(${nextscope[@]+"${nextscope[@]}"})   # the ones the user changed HIMSELF
+  if [[ ${#nextscope[@]} -gt 0 ]]; then
+    for word in "${chg[@]}"; do
+      if [[ $word == data ]]; then
+        nextscope=()
+        for label in $(box_labels "$box"); do nextscope+=("$label"); done
+        break
+      fi
+    done
+    for label in "${nextscope[@]}"; do
+      unset "A_MOVE[$label]" "M_OLD[$label]" "M_NEW[$label]" \
+            "M_DEC[$label]" "B_NEW[$label]"
+    done
+    # Back through the ORDINARY settle route, in bind order — the changed path
+    # forced to its prompt, the ones it dragged with it taking whatever that
+    # route gives them (a re-derivation when the family was placed, a prompt of
+    # their own when it was not). Nothing is created for a re-derived path yet:
+    # the next round may walk away from it.
+    for label in $(box_labels "$box"); do
+      in_scope=0 in_chg=0
+      for word in "${nextscope[@]}"; do
+        if [[ $word == "$label" ]]; then in_scope=1; fi
+      done
+      [[ $in_scope -eq 1 ]] || continue
+      for word in "${chg[@]}"; do
+        if [[ $word == "$label" ]]; then in_chg=1; fi
+      done
+      if [[ $in_chg -eq 1 ]]; then
+        set_bind_path "$box" "$label" 1
+      else
+        RELOC_NO_CREATE=1
+        set_bind_path "$box" "$label"
+        RELOC_NO_CREATE=0
+        mkq+=("$label")
+      fi
+    done
+  fi
+  scope=(${nextscope[@]+"${nextscope[@]}"})
+ done
+
+  # ── 6. The moves ──────────────────────────────────────────────────────────
+  # Deferred to here so that every path is final: a destination re-derived by a
+  # [c]hange in a later round would otherwise be moved onto before it was known.
+  for label in $(box_labels "$box"); do
+    [[ -n ${M_OLD[$label]:-} ]] || continue
+    old=${M_OLD[$label]} new=${M_NEW[$label]}
+    if [[ ${A_MOVE[$label]:-0} -ne 1 ]]; then
+      # ⭐ A DECLINED MOVE IS NO LONGER "keep the old path" UNCONDITIONALLY
+      # (Jei s42): it means the files are not carried over. An empty destination
+      # then keeps the recorded path, the s41 invariant; a [U]se from form 2
+      # points the box at the new path and reads what is already there — and the
+      # directory left behind is NAMED, for the same reason the `u` branch names
+      # it below.
+      if [[ -n ${B_NEW[$label]:-} ]]; then
+        subnote "$old is left where it is $EMD nothing was moved."
+      else
+        revert_path "$box" "$label" "$old"
+      fi
+      continue
+    fi
+    case "${M_DEC[$label]:-plain}" in
       # Nothing moves. The box reads the directory that is already there — and
       # the directory it came from is NAMED, because a bind quietly pointed away
       # from a full data dir is the whole bug this feature exists to fix.
       u) subnote "$old is left where it is $EMD nothing was moved." ;;
       k) revert_path "$box" "$label" "$old" ;;
-      *) move_one "$box" "$label" "$old" "$new" "${dec[i]:-plain}" \
+      *) move_one "$box" "$label" "$old" "$new" "${M_DEC[$label]:-plain}" \
            || revert_path "$box" "$label" "$old" ;;
     esac
+  done
+  # The directories a [c]hange re-derived and this pass held back: made only now
+  # that no further answer can abandon them, and only where nothing else (a
+  # move, or the path having been there all along) has already made them.
+  for label in ${mkq[@]+"${mkq[@]}"}; do
+    new=${PATHS["$box:$label"]:-}
+    [[ -n $new ]] || continue
+    [[ -d $(fs_path "$new") ]] && continue
+    ensure_dir "$new" || :
   done
   return 0
 }
@@ -4843,9 +5231,10 @@ write_notes() {
     printf '  tree, ComfyUI%s `user/` and custom nodes, ds4%s saved sessions, the\n' \
       "'s" "'s"
     printf '  finetuning workspace, `server.env`. droste-setup.sh deletes\n'
-    printf '  nothing here unasked: the one way it ever does is the "replace"\n'
-    printf '  answer when a move you accepted lands on a directory that already\n'
-    printf '  has something in it, and that question names the directory first.\n'
+    printf '  nothing here unasked: the one way it ever does is the "remove data\n'
+    printf '  at new path" answer, when a move you accepted lands on a directory\n'
+    printf '  that already has something in it — and that question names the\n'
+    printf '  directory first.\n'
     printf -- '- **Cache dir** (`caches/<box>` by default) — PROGRAM CACHES, and\n'
     printf '  nothing else: the Python environment overlay and its work dir,\n'
     printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, the seeded\n' \

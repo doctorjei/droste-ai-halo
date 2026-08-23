@@ -1105,8 +1105,16 @@ def adopt_group(args, cache, repo, idx, files, hash_memo):
         if all_sizes_known and size not in sizes:
             # Cheap pre-filter: no repo file has this size, so no hash
             # can match. Skip hashing multi-GB non-members.
+            # 🚨 THE SPLIT NOTE BELONGS HERE MOST OF ALL (s47, second pass). A locally
+            # MERGED split gguf is never the size of any single published part, so it
+            # ALWAYS takes this branch -- the first cut wired the diagnostic only into the
+            # post-hash refusal below, which made it unreachable for exactly the file it
+            # was written for. Found by running it; the unit test exercised the helper, not
+            # the refusal path.
+            split = split_part_note(f.name, [(repo, [
+                v[0] for m in (idx[1], idx[2]) for v in m.values()])])
             log(args, 0, f"REFUSE  {shown}: not byte-identical to any "
-                         f"file in {at} (no size match)")
+                         f"file in {at} (no size match){split}")
             refused += 1
             continue
         sha256, git_sha1 = memo_hash(f, size, hash_memo, args)

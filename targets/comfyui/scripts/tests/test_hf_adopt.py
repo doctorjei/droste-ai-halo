@@ -710,6 +710,25 @@ class AdoptTest(unittest.TestCase):
         self.assertIn("3 SPLIT PARTS", note)
         self.assertIn("--repo will not help", note)
 
+    def test_split_note_reaches_the_size_prefilter_refusal(self):
+        """REGRESSION (s47): the note was wired only into the post-hash
+        refusal, but a locally MERGED split is never the size of a single
+        published part, so it ALWAYS takes the cheap size prefilter instead --
+        making the diagnostic unreachable for the exact file it exists for.
+        This goes through the REFUSAL, not the helper."""
+        f = self.fx.add_download("Big-Model-UD-Q5_K_XL.gguf", b"merged-bytes")
+        self.fx.add_manifest("acme/split", [
+            lfs_sibling("UD-Q5_K_XL/Big-Model-UD-Q5_K_XL-00001-of-00003.gguf",
+                        b"part-one-is-a-different-size-entirely"),
+            lfs_sibling("UD-Q5_K_XL/Big-Model-UD-Q5_K_XL-00002-of-00003.gguf",
+                        b"part-two-also-differs-in-size-here"),
+        ])
+        rc, out, err = self.fx.run("--repo", "acme/split", str(f))
+        self.assertEqual(rc, 1)
+        self.assertIn("no size match", out)          # the prefilter branch
+        self.assertIn("3 SPLIT PARTS", out)          # ...and the note reached it
+        self.assertIn("--repo will not help", out)
+
     def test_split_note_stays_quiet_when_it_does_not_apply(self):
         """CONTROL: the note must not fire on a repo that merely has parts of
         SOMETHING ELSE, nor on a non-gguf."""

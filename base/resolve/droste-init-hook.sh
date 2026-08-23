@@ -118,9 +118,51 @@ fi
 if [ -n "${DROSTE_USER:-}" ]; then
     chown "$DROSTE_USER:" "$RESOLVE_LOG" 2>/dev/null || true
 fi
-# On ANY non-zero exit (including resolve::critical's internal exit 1) dump the log
-# to stderr with a pointer; on success this is a no-op.
-trap 'ec=$?; if [ "$ec" -ne 0 ]; then { printf "droste-init-hook: resolver FAILED (exit %s). Detail (also saved to %s):\n" "$ec" "$RESOLVE_LOG"; tail -n 30 "$RESOLVE_LOG" 2>/dev/null; } >&2; fi' EXIT
+# ── Server intent + "a launch is coming", BOTH BEFORE THE MOUNTS (s47) ──────
+# 🚨 RESET INTENT FIRST, AND THIS CALL IS NOT OPTIONAL. state/.IS_ACTIVE means "a server
+# should be running right now"; it is defined to be reset from STARTUP_ENABLED at every
+# container start — but /opt/program-cache is a HOST directory that survives container
+# restarts, so NOTHING RESETS IT BY ITSELF. This line is the entire enforcement. Remove
+# it and a `server_stop` becomes permanent and silent, which is the exact class of bug
+# the two-setting split was built to remove.
+# ⚙️ It MOVED ABOVE apply_spec in s47 (it used to sit beside maybe_launch): it reads
+# server.env and writes the state dir, both on volumes podman binds at container start,
+# so it never needed the mounts — and the stamp below needs to know the intent.
+serve::reset_active || serve::warn "could not reset the server intent flag — continuing."
+
+# ⭐ THEN SAY A LAUNCH IS COMING — BEFORE apply_spec, WHICH IS THE WHOLE FIX.
+# apply_spec does the mounts, the overlays AND the model-tree scan; on a box with no
+# registry yet that scan runs for minutes, and the launch cannot happen until it ends.
+# podman is already probing throughout. With NO record at all, the probe read the box as
+# "the door was asked to serve and did not" and produced three wrong things at once:
+# UNHEALTHY, a warning on every tty saying the server had DIED, and a relaunch attempt
+# that could start the service before its own overlays were mounted.
+# `starting` is the status that already means "a launch is in flight, do not retry it"
+# (serve::state_ok), and serve::_relaunch_due measures its cooldown from THIS record's
+# own mtime — so one stamp answers all three, adds no new file and no new format.
+# Only for a box that intends to serve: an interactive-only box writes nothing into its
+# host dirs, and the probe answers "nothing to probe" from .IS_ACTIVE before it ever
+# looks at the record.
+if serve::is_active; then
+    serve::_write_state starting - - - - || :
+fi
+
+# ⚠️ NEVER LEAVE `starting` BEHIND — the same invariant serve::relaunch keeps, and it
+# has to hold here too now that the stamp above can outlive its launch. If apply_spec
+# fails, maybe_launch never runs, and the stranded marker would tell every later probe
+# that a launch is in flight forever — turning a loud mount failure into a box that
+# looks permanently mid-start.
+hook::seal_state() {
+    serve::is_active || return 0
+    serve::_read_pidfile || return 0
+    [ "${SERVE_REC_STATUS:-}" = starting ] || return 0
+    serve::_write_state failed - - - - || :
+    return 0
+}
+
+# On ANY non-zero exit (including resolve::critical's internal exit 1) seal the launch
+# record and dump the log to stderr with a pointer; on success this is a no-op.
+trap 'ec=$?; if [ "$ec" -ne 0 ]; then hook::seal_state || :; { printf "droste-init-hook: resolver FAILED (exit %s). Detail (also saved to %s):\n" "$ec" "$RESOLVE_LOG"; tail -n 30 "$RESOLVE_LOG" 2>/dev/null; } >&2; fi' EXIT
 resolve::apply_spec 2>"$RESOLVE_LOG"
 # Success path: surface the resolver's own INFO/WARN lines (fuse fallback, etc.) too.
 cat "$RESOLVE_LOG" >&2
@@ -133,11 +175,9 @@ cat "$RESOLVE_LOG" >&2
 # generic error and the box would become hard to enter, which is the opposite of
 # what we want when the service is the broken part. maybe_launch says nothing at
 # all unless server.env turns serving on.
-# 🚨 RESET INTENT FIRST, AND THIS CALL IS NOT OPTIONAL. state/.IS_ACTIVE means "a server
-# should be running right now"; it is defined to be reset from STARTUP_ENABLED at every
-# container start — but /opt/program-cache is a HOST directory that survives container
-# restarts, so NOTHING RESETS IT BY ITSELF. This line is the entire enforcement. Remove
-# it and a `server_stop` becomes permanent and silent, which is the exact class of bug
-# the two-setting split was built to remove.
-serve::reset_active || serve::warn "could not reset the server intent flag — continuing."
+# ⚙️ THE INTENT RESET AND THE `starting` STAMP RUN ABOVE, BEFORE apply_spec (s47) — see
+# the block there for why. maybe_launch re-reads the record this start already wrote:
+# its pid field is "-", which _pid_is_ours rejects, so it falls straight through to the
+# port check and a fresh launch. That is the same path serve::relaunch takes, and it is
+# intended rather than incidental.
 serve::maybe_launch || serve::warn "serve step failed (exit $?) — the box is still usable interactively."

@@ -950,6 +950,56 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(reg.category_override("thing.safetensors"), "vae")
         self.assertIsNone(reg.category_override("other.safetensors"))
 
+    def test_category_override_survives_the_sync_that_applies_it(self):
+        """REGRESSION (s47): sync rebuilds `entries` from scratch and copies the
+        user-owned ledgers across by hand. `categories` was not copied, so the
+        first sync applied the override and then ERASED it -- the feature
+        destroyed itself on first use. The round-trip test below could not see
+        it because it never goes through cmd_sync."""
+        import model_scanner as _ms
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync()
+        self.assertTrue((self.fx.tree / "loras" / "thing.safetensors").is_symlink())
+
+        reg = _ms.load_registry(self.fx.registry)
+        reg.categories["thing.safetensors"] = {"to": "vae"}
+        _ms.save_registry(self.fx.registry, reg)
+
+        self.fx.sync()
+        self.assertTrue((self.fx.tree / "vae" / "thing.safetensors").is_symlink())
+        # THE ASSERTION THAT WAS MISSING: the ledger is still there afterwards.
+        back = _ms.load_registry(self.fx.registry)
+        self.assertEqual(back.category_override("thing.safetensors"), "vae",
+                         "the sync that applied the override erased it")
+
+    def test_forget_restores_the_classified_category(self):
+        """--forget must actually put the file back. Dropping the ledger entry
+        alone leaves the override's EFFECT cached in entries[...]["category"],
+        which sync happily reuses -- so the first cut of --forget removed the
+        record and changed nothing on disk."""
+        import model_scanner as _ms
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync()
+        self.assertTrue((self.fx.tree / "loras" / "thing.safetensors").is_symlink())
+
+        reg = _ms.load_registry(self.fx.registry)
+        reg.categories["thing.safetensors"] = {"to": "vae"}
+        _ms.save_registry(self.fx.registry, reg)
+        self.fx.sync()
+        self.fx.sync()          # twice: the ledger must survive its own application
+        self.assertTrue((self.fx.tree / "vae" / "thing.safetensors").is_symlink())
+
+        rc = ms.main(["categorize", "thing.safetensors", "--forget",
+                      *self.fx.args()])
+        self.assertEqual(rc, 0)
+        self.fx.sync()
+        self.assertTrue((self.fx.tree / "loras" / "thing.safetensors").is_symlink(),
+                        "forget removed the record but left the file where the "
+                        "override had put it")
+        self.assertFalse((self.fx.tree / "vae" / "thing.safetensors").exists())
+
     def test_category_ledger_round_trips(self):
         import model_scanner as _ms
         path = self.fx.root / "reg.yaml"

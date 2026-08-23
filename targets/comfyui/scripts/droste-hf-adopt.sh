@@ -513,9 +513,10 @@ def token_windows(tokens, floor=1):
 
 
 def derive_term_sets(name):
-    """Filename -> ladder of HF search queries, most specific first: the
-    full stem, then quant/dtype tokens stripped, then contiguous WINDOWS
-    of what is left, longest first.
+    """Filename -> ladder of HF search queries: SPECIFIC, then GENERAL, then the
+    MIDDLE. In order -- the full stem; its separator-normalized form; every
+    TWO-token window; every qualifying ONE-token window; then the remaining
+    windows longest-first.
 
     ⭐ WINDOWS, NOT A SUFFIX LADDER (s47), and a real file forced it.
     `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` lives in
@@ -526,13 +527,24 @@ def derive_term_sets(name):
     three-rung ladder shaved one trailing token at a time and stopped, so it
     could only ever find models named at the START of their filename.
 
-    For a filename carrying quant/dtype tokens the first three queries are
-    UNCHANGED from the old ladder (its rung 2 is the full window of plain
-    tokens, its rung 3 the first window one shorter). For a filename WITHOUT
-    them the old code skipped its rung 2 -- stripping had changed nothing --
-    so such a file now also asks the separator-normalized form of its stem
-    ("stable diffusion xl" beside "stable-diffusion-xl"), which HF's search
-    does not treat as the same query. One extra GET, no candidate cost.
+    ⚠️ THE ORDER IS NOT LONGEST-FIRST, AND THAT WAS MEASURED, NOT PREFERRED.
+    Longest-first is the obvious reading of "most specific first" and it FAILED 3 of
+    6 real files: the winning query was a TWO-token window in every one of the six,
+    and the long windows returned either nothing or junk, so the answer sat past
+    both MAX_SEARCHES and MAX_CANDIDATES. The two ends of the ladder ask different
+    questions -- a long query asks "is a repo named after this FILE?" (which is what
+    identifies whisper_ggml-large-v3 and randomMIX3D_v30), a short one asks "is a
+    repo named after this MODEL?" -- and the middle is what measurably returns
+    nothing. Precision is not what the long queries buy; the HASH GATE is, and it
+    applies identically however a candidate was proposed.
+
+    The old ladder's rungs all SURVIVE, reordered rather than dropped, so nothing it
+    used to find became unreachable. The old rung 2 (the full window of plain tokens)
+    is now query 2; its rung 3 appears among the windows. A filename with no
+    quant/dtype tokens also gains the separator-normalized stem, which the old code
+    skipped because stripping had changed nothing -- HF's search does not treat
+    "stable diffusion xl" and "stable-diffusion-xl" as the same query. One extra GET,
+    no candidate cost.
     """
     stem = name[:name.rfind(".")] if "." in name else name
     tokens = [t for t in re.split(r"[-_. ]+", stem) if t]
@@ -785,11 +797,14 @@ def identify_file(args, f, size, token, manifests, searches, hash_memo):
     # ⭐ EVERY QUERY IS GATED BEFORE THE NEXT ONE IS ASKED (s47). The old loop
     # stopped at the first query that returned ANYTHING and hash-checked only
     # that batch -- so a rung answering with one junk repo ended the ladder
-    # exactly as if it had answered with the right one. Measured on a real
-    # tree: 'minimax h3 audio vae' returns a single wrong repo, and the query
-    # that finds the file ('minimax h3') was three rungs further down and never
-    # asked. Now a query that yields no match simply costs its candidates and
-    # the ladder continues.
+    # exactly as if it had answered with the right one. Measured on a real tree:
+    # 'minimax h3 audio vae' returns ONE wrong repo and used to end the search there.
+    # ⚠️ Both halves of the s47 fix are needed for that file and neither is enough
+    # alone: the WINDOWS change is what makes 'minimax h3' exist as a query (the old
+    # three-rung ladder never produced it at any position), and THIS change is what
+    # lets the ladder reach it after a junk answer. It is query 3 today, and it finds
+    # the repo as candidate 2. A query that yields no match now simply costs its
+    # candidates and the ladder continues.
     downloads, matches, truncated = {}, [], False
     for query in term_sets[:MAX_SEARCHES]:
         log(args, 2, f"# {f.name}: search {query!r}")

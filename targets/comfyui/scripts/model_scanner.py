@@ -1526,7 +1526,14 @@ def cmd_sync(args) -> int:
 
     # link phase
     new = Registry()
-    new.renames = dict(old.renames)   # the user's names outlive every entry we rebuild
+    # 🚨 EVERY USER-OWNED LEDGER MUST BE CARRIED HERE, AND FORGETTING ONE IS SILENT.
+    # `entries` are rebuilt from scratch each sync; anything the USER decided lives at the
+    # top level and has to be copied across explicitly. `categories` was added in s47 and
+    # NOT copied, so the first sync after recording an override applied it and then wiped
+    # the ledger -- the feature destroyed itself on first use, and the dataclass round-trip
+    # tests could not see it because they never went through this function.
+    new.renames = dict(old.renames)        # the user's names outlive every entry
+    new.categories = dict(old.categories)  # ...and so do the user's categories
     # tree paths this run has ALREADY explained on their own line (CONFLICT / KEEP). The
     # real-file inventory below still COUNTS them -- they are real files in the tree, and
     # the census must not lie -- but it does not say so twice.
@@ -2036,9 +2043,9 @@ def _category_of(src: SourceFile, reg: Registry) -> str:
 def cmd_categorize(args) -> int:
     """Record the category YOU want for a source; re-asserted at every sync.
 
-    The rename verb's twin, and deliberately shaped like it: --list, a set form,
-    and setting a source back to what the classifier says FORGETS the override
-    rather than freezing today's answer forever.
+    The rename verb's twin in standing, not in spelling: --list, a set form, and an
+    explicit --forget. It cannot borrow rename's "pass the current value to forget"
+    trick -- see the comment below.
     """
     reg = load_registry(args.registry)
 
@@ -2049,33 +2056,51 @@ def cmd_categorize(args) -> int:
         log(f"model-scanner: {len(reg.categories)} recorded override(s)")
         return 0
 
-    if not args.name or not args.category:
-        log("ERROR  categorize takes <file-name> <category> (or --list). "
-            "Passing the category the classifier already chose forgets the override.")
+    name = Path(args.name).name if args.name else ""   # tree-relative path ok, as in rename
+
+    # ⭐ FORGETTING IS AN EXPLICIT FLAG, AND IT HAS TO BE (s47, found by running the verb).
+    # rename can say "pass the current name to forget" because a DERIVED name is
+    # recomputable without touching the file. A category is not: once an override has been
+    # applied, the entry's recorded `category` IS the override, so comparing against it can
+    # never match what the classifier would say. The first cut of this verb promised the
+    # rename bargain and shipped a forget path that was unreachable after the first sync --
+    # an override could only be removed by hand-editing the registry.
+    if args.forget:
+        if not name:
+            log("ERROR  categorize --forget takes <file-name>.")
+            return 2
+        if name not in reg.categories:
+            log(f"NOTHING TO FORGET  {name} has no recorded override")
+            return 0
+        del reg.categories[name]
+        # ⚠️ DROPPING THE LEDGER ENTRY IS NOT ENOUGH, AND THE FIRST CUT OF --forget STOPPED
+        # HERE (s47). The override's EFFECT is cached in `entries[...]["category"]`, and
+        # sync reuses that whenever the heuristics version matches -- so the file stayed
+        # where the override had put it and "follows the classifier again" was still a
+        # false promise. Clearing the cached category makes the next sync re-classify it.
+        # The ENTRY itself is kept: its `links` are what make the old link OURS, and an
+        # entry deleted here would leave that link unowned, i.e. reported as a CONFLICT
+        # and left in place forever -- worse than the bug being fixed.
+        cleared = 0
+        for e in (reg.entries or {}).values():
+            if any(Path(link).name == name for link in (e.get("links") or [])):
+                e.pop("category", None)
+                cleared += 1
+        save_registry(args.registry, reg)
+        log(f"FORGOT  {name}: it follows the classifier again at the next sync"
+            + (f" ({cleared} cached classification cleared)" if cleared else ""))
+        return 0
+
+    if not name or not args.category:
+        log("ERROR  categorize takes <file-name> <category>, or --forget <file-name>, "
+            "or --list.")
         return 2
 
-    name = Path(args.name).name        # a tree-relative path is accepted, as in rename
     cat = args.category.strip("/")
     if cat not in CATEGORIES:
         log(f"ERROR  '{cat}' is not a category this tool links into. "
             f"Known: {', '.join(sorted(CATEGORIES))}")
         return 2
-
-    # What does the classifier say TODAY? Matching it means "no override", so the
-    # file follows the rules again -- the same bargain rename makes with a name.
-    entry = None
-    for ident, e in (load_registry(args.registry).entries or {}).items():
-        for link in e.get("links") or []:
-            if Path(link).name == name:
-                entry = e
-                break
-        if entry:
-            break
-    if entry and entry.get("category") == cat and name in reg.categories:
-        del reg.categories[name]
-        save_registry(args.registry, reg)
-        log(f"FORGOT  {name}: the classifier already says {cat}")
-        return 0
 
     reg.categories[name] = {
         "to": cat,
@@ -2283,8 +2308,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the source or link name (a tree-relative path is "
                          "accepted; only the filename is used)")
     cg.add_argument("category", nargs="?",
-                    help="the category directory to link it under. Passing the "
-                         "category the classifier already chose forgets the override.")
+                    help="the category directory to link it under")
+    cg.add_argument("--forget", action="store_true",
+                    help="drop the recorded override for <file-name>; the file follows "
+                         "the classifier again from the next sync")
     cg.add_argument("--list", action="store_true",
                     help="show the recorded overrides")
     cg.set_defaults(fn=cmd_categorize)

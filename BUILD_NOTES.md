@@ -1400,6 +1400,30 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
 - Apply the turboquant grammar patch: `llama-grammar.patch` raises
   `MAX_REPETITION_THRESHOLD` for complex tool schemas. This is the ONLY patch
   upstream's turboquant Dockerfile applies.
+- ⭐ **TURBOQUANT IS OPT-IN — the kernels are compiled in, nothing selects them.**
+  Measured at the pin (`common/arg.cpp:390`): the fork's contribution here is three KV
+  CACHE quant types, `GGML_TYPE_TURBO2_0/3_0/4_0`, added to `kv_cache_types` — the list
+  consumed by `-ctk/--cache-type-k` and `-ctv/--cache-type-v`. The default stays F16, so a
+  box that sets neither flag never uses them (Jei observed exactly this on hardware before
+  it was confirmed in the source).
+  ⚠️ **The accepted STRINGS are `turbo2` / `turbo3` / `turbo4`** (`ggml.c` `type_name`),
+  NOT the enum spellings — an unknown value throws `Unsupported cache type` and the server
+  does not start. Both flags carry env annotations (`LLAMA_ARG_CACHE_TYPE_K` / `_V`), so
+  they arrive as commented lines in the generated `llama.env`:
+
+      LLAMA_ARG_CACHE_TYPE_K=turbo4
+      LLAMA_ARG_CACHE_TYPE_V=turbo4
+
+  On a large MoE at long context the KV cache is where the headroom goes, so this is the
+  knob that matters most on a 128 GB machine. The quality cost of turbo3/turbo2 has NOT
+  been measured here.
+- **How to prove the running binary IS the fork:** `llama-server --version` reports the
+  build commit; it must match `LLAMA_REF`. Stronger still, the image cannot build without
+  it — `targets/Container.llama` runs `gen_llama_env.sh`, which EXECUTES the freshly-built
+  `llama-server` to enumerate its arg table and fails the build if the required
+  `LLAMA_ARG_*` names are missing. Nothing installs llama.cpp from apt (the runtime's only
+  apt install is `libgomp1`), so `/usr/local/bin/llama-server` can only be the built
+  artifact.
 - HIP build for gfx1151: `ROCM_PATH`/`HIP_PATH` resolve the pip SDK root;
   `AMDGPU_TARGETS=${GFX_TARGET}`. RPC + HIP UMA + unified memory are the
   turboquant/Strix-Halo flags (128 GB unified mem). FLAG (on-host): confirm HIP

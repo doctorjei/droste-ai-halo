@@ -93,25 +93,33 @@ RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/Comfy
 # Safe here in the sense the guard intends — the path is baked by us, not shared.
 WORKDIR /opt/ComfyUI
 RUN uv pip install -r requirements.txt \
-    && pip install --prefer-binary \
+    && uv pip install \
        pillow opencv-python-headless imageio imageio-ffmpeg scipy \
        "huggingface_hub[hf_transfer]" pyyaml websocket-client
-# ⚠️ THE SECOND INSTALL STAYS pip — and this is the ONE uv boundary that is still OPEN
-# rather than retracted. Read it as a question, not a settled limit.
+# ⚠️ THE SECOND INSTALL LOST ITS `--prefer-binary` WHEN IT MOVED TO uv (s46, Jei's call) —
+# and the flag was NOT silently dropped, it was measured first. Read this before adding a
+# flag back or "restoring" the pip line.
 # ✅ ESTABLISHED: uv REJECTS `--prefer-binary` outright (`error: unexpected argument`).
 #    Its nearest relatives, `--only-binary`/`--no-binary`, are STRICTER — they forbid
 #    sdists rather than preferring wheels.
-# ❌ NOT ESTABLISHED, and I should not have written "until there is a measured equivalent"
-#    as though I had checked: **nobody has measured whether uv's DEFAULT resolves this
-#    exact package list to the same set.** uv prefers wheels in practice, so the default
-#    may already do what the flag asks.
-# 🚨 WHY IT MUST NOT BE MIGRATED ON A GUESS: `--prefer-binary` prefers a WHEEL even when a
+# ✅ NOW MEASURED (s46) — this used to read "nobody has measured whether uv's DEFAULT
+#    resolves this exact package list to the same set", which was the honest gap. It is
+#    closed: three dry runs of THIS list on cp313/linux-x86_64 — pip WITH the flag, pip
+#    WITHOUT it, and uv's default — resolve the IDENTICAL 22 packages at identical
+#    versions. The flag is inert today, for pip as well as for uv.
+# 🚨 THAT MEASURES TODAY'S INDEX, NOT THE FLAG'S PURPOSE — so here is the exposure, stated
+#    plainly rather than discovered later. `--prefer-binary` prefers a WHEEL even when a
 #    NEWER version exists only as an sdist. For a media stack (pillow, opencv, scipy) that
 #    is the difference between pulling a prebuilt wheel and COMPILING a large C/C++ project
-#    during the image build. If uv's default differs, the build still goes GREEN and only
-#    the cascade time tells you — the worst kind of regression to ship.
-# ▶ OPEN FOR JEI, with options weighed → notebook/plans/uv-migration-completion-s45.md
-#    item 4. Agent lean: run ONE dry-run comparison first, then decide.
+#    during the image build. The day an upstream here ships sdist-only, pip would fall back
+#    to the older wheel and uv's default will BUILD it: still GREEN, only the cascade time
+#    tells you. **The tell is a comfyui job whose duration jumps for no other reason.**
+# ▶ DECIDED BY JEI (s46) — migrate with no flag, over `--only-binary=:all:` (which would
+#    make that case a RED JOB but also fail builds pip would have finished) and over
+#    staying on pip. → notebook/plans/uv-migration-completion-s45.md item 4.
+# NB the constraints file still applies here: uv reads UV_CONSTRAINT, exported globally by
+#    the runtime base, so the torch pins and the transformers bound appended above are in
+#    force for this install exactly as PIP_CONSTRAINT enforced them before.
 
 # ComfyUI Custom Nodes
 WORKDIR /opt/ComfyUI/custom_nodes
@@ -154,7 +162,8 @@ RUN git clone --depth=1 https://github.com/Comfy-Org/ComfyUI-Manager /opt/ComfyU
 # file makes any of those FAIL LOUDLY rather than silently install a CPU wheel (PyPI
 # rejects local version identifiers, so `+rocm...` can only come from AMD's index) —
 # this proves the outcome instead of trusting the guard.
-# ❌ NOT the --no-deps --force-reinstall re-pin Container.vllm uses. vllm needs one
+# ❌ NOT the --no-deps re-pin Container.vllm uses (`--reinstall-package` since s46;
+# `--force-reinstall` before it, when that RUN was pip). vllm needs one
 # because it DELIBERATELY lets a PyPI torchvision arrive and then replaces it; nothing
 # here does that. A re-pin would download ~1 GB into a layer that downloads none, for a
 # failure mode the constraint already makes impossible-and-loud.

@@ -132,6 +132,91 @@ class AdoptTest(unittest.TestCase):
         self.fx = Fixture(Path(self._tmp.name))
         self.addCleanup(self._tmp.cleanup)
 
+    # ------------------------------------------------------ --exclude / --exclude-dir
+    # Every exclusion assertion is paired with a control proving the SAME file
+    # is adopted without the flag -- otherwise a filter that excluded
+    # everything, or a walk that found nothing, would pass just as happily.
+    def _two_files(self):
+        a, b = b"content-alpha", b"content-beta"
+        fa = self.fx.add_download("keep/wanted.safetensors", a)
+        fb = self.fx.add_download("keep/skipme.safetensors", b)
+        self.fx.add_manifest("acme/tiny", [
+            lfs_sibling("wanted.safetensors", a),
+            lfs_sibling("skipme.safetensors", b),
+        ])
+        return fa, fb
+
+    def test_exclude_glob_skips_only_the_match(self):
+        self._two_files()
+        d = str(self.fx.downloads / "keep")
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", d)          # control
+        self.assertEqual(rc, 0)
+        self.assertIn("2 adopted", out)
+        self.assertNotIn("excluded", out)
+
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--exclude", "skip*", d)
+        self.assertEqual(rc, 0)
+        self.assertIn("1 adopted", out)
+        self.assertIn("1 excluded", out)
+        self.assertIn("wanted.safetensors", out)
+        self.assertNotIn("skipme.safetensors", out)
+
+    def test_exclude_repeatable(self):
+        self._two_files()
+        d = str(self.fx.downloads / "keep")
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--exclude", "skip*",
+                                 "--exclude", "want*", d)
+        self.assertEqual(rc, 2)   # nothing left to consider
+        self.assertIn("no candidate files found", out + _)
+
+    def test_exclude_with_slash_matches_relative_path(self):
+        a = b"nested-content"
+        self.fx.add_download("tree/sub/deep.safetensors", a)
+        self.fx.add_manifest("acme/tiny", [lfs_sibling("deep.safetensors", a)])
+        d = str(self.fx.downloads / "tree")
+        # bare name pattern matches at any depth...
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--recursive",
+                                 "--exclude", "deep.safetensors", d)
+        self.assertEqual(rc, 2)
+        # ...and a pattern WITH a slash is anchored to the relative path
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--recursive",
+                                 "--exclude", "sub/*.safetensors", d)
+        self.assertEqual(rc, 2)
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--recursive",
+                                 "--exclude", "other/*.safetensors", d)
+        self.assertEqual(rc, 0)          # control: wrong dir, no match
+        self.assertIn("1 adopted", out)
+
+    def test_exclude_dir_prunes_the_walk(self):
+        a, b = b"top-content", b"buried-content"
+        self.fx.add_download("tree/top.safetensors", a)
+        self.fx.add_download("tree/junk/buried.safetensors", b)
+        self.fx.add_manifest("acme/tiny", [
+            lfs_sibling("top.safetensors", a),
+            lfs_sibling("buried.safetensors", b),
+        ])
+        d = str(self.fx.downloads / "tree")
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--recursive", d)
+        self.assertEqual(rc, 0)
+        self.assertIn("2 adopted", out)                              # control
+
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--recursive",
+                                 "--exclude-dir", "junk", d)
+        self.assertEqual(rc, 0)
+        self.assertIn("1 adopted", out)
+        # PRUNED, not filtered: a pruned dir is never walked, so its files are
+        # not counted as excluded either.
+        self.assertNotIn("excluded", out)
+        self.assertNotIn("buried.safetensors", out)
+
+    def test_explicitly_named_file_beats_exclude_and_says_so(self):
+        _, fb = self._two_files()
+        rc, out, _ = self.fx.run("--repo", "acme/tiny", "--exclude", "skip*",
+                                 str(fb))
+        self.assertEqual(rc, 0)
+        self.assertIn("1 adopted", out)
+        self.assertIn("named explicitly", out)   # never silently dropped
+
     # -------------------------------------------------- --repo mode (regression)
     def test_repo_mode_adopts_dry_run_then_apply(self):
         content = b"weights-weights-weights"
@@ -545,17 +630,94 @@ class AdoptTest(unittest.TestCase):
 
     # -------------------------------------------------------- unit: term ladder
     def test_derive_term_sets(self):
-        self.assertEqual(
-            mod.derive_term_sets("qwen2.5-0.5b-instruct-q4_k_m.gguf"),
-            ["qwen2.5-0.5b-instruct-q4_k_m",
-             "qwen2 5 0 5b instruct",
-             "qwen2 5 0 5b"])
+        # ORDER CONTRACT: the exact stem first, its separator-normalized form
+        # second, then the general (short) windows, then the middle. The old
+        # ladder's rungs all survive -- REORDERED, not dropped -- so they are
+        # asserted by membership rather than by position.
+        ladder = mod.derive_term_sets("qwen2.5-0.5b-instruct-q4_k_m.gguf")
+        self.assertEqual(ladder[:2], ["qwen2.5-0.5b-instruct-q4_k_m",
+                                      "qwen2 5 0 5b instruct"])
+        for old_rung in ("qwen2 5 0 5b instruct", "qwen2 5 0 5b"):
+            self.assertIn(old_rung, ladder)
         self.assertEqual(mod.derive_term_sets("llama-3-8b-fp16.safetensors"),
-                         ["llama-3-8b-fp16", "llama 3 8b", "llama 3"])
-        # no quant tokens: full stem, then trailing token dropped
+                         ["llama-3-8b-fp16", "llama 3 8b",
+                          "llama 3", "3 8b", "llama"])
+        # No quant tokens: the old code skipped its rung 2 because stripping
+        # changed nothing, so the separator-normalized stem is NEW here. HF's
+        # search does not treat it as the same query as the hyphenated stem.
         self.assertEqual(mod.derive_term_sets("stable-diffusion-xl.bin"),
-                         ["stable-diffusion-xl", "stable diffusion"])
+                         ["stable-diffusion-xl", "stable diffusion xl",
+                          "stable diffusion", "diffusion xl",
+                          "stable", "diffusion"])
         self.assertEqual(mod.derive_term_sets("model.bin"), ["model"])
+
+    def test_two_token_name_keeps_its_solo_rung(self):
+        """REGRESSION (caught against the live API, not by a unit test):
+        randomMIX3D_v30.safetensors identified only via the one-token query
+        the old ladder ended with. A floor of two silently removed it."""
+        ladder = mod.derive_term_sets("randomMIX3D_v30.safetensors")
+        self.assertIn("randomMIX3D", ladder)
+        # ...but a SHORT lone token stays out: it is a junk magnet.
+        self.assertNotIn("nai", mod.derive_term_sets("nai_aini.pt"))
+
+    def test_junk_answer_does_not_end_the_ladder(self):
+        """THE s47 FIX. A rung that returns one wrong repo used to end the
+        search exactly as if it had returned the right one."""
+        content = b"minimax-audio-vae-bytes"
+        f = self.fx.add_download(
+            "minimax_h3_audio_vae_fp32.safetensors", content)
+        self.fx.add_manifest("dummy/minimax_h3_audio_vae_bf16",
+                             [lfs_sibling("other.safetensors", b"nope")])
+        self.fx.add_manifest("Comfy-Org/MiniMax-H3", [
+            lfs_sibling("vae/minimax_h3_audio_vae_fp32.safetensors", content),
+        ])
+        self.fx.set_search({
+            # the rung that answers first, with junk
+            "minimax h3 audio vae": [
+                {"id": "dummy/minimax_h3_audio_vae_bf16", "downloads": 3}],
+            # the rung three further down that actually has it
+            "minimax h3": [{"id": "Comfy-Org/MiniMax-H3", "downloads": 900}],
+        })
+        rc, out, err = self.fx.run(str(f))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("IDENTIFIED", out)
+        self.assertIn("Comfy-Org/MiniMax-H3", out)
+        # The junk repo was GATED and rejected, not skipped past: the count
+        # is what proves the ladder paid for it and carried on.
+        self.assertIn("2 candidate(s) tried", out)
+
+    def test_candidate_budget_truncation_is_announced(self):
+        """A budget stop must never read like a clean 'no match'."""
+        f = self.fx.add_download("widget_alpha_beta.safetensors", b"unmatched")
+        junk = [f"org{i}/widget-alpha" for i in range(5)]
+        for r in junk:
+            self.fx.add_manifest(r, [lfs_sibling("x.bin", b"different")])
+        self.fx.set_search({"*": [{"id": r, "downloads": 10} for r in junk]})
+        with mock.patch.object(mod, "MAX_CANDIDATES", 2):
+            rc, out, err = self.fx.run(str(f))
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSE", out)
+        self.assertIn("budget", out)
+        self.assertIn("not an exhaustive answer", out)
+
+    def test_windows_reach_a_model_named_mid_filename(self):
+        """The real file that forced windows: the model name is in the
+        MIDDLE, so no suffix ladder can reach it."""
+        ladder = mod.derive_term_sets(
+            "qwen3vl_32b_minimax_h3_int8_convrot.safetensors")
+        self.assertIn("minimax h3", ladder)
+        self.assertLessEqual(ladder.index("minimax h3"), mod.MAX_SEARCHES)
+        # ...and it is NOT reachable by dropping trailing tokens alone.
+        suffixes = {" ".join(("qwen3vl 32b minimax h3 convrot".split())[:i])
+                    for i in range(1, 6)}
+        self.assertNotIn("minimax h3", suffixes)
+
+    def test_all_noise_windows_are_not_queried(self):
+        ladder = mod.derive_term_sets("thing_v2_fp16_final_8step.safetensors")
+        for q in ladder[1:]:
+            self.assertFalse(
+                all(mod.NOISE_RE.match(t) for t in q.split()),
+                f"all-noise window queried: {q!r}")
 
     # -------------------------------------------------------- hash memoization
     def test_file_hashed_once_across_identify_and_adopt(self):

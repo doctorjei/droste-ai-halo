@@ -47,6 +47,7 @@ DEFAULT IS DRY-RUN: nothing is touched until you pass --apply.
 
 import argparse
 import errno
+import fnmatch
 import hashlib
 import json
 import os
@@ -62,7 +63,16 @@ CHUNK = 1 << 20  # 1 MiB read chunks for streamed hashing
 API_BASE = "https://huggingface.co/api/models"
 FIXTURE_ENV = "DROSTE_ADOPT_API_FIXTURE"  # test hook; deliberately not in --help
 SEARCH_LIMIT = 20  # candidate repos returned per search query
-MAX_SEARCHES = 3  # search attempts per file before giving up (stay polite)
+# ⭐ CAP WHAT IS EXPENSIVE, NOT WHAT IS CHEAP (s47). A search is ONE GET that
+# returns up to SEARCH_LIMIT ids; a candidate costs a manifest fetch each. The
+# old ladder capped searches at 3 and let the candidates run, which is backwards:
+# it made the ladder too short to find anything while doing nothing about a
+# junk-magnet filename ("nai_aini.pt") burning 20 manifest fetches on
+# naija-address-normalizer and friends. Searches are now generous and CANDIDATES
+# carry the budget -- and because a junk magnet fills that budget immediately, it
+# also stops searching almost at once.
+MAX_SEARCHES = 16     # search queries per file (cheap: one GET each)
+MAX_CANDIDATES = 40   # manifest fetches per file -- the real budget
 HASH_PROGRESS_MIN = 256 << 20  # smaller files hash too fast to show progress
 HASH_PROGRESS_STEP = 128 << 20  # progress update cadence while hashing
 
@@ -464,10 +474,66 @@ def ecosystem_candidates(name):
     return out
 
 
+# Tokens that describe a FILE rather than a MODEL. A window made only of these
+# names nothing, so it is not worth a query; a window that merely contains one
+# still is ("minimax h3 int8" is a fine query, "int8 convrot" is not).
+NOISE_RE = re.compile(r"(?i)^(comfyui|pruned|turbo|imatrix|convrot|chat|merged"
+                      r"|final|full|ema|fixed|base|model|weights"
+                      r"|\d+|\d+step|v\d+(\.\d+)*)$")
+
+
+# A lone token has to earn its query: it is the broadest thing we can ask, and
+# a short one is a junk magnet ("nai" returned naija-address-normalizer,
+# whisper-large-v3-sk and a potato-disease classifier, 20 manifest fetches for
+# nothing). Four characters is the floor, and noise words never qualify.
+SOLO_MIN = 4
+
+
+def token_windows(tokens, floor=1):
+    """Contiguous token windows, longest first and left to right within a
+    length. All-noise windows are dropped, and single tokens must clear
+    SOLO_MIN.
+
+    ⚠️ THE FLOOR IS 1, NOT 2, AND A REGRESSION PROVED IT. The pre-window
+    ladder ended with `" ".join(plain[:-1])`, which for a two-token filename
+    is a SINGLE token -- and that is the query that identified
+    randomMIX3D_v30.safetensors (repo: the-next-savior/randomMIX3D_v20...).
+    A floor of 2 silently dropped the only rung that file had.
+    """
+    out = []
+    for size in range(len(tokens), floor - 1, -1):
+        for i in range(0, len(tokens) - size + 1):
+            w = tokens[i:i + size]
+            if all(NOISE_RE.match(t) for t in w):
+                continue
+            if size == 1 and len(w[0]) < SOLO_MIN:
+                continue
+            out.append(" ".join(w))
+    return out
+
+
 def derive_term_sets(name):
-    """Filename -> ladder of HF search queries, most specific first:
-    the full stem, then quant/dtype tokens stripped, then the trailing
-    token dropped as well."""
+    """Filename -> ladder of HF search queries, most specific first: the
+    full stem, then quant/dtype tokens stripped, then contiguous WINDOWS
+    of what is left, longest first.
+
+    ⭐ WINDOWS, NOT A SUFFIX LADDER (s47), and a real file forced it.
+    `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` lives in
+    Comfy-Org/MiniMax-H3: the model name is in the MIDDLE of the filename, so
+    no amount of dropping trailing tokens reaches it -- measured, every rung
+    from 'qwen3vl 32b minimax h3 int8 convrot' down to 'qwen3vl' returns Qwen's
+    own repos, while 'minimax h3' returns the right one as the #1 hit. The old
+    three-rung ladder shaved one trailing token at a time and stopped, so it
+    could only ever find models named at the START of their filename.
+
+    For a filename carrying quant/dtype tokens the first three queries are
+    UNCHANGED from the old ladder (its rung 2 is the full window of plain
+    tokens, its rung 3 the first window one shorter). For a filename WITHOUT
+    them the old code skipped its rung 2 -- stripping had changed nothing --
+    so such a file now also asks the separator-normalized form of its stem
+    ("stable diffusion xl" beside "stable-diffusion-xl"), which HF's search
+    does not treat as the same query. One extra GET, no candidate cost.
+    """
     stem = name[:name.rfind(".")] if "." in name else name
     tokens = [t for t in re.split(r"[-_. ]+", stem) if t]
     plain, quant_tail = [], False
@@ -479,16 +545,30 @@ def derive_term_sets(name):
             continue  # the _K / _M / _XXS pieces of q4_K_M-style suffixes
         quant_tail = False
         plain.append(t)
+    # ⭐ SPECIFIC, THEN GENERAL, THEN THE MIDDLE -- and the order is the whole
+    # difference between finding these files and not. MEASURED against the live
+    # API on six real refusals: the winning query was a TWO-TOKEN window every
+    # single time, while the long windows returned either nothing or junk. Pure
+    # longest-first ordering therefore buried the answer past both caps -- the
+    # DeepSeek file spent all 16 queries on windows that returned 0 results.
+    # The two ends of the ladder ask different questions: a long query asks "is
+    # a repo named after this FILE?" (which is what identified the whisper and
+    # randomMIX3D files), a short one asks "is a repo named after this MODEL?".
+    # Both are worth asking early; the middle is what measurably is not.
+    # Precision is not what the long queries buy us anyway -- the hash gate is,
+    # and it applies identically to every candidate however it was proposed.
+    windows = token_windows(plain)
     sets = [stem]
-    if plain and plain != tokens:
-        sets.append(" ".join(plain))
-    if len(plain) > 1:
-        sets.append(" ".join(plain[:-1]))
+    if windows:
+        sets.append(windows[0])              # the whole name, normalized
+    sets.extend(w for w in windows if len(w.split()) == 2)
+    sets.extend(w for w in windows if len(w.split()) == 1)
+    sets.extend(windows[1:])                 # the middle, longest first
     out = []
-    for s in sets:
-        if s not in out:
-            out.append(s)
-    return out[:MAX_SEARCHES]
+    for s_ in sets:
+        if s_ and s_ not in out:
+            out.append(s_)
+    return out
 
 
 def gguf_repo_hint(path):
@@ -667,7 +747,15 @@ def identify_file(args, f, size, token, manifests, searches, hash_memo):
     term_sets = derive_term_sets(f.name)
     if hint_name and hint_name not in term_sets:
         term_sets.insert(0, hint_name)  # e.g. gguf general.name
-    results = []
+    # ⭐ EVERY QUERY IS GATED BEFORE THE NEXT ONE IS ASKED (s47). The old loop
+    # stopped at the first query that returned ANYTHING and hash-checked only
+    # that batch -- so a rung answering with one junk repo ended the ladder
+    # exactly as if it had answered with the right one. Measured on a real
+    # tree: 'minimax h3 audio vae' returns a single wrong repo, and the query
+    # that finds the file ('minimax h3') was three rungs further down and never
+    # asked. Now a query that yields no match simply costs its candidates and
+    # the ladder continues.
+    downloads, matches, truncated = {}, [], False
     for query in term_sets[:MAX_SEARCHES]:
         log(args, 2, f"# {f.name}: search {query!r}")
         progress(args, f'  identifying {f.name}: searching "{query}"...')
@@ -677,35 +765,41 @@ def identify_file(args, f, size, token, manifests, searches, hash_memo):
             log(args, 0, f"warning: HF search failed "
                          f"({getattr(e, 'reason', e)})")
             return None, "HF search unavailable; pass --repo explicitly", []
-        if results:
+        batch = []
+        for r in results:
+            rid = valid_repo_id(r.get("id")) if isinstance(r, dict) else None
+            if rid and rid not in downloads:
+                downloads[rid] = r.get("downloads") or 0
+                batch.append(rid)
+        if batch:
+            log(args, 2, f"# {f.name}: candidates: {', '.join(batch)}")
+        for repo in batch:
+            if repo in seen:
+                continue  # already hash-checked under a higher-priority signal
+            if len(tried) >= MAX_CANDIDATES:
+                truncated = True
+                break
+            seen.add(repo)
+            progress(args, f"  checking {repo}...")
+            entry = get_manifest(args, repo, args.revision, token, manifests)
+            if entry is None:
+                continue  # manifest fetch failed -> next candidate
+            tried.append(repo)
+            if hash_matches(entry[1]):
+                matches.append(repo)
+        # Stop at the first query that PROVES something. Matches are reported
+        # together (see "also matches" below), so the whole batch is gated
+        # before this test rather than returning on the first hit.
+        if matches or truncated:
             break
-
-    downloads, candidates = {}, []
-    for r in results:
-        rid = valid_repo_id(r.get("id")) if isinstance(r, dict) else None
-        if rid and rid not in downloads:
-            downloads[rid] = r.get("downloads") or 0
-            candidates.append(rid)
-    log(args, 2, f"# {f.name}: candidates: "
-                 f"{', '.join(candidates) or '(none)'}")
-
-    matches = []
-    for repo in candidates:
-        if repo in seen:
-            continue  # already hash-checked under a higher-priority signal
-        seen.add(repo)
-        progress(args, f"  checking {repo}...")
-        entry = get_manifest(args, repo, args.revision, token, manifests)
-        if entry is None:
-            continue  # manifest fetch failed -> next candidate
-        tried.append(repo)
-        if hash_matches(entry[1]):
-            matches.append(repo)
     progress_clear()
     if not matches:
+        # ⚠️ A BUDGET STOP IS NOT A CLEAN "no match" AND MUST NOT READ LIKE ONE.
+        cap = (f" -- stopped at the {MAX_CANDIDATES}-candidate budget, so this "
+               f"is not an exhaustive answer" if truncated else "")
         if tried:
             return None, (f"no candidate repo's manifest contained this "
-                          f"file's sha256 (tried: {', '.join(tried)}); "
+                          f"file's sha256 (tried: {', '.join(tried)}){cap}; "
                           f"pass --repo, or the file may have been "
                           f"re-saved (hash drift)"), []
         return None, ("no candidate repos found (config/ecosystem/search "
@@ -797,24 +891,70 @@ def ensure_ref(args, repo_dir, revision, commit, apply_mode):
 
 # ----------------------------------------------------------- file gathering
 
+# --------------------------------------------------------- exclusion filters
+
+# WHY BOTH FLAGS AND NOT ONE: --exclude-dir PRUNES, so a directory it names is
+# never descended into -- that is a different (and much cheaper) act than
+# testing every file underneath it against a glob, and on a model tree the
+# difference is thousands of stat calls.
+#
+# ⭐ AN EXPLICITLY NAMED FILE IS AN INSTRUCTION, NOT A CANDIDATE. Filters apply
+# to what a SCAN discovers, never to a path the user typed -- the same rule the
+# companion-suffix skip already follows ("named explicitly: the user means it").
+# A user who names a file AND excludes it is contradicting themselves, so that
+# one case is reported rather than resolved silently.
+def _excluded(rel, name, patterns):
+    """Does this file match any --exclude pattern? A pattern containing a
+    slash is matched against the path RELATIVE to the directory argument it
+    was found under (rsync/gitignore convention); a bare pattern is matched
+    against the file name alone, at any depth."""
+    for pat in patterns or ():
+        target = rel if "/" in pat else name
+        if fnmatch.fnmatch(target, pat):
+            return True
+    return False
+
+
 def gather_files(args, paths):
     """Expand CLI paths: files as-is; dirs scanned (non-recursive unless
     --recursive). Skips .cache/ metadata dirs that `hf download
     --local-dir` leaves behind."""
     out = []
+    skipped = 0
+    xdirs = set(args.exclude_dir or ())
     for p in paths:
         p = Path(p).expanduser()
         if p.is_dir():
             if args.recursive:
                 for root, dirs, files in os.walk(p):
-                    dirs[:] = sorted(d for d in dirs if d != ".cache")
-                    out.extend(Path(root) / f for f in sorted(files))
+                    dirs[:] = sorted(d for d in dirs
+                                     if d != ".cache" and d not in xdirs)
+                    for f in sorted(files):
+                        c = Path(root) / f
+                        if _excluded(str(c.relative_to(p)), f, args.exclude):
+                            skipped += 1
+                            continue
+                        out.append(c)
             else:
-                out.extend(sorted(c for c in p.iterdir() if c.is_file()))
+                for c in sorted(x for x in p.iterdir() if x.is_file()):
+                    if _excluded(c.name, c.name, args.exclude):
+                        skipped += 1
+                        continue
+                    out.append(c)
         elif p.is_file():
+            # Named explicitly: the user means it. Excluding it too is a
+            # contradiction, and it is said out loud rather than resolved in
+            # silence -- dropping a path someone typed is exactly the kind of
+            # quiet disobedience this tool must not do.
+            if _excluded(p.name, p.name, args.exclude):
+                log(args, 0, f"note: {p.name} was named explicitly, so it is "
+                             f"adopted despite matching --exclude")
             out.append(p)
         else:
             die(f"no such file or directory: {p}")
+    if skipped:
+        log(args, 1, f"# --exclude skipped {skipped} file(s)")
+    args.excluded_count = skipped
     files = [f for f in out if f.is_file()]
     if not files:
         die("no candidate files found (empty dir? need --recursive?)")
@@ -859,6 +999,15 @@ def build_parser():
                       help="move into the cache (source removed only "
                            "after successful placement)")
     p.set_defaults(mode="link")
+    p.add_argument("--exclude", metavar="GLOB", action="append", default=[],
+                   help="skip files matching GLOB (repeatable). A pattern "
+                        "with a / matches the path relative to the directory "
+                        "argument; otherwise it matches the file name.")
+    p.add_argument("--exclude-dir", metavar="NAME", action="append",
+                   default=[],
+                   help="prune directories called NAME while scanning "
+                        "(repeatable); pruned, so their contents are never "
+                        "walked at all.")
     p.add_argument("--recursive", action="store_true",
                    help="recurse into directories")
     p.add_argument("--cache", metavar="DIR",
@@ -1041,8 +1190,10 @@ def main(argv=None):
         refused += r
 
     tag = " (dry-run; nothing was changed)" if not apply_mode else ""
+    nx = getattr(args, "excluded_count", 0)
+    xtra = f", {nx} excluded" if nx else ""
     log(args, 0, f"summary: {adopted} adopted, {already} already cached, "
-                 f"{refused} refused{tag}")
+                 f"{refused} refused{xtra}{tag}")
     if adopted == 0 and already == 0 and refused > 0:
         sys.exit(1)
 

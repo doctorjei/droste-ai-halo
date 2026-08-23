@@ -677,60 +677,45 @@ def _dominant_dtype(header):
 
 
 def _detect_upscaler_arch(keys):
-    """Super-resolution network architecture from key signatures.
-    Returns (arch, confidence) or (None, None)."""
-    has = lambda sub: any(sub in k for k in keys)
-    starts = lambda pre: any(k.startswith(pre) for k in keys)
-    if starts("m_head") and has("m_body") and has("m_tail"):
-        return ("ScuNET", "absolute")
-    if has("relative_position_bias_table"):
-        # SwinIR-family window attention; HAT adds conv blocks per group
-        if has("conv_block") or has("conv_after_body"):
-            return ("HAT", "absolute")
-        if has("residual_group"):
-            return ("SwinIR", "absolute")
-        return ("SwinIR", "uncertain")
-    if has("spatial_block") or has(".dat_"):
-        return ("DAT", "uncertain")
-    if has("model.1.sub.") or has("RRDB_trunk"):
-        return ("ESRGAN", "absolute")
-    if has("conv_first") and (has("rdb") or has("RDB") or has("conv_body")):
-        return ("RealESRGAN", "absolute")
-    return (None, None)
+    """Super-resolution architecture -> (arch, confidence), or (None, None).
+
+    The rules moved to model_formats in s46 (classifier unification): this tool and
+    model_scanner were each keeping key-signature knowledge the other needed, and the
+    scanner had NO upscaler-architecture rules at all while this file had seven. Kept as
+    a named function rather than inlined at the call sites -- it is this tool's word for
+    the thing, and the indirection is where a future policy difference would live.
+    """
+    return model_formats.detect_upscaler_arch(keys)
 
 
 def _detect_kind(keys):
-    """Routing-relevant network KIND from key signatures. Only kinds we
-    can assert absolutely are returned (uncertain guesses defer to the
-    API type). Returns (kind, confidence) or None."""
-    has = lambda sub: any(sub in k for k in keys)
-    if has("adapter.body") or has("adapter_down"):
-        return ("t2i_adapter", "absolute")
-    if has("control_model") or has("controlnet_cond_embedding") \
-            or has("controlnet_down_blocks"):
-        return ("controlnet", "absolute")
-    arch, conf = _detect_upscaler_arch(keys)
-    if arch is not None and conf == "absolute":
-        return ("upscaler", "absolute")
+    """Routing-relevant network KIND -> (kind, confidence), or None.
+
+    ⚠️ THE WHITELIST IS THE GUARD, and it is why handing this tool the scanner's full
+    rule set is safe. The shared classifier answers for many more kinds than this tool
+    routes on -- checkpoint, vae, lora, text_encoder and the rest -- and the API knows
+    things tensor names cannot (LoRA vs LyCORIS vs DoRA is not distinguishable from keys
+    today, yet three directories are fed by the API's word for it). So CONTENT ASSERTS
+    THE FAMILY AND THE API ASSERTS THE SUB-TYPE: only kinds present in KIND_TO_TYPE are
+    emitted for routing, and everything else defers. That list stays a WHITELIST and must
+    never become a confidence threshold.
+
+    What crossing the shared rules actually bought here (s46): the DiT-era ControlNet
+    spellings this tool had never learned -- `controlnet_blocks.` / `controlnet_x_
+    embedder.`, i.e. InstantX's Qwen-Image ControlNets -- plus anchored matching in place
+    of substring matching (Jei's ruling).
+    """
+    kind = model_formats.classify_keys(keys)
+    if kind and kind in KIND_TO_TYPE:
+        return (kind, "absolute")
     return None
 
 
 def _detect_base_model(keys):
-    """Base diffusion model from key signatures. Distinct architectures
-    (FLUX/SD3/SDXL) are absolute; SD1.x vs SD2 is uncertain. Recorded
-    only -- never used for routing."""
-    has = lambda sub: any(sub in k for k in keys)
-    if has("double_blocks.") or has("single_blocks."):
-        return ("FLUX.1", "absolute")
-    if has("joint_blocks."):
-        return ("SD3", "absolute")
-    if has("conditioner.embedders.1"):
-        return ("SDXL", "absolute")
-    if has("cond_stage_model.model."):
-        return ("SD2", "uncertain")
-    if has("model.diffusion_model.") or has("cond_stage_model.transformer"):
-        return ("SD1.x", "uncertain")
-    return None
+    """Base diffusion model from key signatures. Recorded only -- never routed on.
+    Shared since s46; see model_formats.detect_base_model for the FLUX/HunyuanVideo
+    caveat that is still unverified."""
+    return model_formats.detect_base_model(keys)
 
 
 def sniff_content(path, prefix):
@@ -776,7 +761,11 @@ def sniff_content(path, prefix):
         base = _detect_base_model(keys)
         if base:
             facts["base_model"] = base
-        if any("first_stage_model." in k for k in keys):
+        # Shared since s46 (Jei ruled it carries as DATA rather than staying one tool's
+        # private test): the same signature the scanner reads as "a VAE still wearing
+        # checkpoint packaging" is, with a denoiser present, "this checkpoint carries its
+        # VAE". One fact, two correct readings. Now ANCHORED, per the same ruling.
+        if model_formats.packaged_vae(keys):
             facts["embedded_vae"] = (True, "absolute")
         if any(".model_ema." in k or k.startswith("model_ema.") for k in keys):
             facts["has_ema"] = (True, "absolute")

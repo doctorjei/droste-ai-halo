@@ -1193,6 +1193,78 @@ class CivitaiAdoptTest(unittest.TestCase):
         zp = self.fx.add_download("z.pt", pickle_statedict(keys, zipped=True))
         self.assertEqual(sorted(mod.sniff_pickle_keys(zp)), sorted(keys))
 
+    # ------------------------------- s46: the shared key-signature rules
+    # One fixture per rule as it crossed, which the plan requires for a reason: 93
+    # scanner tests will catch a regression on that side, while this tool had ~5
+    # classification tests and would have caught almost nothing.
+    def test_dit_controlnet_is_detected_now(self):
+        """THE COVERAGE WIN. The DiT-era ControlNet spellings -- InstantX's Qwen-Image
+        ControlNets -- were in the scanner and had never been in this tool, so such a
+        file routed on the API type alone."""
+        for key in ("controlnet_blocks.0.weight", "controlnet_x_embedder.weight",
+                    "controlnet_mid_block.weight"):
+            self.assertEqual(mod._detect_kind([key]), ("controlnet", "absolute"), key)
+
+    def test_key_matching_is_anchored_not_substring(self):
+        """Jei's s46 ruling, in the case it was ruled on. This tool matched signatures
+        ANYWHERE in a key; the shared rules anchor them (after stripping a DataParallel
+        `module.`). A root-level `control_model.` still matches; a key that merely
+        CONTAINS the token no longer does, and defers to the API type."""
+        self.assertEqual(mod._detect_kind(["control_model.input_blocks.0.weight"]),
+                         ("controlnet", "absolute"))
+        self.assertEqual(mod._detect_kind(["module.control_model.input_blocks.0.weight"]),
+                         ("controlnet", "absolute"))       # DataParallel packaging
+        self.assertIsNone(mod._detect_kind(["x.control_model_foo.weight"]))
+
+    def test_t2i_adapter_uses_the_measured_key_shape(self):
+        """`adapter.body.` is not a guess: TencentARC's t2i-adapter-canny-sdxl-1.0 and
+        -depth-midas-sdxl-1.0 were read over HTTP range requests (38 tensors each, every
+        one under `adapter.`), which is why it may be anchored."""
+        self.assertEqual(mod._detect_kind(["adapter.body.0.resnets.0.block1.bias"]),
+                         ("t2i_adapter", "absolute"))
+
+    def test_upscaler_architectures_survived_the_move(self):
+        for keys, want in (
+                (["m_head.0.w", "m_body.0.w", "m_tail.0.w"], "ScuNET"),
+                (["l.0.residual_group.b.0.attn.relative_position_bias_table"], "SwinIR"),
+                (["l.0.attn.relative_position_bias_table", "conv_after_body.w"], "HAT"),
+                (["model.1.sub.0.RDB1.conv1.weight"], "ESRGAN"),
+                (["conv_first.weight", "body.0.rdb1.conv1.weight"], "RealESRGAN")):
+            self.assertEqual(mod._detect_upscaler_arch(keys)[0], want, want)
+            self.assertEqual(mod._detect_kind(keys), ("upscaler", "absolute"), want)
+
+    def test_the_whitelist_still_guards_the_api(self):
+        """⚠️ THE TRAP THE PLAN NAMES. The shared classifier answers for many more kinds
+        than this tool routes on, and the API knows things tensor names cannot -- LoRA vs
+        LyCORIS vs DoRA is not distinguishable from keys today, yet three directories are
+        fed by the API's word for it. So only KIND_TO_TYPE kinds may route; everything
+        else must defer, however confident the content rule is."""
+        for keys in (["model.diffusion_model.input_blocks.0.weight"],   # checkpoint
+                     ["first_stage_model.decoder.conv.weight"],          # vae
+                     ["lora_unet_down_blocks_0.weight"],                 # lora
+                     ["text_model.encoder.layers.0.weight"]):            # text encoder
+            self.assertIsNone(mod._detect_kind(keys), keys[0])
+        for kind in mod.KIND_TO_TYPE:
+            self.assertIn(kind, ("controlnet", "t2i_adapter", "upscaler"),
+                          "the routing whitelist grew; that is a decision, not a detail")
+
+    def test_embedded_vae_is_anchored_shared_data(self):
+        """The last signature the two tools each spelled privately. Jei ruled (s46) that
+        the shared classifier carries it as DATA: the scanner reads it as "a VAE still
+        wearing checkpoint packaging" and warns, this tool reads it as "this checkpoint
+        carries its VAE". One fact, two correct readings -- and anchored now, so a key
+        that merely contains the token no longer sets it."""
+        import model_formats
+        self.assertTrue(model_formats.packaged_vae(["first_stage_model.decoder.conv.w"]))
+        self.assertTrue(model_formats.packaged_vae(["module.first_stage_model.decoder.w"]))
+        self.assertFalse(model_formats.packaged_vae(["x.first_stage_model.nested.w"]))
+        # ...and it still reaches the sidecar, which is what this tool records it for
+        p = self.fx.add_download("ckpt.pth", pickle_statedict(
+            ["model.diffusion_model.input_blocks.0.weight",
+             "first_stage_model.decoder.conv.weight"]))
+        facts = mod.sniff_content(p, p.read_bytes()[:4096])
+        self.assertEqual(facts.get("embedded_vae"), (True, "absolute"))
+
     def test_legacy_container_is_read_not_recorded_as_empty(self):
         """REGRESSION (s46): a legacy torch checkpoint was read as EMPTY, and the
         emptiness was then recorded as a FACT.

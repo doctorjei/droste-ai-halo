@@ -244,6 +244,11 @@ KIND_TEXT_ENCODER = "text_encoder"
 KIND_CLIP_VISION = "clip_vision"
 KIND_FACE_DETECTOR = "face_detector"
 KIND_POSE_ESTIMATOR = "pose_estimator"
+# Crossed over from the adopt tool (s46). Its `KIND_TO_TYPE` whitelist already spells
+# them exactly like this, which is not a coincidence -- these names ARE the internal
+# vocabulary that tool had been keeping privately.
+KIND_T2I_ADAPTER = "t2i_adapter"
+KIND_UPSCALER = "upscaler"
 
 # AnimateDiff motion modules ride inside a UNet-shaped state dict, so the block prefix
 # plus the temporal stack hanging off it IS the discriminator -- a depth model's
@@ -450,7 +455,114 @@ def classify_keys(keys) -> str | None:
         return KIND_VAE
     if any_start("text_model.", "t5.", "enc."):
         return KIND_TEXT_ENCODER
+    # ---- rules that crossed from the adopt tool (s46), at the BOTTOM of the ladder.
+    # ⚠️ THE PLACEMENT IS A STAGING DECISION, NOT THE FINAL DESIGN. Down here they can
+    # only fire where every rule above has ABSTAINED, which is what keeps this stage
+    # outcome-free for the scanner (measured: 39,900 headers, zero differences).
+    # The adopt tool ran its T2I rule ABOVE its ControlNet rules, and that order is
+    # RIGHT -- they are sibling conditioning mechanisms and the adapter is the more
+    # specific claim. Restoring it here costs a scanner outcome change TODAY (measured:
+    # 825 diffs, every one a file carrying a T2I signature AND another rule's signature;
+    # no single-signature file moved), because a T2I kind currently maps to nothing.
+    # It becomes FREE the moment KIND_T2I_ADAPTER maps to `controlnet` in the scanner,
+    # which is exactly what the crossing commit does -- so the move belongs there, with
+    # the HEURISTICS_VERSION bump that pays for it, and not here.
+    # `adapter.body.` is MEASURED on real files (TencentARC t2i-adapter-canny-sdxl and
+    # -depth-midas-sdxl: 38 tensors, every one under `adapter.`), so it anchors.
+    # `adapter_down` is kept as a SUBSTRING and is UNVERIFIED -- it crossed over from the
+    # adopt tool, no specimen was found for it here, and narrowing it silently would be
+    # dropping coverage on a guess.
+    # The upscaler rule is last on merit rather than staging: an architecture fingerprint
+    # says which network this is, not what job it does, so it may only speak where every
+    # role rule has abstained.
+    if any_start("adapter.body.") or any("adapter_down" in k for k in keys):
+        return KIND_T2I_ADAPTER
+    if detect_upscaler_arch(keys)[1] == "absolute":
+        return KIND_UPSCALER
     return None
+
+
+# ── ARCHITECTURE fingerprints ─────────────────────────────────────────────────────────
+# ⚠️ THESE MATCH AS SUBSTRINGS, AND THAT IS THE ONE PLACE THE ANCHORING RULE BENDS.
+# Jei ruled anchored prefixes for the ROLE rules above (s46) and that ruling stands: a
+# role announces itself at the ROOT of a state dict (`control_model.`, `first_stage_
+# model.`), so anchoring costs nothing and stops `enc.` matching `encoder.`.
+# An architecture does the opposite. `relative_position_bias_table` lives at
+# `layers.0.residual_group.blocks.0.attn.relative_position_bias_table`; RealESRGAN's RDBs
+# hang under `body.`. A fingerprint is a component NAME somewhere in the module tree, and
+# anchoring it would simply delete the rule.
+# ⭐ THAT ASYMMETRY IS WHY THE TWO TOOLS HAD DIFFERENT MATCHING SEMANTICS IN THE FIRST
+# PLACE: the scanner mostly asks "what ROLE does this file play", the adopt tool mostly
+# asks "which ARCHITECTURE is this upscaler". Neither was wrong; they were answering
+# different questions and the difference was never written down.
+#
+# ⚠️ ORDER IS LOAD-BEARING (verbatim from the adopt tool): ScuNET first; HAT before
+# SwinIR (HAT adds conv blocks to the same window attention); ESRGAN before RealESRGAN.
+def detect_upscaler_arch(keys) -> tuple:
+    """Super-resolution architecture from key signatures -> (arch, confidence).
+
+    An ATTRIBUTE, not a kind: it says which network a file is, not what role it plays.
+    The caller decides what to do with it -- the adopt tool routes on it
+    (UPSCALER_ARCH_DIRS), the scanner does not link by architecture at all.
+    """
+    has = lambda sub: any(sub in k for k in keys)
+    starts = lambda pre: any(k.startswith(pre) for k in keys)
+    if starts("m_head") and has("m_body") and has("m_tail"):
+        return ("ScuNET", "absolute")
+    if has("relative_position_bias_table"):
+        # SwinIR-family window attention; HAT adds conv blocks per group
+        if has("conv_block") or has("conv_after_body"):
+            return ("HAT", "absolute")
+        if has("residual_group"):
+            return ("SwinIR", "absolute")
+        return ("SwinIR", "uncertain")
+    if has("spatial_block") or has(".dat_"):
+        return ("DAT", "uncertain")
+    if has("model.1.sub.") or has("RRDB_trunk"):
+        return ("ESRGAN", "absolute")
+    if has("conv_first") and (has("rdb") or has("RDB") or has("conv_body")):
+        return ("RealESRGAN", "absolute")
+    return (None, None)
+
+
+def detect_base_model(keys) -> tuple | None:
+    """Base diffusion family from key signatures -> (family, confidence) or None.
+
+    Another ATTRIBUTE. Distinct architectures (FLUX/SD3/SDXL) are absolute; SD1.x vs SD2
+    is uncertain, because they differ by text-encoder plumbing rather than by shape.
+    ⚠️ FLAGGED BY THE s41 AUDIT, STILL UNVERIFIED: `double_blocks.` -> FLUX.1 at
+    `absolute` may also match HunyuanVideo, in which case a correct `baseModel` gets
+    rewritten. No fixture exists either way -- check a real file before trusting OR
+    "fixing" this.
+    """
+    has = lambda sub: any(sub in k for k in keys)
+    if has("double_blocks.") or has("single_blocks."):
+        return ("FLUX.1", "absolute")
+    if has("joint_blocks."):
+        return ("SD3", "absolute")
+    if has("conditioner.embedders.1"):
+        return ("SDXL", "absolute")
+    if has("cond_stage_model.model."):
+        return ("SD2", "uncertain")
+    if has("model.diffusion_model.") or has("cond_stage_model.transformer"):
+        return ("SD1.x", "uncertain")
+    return None
+
+
+def packaged_vae(keys) -> bool:
+    """True when a VAE section is present under a CHECKPOINT's packaging prefix.
+
+    ⭐ SHARED DATA, ruled by Jei (s46), and it is the last signature the two tools were
+    each spelling for themselves. It is a fact about the CONTAINER, not about the VAE:
+    `first_stage_model.` is ComfyUI's base-class `vae_key_prefix`, stripped on load and
+    re-added on save (measured s43, `supported_models_base.py:45` / `sd.py:2210`).
+    Consumers read it differently ON PURPOSE and both are right: with a denoiser present
+    it means "this checkpoint carries its VAE" (the adopt tool's `embedded_vae`);
+    without one it means "this VAE is still wearing checkpoint packaging", which
+    ComfyUI's VAELoader will not load -- the scanner's WARN.
+    ⚠️ ANCHORED, per the role rule. The adopt tool matched it as a substring until s46.
+    """
+    return any(k.startswith("first_stage_model.") for k in strip_dataparallel(keys))
 
 
 # Signatures that name a model OUTRIGHT, as opposed to the generic encoder+decoder shape

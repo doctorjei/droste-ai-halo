@@ -402,7 +402,7 @@ class ScannerTest(unittest.TestCase):
         reg = self.fx.load_registry()
         # 3 since s35 (the top-level `renames` ledger). Entries are unchanged from v2,
         # which the assertions below this line are the standing proof of.
-        self.assertEqual(reg["version"], 3)
+        self.assertEqual(reg["version"], 4)
         # ...and a store nobody has renamed anything in does not grow the key at all
         self.assertNotIn("renames", reg)
         cats = {e["display"]: e["category"] for e in reg["entries"].values()}
@@ -936,6 +936,30 @@ class ScannerTest(unittest.TestCase):
         markers and none of the VAE ones must abstain, not guess."""
         self.assertIsNone(ms.classify_safetensors_header(
             {"encoder.block.0.weight": {}, "decoder.block.0.weight": {}}))
+
+    # ------------------------------------------- the category override ledger (s47)
+    def test_category_override_survives_a_heuristics_bump(self):
+        """THE WHOLE POINT: a hand-edited `category` inside entries is CACHE and a
+        bump overwrites it. A ledger entry is the user's answer and must not be."""
+        import model_scanner as _ms
+        reg = _ms.Registry(entries={}, heuristics=_ms.HEURISTICS_VERSION,
+                           categories={"thing.safetensors": {"to": "vae"}})
+        self.assertEqual(reg.category_override("thing.safetensors"), "vae")
+        # a stale-heuristics registry still answers -- the override is not cached data
+        reg.heuristics = 1
+        self.assertEqual(reg.category_override("thing.safetensors"), "vae")
+        self.assertIsNone(reg.category_override("other.safetensors"))
+
+    def test_category_ledger_round_trips(self):
+        import model_scanner as _ms
+        path = self.fx.root / "reg.yaml"
+        reg = _ms.Registry(entries={}, categories={"a.bin": {"to": "loras"}})
+        _ms.save_registry(path, reg)
+        back = _ms.load_registry(path)
+        self.assertEqual(back.category_override("a.bin"), "loras")
+        # CONTROL: a registry with no ledger is unchanged in shape
+        _ms.save_registry(path, _ms.Registry(entries={}))
+        self.assertNotIn("categories", (path.read_text()))
 
     def test_object_pickle_executes_nothing(self):
         """The stub is now a real type, so it is instantiated rather than merely called.

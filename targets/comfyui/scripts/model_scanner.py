@@ -195,7 +195,7 @@ except ImportError as e:  # pragma: no cover
 # an old scanner reading a v3 store classifies exactly as before, it simply does not know
 # to defend the user's names -- so this bump is a description of the store, not a
 # migration. (Nothing reads the field; HEURISTICS_VERSION is the one that forces work.)
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 # 7: qualified path segments (nai_hypernetworks) and annotator family names (depth_anything,
 #    ZoeD, the Annotators repo) now classify, so every registry must re-run.
 # 8: STEP 2 -- the weighted SCORE decides the category, not the heuristic ladder, and LoFi
@@ -1265,12 +1265,23 @@ class Registry:
     # Survives everything: a heuristics bump reclassifies, but a reclassified file keeps
     # the name its owner gave it (it only moves to another category dir under that name).
     renames: dict = field(default_factory=dict)
+    # link name -> {"to": category, "recorded": ...}. THE SAME BARGAIN AS renames,
+    # for the other half of what the scanner decides about a file. A hand-edited
+    # `category` inside `entries` is CACHE and the next heuristics bump overwrites it;
+    # an entry here is the USER'S ANSWER and survives every bump, exactly as a chosen
+    # name does. Without it the only durable way to disagree with the classifier was
+    # to edit the registry after every bump, which is not a workflow.
+    categories: dict = field(default_factory=dict)
 
     def owned_links(self) -> set[str]:
         owned: set[str] = set()
         for e in self.entries.values():
             owned.update(e.get("links") or [])
         return owned
+
+    def category_override(self, link_name: str):
+        """The category the user chose for this source, or None."""
+        return (self.categories.get(link_name) or {}).get("to") or None
 
     def renamed(self, link_name: str) -> str:
         """The name the tree should use for a source: the user's if they chose one."""
@@ -1288,9 +1299,12 @@ def load_registry(path: Path) -> Registry:
         renames = data.get("renames") or {}
         if not isinstance(renames, dict):
             raise ValueError("renames is not a mapping")
+        cats = data.get("categories") or {}
+        if not isinstance(cats, dict):
+            raise ValueError("categories is not a mapping")
         return Registry(entries=entries,
                         heuristics=int(data.get("heuristics", 0)),
-                        renames=renames)
+                        renames=renames, categories=cats)
     except Exception as e:  # corrupt registry -> start fresh; links fail safe to "user's"
         log(f"WARN  unreadable registry {path} ({e}); starting fresh "
             f"(existing links are treated as user-owned)")
@@ -1305,6 +1319,8 @@ def save_registry(path: Path, reg: Registry) -> None:
     # in stays exactly the document it was before the ledger existed.
     if reg.renames:
         doc["renames"] = reg.renames
+    if reg.categories:
+        doc["categories"] = reg.categories
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(yaml.safe_dump(doc, sort_keys=True, default_flow_style=False))
     tmp.replace(path)
@@ -1437,6 +1453,16 @@ def cmd_sync(args) -> int:
     confidences: dict[str, dict] = {}     # identity -> {confidence, signals, disputed?}
     n_new = 0
     for src in files:
+        # ⭐ THE USER'S ANSWER OUTRANKS BOTH THE CACHE AND THE CLASSIFIER, and it is
+        # applied before either is consulted so a heuristics bump cannot quietly undo
+        # it. Same standing the rename ledger has over a derived link name.
+        override = old.category_override(src.link_name)
+        if override:
+            categories[src.identity] = override
+            formats[src.identity] = (
+                (old.entries.get(src.identity) or {}).get("format")
+                or detect_format(src))
+            continue
         prev = old.entries.get(src.identity) if reuse_cache else None
         if prev and prev.get("category"):
             categories[src.identity] = prev["category"]
@@ -2007,6 +2033,59 @@ def _category_of(src: SourceFile, reg: Registry) -> str:
     return winner or classify(src)
 
 
+def cmd_categorize(args) -> int:
+    """Record the category YOU want for a source; re-asserted at every sync.
+
+    The rename verb's twin, and deliberately shaped like it: --list, a set form,
+    and setting a source back to what the classifier says FORGETS the override
+    rather than freezing today's answer forever.
+    """
+    reg = load_registry(args.registry)
+
+    if args.list:
+        for key in sorted(reg.categories):
+            rec = reg.categories[key] or {}
+            log(f"CATEGORY  {key} -> {rec.get('to', '?')}")
+        log(f"model-scanner: {len(reg.categories)} recorded override(s)")
+        return 0
+
+    if not args.name or not args.category:
+        log("ERROR  categorize takes <file-name> <category> (or --list). "
+            "Passing the category the classifier already chose forgets the override.")
+        return 2
+
+    name = Path(args.name).name        # a tree-relative path is accepted, as in rename
+    cat = args.category.strip("/")
+    if cat not in CATEGORIES:
+        log(f"ERROR  '{cat}' is not a category this tool links into. "
+            f"Known: {', '.join(sorted(CATEGORIES))}")
+        return 2
+
+    # What does the classifier say TODAY? Matching it means "no override", so the
+    # file follows the rules again -- the same bargain rename makes with a name.
+    entry = None
+    for ident, e in (load_registry(args.registry).entries or {}).items():
+        for link in e.get("links") or []:
+            if Path(link).name == name:
+                entry = e
+                break
+        if entry:
+            break
+    if entry and entry.get("category") == cat and name in reg.categories:
+        del reg.categories[name]
+        save_registry(args.registry, reg)
+        log(f"FORGOT  {name}: the classifier already says {cat}")
+        return 0
+
+    reg.categories[name] = {
+        "to": cat,
+        "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    save_registry(args.registry, reg)
+    log(f"CATEGORY  {name} -> {cat} (applied at the next sync)")
+    return 0
+
+
 def cmd_rename(args) -> int:
     reg = load_registry(args.registry)
 
@@ -2195,6 +2274,20 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("-u", "--unclassified", action="store_true",
                      help="only files that end up unclassified")
     ins.set_defaults(fn=cmd_inspect)
+
+    cg = sub.add_parser("categorize", parents=[common],
+                        help="record the category YOU want for a file; the scanner "
+                             "re-asserts it at every sync and a heuristics bump "
+                             "cannot overwrite it")
+    cg.add_argument("name", nargs="?",
+                    help="the source or link name (a tree-relative path is "
+                         "accepted; only the filename is used)")
+    cg.add_argument("category", nargs="?",
+                    help="the category directory to link it under. Passing the "
+                         "category the classifier already chose forgets the override.")
+    cg.add_argument("--list", action="store_true",
+                    help="show the recorded overrides")
+    cg.set_defaults(fn=cmd_categorize)
 
     rn = sub.add_parser("rename", parents=[common],
                         help="give a tree link the name YOU want; the scanner records "

@@ -28,8 +28,11 @@ ARG RCCL_REF=a2686c9f41e44a75459e4771b7f380358432b294
 
 # Install torch & upgraded dependencies
 # uv (staged migration, s45 — BUILD-ONLY image, never shipped; same measured shape as
-# Container.vllm-build's torch line). ⚠️ The `pip wheel` further down STAYS pip: uv has
-# no `pip wheel` equivalent.
+# Container.vllm-build's torch line).
+# ⚠️ The `pip wheel` further down is STILL pip. ❌ Its original justification — "uv has no
+# `pip wheel` equivalent" — was RETRACTED s45: `uv build --wheel` is the equivalent, under
+# a different verb. It stays pip only because that migration is unproven in CI, not
+# because it is impossible → notebook/plans/uv-migration-completion-s45.md item 1.
 RUN . /etc/droste/rocm-version.env && \
       uv pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
       uv pip install --upgrade scikit-build-core setuptools wheel

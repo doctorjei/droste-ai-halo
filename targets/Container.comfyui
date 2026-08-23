@@ -96,12 +96,22 @@ RUN uv pip install -r requirements.txt \
     && pip install --prefer-binary \
        pillow opencv-python-headless imageio imageio-ffmpeg scipy \
        "huggingface_hub[hf_transfer]" pyyaml websocket-client
-# ⚠️ The SECOND install stays pip, and not by omission (s45): **uv rejects
-# `--prefer-binary`** outright (`error: unexpected argument`; its nearest relatives are
-# `--only-binary`/`--no-binary`, which mean something stricter). Dropping the flag to
-# migrate the line would be a silent behaviour change on a SHIPPED image — this batch is a
-# media stack where preferring a wheel over a newer sdist is the whole point. Left as-is
-# until there is a measured equivalent.
+# ⚠️ THE SECOND INSTALL STAYS pip — and this is the ONE uv boundary that is still OPEN
+# rather than retracted. Read it as a question, not a settled limit.
+# ✅ ESTABLISHED: uv REJECTS `--prefer-binary` outright (`error: unexpected argument`).
+#    Its nearest relatives, `--only-binary`/`--no-binary`, are STRICTER — they forbid
+#    sdists rather than preferring wheels.
+# ❌ NOT ESTABLISHED, and I should not have written "until there is a measured equivalent"
+#    as though I had checked: **nobody has measured whether uv's DEFAULT resolves this
+#    exact package list to the same set.** uv prefers wheels in practice, so the default
+#    may already do what the flag asks.
+# 🚨 WHY IT MUST NOT BE MIGRATED ON A GUESS: `--prefer-binary` prefers a WHEEL even when a
+#    NEWER version exists only as an sdist. For a media stack (pillow, opencv, scipy) that
+#    is the difference between pulling a prebuilt wheel and COMPILING a large C/C++ project
+#    during the image build. If uv's default differs, the build still goes GREEN and only
+#    the cascade time tells you — the worst kind of regression to ship.
+# ▶ OPEN FOR JEI, with options weighed → notebook/plans/uv-migration-completion-s45.md
+#    item 4. Agent lean: run ONE dry-run comparison first, then decide.
 
 # ComfyUI Custom Nodes
 WORKDIR /opt/ComfyUI/custom_nodes

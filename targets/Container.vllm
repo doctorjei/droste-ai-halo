@@ -91,6 +91,10 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     (survives even a 100k recursion limit — it's pathological backtracking, not mere depth). The
 #     legacy resolver takes the first satisfying candidate (our torch satisfies ==2.9.1) and skips
 #     the backtracking entirely. Scoped to this RUN via the env export.
+#     ⚠️ ALL OF THAT DESCRIBES pip, AND IS STILL TRUE OF pip. It is NOT a statement about uv —
+#     see the retraction above the RUN: uv resolved this same graph in ~2.4s in a dry run, so
+#     under uv this workaround is probably unnecessary. Do not cite this paragraph as a reason
+#     the step cannot migrate.
 #  4. ray (upstream installs it explicitly; used by the cluster launcher paths).
 #  5. REPAIR the one constraint the legacy resolver is known to drop, then VERIFY the whole
 #     environment. The legacy resolver's "first satisfying candidate" rule (step 3) has no
@@ -127,19 +131,27 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #  7. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
-# ⛔ THIS ENTIRE RUN STAYS ON pip, AND IT IS THE ONE PLACE THE s45 uv MIGRATION CANNOT GO.
-# Not a judgement call — two of its load-bearing mechanisms have no uv equivalent:
-#   * `PIP_USE_DEPRECATED=legacy-resolver` (step 3). uv has ONE resolver and no legacy
-#     mode. The legacy resolver is here because the modern backtracker dies with
-#     RecursionError on this dep graph (measured; survives a 100k recursion limit).
-#     Whether uv's PubGrub resolver has the same pathology is UNKNOWN and cannot be
-#     measured without building — so migrating this would be a guess on the one image
-#     with a documented resolver failure.
-#   * `unset PIP_CONSTRAINT` (step 2b). uv does not read that variable at all; the uv
-#     spelling needs UV_CONSTRAINT *and* UV_BUILD_CONSTRAINT unset too. Getting that
-#     subtly wrong reproduces the exact s44 vllm build failure.
-# Everything else in the tree that CAN move to uv has moved. Revisit only with a measured
-# resolve, never by pattern-matching the other targets.
+# ⚠️ THIS ENTIRE RUN IS STILL ON pip — and the reason recorded here was WRONG. Read this
+# before either migrating it or citing it as a limit.
+# ❌ RETRACTED s45: "uv has ONE resolver and no legacy mode, and whether its PubGrub has
+# the same pathology is UNKNOWN and CANNOT BE MEASURED WITHOUT BUILDING." It was
+# measurable in two minutes, and both legs came back the other way:
+#   * `uv pip install --dry-run vllm==0.16.0` resolved the FULL dependency graph in
+#     ~2.4s — the graph pip's modern resolver dies on with RecursionError even at a
+#     100k recursion limit. No sign of the same pathology.
+#   * The specific interaction that broke pip: with a local-version torch
+#     (`2.9.1+rocm…`) installed, `uv pip install --dry-run "torch==2.9.1"` reports
+#     "Would make no changes" — uv honours PEP 440 local-version satisfaction and does
+#     not re-resolve torch.
+# ⇒ If uv drives this step, `PIP_USE_DEPRECATED=legacy-resolver` is very likely
+# unnecessary and should be DELETED rather than carried.
+# 🚨 CAVEAT, AND IT IS LOAD-BEARING: that measurement used the PYPI vllm wheel, not our
+# locally built ROCm one, and this step installs local .whl FILES rather than resolving a
+# name. Strong evidence, NOT a receipt — prove it in CI, alone, in its own commit.
+# 🚨 THE OTHER HALF IS A REAL TRAP AND STILL STANDS: `unset PIP_CONSTRAINT` (step 2b) does
+# NOTHING for uv. A uv version of this step must unset UV_CONSTRAINT *and*
+# UV_BUILD_CONSTRAINT — both — or it reproduces the s44 failure that cost a ~57 min cascade.
+# ▶ PLAN: notebook/plans/uv-migration-completion-s45.md item 3 (lands ALONE, last).
 RUN . /etc/droste/rocm-version.env \
     && export PIP_USE_DEPRECATED=legacy-resolver \
     && unset PIP_CONSTRAINT \

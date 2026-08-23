@@ -685,6 +685,41 @@ def get_manifest(args, repo, revision, token, manifests):
     return entry
 
 
+# --------------------------------------------------- merged-split-GGUF detector
+
+SPLIT_PART_SUFFIX = r"-(\d{5})-of-(\d{5})\.gguf$"
+
+
+def split_part_note(name, repo_files):
+    """A repo publishes <stem>-00001-of-000NN.gguf and the user holds <stem>.gguf.
+
+    ⭐ WORTH A DIAGNOSTIC OF ITS OWN because the honest refusal is USELESS here.
+    "the file may have been re-saved (hash drift)" is true and tells the user
+    nothing: a locally MERGED split has no published counterpart at all, so no
+    --repo, no revision and no re-run can ever match it. Measured on
+    Mistral-Medium-3.5-128B-UD-Q5_K_XL.gguf, which unsloth ships as three parts.
+    """
+    # A cheap early-out, NOT a correctness gate: mutation-testing showed the stem +
+    # suffix match already rejects every non-gguf on its own, because the pattern
+    # requires our exact stem followed by -NNNNN-of-NNNNN.gguf. Kept because it saves
+    # building a bogus stem for every non-gguf in a tree, and said out loud so nobody
+    # later reads the test below as proving this line load-bearing.
+    if not name.lower().endswith(".gguf"):
+        return ""
+    stem = name[:-len(".gguf")]
+    pat = re.compile(re.escape(stem) + SPLIT_PART_SUFFIX, re.I)
+    for repo, rfilenames in repo_files:
+        for rfn in rfilenames or ():
+            m = pat.search(rfn or "")
+            if m:
+                return (f" -- NOTE: {repo} publishes this model as {int(m.group(2))} "
+                        f"SPLIT PARTS ({stem}-00001-of-{m.group(2)}.gguf and siblings). "
+                        f"A locally merged file is not byte-identical to any of them, "
+                        f"so no repo can match it and --repo will not help; keep it "
+                        f"in /opt/models, or fetch the parts to adopt them")
+    return ""
+
+
 def identify_file(args, f, size, token, manifests, searches, hash_memo):
     """IDENTIFY phase for one file (no --repo): find HF repos whose
     published hashes prove they contain this exact content. Candidate
@@ -798,6 +833,14 @@ def identify_file(args, f, size, token, manifests, searches, hash_memo):
         cap = (f" -- stopped at the {MAX_CANDIDATES}-candidate budget, so this "
                f"is not an exhaustive answer" if truncated else "")
         if tried:
+            split = split_part_note(f.name, (
+                (r, [sib.get("rfilename") for sib in
+                     ((manifests.get(r) or ({}, None))[0].get("siblings") or [])])
+                for r in tried))
+            if split:
+                return None, (f"no candidate repo's manifest contained this "
+                              f"file's sha256 (tried: {', '.join(tried)})"
+                              f"{split}"), []
             return None, (f"no candidate repo's manifest contained this "
                           f"file's sha256 (tried: {', '.join(tried)}){cap}; "
                           f"pass --repo, or the file may have been "
@@ -1062,8 +1105,10 @@ def adopt_group(args, cache, repo, idx, files, hash_memo):
             digest = git_sha1
             kind = "git blobId"
         if hit is None:
+            split = split_part_note(f.name, [(repo, [
+                v[0] for m in (idx[1], idx[2]) for v in m.values()])])
             log(args, 0, f"REFUSE  {shown}: not byte-identical to any "
-                         f"file in {at}")
+                         f"file in {at}{split}")
             refused += 1
             continue
 

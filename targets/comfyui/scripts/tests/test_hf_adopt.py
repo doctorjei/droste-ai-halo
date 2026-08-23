@@ -700,6 +700,24 @@ class AdoptTest(unittest.TestCase):
         self.assertIn("budget", out)
         self.assertIn("not an exhaustive answer", out)
 
+    def test_merged_split_gguf_is_explained_not_shrugged_at(self):
+        """A locally merged split has no published counterpart, so 'may have
+        been re-saved (hash drift)' is true and useless. Mistral-shaped."""
+        parts = [f"UD-Q5_K_XL/Mistral-Medium-3.5-128B-UD-Q5_K_XL"
+                 f"-0000{i}-of-00003.gguf" for i in (1, 2, 3)]
+        note = mod.split_part_note(
+            "Mistral-Medium-3.5-128B-UD-Q5_K_XL.gguf", [("unsloth/M", parts)])
+        self.assertIn("3 SPLIT PARTS", note)
+        self.assertIn("--repo will not help", note)
+
+    def test_split_note_stays_quiet_when_it_does_not_apply(self):
+        """CONTROL: the note must not fire on a repo that merely has parts of
+        SOMETHING ELSE, nor on a non-gguf."""
+        parts = ["other-model-00001-of-00003.gguf"]
+        self.assertEqual(mod.split_part_note("mine.gguf", [("o/x", parts)]), "")
+        self.assertEqual(
+            mod.split_part_note("mine.safetensors", [("o/x", parts)]), "")
+
     def test_windows_reach_a_model_named_mid_filename(self):
         """The real file that forced windows: the model name is in the
         MIDDLE, so no suffix ladder can reach it."""

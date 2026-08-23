@@ -22,8 +22,24 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 
 # TheRock ROCm SDK devel (amdclang++/hipcc, HIP headers, device bitcode, cmake configs).
 # Versions come from the pin baked into the runtime base at /etc/droste/rocm-version.env.
+#
+# ⭐ FIRST STEP OF THE STAGED uv MIGRATION (s45). This file is deliberately first: it is
+# BUILD-ONLY (never shipped to a user) and it is phase 1 of the CI matrix, so a failure
+# is cheap and immediate. Half-migrated is a valid state — pip and uv produce the same
+# venv, and the rest of the tree still uses pip.
+# ✅ MEASURED BEFORE CHANGING, both tools against the real index (uv 0.12.5):
+# they resolve the SAME three packages at the same version — rocm, rocm-sdk-core,
+# rocm-sdk-devel, all 7.13.0a20260501.
+# 🔧 `--prerelease` is NOT needed and is deliberately absent: the pin is an ALPHA
+# (`7.13.0a…`), and uv accepts a prerelease whose specifier names it exactly, same as
+# pip. Adding `--prerelease=allow` would also widen every DEPENDENCY to prereleases,
+# which is a change pip never made here.
+# 🔧 uv's `index-strategy` (default `first-index`) cannot bite on this line: there is
+# ONE index, not an `--extra-index-url` pair.
+# 🔧 uv finds /opt/venv via VIRTUAL_ENV, set as an image ENV in the runtime base — it
+# does NOT follow PATH to a venv's pip the way this line used to rely on.
 RUN . /etc/droste/rocm-version.env && \
-      pip install --index-url ${ROCM_INDEX_URL} "rocm[devel]==${ROCM_SDK_DEVEL_VERSION}" && \
+      uv pip install --index-url ${ROCM_INDEX_URL} "rocm[devel]==${ROCM_SDK_DEVEL_VERSION}" && \
       rocm-sdk init
 
 # Point /opt/rocm at the SDK root via `rocm-sdk path --root`

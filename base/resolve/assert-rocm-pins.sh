@@ -12,10 +12,19 @@
 # builds, the container still starts, the service still answers — and there is
 # no GPU. Nothing in CI notices, because everything "works".
 #
-# Run it AFTER any layer that installs or re-pins part of the stack:
-#   base/Container.torch      after the torch install (the source of truth)
-#   targets/Container.comfyui after the torchvision/torchaudio pin
-#   targets/Container.vllm    after its --force-reinstall torchvision re-pin
+# Run it AFTER any layer that installs or re-pins part of the stack — and, in an
+# image that keeps installing afterwards, AT THE END OF THE CHAIN TOO. An assertion
+# above four more resolving layers proves the stack was right before the layers most
+# likely to break it (s45: comfyui's only assertion sat before its own
+# requirements.txt, the media batch and Manager's requirements; finetuning had none
+# at all under bitsandbytes + flash-attention + unsloth-from-source).
+#   base/Container.torch        after the torch install (the source of truth)
+#   targets/Container.comfyui   after the torchvision/torchaudio pin, AND in the last
+#                               package-installing layer (all three)
+#   targets/Container.vllm      after its --force-reinstall torchvision re-pin
+#   targets/Container.finetuning in the last package-installing layer (`torch` only —
+#                               this port never installs torchvision/torchaudio)
+# llama and ds4 are FROM the RUNTIME base and have no torch: they must NOT call this.
 #
 # Usage: assert-rocm-pins.sh [package ...]        (default: all three)
 # Named packages MUST be installed and MUST match. Absent is a failure, not a

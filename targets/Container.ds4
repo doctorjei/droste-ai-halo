@@ -31,7 +31,7 @@ RUN printf '/usr/local/lib\n/usr/local/lib64\n' > /etc/ld.so.conf.d/ds4-local.co
 # Install git, pipx, & python runtime (into the base's /opt/venv)
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* && apt-get clean
-RUN pip install --no-cache-dir pipx 'huggingface_hub[hf_xet]'
+RUN uv pip install --no-cache-dir pipx 'huggingface_hub[hf_xet]'
 
 # DS4 Cockpit TUI
 RUN pipx install --global "git+${COCKPIT_REPO}@${COCKPIT_REF}#subdirectory=ds4-strix-halo-cockpit"

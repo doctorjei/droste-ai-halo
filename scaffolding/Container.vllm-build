@@ -28,11 +28,18 @@ ARG FP8_KERNELS_REPO=https://github.com/leonyurko/vllm-fp8-strix-halo-kernel-sup
 ARG FP8_KERNELS_REF=50424f5525b8382353551e3301d0da56eca0be2b
 
 # Install Torch
+# uv (staged migration, s45 — this is a BUILD-ONLY image, never shipped). ✅ MEASURED
+# against the real index before changing: uv resolves `torch==<pin>+rocm…` to the same
+# 14 packages pip does, including triton+rocm and rocm-sdk-libraries — the LOCAL VERSION
+# IDENTIFIER is handled identically, and no `--pre` is required (2.9.1 is a final release;
+# the `+rocm…` part is local metadata, not a prerelease).
 RUN . /etc/droste/rocm-version.env \
-    && pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
+    && uv pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
 
-# Python build backends
-RUN pip install --upgrade \
+# Python build backends. These are what the `pip wheel --no-build-isolation` steps below
+# compile against, so they must land in the SAME venv — they do: uv finds /opt/venv via
+# VIRTUAL_ENV (an image ENV from the runtime base), it does not follow PATH.
+RUN uv pip install --upgrade \
       cmake ninja packaging wheel numpy "setuptools-scm>=8" "setuptools<80.0.0" \
       scikit-build-core pybind11 numba scipy
 
@@ -42,6 +49,16 @@ ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE \
 
 COPY patch_aiter_headers.py /opt/patch_aiter_headers.py
 
+# ⚠️ THE pip LINES IN THE RUN BELOW STAY pip, and NOT by omission (s45 uv migration):
+#   * uv has NO `pip wheel` equivalent — `uv pip` is compile/sync/install/uninstall/
+#     freeze/list/show/tree/check and nothing else. EVERY `pip wheel` line in this tree
+#     is therefore permanently pip. (The board's "30 pip install lines" scope count did
+#     not separate these out.)
+#   * uv DOES accept `--force-reinstall`, but maps it onto its own `--reinstall`, which
+#     reinstalls ALL packages rather than pip's narrower behaviour. That install resolves
+#     dependencies from PyPI while UV_CONSTRAINT pins torch to `+rocm…` — which is
+#     exactly the s44 vllm failure shape: a PyPI-facing resolve of a package only AMD's
+#     index can serve. Migrating it needs its own measurement, not a guess.
 RUN mkdir -p /artifacts/wheels \
     && git clone "${FLASH_ATTENTION_REPO}" /opt/flash-attention \
     && cd /opt/flash-attention \
@@ -61,7 +78,7 @@ RUN mkdir -p /artifacts/wheels \
 # vLLM
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
       rustc cargo python3.13-dev libdrm-dev && rm -rf /var/lib/apt/lists/* && apt-get clean \
-      && pip install "setuptools-rust>=1.9.0"
+      && uv pip install "setuptools-rust>=1.9.0"
 
 # Prebuild aiter's import-time JIT module for the RUNTIME image. `import aiter` evaluates
 # aiter/ops/enum.py at module scope, which JIT-compiles module_aiter_enum (a single CPU-only
@@ -106,16 +123,24 @@ ENV ROCM_HOME=/opt/rocm \
     HIP_PATH=/opt/rocm \
     HIP_PLATFORM=amd \
     VLLM_TARGET_DEVICE=rocm \
-    PYTORCH_ROCM_ARCH=gfx1151 \
-    HIP_ARCHITECTURES=gfx1151 \
-    AMDGPU_TARGETS=gfx1151 \
     MAX_JOBS=4 \
     CC=/opt/rocm/lib/llvm/bin/clang \
     CXX=/opt/rocm/lib/llvm/bin/clang++
-RUN cd /opt/vllm \
+# The THREE ARCH VARIABLES ARE DELIBERATELY NOT `ENV`. `ENV` cannot source a file, so a
+# literal gfx1151 up here would be a second source of truth beside GFX_TARGET in
+# /etc/droste/rocm-version.env — exactly what base/Container.build refuses to create by
+# not re-exporting GFX_TARGET as an image ENV. They are exported inside the build RUN
+# instead, which is the idiom the other four builder files already use. Safe: nothing
+# after this stage reads them (the final carrier is FROM scratch, and the aiter step
+# above passes GPU_ARCHS itself).
+RUN . /etc/droste/rocm-version.env \
+    && export PYTORCH_ROCM_ARCH="${GFX_TARGET}" \
+              HIP_ARCHITECTURES="${GFX_TARGET}" \
+              AMDGPU_TARGETS="${GFX_TARGET}" \
+    && cd /opt/vllm \
     && export HIP_DEVICE_LIB_PATH="$(find /opt/rocm -type d -name bitcode -print -quit)" \
-    && echo "Compiling vLLM with bitcode: ${HIP_DEVICE_LIB_PATH}, clang: ${CC}" \
-    && export CMAKE_ARGS="-DROCM_PATH=/opt/rocm -DHIP_PATH=/opt/rocm -DAMDGPU_TARGETS=gfx1151 -DHIP_ARCHITECTURES=gfx1151" \
+    && echo "Compiling vLLM for ${GFX_TARGET} with bitcode: ${HIP_DEVICE_LIB_PATH}, clang: ${CC}" \
+    && export CMAKE_ARGS="-DROCM_PATH=/opt/rocm -DHIP_PATH=/opt/rocm -DAMDGPU_TARGETS=${GFX_TARGET} -DHIP_ARCHITECTURES=${GFX_TARGET}" \
     && python -m pip wheel --no-build-isolation --no-deps -w /artifacts/wheels -v .
 
 # Pure-python FP8 Triton kernels (leonyurko)

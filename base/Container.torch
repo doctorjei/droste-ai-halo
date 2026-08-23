@@ -42,6 +42,14 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 
 # ROCM / Torch pin: read from the file the runtime base baked in, so this layer is
 # pinned by its own base and can never drift from it.
+# uv (staged migration, s45 — this file is the one the board said to migrate LAST, and it
+# is done last). ✅ MEASURED against the real index before changing: uv resolves
+# `torch==2.9.1+rocm…` to the SAME 14 packages pip does, triton+rocm and
+# rocm-sdk-libraries-gfx1151 included. `--pre` is accepted by uv and kept verbatim — it was
+# always belt-and-braces here (2.9.1 is a final release; the `+rocm…` suffix is a LOCAL
+# VERSION IDENTIFIER, not a prerelease marker), and removing it would be an unrelated change.
+# The assertion on the next line is what makes this migration safe to make at all: if uv
+# ever resolved differently, this build goes red rather than shipping a GPU-less image.
 RUN . /etc/droste/rocm-version.env \
-    && pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" \
+    && uv pip install --pre --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" \
     && /opt/resources/resolve/assert-rocm-pins.sh torch

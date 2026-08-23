@@ -127,6 +127,19 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #  7. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
+# ⛔ THIS ENTIRE RUN STAYS ON pip, AND IT IS THE ONE PLACE THE s45 uv MIGRATION CANNOT GO.
+# Not a judgement call — two of its load-bearing mechanisms have no uv equivalent:
+#   * `PIP_USE_DEPRECATED=legacy-resolver` (step 3). uv has ONE resolver and no legacy
+#     mode. The legacy resolver is here because the modern backtracker dies with
+#     RecursionError on this dep graph (measured; survives a 100k recursion limit).
+#     Whether uv's PubGrub resolver has the same pathology is UNKNOWN and cannot be
+#     measured without building — so migrating this would be a guess on the one image
+#     with a documented resolver failure.
+#   * `unset PIP_CONSTRAINT` (step 2b). uv does not read that variable at all; the uv
+#     spelling needs UV_CONSTRAINT *and* UV_BUILD_CONSTRAINT unset too. Getting that
+#     subtly wrong reproduces the exact s44 vllm build failure.
+# Everything else in the tree that CAN move to uv has moved. Revisit only with a measured
+# resolve, never by pattern-matching the other targets.
 RUN . /etc/droste/rocm-version.env \
     && export PIP_USE_DEPRECATED=legacy-resolver \
     && unset PIP_CONSTRAINT \

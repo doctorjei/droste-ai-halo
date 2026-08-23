@@ -27,9 +27,12 @@ ARG RCCL_REPO=https://github.com/kyuz0/rocm-systems.git
 ARG RCCL_REF=a2686c9f41e44a75459e4771b7f380358432b294
 
 # Install torch & upgraded dependencies
+# uv (staged migration, s45 — BUILD-ONLY image, never shipped; same measured shape as
+# Container.vllm-build's torch line). ⚠️ The `pip wheel` further down STAYS pip: uv has
+# no `pip wheel` equivalent.
 RUN . /etc/droste/rocm-version.env && \
-      pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
-      pip install --upgrade scikit-build-core setuptools wheel
+      uv pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
+      uv pip install --upgrade scikit-build-core setuptools wheel
 
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
       libdrm-dev && rm -rf /var/lib/apt/lists/* && apt-get clean
@@ -54,7 +57,7 @@ RUN . /etc/droste/rocm-version.env \
     && git init -q && git remote add origin "${RCCL_REPO}" \
     && git fetch --depth 1 origin "${RCCL_REF}" && git checkout -q FETCH_HEAD \
     && cd projects/rccl \
-    && mkdir -p build_gfx1151 && cd build_gfx1151 \
+    && mkdir -p "build_${GFX_TARGET}" && cd "build_${GFX_TARGET}" \
     && HIPCC="$(command -v hipcc)" \
     && CXX="${HIPCC}" cmake .. \
         -DCMAKE_CXX_COMPILER="${HIPCC}" \

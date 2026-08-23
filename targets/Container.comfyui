@@ -65,10 +65,10 @@ RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
 
 ## PIP: Torch Stack, GGUF, & Transformers (pinned if set)
 RUN . /etc/droste/rocm-version.env && \
-    pip install --pre --index-url ${ROCM_INDEX_URL} \
+    uv pip install --pre --index-url ${ROCM_INDEX_URL} \
        "torchvision${TORCHVISION_VERSION:+==${TORCHVISION_VERSION}}" \
        "torchaudio${TORCHAUDIO_VERSION:+==${TORCHAUDIO_VERSION}}" && \
-    pip install gguf "transformers==${TRANSFORMERS_VERSION}" \
+    uv pip install gguf "transformers==${TRANSFORMERS_VERSION}" \
        "accelerate==${ACCELERATE_VERSION}" && \
     printf 'transformers%s\n' "${TRANSFORMERS_BOUND}" >> /etc/droste/rocm-constraints.txt && \
     /opt/resources/resolve/assert-rocm-pins.sh torch torchvision torchaudio
@@ -92,10 +92,16 @@ RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/Comfy
 # (i.e. /etc/gitconfig) rather than --global: the box user's HOME varies by lane.
 # Safe here in the sense the guard intends — the path is baked by us, not shared.
 WORKDIR /opt/ComfyUI
-RUN pip install -r requirements.txt \
+RUN uv pip install -r requirements.txt \
     && pip install --prefer-binary \
        pillow opencv-python-headless imageio imageio-ffmpeg scipy \
        "huggingface_hub[hf_transfer]" pyyaml websocket-client
+# ⚠️ The SECOND install stays pip, and not by omission (s45): **uv rejects
+# `--prefer-binary`** outright (`error: unexpected argument`; its nearest relatives are
+# `--only-binary`/`--no-binary`, which mean something stricter). Dropping the flag to
+# migrate the line would be a silent behaviour change on a SHIPPED image — this batch is a
+# media stack where preferring a wheel over a newer sdist is the whole point. Left as-is
+# until there is a measured equivalent.
 
 # ComfyUI Custom Nodes
 WORKDIR /opt/ComfyUI/custom_nodes
@@ -126,7 +132,22 @@ RUN git clone --depth=1 https://github.com/Comfy-Org/ComfyUI-Manager /opt/ComfyU
          git -C /opt/ComfyUI/custom_nodes/comfyui-manager fetch --depth=1 origin "${MANAGER_REF}" \
          && git -C /opt/ComfyUI/custom_nodes/comfyui-manager checkout "${MANAGER_REF}"; \
        fi \
-    && pip install -r /opt/ComfyUI/custom_nodes/comfyui-manager/requirements.txt
+    && uv pip install -r /opt/ComfyUI/custom_nodes/comfyui-manager/requirements.txt \
+    && /opt/resources/resolve/assert-rocm-pins.sh torch torchvision torchaudio
+# ⚠️ THE ASSERTION ABOVE MUST STAY IN THE LAST PACKAGE-INSTALLING LAYER OF THIS FILE.
+# Add an install below this point and you must move it down with them. The earlier
+# assertion (after the torchvision/torchaudio pin) localises a failure to the pin step
+# itself; this one is the one that matters, because everything between the two RESOLVES
+# PACKAGES over the top of the stack: ComfyUI's own requirements.txt lists bare
+# `torch`/`torchvision`/`torchaudio`, the --prefer-binary batch pulls a media stack, and
+# Manager's requirements carry UNPINNED transformers/huggingface-hub. The constraints
+# file makes any of those FAIL LOUDLY rather than silently install a CPU wheel (PyPI
+# rejects local version identifiers, so `+rocm...` can only come from AMD's index) —
+# this proves the outcome instead of trusting the guard.
+# ❌ NOT the --no-deps --force-reinstall re-pin Container.vllm uses. vllm needs one
+# because it DELIBERATELY lets a PyPI torchvision arrive and then replaces it; nothing
+# here does that. A re-pin would download ~1 GB into a layer that downloads none, for a
+# failure mode the constraint already makes impossible-and-loud.
 
 # Relocate the 11 baked SD/SD2 config yamls OUT of the models tree (the runtime
 # model-tree bind replaces models/); they register back via the seeded

@@ -135,23 +135,28 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: HIP gfx1151 compile probe (the go/no-go)
+      - name: HIP device compile probe (the go/no-go)
         run: |
           docker run --rm "${NS}/droste-build-base-halo:${GITHUB_SHA}" bash -lc '
             set -euo pipefail
+            # The arch comes from the pin file the build base bakes in, never from a
+            # literal here: GFX_TARGET in /etc/droste/rocm-version.env is the one place
+            # the target is declared, and a probe that hardcoded it could pass for an
+            # arch the images were not built for.
+            . /etc/droste/rocm-version.env
             echo "== which hipcc / amdclang++ =="
             command -v hipcc && command -v amdclang++
             echo "== rocm-sdk path =="
             rocm-sdk path --root && rocm-sdk path --cmake
 
-            echo "== hipcc device compile for gfx1151 =="
+            echo "== hipcc device compile for ${GFX_TARGET} =="
             cat > /tmp/k.hip <<EOF
           #include <hip/hip_runtime.h>
           __global__ void add1(float* a){ a[threadIdx.x] += 1.0f; }
           int main(){ return 0; }
           EOF
-            hipcc --offload-arch=gfx1151 /tmp/k.hip -o /tmp/k
-            echo "HIPCC gfx1151 device compile: OK"
+            hipcc --offload-arch="${GFX_TARGET}" /tmp/k.hip -o /tmp/k
+            echo "HIPCC ${GFX_TARGET} device compile: OK"
 
             echo "== cmake find_package(hip) =="
             mkdir -p /tmp/cm && cd /tmp/cm
@@ -163,7 +168,7 @@ jobs:
           EOF
             cmake -B build -DCMAKE_PREFIX_PATH="/opt/rocm" . >/dev/null
             echo "find_package(hip): OK"
-            echo "=== CORE BET VALIDATED: pip rocm-sdk-devel compiles HIP for gfx1151 ==="
+            echo "=== CORE BET VALIDATED: pip rocm-sdk-devel compiles HIP for ${GFX_TARGET} ==="
           '
 
   # ── Ports, phase 2 ────────────────────────────────────────────────────────

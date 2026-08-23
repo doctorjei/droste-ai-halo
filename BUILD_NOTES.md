@@ -957,6 +957,74 @@ Both live at `targets/comfyui/scripts/`, beside `model_scanner.py` and the
 comfyui image with them; the two files under `scripts/` are forwarding stubs
 that keep the documented host invocation working. The design rationale:
 
+### 2026-08-23 — one set of key-signature rules (and the uv migration finishes)
+
+Two tools in this repo read tensor names to decide what a weight file is:
+`model_scanner.py`, which answers in ComfyUI loader directories, and
+`droste-civitai-adopt.sh`, which answers in the A1111 layout CivitAI's ecosystem
+assumes. They shared the knowledge and not the code, and the copies had drifted
+in both directions — the adopt tool had seven upscaler-architecture rules the
+scanner lacked entirely, the scanner had DiT-era ControlNet spellings and the
+whole pickle-module signal set the adopt tool lacked.
+
+- **The rules live in `model_formats.py` now, once, behind an internal
+  vocabulary.** Neither tool's directory names are the domain model: a file in
+  the wrong ComfyUI directory is not found by any loader, and CivitAI's layout is
+  not ours to redefine. So the shared rules answer in `KIND_*` and each tool
+  keeps only its edge mapping. **The trees are renderings; the kind is the domain
+  model.** Same argument that put the restricted unpickler there, and there is a
+  test that greps for a re-fork of either.
+- **Matching is anchored; architecture fingerprints are the exception, and the
+  exception is what explains the drift.** A ROLE announces itself at the root of
+  a state dict (`control_model.`, `first_stage_model.`), so anchoring costs
+  nothing and stops `enc.` matching `encoder.`. An ARCHITECTURE is a component
+  name inside the module tree — `relative_position_bias_table` lives at
+  `layers.0.residual_group.blocks.0.attn.…` — so anchoring it would delete the
+  rule. The scanner mostly asked "what role does this play"; the adopt tool
+  mostly asked "which architecture is this upscaler". Neither matching style was
+  wrong, and nobody had written down that they answer different questions.
+- **`KIND_TO_TYPE` stays a whitelist.** The shared classifier answers for far
+  more kinds than the adopt tool routes on, and the API knows things tensor names
+  cannot: LoRA versus LyCORIS versus DoRA is not distinguishable from keys today,
+  yet three directories are fed by the API's word for it. Content asserts the
+  family, the API asserts the sub-type, and an uncertain architecture abstains
+  rather than returning a weak kind — the adopt tool stamps whatever it receives
+  as absolute for routing.
+- **Heuristics 13, and what it buys.** Upscaler architectures (ScuNET, SwinIR,
+  HAT, DAT, ESRGAN, RealESRGAN) and T2I adapters classify by content in the
+  scanner now. Before this, an ESRGAN whose filename carried no `esrgan` or `4x`
+  token got no content vote at all and ended unclassified. The bump
+  re-classifies every registry in the field on next sync; the renames ledger
+  survives it.
+- **A legacy torch checkpoint was being read as empty, and the emptiness
+  recorded as a fact.** The shared reader's `max_objects` defaults to 1 and both
+  of its legacy behaviours are gated on it being greater than 1, so the adopt
+  tool harvested torch's magic number, found no keys, and wrote
+  `tensor_count: 0` at confidence absolute about a file it had never read — along
+  with losing every routing signal the file carried.
+- **`double_blocks.` did not mean FLUX.** It was carried as an absolute
+  base-model signature and HunyuanVideo has 480 of those keys, so a correct
+  baseModel was being rewritten. They are the same DiT family, so the blocks
+  cannot separate them; the text pathway does — FLUX projects text once
+  (`txt_in.weight`/`txt_in.bias`), HunyuanVideo refines it through
+  `txt_in.individual_token_refiner.`. Both files were read over HTTP range
+  requests rather than argued about, which is how key-signature questions get
+  settled here.
+
+**The uv migration finished in the same batch.** Every "no uv equivalent" reason
+recorded a day earlier was wrong: wheel building is `uv build --wheel` (a
+different verb), `--reinstall-package` is narrower than pip's
+`--force-reinstall`, uv resolves the vLLM graph in seconds where pip
+RecursionErrors on it (so `PIP_USE_DEPRECATED=legacy-resolver` is deleted), and
+`--prefer-binary` turned out to be inert — uv's default resolves that media batch
+to the identical 22 packages. Exactly one pip install line remains, the venv
+bootstrap, which is the line that installs uv. The `pip check` gate stays on pip
+deliberately: its allowlist matches pip's exact output wording.
+⚠️ Dropping `--prefer-binary` leaves one exposure worth naming. If an upstream in
+that batch ever ships a version as an sdist only, pip would fall back to an older
+wheel and uv's default will build it: green, but slow. The tell is a comfyui job
+whose duration jumps for no other reason.
+
 ### The hash-proof adoption gate
 - Content enters a shared store ONLY on cryptographic proof, NEVER on
   filename similarity — a shared cache poisoned by a name-guessed adoption

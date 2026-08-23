@@ -1000,6 +1000,41 @@ class ScannerTest(unittest.TestCase):
                         "override had put it")
         self.assertFalse((self.fx.tree / "vae" / "thing.safetensors").exists())
 
+    def test_categorize_accepts_the_name_the_tree_shows(self):
+        """REGRESSION (s47): both ledgers are keyed by the DERIVED name, but a
+        rename means the tree shows the USER'S name -- so categorizing by the
+        only name they have ever seen recorded an override under a key no sync
+        looks up, printed "applied at the next sync", and did nothing."""
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync()
+        ms.main(["rename", "thing.safetensors", "my-lora.safetensors",
+                 *self.fx.args()])
+        self.assertTrue((self.fx.tree / "loras" / "my-lora.safetensors").is_symlink())
+
+        rc = ms.main(["categorize", "my-lora.safetensors", "vae", *self.fx.args()])
+        self.assertEqual(rc, 0)
+        self.fx.sync()
+        self.assertTrue((self.fx.tree / "vae" / "my-lora.safetensors").is_symlink(),
+                        "an override typed under the tree's own name was ignored")
+
+    def test_categorize_says_so_when_no_file_matches(self):
+        """A typo must not sit in the ledger doing nothing forever -- the same
+        silent no-op this verb was fixed for."""
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ms.main(["categorize", "nosuch.safetensors", "vae", *self.fx.args()])
+        self.assertIn("no synced file currently links as nosuch.safetensors",
+                      buf.getvalue())
+        # CONTROL: a name that DOES match must stay quiet
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            ms.main(["categorize", "thing.safetensors", "vae", *self.fx.args()])
+        self.assertNotIn("no synced file currently links", buf2.getvalue())
+
     def test_category_ledger_round_trips(self):
         import model_scanner as _ms
         path = self.fx.root / "reg.yaml"

@@ -2040,6 +2040,12 @@ def _category_of(src: SourceFile, reg: Registry) -> str:
     return winner or classify(src)
 
 
+def _both(typed: str, key: str) -> str:
+    """Show the name the user typed, and the ledger key when they differ (a rename
+    means the tree shows one name while both ledgers are keyed by the other)."""
+    return typed if typed == key else f"{typed} (recorded as {key})"
+
+
 def cmd_categorize(args) -> int:
     """Record the category YOU want for a source; re-asserted at every sync.
 
@@ -2052,11 +2058,28 @@ def cmd_categorize(args) -> int:
     if args.list:
         for key in sorted(reg.categories):
             rec = reg.categories[key] or {}
-            log(f"CATEGORY  {key} -> {rec.get('to', '?')}")
+            # Show the name the TREE shows when a rename means it differs from the key --
+            # otherwise a user who renamed a file cannot recognise their own override.
+            seen = (reg.renames.get(key) or {}).get("to")
+            shown = key if not seen or seen == key else f"{seen} (recorded as {key})"
+            log(f"CATEGORY  {shown} -> {rec.get('to', '?')}")
         log(f"model-scanner: {len(reg.categories)} recorded override(s)")
         return 0
 
     name = Path(args.name).name if args.name else ""   # tree-relative path ok, as in rename
+
+    # 🚨 THE USER TYPES THE NAME THEY CAN SEE, WHICH AFTER A RENAME IS NOT THE KEY (s47).
+    # Both ledgers are keyed by the DERIVED link name, but `rename` means the tree shows
+    # the user's name instead -- so `categorize my-lora.safetensors vae` recorded an
+    # override under a key no sync ever looks up, printed "applied at the next sync", and
+    # did nothing. A silent no-op on input someone deliberately typed, and worse than a
+    # dead config line because the tool CONFIRMS it. Map a rename TARGET back to its key so
+    # either name works; the name the tree shows is the one a user has actually seen.
+    typed = name
+    for derived, rec in (reg.renames or {}).items():
+        if (rec or {}).get("to") == name:
+            name = derived
+            break
 
     # ⭐ FORGETTING IS AN EXPLICIT FLAG, AND IT HAS TO BE (s47, found by running the verb).
     # rename can say "pass the current name to forget" because a DERIVED name is
@@ -2087,7 +2110,7 @@ def cmd_categorize(args) -> int:
                 e.pop("category", None)
                 cleared += 1
         save_registry(args.registry, reg)
-        log(f"FORGOT  {name}: it follows the classifier again at the next sync"
+        log(f"FORGOT  {_both(typed, name)}: it follows the classifier again at the next sync"
             + (f" ({cleared} cached classification cleared)" if cleared else ""))
         return 0
 
@@ -2107,7 +2130,23 @@ def cmd_categorize(args) -> int:
         "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     save_registry(args.registry, reg)
-    log(f"CATEGORY  {name} -> {cat} (applied at the next sync)")
+    # Name BOTH when they differ: echoing a key the user never typed, with no explanation,
+    # is a quieter version of the same discourtesy this block exists to fix.
+    log(f"CATEGORY  {_both(typed, name)} -> {cat} (applied at the next sync)")
+    # ⚠️ AN OVERRIDE FOR A NAME NOTHING MATCHES IS RECORDED, BUT SAID OUT LOUD. Pre-recording
+    # for a file that has not been synced yet is legitimate, so this is not an error -- but a
+    # typo would otherwise sit in the ledger doing nothing forever, which is the same silent
+    # no-op this verb was just fixed for.
+    # ⚠️ CHECK BOTH SPELLINGS. The ledger key is the DERIVED name, but the tree's link
+    # carries the RENAMED one -- comparing only the key made this warn about a file that
+    # was sitting right there. (Caught immediately by running it; the first cut of this
+    # very warning was itself a false alarm.)
+    known = any(Path(link).name in (name, typed)
+                for e in (reg.entries or {}).values()
+                for link in (e.get("links") or []))
+    if not known:
+        log(f"NOTE  no synced file currently links as {typed}; the override is recorded "
+            f"and will apply if one appears (check the name if that is unexpected)")
     return 0
 
 

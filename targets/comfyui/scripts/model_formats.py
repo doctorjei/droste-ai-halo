@@ -342,9 +342,19 @@ def classify_metadata(meta: dict) -> str | None:
     # ecosystem's abbreviation. Measured on qwen3vl_32b_minimax_h3_int8_convrot
     # (`minimax_h3_te={"num_hidden_layers": 50, ...}`). The `{` test is what keeps it
     # a declaration rather than a name that merely ends in those two letters.
+    # ⭐ EXTENDED s47 (second pass): the same shape declares a VAE.
+    # minimax_h3_audio_vae={"latents_mean": ..., "decoder_type": "bigvgan"} -- a
+    # repacked component carries its own config blob under a key that names what it
+    # is, and the ecosystem's two abbreviations are `_te` and `_vae`. Measured on
+    # both real files. The `{` test is what keeps this a declaration rather than a
+    # name that merely ends in those letters.
     for k, v in (meta or {}).items():
-        if k.endswith("_te") and str(v).lstrip().startswith("{"):
+        if not str(v).lstrip().startswith("{"):
+            continue
+        if k.endswith("_te"):
             return KIND_TEXT_ENCODER
+        if k.endswith("_vae"):
+            return KIND_VAE
     arch = str((meta or {}).get("modelspec.architecture", "")).lower()
     if not arch:
         return None
@@ -473,12 +483,31 @@ def classify_keys(keys) -> str | None:
     if (any_start("video_patch_proj.", "audio_patch_proj.")
             and any_start("blocks.", "final_layer.")):
         return KIND_DIFFUSION_MODEL
-    if any_start("encoder.block.", "decoder.block."):   # T5-style, before generic vae
+    # 🚨 `encoder.block.` IS NOT A T5 FINGERPRINT ON ITS OWN, and this rule claimed a
+    # VAE for months because it sat before the VAE check and matched on the prefix
+    # alone. MEASURED (s47, range-fetched header): MiniMax-H3's audio VAE is a
+    # DAC/BigVGAN autoencoder whose CONVOLUTION stack is also called `encoder.block.N`
+    # -- 110 of them, with no SelfAttention, no relative_attention_bias, and
+    # `mean_proj`/`logs_proj`/`latents_*` at the root. T5 names its TRANSFORMER stack
+    # the same way (`encoder.block.0.layer.0.SelfAttention.q.weight`), so the block
+    # prefix is a collision, not evidence. Ask for the attention that makes it T5.
+    if (any_start("encoder.block.", "decoder.block.")
+            and (any_start("shared.")
+                 or any("SelfAttention" in k or "relative_attention_bias" in k
+                        or "DenseReluDense" in k for k in keys))):
         return KIND_TEXT_ENCODER
     # `first_stage_model.` alone is a VAE still wearing a checkpoint's packaging; WITH
     # `model.diffusion_model.` it is that checkpoint's VAE section, which is why the
     # checkpoint rule above runs first. Measured, not argued (s43): it is ComfyUI's
     # base-class `vae_key_prefix`, stripped on load and re-added on save.
+    # A VAE by DEFINITION projects to a mean and a log-variance and samples between
+    # them; a plain autoencoder does not. Those projections (or the latent statistics
+    # published beside them) are therefore a general VAE signature and not a MiniMax
+    # special case -- and this is the rule that catches such a file when it arrives
+    # with no metadata to declare itself.
+    if (any_start("mean_proj.", "logs_proj.")
+            or any_start("latents_mean", "latents_std")):
+        return KIND_VAE
     if any_start("first_stage_model."):
         return KIND_VAE
     # An encoder/decoder PAIR is a shape, not an identity: it must be backed by real

@@ -233,7 +233,7 @@ REGISTRY_VERSION = 3
 # NOT bumped by the s35 work (tree-awareness, renames, the name-is-API blacklist):
 # none of it changes what a file is classified AS. A bump costs a full re-classification
 # of every registry in the field, so it is spent on classification changes only.
-HEURISTICS_VERSION = 14
+HEURISTICS_VERSION = 15
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"

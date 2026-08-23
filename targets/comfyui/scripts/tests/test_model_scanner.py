@@ -907,6 +907,36 @@ class ScannerTest(unittest.TestCase):
                "__metadata__": {"trained_on_te": "yes"}}
         self.assertIsNone(ms.classify_safetensors_header(hdr))
 
+    def test_audio_vae_is_not_a_t5(self):
+        """`encoder.block.` is a COLLISION, not a T5 fingerprint: MiniMax-H3's
+        audio VAE is a DAC/BigVGAN autoencoder whose convolution stack carries
+        110 of them. Keys and metadata are the real ones, range-fetched."""
+        keys = ["latents_mean", "latents_std", "dec_in_proj.weight",
+                "mean_proj.weight", "logs_proj.weight",
+                "encoder.block.0.block.0.alpha", "decoder.activation_post.act.alpha"]
+        self.assertEqual(ms.classify_safetensors_header({k: {} for k in keys}), "vae")
+        # ...and by its own declaration, which is consulted first.
+        self.assertEqual(ms.classify_safetensors_header(
+            {"encoder.block.0.block.0.alpha": {},
+             "__metadata__": {"minimax_h3_audio_vae": '{"sample_rate": 32000}'}}),
+            "vae")
+
+    def test_real_t5_still_classifies(self):
+        """CONTROL for the rule above -- and the fixtures are now the key
+        shapes a real t5xxl has (220 tensors: 97 SelfAttention, 72
+        DenseReluDense, 1 relative_attention_bias, shared.)."""
+        for extra in ("encoder.block.0.layer.0.SelfAttention.q.weight",
+                      "encoder.block.0.layer.1.DenseReluDense.wi_0.weight",
+                      "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"):
+            self.assertEqual(ms.classify_safetensors_header(
+                {extra: {}, "shared.weight": {}}), "text_encoders", extra)
+
+    def test_block_prefix_alone_claims_nothing(self):
+        """The collision in its purest form: encoder.block. with none of T5's
+        markers and none of the VAE ones must abstain, not guess."""
+        self.assertIsNone(ms.classify_safetensors_header(
+            {"encoder.block.0.weight": {}, "decoder.block.0.weight": {}}))
+
     def test_object_pickle_executes_nothing(self):
         """The stub is now a real type, so it is instantiated rather than merely called.
         It must still be inert -- construction, attribute access and state application
@@ -2065,7 +2095,7 @@ class ScannerTest(unittest.TestCase):
                      ["text_embedding_projection.x"], ["double_blocks.0.x"],
                      ["transformer_blocks.0.x", "img_in.x"],
                      ["patch_embedding.x", "time_embedding.x"],
-                     ["net.blocks.0.adaln_modulation.x"], ["encoder.block.0.x"],
+                     ["net.blocks.0.adaln_modulation.x"], ["encoder.block.0.layer.0.SelfAttention.q.weight"],
                      ["first_stage_model.decoder.x"],
                      ["encoder.down.0.x", "decoder.up.0.x"], ["t5.x"],
                      ["adapter.body.0.x"], ["model.1.sub.0.RDB1.conv1.w"]):
@@ -2441,7 +2471,7 @@ class ScannerTest(unittest.TestCase):
             # shape, and is pinned as a NON-vae in its own test.
             (ldm_vae_keys(), None, "vae"),
             (diffusers_vae_keys(), None, "vae"),
-            (["encoder.block.0.layer.0.q.weight", "shared.weight"], None,
+            (["encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"], None,
              "text_encoders"),  # T5-style must NOT hit the generic vae rule
             (["text_model.encoder.x"], None, "text_encoders"),
             (["foo.bar"], None, None),

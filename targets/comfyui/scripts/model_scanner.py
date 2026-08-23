@@ -1365,23 +1365,38 @@ def ensure_link(target: Path, dst: Path, owned: bool, hardlink: bool, dry: bool)
     return "linked"
 
 
-def prune_link(tree: Path, rel: str, dry: bool) -> str:
+def prune_link(tree: Path, rel: str, dry: bool, source: str | None = None) -> str:
     """Remove an OWNED link whose source vanished. Returns: pruned | kept | gone.
 
-    SYMLINK-ONLY, and deliberately so: the is_symlink() test is what stands between a
-    real file that appeared at an owned path -- an in-box downloader writing through the
-    bind, a user dropping a replacement over our link -- and deletion. Ownership is not
-    enough to justify unlinking a REGULAR file, because a regular file is data we did not
-    put there and cannot recreate. (test_prune_never_deletes_a_real_file pins this.)
+    A REGULAR FILE at an owned path is not deleted on ownership alone: an in-box
+    downloader writing through the bind, or a user dropping a replacement over our link,
+    leaves data we did not put there and cannot recreate.
+    (test_prune_never_deletes_a_real_file pins this.)
+
+    🚨 BUT "REGULAR FILE" IS NOT THE SAME QUESTION AS "NOT OURS", AND UNDER --hardlink IT
+    NEVER WAS (s47). Our own hardlink IS a regular file, so a symlink-only test declined to
+    prune it: a re-classified file was linked into its new category while the old link
+    stayed put, was dropped from the registry as "the user's", and the model appeared in
+    TWO ComfyUI pickers with nothing left to clean it up. The heuristics 13->15 bump would
+    have done that to every re-classified file in a --hardlink tree.
+    ⭐ The INODE decides, exactly as owned_link_state already decides it for `status`
+    (s43): same (st_dev, st_ino) as the source we recorded => our link, whatever mode made
+    it. Anything else is still kept. So the safety rule is unchanged -- it is the TEST for
+    "ours" that was wrong, not the rule.
     """
     dst = tree / rel
     if dst.is_symlink():
         if not dry:
             dst.unlink()
         return "pruned"
-    if dst.exists():
-        return "kept"   # real file (user replacement or hardlink holding data): keep
-    return "gone"
+    if not dst.exists():
+        return "gone"
+    if source and owned_link_state(dst, source) == "ok":
+        # provably our own hardlink: same file as the source we recorded
+        if not dry:
+            dst.unlink()
+        return "pruned"
+    return "kept"   # real file we cannot prove is ours: keep
 
 
 # ------------------------------------------------------------------------------- sync
@@ -1603,7 +1618,7 @@ def cmd_sync(args) -> int:
         for rel in stale:
             if not args.prune:
                 continue
-            state = prune_link(tree, rel, dry)
+            state = prune_link(tree, rel, dry, entry.get("source"))
             if state == "pruned":
                 n_pruned += 1
                 # three ways an owned link stops being wanted, and the log should not

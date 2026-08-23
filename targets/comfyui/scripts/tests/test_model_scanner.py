@@ -1035,6 +1035,41 @@ class ScannerTest(unittest.TestCase):
             ms.main(["categorize", "thing.safetensors", "vae", *self.fx.args()])
         self.assertNotIn("no synced file currently links", buf2.getvalue())
 
+    def test_hardlink_tree_prunes_its_own_stale_link(self):
+        """REGRESSION (s47): prune_link tested is_symlink(), but under
+        --hardlink OUR OWN link is a regular file -- so a reclassified file was
+        linked into its new category while the old link stayed put and was
+        dropped from the registry as 'the user's'. The model then appeared in
+        TWO pickers with nothing left to clean it up, and the heuristics bump
+        would have done that to every reclassified file in a --hardlink tree."""
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync("--hardlink")
+        self.assertTrue((self.fx.tree / "loras" / "thing.safetensors").exists())
+
+        ms.main(["categorize", "thing.safetensors", "vae", *self.fx.args()])
+        self.fx.sync("--hardlink")
+        self.assertTrue((self.fx.tree / "vae" / "thing.safetensors").exists())
+        self.assertFalse((self.fx.tree / "loras" / "thing.safetensors").exists(),
+                         "the stale hardlink was left behind: the file is in two "
+                         "categories at once")
+
+    def test_hardlink_prune_still_refuses_a_file_that_is_not_ours(self):
+        """CONTROL for the above, and the rule that must not bend: ownership is
+        not enough to delete a REGULAR file. Only an inode match with the
+        recorded source proves the link is ours."""
+        self.fx.add_local_file("thing.safetensors",
+                               safetensors_bytes(["lora_unet_x.lora_down.weight"]))
+        self.fx.sync("--hardlink")
+        owned = self.fx.tree / "loras" / "thing.safetensors"
+        owned.unlink()
+        owned.write_text("irreplaceable user data")
+
+        ms.main(["categorize", "thing.safetensors", "vae", *self.fx.args()])
+        self.fx.sync("--hardlink")
+        self.assertTrue(owned.exists(), "deleted a file that was not ours")
+        self.assertEqual(owned.read_text(), "irreplaceable user data")
+
     def test_category_ledger_round_trips(self):
         import model_scanner as _ms
         path = self.fx.root / "reg.yaml"

@@ -642,12 +642,28 @@ def sniff_pickle_keys(path):
     raises instead of returning empty: model_scanner turns the same silence
     into a loud `empty: ...` finding, because for a classifier a 150 MB file
     that yields nothing is news. Here it is merely a file the API type will
-    have to route."""
+    have to route.
+
+    ⚠️ `max_objects` IS LOAD-BEARING AND WAS WRONG UNTIL s46. The default is 1,
+    and BOTH legacy-container behaviours in the shared reader -- skipping the
+    preamble and stopping at the storage-key list -- are gated on it being
+    greater than 1. So for a legacy (pre-1.6, non-zip) torch checkpoint this
+    read harvested torch's MAGIC NUMBER, found no keys, and returned an EMPTY
+    list rather than raising: the caller then recorded `tensor_count: 0` at
+    confidence *absolute* -- a positive assertion about a file it never read --
+    and lost every content signal the file did carry. Measured on a hand-built
+    legacy ESRGAN: `[]` here, versus a correct read that yields the
+    `model.1.sub.` keys and routes it as an upscaler on its own tensors.
+
+    An EMPTY result is therefore treated as a failure, not as a fact. The
+    docstring above always promised "any trouble -> None"; this path was
+    returning [] instead, which is the one value that reads as success."""
     try:
-        keys, _modules, _what = model_formats.read_torch_container(path)
-        return sorted(keys)
+        keys, _modules, _what = model_formats.read_torch_container(
+            path, max_objects=model_formats.LEGACY_MAX_PICKLES)
     except Exception:
         return None
+    return sorted(keys) if keys else None
 
 
 def _dominant_dtype(header):

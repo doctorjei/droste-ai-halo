@@ -112,6 +112,31 @@ def pickle_statedict(keys, ordered=False, zipped=False) -> bytes:
     return buf.getvalue()
 
 
+# --- torch LEGACY serialization (pre-1.6 / _use_new_zipfile_serialization=False) -------
+# NOT a zip: a SEQUENCE of pickles -- magic number, protocol version, sys_info, payload,
+# storage-key list -- then raw storage bytes. This tool had NO legacy fixture at all until
+# s46, which is exactly why it read every such file as empty for a year (see
+# test_legacy_container_is_read_not_recorded_as_empty). Mirrors the builder in
+# test_model_scanner.py; hand-built because there is no torch in this environment, and
+# none is wanted -- the reader must never need one.
+TORCH_LEGACY_MAGIC = 0x1950A86A20F9469CFC6C
+
+
+def torch_legacy_bytes(payload=None, *, trailer=True) -> bytes:
+    """payload=None builds a PREAMBLE-ONLY stream -- the truncated/corrupt case."""
+    buf = io.BytesIO()
+    pickle.dump(TORCH_LEGACY_MAGIC, buf, protocol=2)
+    pickle.dump(1001, buf, protocol=2)
+    pickle.dump({"protocol_version": 1001, "little_endian": True,
+                 "type_sizes": {"short": 2, "int": 4, "long": 8}}, buf, protocol=2)
+    if payload is not None:
+        pickle.dump(payload, buf, protocol=2)
+    if trailer:
+        pickle.dump(["0"], buf, protocol=2)     # serialized_storage_keys
+        buf.write(b"\x00" * 128)                # raw storage bytes: NOT a pickle
+    return buf.getvalue()
+
+
 def file_entry(name: str, content: bytes, ftype: str = "Model") -> dict:
     # the live API reports SHA256 uppercase: exercise case-insensitivity
     return {"name": name, "type": ftype, "sizeKB": len(content) / 1024,
@@ -1167,6 +1192,44 @@ class CivitaiAdoptTest(unittest.TestCase):
         self.assertEqual(sorted(mod.sniff_pickle_keys(raw)), sorted(keys))
         zp = self.fx.add_download("z.pt", pickle_statedict(keys, zipped=True))
         self.assertEqual(sorted(mod.sniff_pickle_keys(zp)), sorted(keys))
+
+    def test_legacy_container_is_read_not_recorded_as_empty(self):
+        """REGRESSION (s46): a legacy torch checkpoint was read as EMPTY, and the
+        emptiness was then recorded as a FACT.
+
+        `read_torch_container`'s `max_objects` defaults to 1, and BOTH legacy
+        behaviours in the shared reader -- skipping the preamble, stopping at the
+        storage-key list -- are gated on it being > 1. So this read returned torch's
+        MAGIC NUMBER, no keys, and an empty LIST rather than raising: `sniff_content`
+        saw a non-None result, took it for success, and wrote `tensor_count: 0` at
+        confidence *absolute* about a file it never read.
+
+        The file below is the case that shows the cost, not just the wrongness: with a
+        correct read its `model.1.sub.` keys make it an upscaler, absolutely, on its own
+        tensors. Under the bug it had NO kind and routed on the API type alone."""
+        p = self.fx.add_download("legacy-esrgan.pth", torch_legacy_bytes(
+            {"state_dict": {"model.1.sub.0.RDB1.conv1.weight": 1,
+                            "model.1.sub.0.RDB1.conv2.weight": 1}}))
+        keys = mod.sniff_pickle_keys(p)
+        self.assertIsNotNone(keys, "legacy container read as unreadable")
+        self.assertIn("model.1.sub.0.RDB1.conv1.weight", keys)
+        facts = mod.sniff_content(p, p.read_bytes()[:4096])
+        self.assertNotEqual(facts.get("tensor_count", (None,))[0], 0,
+                            "recorded an empty tensor count as an absolute fact")
+        self.assertEqual(facts.get("kind"), ("upscaler", "absolute"))
+        self.assertEqual(facts.get("upscaler_arch"), ("ESRGAN", "absolute"))
+
+    def test_unreadable_container_is_none_not_empty(self):
+        """The other half of the same fix, and the one that keeps it honest: a stream
+        that yields NOTHING must read as failure (None -> route by API type), never as
+        an empty success. The tool's own docstring promised 'any trouble -> None' while
+        this path returned [], which is the one value that reads as a successful read of
+        a file with no tensors."""
+        p = self.fx.add_download("truncated.pth", torch_legacy_bytes(None))
+        self.assertIsNone(mod.sniff_pickle_keys(p))
+        facts = mod.sniff_content(p, p.read_bytes()[:4096])
+        self.assertEqual(facts.get("sniff"), ("unavailable", "uncertain"))
+        self.assertNotIn("tensor_count", facts)
 
     def test_restricted_unpickler_survives_newobj(self):
         """REGRESSION (s31): find_class used to return an inert INSTANCE, but NEWOBJ

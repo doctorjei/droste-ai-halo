@@ -169,8 +169,22 @@ except ImportError:  # pragma: no cover
 # /opt/resources/scripts, which is also on PYTHONPATH). Holds the execution-free
 # container readers this file shares with the adopt tools -- above all the restricted
 # unpickler, which is a security boundary and must exist exactly once.
+# Since s46 it ALSO holds the key-signature rules -- what a file IS, from the names
+# inside it -- in an internal vocabulary (`KIND_*`) that is neither tool's directory
+# names. This file owns the MAPPING from those kinds to ComfyUI loader dirs
+# (KIND_TO_CATEGORY, below the rule imports) and nothing else about them: the trees are
+# renderings, the kind is the domain model. Design:
+# ~/canon/notebook/plans/classifier-unification-s41.md
 try:
-    from model_formats import LEGACY_MAX_PICKLES, read_torch_container
+    from model_formats import (
+        ANIMATEDIFF_KEY_RE, DATAPARALLEL_PREFIX, LEGACY_MAX_PICKLES,
+        MOTION_LORA_MARKERS, POSE_STAGE_KEY_RE, RETINAFACE_HEAD_PREFIXES,
+        VAE_ANATOMY_PREFIXES, classify_keys, classify_metadata, has_vae_anatomy,
+        names_its_architecture,
+        read_torch_container, strip_dataparallel,
+        KIND_ANIMATEDIFF_MOTION_LORA, KIND_ANIMATEDIFF_MOTION_MODULE, KIND_CHECKPOINT,
+        KIND_CLIP_VISION, KIND_CONTROLNET, KIND_DIFFUSION_MODEL, KIND_FACE_DETECTOR,
+        KIND_LORA, KIND_POSE_ESTIMATOR, KIND_TEXT_ENCODER, KIND_VAE)
 except ImportError as e:  # pragma: no cover
     sys.exit(f"model-scanner: model_formats.py must sit beside this script ({e})")
 
@@ -377,90 +391,12 @@ CONTROLNET_NAME_RE = re.compile(r"^control_(?:v\d|sd\d|lora)")
 # All distinctive multi-character names, so no control_* ControlNet filename contains one.
 ANNOTATOR_NAME_RE = re.compile(r"(?:^|_)(?:depth_anything|zoed|annotators?)(?:$|_)")
 
-# AnimateDiff temporal stack, IN UNET-BLOCK CONTEXT. The bare `.motion_modules.` /
-# `.temporal_transformer.` substrings are not enough: Metric-Video-Depth-Anything-Large
-# names its temporal head `head.motion_modules.0.temporal_transformer.*` and was filed as
-# an AnimateDiff motion module on that alone. AnimateDiff modules and motion LoRAs both
-# hang off a UNet's down_blocks/mid_block/up_blocks, and a depth model's `head.`/
-# `pretrained.` trunk cannot reach that shape -- so the block prefix IS the discriminator.
-ANIMATEDIFF_KEY_RE = re.compile(
-    r"(?:^|\.)(?:down_blocks|mid_block|up_blocks)\.(?:[^.]+\.)*"
-    r"(?:motion_modules|temporal_transformer)\.")
-
-# The LoRA processor that separates an AnimateDiff motion LORA from the motion MODULE it
-# adapts -- same tensor layout otherwise. Note the spelling: `.to_k_lora.down.`, never
-# `.lora_down`, which is why the generic lora rule never sees these files.
-MOTION_LORA_MARKERS = ("to_q_lora", "to_k_lora", "to_v_lora", "to_out_lora",
-                       "_lora.down.", "_lora.up.")
-
-# torch.nn.DataParallel wraps EVERY key of the model it holds in `module.`, and a
-# checkpoint saved straight off a DataParallel model carries that wrapper forever --
-# detection_Resnet50_Final.pth inspects as prefixes `_metadata, module` with keys like
-# `module.BboxHead.0.conv1x1.weight`. It is pure PACKAGING: it says nothing about what
-# the model is, and every prefix rule is blind while it is there. So it is stripped
-# ONCE, in the shared key classifier, ahead of all rules -- doing it per-rule would
-# oblige every future rule to remember to. Only the CLASSIFIER sees the stripped names;
-# `inspect` still prints the raw keys, because what is on disk is what a human reading
-# the evidence is trying to match against.
-DATAPARALLEL_PREFIX = "module."
-
-
-def strip_dataparallel(keys) -> list:
-    """Drop a leading `module.` from every key (torch DataParallel packaging)."""
-    n = len(DATAPARALLEL_PREFIX)
-    return [k[n:] if k.startswith(DATAPARALLEL_PREFIX) else k for k in keys]
-
-
-# REAL autoencoder anatomy, in THREE spellings: ldm (`encoder.down.` / `decoder.up.`),
-# diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`) and the causal-video
-# autoencoders (`encoder.downsamples.` / `decoder.upsamples.`), plus the quantisation
-# convs that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
-#
-# Required because "has an encoder and a decoder" is not "is a VAE". parsing_parsenet.pth
-# -- ParseNet, a face-PARSING/segmentation net, 85.3 MB -- has prefixes
-# `body, decoder, encoder, out_img_conv, out_mask_conv` and won vae@0.6 x 20 parts against
-# its own correct filename (facedetection, LoFi-capped at 0.3 x 5). Plenty of models are
-# shaped like an autoencoder; only an autoencoder has an autoencoder's insides. Without
-# anatomy the vae rule simply does not fire -- it abstains rather than guessing some other
-# category -- and the naming measures decide.
-#
-# The Wan spelling is here because the quant convs are NOT: a field dump of the real
-# wan_2.1_vae.safetensors (Jei, s33) has top-level prefixes `conv1, conv2, decoder,
-# encoder` with keys like `decoder.upsamples.0.residual.0.gamma` and NO quant_conv /
-# post_quant_conv anywhere -- so the resample stack is the only anatomy such a file has
-# to offer. PROVENANCE DIFFERS between the two halves of that pair: `decoder.upsamples.`
-# is PROVEN (it is in the dump); `encoder.downsamples.` is INFERRED from the encoder/
-# decoder symmetry every one of these autoencoders is built with, and is unconfirmed.
-# Both are narrow enough to be safe either way -- ParseNet, the counterexample this whole
-# rule exists for, has neither (its encoder/decoder are bare `encoder.0` / `decoder.0`).
-VAE_ANATOMY_PREFIXES = ("encoder.down.", "decoder.up.",
-                        "encoder.down_blocks.", "decoder.up_blocks.",
-                        "encoder.downsamples.", "decoder.upsamples.")
-
-
-def _has_vae_anatomy(keys) -> bool:
-    """True when an encoder/decoder pair is backed by real autoencoder internals.
-
-    `quant_conv.` is a substring test on purpose: it covers `post_quant_conv.` in the
-    same breath, and both sit at the state-dict root in ldm and diffusers alike.
-    """
-    return any(k.startswith(VAE_ANATOMY_PREFIXES) or "quant_conv." in k for k in keys)
-
-
-# RetinaFace / facexlib detection heads. These three head names together ARE the
-# RetinaFace signature (detection_Resnet50_Final.pth, detection_mobilenet0.25_Final.pth);
-# nothing else in a model collection names a tensor `BboxHead`. Only visible once the
-# DataParallel wrapper above is stripped -- which is exactly how these files ship.
-RETINAFACE_HEAD_PREFIXES = ("BboxHead.", "ClassHead.", "LandmarkHead.")
-
-# Convolutional Pose Machine / OpenPose stage convolutions. `facenet.pth` (153.7 MB) is,
-# despite its name, a CPM LANDMARK model: prefixes `Mconv1_stage2 ... Mconv7_stage6`, keys
-# like `Mconv1_stage2.bias`. The openpose annotators already routed here BY NAME
-# (body_pose_model.pth / hand_pose_model.pth) are the same architecture family and spell
-# their stages `model1_1.0.weight`, so one rule covers both -- and now covers them by
-# CONTENT, which is what a renamed or oddly-named copy needs. Anchored at the start of the
-# key and requiring the stage digits, so an ordinary `model.`/`model0.` prefix cannot match.
-POSE_STAGE_KEY_RE = re.compile(r"^(?:Mconv\d+_stage\d+|model\d+_\d+)\.")
+# The key-signature rules that used to sit here -- ANIMATEDIFF_KEY_RE,
+# MOTION_LORA_MARKERS, DATAPARALLEL_PREFIX/strip_dataparallel, VAE_ANATOMY_PREFIXES/
+# has_vae_anatomy, RETINAFACE_HEAD_PREFIXES, POSE_STAGE_KEY_RE -- MOVED to model_formats
+# in s46, with their evidence comments, and are imported above. They moved because the
+# adopt tools need the same knowledge and were keeping a second, drifting copy of part
+# of it; what stayed here is what is ComfyUI-specific, i.e. WHERE a kind lands.
 # WHERE they land. The openpose estimators already live in controlnet_aux, so a CPM
 # landmark net joins them. This placement is one constant on purpose: it awaits Jei's
 # confirmation, and changing it is a one-line change here, nowhere else.
@@ -814,109 +750,41 @@ def classify_by_filename(name: str) -> str | None:
     return None
 
 
+# ── The edge: internal KIND -> ComfyUI loader directory ────────────────────────────────
+# This map is the whole of what makes a shared rule a SCANNER answer. It is total over
+# the kinds `model_formats.classify_keys` can return, and it is deliberately allowed to
+# be many-to-one: a kind finer than any directory we link into simply collapses here.
+# ⚠️ A NEW KIND WITHOUT AN ENTRY ABSTAINS rather than raising -- an unmapped kind means
+# "the rules learned something this tool has nowhere to put", which is exactly the state
+# the adopt tool's t2i-adapter and upscaler-architecture rules are in until they cross.
+# That is a `.get`, not an oversight; the crossing commit adds the entries with the
+# HEURISTICS_VERSION bump that pays for the outcome change.
+KIND_TO_CATEGORY = {
+    KIND_LORA: "loras",
+    KIND_ANIMATEDIFF_MOTION_LORA: "animatediff_motion_lora",
+    KIND_ANIMATEDIFF_MOTION_MODULE: "animatediff_models",
+    KIND_CHECKPOINT: "checkpoints",
+    KIND_DIFFUSION_MODEL: "diffusion_models",
+    KIND_CONTROLNET: "controlnet",
+    KIND_VAE: "vae",
+    KIND_TEXT_ENCODER: "text_encoders",
+    KIND_CLIP_VISION: "clip_vision",
+    KIND_FACE_DETECTOR: "facedetection",
+    KIND_POSE_ESTIMATOR: POSE_STAGE_CATEGORY,
+}
+
+
 def classify_safetensors_header(header: dict) -> str | None:
-    meta = header.get("__metadata__") or {}
-    arch = str(meta.get("modelspec.architecture", "")).lower()
-    if arch:
-        if "lora" in arch:
-            return "loras"
-        if "controlnet" in arch:
-            return "controlnet"
-        if arch.endswith("vae") or "/vae" in arch:
-            return "vae"
+    """ComfyUI category from a safetensors header, or None to abstain.
 
-    # ONE normalization pass, ahead of every rule: a checkpoint saved off a
-    # torch.nn.DataParallel model has `module.` welded to the front of every key, which
-    # blinds all of the prefix rules below at once (see DATAPARALLEL_PREFIX).
-    keys = strip_dataparallel(k for k in header if k != "__metadata__")
-    # Only DOTTED keys have a prefix. Tensor names are always module-scoped, so this
-    # costs nothing there -- but object-pickles reach this classifier through
-    # classify_pickle with plain ATTRIBUTE names harvested from __setstate__, and a bare
-    # `encoder`/`decoder` attribute pair would otherwise synthesize "encoder."/"decoder."
-    # and be read as an autoencoder state dict.
-    prefixes = {k.split(".", 1)[0] + "." for k in keys if "." in k}
-
-    def any_start(*pfx):
-        return any(k.startswith(pfx) for k in keys)
-
-    # loras first: lora tensor names embed base-model names (double_blocks etc.)
-    if any(k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k
-           or ".lora_B" in k or ".lora_down" in k or ".lora_up" in k for k in keys):
-        return "loras"
-    if any_start("model.diffusion_model."):        # full checkpoint bundle
-        return "checkpoints"
-    # AnimateDiff motion modules ride inside a UNet-shaped state dict (down_blocks./
-    # mid_block./up_blocks.), so they must be tested BEFORE any generic block rule --
-    # the giveaway is the temporal stack hanging off each block (ANIMATEDIFF_KEY_RE).
-    if any(ANIMATEDIFF_KEY_RE.search(k) for k in keys):
-        # ...and a motion LORA has the SAME layout as the motion module it adapts, so the
-        # only thing separating them is the LoRA processor hanging off each attention
-        # block. Without this the whole AnimateDiff-Motion-LoRAs family filed as motion
-        # MODULES, where the loader that wants them (AnimateDiffLoraLoader) never looks.
-        if any(m in k for k in keys for m in MOTION_LORA_MARKERS):
-            return "animatediff_motion_lora"
-        return "animatediff_models"
-    if any_start("control_model."):
-        return "controlnet"
-    # diffusers-format ControlNet: the zero-conv trunk that makes it a ControlNet rather
-    # than the UNet it is otherwise shaped like. `controlnet_blocks.` /
-    # `controlnet_x_embedder.` are the DiT-era spelling of the same idea (InstantX's
-    # Qwen-Image ControlNets) -- and they must keep their place ABOVE the bare-DiT rules
-    # below, which see img_in./txt_in./transformer_blocks. and call it a diffusion model
-    # at 0.99: a DiT ControlNet has all of those too, plus the trunk that overrides them.
-    if any_start("controlnet_cond_embedding.", "controlnet_down_blocks.",
-                 "controlnet_mid_block.", "controlnet_blocks.",
-                 "controlnet_x_embedder."):
-        return "controlnet"
-    # ---- auxiliary DETECTOR / ESTIMATOR architectures. They sit above the generic model
-    # shapes below because they are unmistakable -- nothing else names a tensor `BboxHead`
-    # or `Mconv3_stage4` -- and because both families ship as bare .pth files whose only
-    # other signal is a filename that can be actively misleading (`facenet.pth` is a pose
-    # model, not a face-recognition net).
-    if any_start(*RETINAFACE_HEAD_PREFIXES):
-        return "facedetection"
-    if any(POSE_STAGE_KEY_RE.match(k) for k in keys):
-        return POSE_STAGE_CATEGORY
-    # A vision tower is evidence that a model CAN SEE, not that it IS an image encoder.
-    # A multimodal LLM ships one bolted onto a language decoder (model.layers./
-    # language_model.) through a projector -- and one of those, a gemma-3-12b shipped as
-    # an LTX-2 text encoder, scored clip_vision@0.99 purely because `vision_model.` was
-    # present (Jei's verdict, s30: it is a text encoder). The decoder is what settles it;
-    # a real CLIP-Vision / IP-Adapter image_encoder has a vision tower and NOTHING else.
-    if any_start("vision_model."):
-        if any_start("model.layers.", "language_model.", "multi_modal_projector."):
-            return "text_encoders"
-        return "clip_vision"
-    # LTX-2 projection layer: bridges text embeddings into the AV transformer. Loads from
-    # ComfyUI/models/text_encoders despite not being an encoder itself.
-    if any_start("text_embedding_projection."):
-        return "text_encoders"
-    if any_start("diffusion_model.", "double_blocks.", "joint_blocks."):
-        return "diffusion_models"
-    # BARE DENOISERS. A *checkpoint* is defined by carrying several components at once
-    # (unet + first_stage_model + conditioner); a file holding only the denoiser is a
-    # diffusion model however big it is. These are the modern DiT layouts: Qwen-Image
-    # (transformer_blocks. + img_in/txt_in), Wan (patch_embedding. + time_embedding.),
-    # and the `net.`-rooted stacks with adaLN modulation.
-    if any_start("transformer_blocks.") and any_start("img_in.", "txt_in."):
-        return "diffusion_models"
-    if any_start("patch_embedding.") and any_start("time_embedding."):
-        return "diffusion_models"
-    if any(k.startswith("net.blocks.") and "adaln_modulation" in k for k in keys):
-        return "diffusion_models"
-    if any_start("encoder.block.", "decoder.block."):   # T5-style, before generic vae
-        return "text_encoders"
-    if any_start("first_stage_model."):
-        return "vae"
-    # An encoder/decoder PAIR is a shape, not an identity: it must be backed by real
-    # autoencoder internals before it may claim `vae` (see VAE_ANATOMY_PREFIXES). Bare
-    # encoder./decoder. falls through to abstain, and naming gets to decide.
-    if ("decoder." in prefixes and "encoder." in prefixes
-            and _has_vae_anatomy(keys)):
-        return "vae"
-    if any_start("text_model.", "t5.", "enc."):
-        return "text_encoders"
-    return None
+    Since s46 this is a two-line function on purpose: the RULES live in
+    model_formats (shared with the adopt tools), and what remains here is the
+    translation into this tool's vocabulary. Metadata first -- `modelspec.architecture`
+    is the writer DECLARING what the file is -- then the key signatures.
+    """
+    kind = (classify_metadata(header.get("__metadata__") or {})
+            or classify_keys(k for k in header if k != "__metadata__"))
+    return KIND_TO_CATEGORY.get(kind) if kind else None
 
 
 def _is_ct2_layout(src: SourceFile) -> bool:
@@ -1081,21 +949,12 @@ LOFI_MEASURES = {"ct2", "config", "component", "segments", "filename", "repo"}
 LOFI_MAX_RATING = 0.3
 EMBEDDED_MAX_RATING = 0.99   # nor may anything else claim absolute certainty
 
-# Tensor-name prefixes that identify a model outright, vs the generic encoder+decoder
-# shape that merely suggests an autoencoder (plenty of models have both).
-DISTINCTIVE_PREFIXES = (
-    "model.diffusion_model.", "control_model.", "vision_model.", "diffusion_model.",
-    "double_blocks.", "joint_blocks.", "encoder.block.", "decoder.block.",
-    "first_stage_model.", "text_model.", "t5.", "enc.",
-    # diffusers-format ControlNet zero-conv trunk; LTX-2 projection layer; the bare-DiT
-    # roots (Qwen-Image / Wan / adaLN `net.` stacks). Each names its model outright, so
-    # they belong at the top rating rather than the generic 0.6 inference.
-    "controlnet_cond_embedding.", "controlnet_down_blocks.", "controlnet_mid_block.",
-    "controlnet_blocks.", "controlnet_x_embedder.",
-    "text_embedding_projection.", "transformer_blocks.", "patch_embedding.",
-    # ...and the RetinaFace heads, which name their architecture as squarely as any of
-    # the above (defined once, up with the rule that matches them).
-) + RETINAFACE_HEAD_PREFIXES
+# DISTINCTIVE_PREFIXES used to sit here: a hand-maintained SECOND copy of the key
+# signatures the classifier matches on, kept for the confidence model. It moved to
+# model_formats in s46 as CONCLUSIVE_PREFIXES / names_its_architecture(), because two
+# lists of one fact drift -- add a rule, forget the other list, and a file whose shape is
+# conclusive quietly rates as a guess. The RATING stays here: what conclusive evidence is
+# worth is this tool's policy, and the adopt tools have their own.
 
 
 def rate_safetensors(header: dict) -> tuple[str, float] | None:
@@ -1106,21 +965,11 @@ def rate_safetensors(header: dict) -> tuple[str, float] | None:
     # Same normalization the classifier ran on, for the same reason: a DataParallel
     # `module.` wrapper must not cost a file its confidence rating either.
     keys = strip_dataparallel(k for k in header if k != "__metadata__")
-    if (any(k.startswith(DISTINCTIVE_PREFIXES) for k in keys)
-            # a CPM/OpenPose stage conv names its architecture outright, but it is a
-            # PATTERN rather than a fixed prefix, so it cannot live in the tuple above
-            or any(POSE_STAGE_KEY_RE.match(k) for k in keys)
-            # ...and so is the AnimateDiff temporal stack. Its BLOCK roots (down_blocks./
-            # mid_block./up_blocks.) are the generic UNet skeleton and must NEVER join
-            # DISTINCTIVE_PREFIXES -- half the collection would inherit 0.99 off them.
-            # The composite is the opposite: a temporal_transformer hanging off a UNet
-            # block names AnimateDiff as squarely as `control_model.` names a ControlNet,
-            # and rating the 8 motion LoRAs + the motion modules at the generic 0.6 left
-            # them scoring 0.4-0.45 -- looking like guesses when the shape is conclusive.
-            or any(ANIMATEDIFF_KEY_RE.search(k) for k in keys)
-            or any(k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k
-                   or ".lora_B" in k or ".lora_down" in k or ".lora_up" in k
-                   for k in keys)):
+    # Why this is worth 0.99 and the generic shape is worth 0.6: rating the 8 motion
+    # LoRAs and the motion modules at 0.6 left them scoring 0.4-0.45 -- looking like
+    # guesses when their shape is conclusive. The list of what COUNTS as conclusive is
+    # shared knowledge and lives in model_formats; this number is ours.
+    if names_its_architecture(keys):
         return cat, EMBEDDED_MAX_RATING
     meta = header.get("__metadata__") or {}
     if str(meta.get("modelspec.architecture", "")):

@@ -18,6 +18,7 @@ including a reproduction of the Raiju field-test scenario.
 Run:  python3 targets/comfyui/scripts/tests/test_model_scanner.py -v
 """
 
+import ast
 import contextlib
 import hashlib
 import io
@@ -1382,10 +1383,13 @@ class ScannerTest(unittest.TestCase):
             # by the same change -- one step down, as any key-derived pickle rating is
             self.assertEqual(ms.rate_pickle(set(keys), set()), (want, 0.95), want)
         # ...and the lift is the COMPOSITE, never the block roots. Those are the generic
-        # UNet skeleton -- half the collection has them -- so they must stay OUT of
-        # DISTINCTIVE_PREFIXES and must not rate above the generic tier on their own.
+        # UNet skeleton -- half the collection has them -- so they must stay OUT of the
+        # conclusive-signature list and must not rate above the generic tier on their
+        # own. (That list was ms.DISTINCTIVE_PREFIXES until s46; it is now shared, as
+        # model_formats.CONCLUSIVE_PREFIXES. Same assertion, new home.)
+        import model_formats
         for root in ("down_blocks.", "mid_block.", "up_blocks."):
-            self.assertNotIn(root, ms.DISTINCTIVE_PREFIXES)
+            self.assertNotIn(root, model_formats.CONCLUSIVE_PREFIXES)
         plain_unet = {"down_blocks.0.resnets.0.conv1.weight": {},
                       "mid_block.attentions.0.proj_in.weight": {},
                       "up_blocks.1.resnets.0.conv2.weight": {}}
@@ -1907,6 +1911,86 @@ class ScannerTest(unittest.TestCase):
         for tool in ("model_scanner.py", "droste-civitai-adopt.sh"):
             self.assertNotIn("pickle.Unpickler", (scripts / tool).read_text(),
                              f"{tool} grew its own unpickler again")
+
+    # ------------------------- s46: one key-signature rule set, two vocabularies
+    def test_key_rules_live_in_the_shared_module(self):
+        """The rules moved to model_formats in s46 for the same reason the unpickler
+        did: the adopt tools need the same knowledge and were keeping a second, partial
+        copy. What stays HERE is the mapping to ComfyUI loader dirs -- the tree is a
+        rendering, the kind is the domain model."""
+        import model_formats
+
+        self.assertIs(ms.classify_keys, model_formats.classify_keys)
+        self.assertIs(ms.strip_dataparallel, model_formats.strip_dataparallel)
+        scripts = Path(ms.__file__).resolve().parent
+        # STRING LITERALS ONLY, via the AST -- not a text grep. Comments and docstrings
+        # legitimately DESCRIBE the heuristics (the HEURISTICS_VERSION changelog names
+        # several rules by their key signature, and should), and prose about a rule is
+        # not a copy of it. A re-implementation, on the other hand, needs the literal.
+        tree = ast.parse((scripts / "model_scanner.py").read_text())
+        docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                      if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef))
+                      and n.body and isinstance(n.body[0], ast.Expr)
+                      and isinstance(n.body[0].value, ast.Constant)
+                      and isinstance(n.body[0].value.value, str)}
+        literals = [n.value for n in ast.walk(tree)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and id(n) not in docstrings]
+        for signature in ("controlnet_x_embedder.", "Mconv", "BboxHead.",
+                          "adaln_modulation", "text_embedding_projection."):
+            self.assertNotIn(signature, literals,
+                             f"key-signature rule {signature!r} re-grew in the scanner")
+        # ⚠️ `first_stage_model.` is the ONE signature still spelled in both tools, and
+        # it is deliberate rather than missed: the scanner tests it in
+        # checkpoint_packaged_vae (the s43 WARN) and the adopt tool tests it for
+        # `embedded_vae`. Whether the SHARED classifier should carry "packaged as a
+        # checkpoint section" as DATA both tools may read, or stay one tool's warn, is
+        # an OPEN question for Jei in the unification plan. This assertion records the
+        # duplication on purpose, so that closing the question removes a failing test
+        # rather than leaving an invisible fork.
+        self.assertIn("first_stage_model.", literals,
+                      "packaged-VAE moved to the shared module? update the plan's open "
+                      "question and this test together")
+        self.assertIn("controlnet_x_embedder.",
+                      (scripts / "model_formats.py").read_text())
+
+    def test_kind_map_is_total_over_the_rules(self):
+        """Every KIND the shared rules can return must have a home in this tool.
+
+        The map uses `.get`, so an unmapped kind ABSTAINS rather than raising -- the
+        right behaviour for a rule that exists for the adopt side only, and the wrong
+        thing to discover by watching a file go unclassified. This test is the tripwire:
+        add a rule that returns a new kind and either map it or add it to the exemption
+        list below, deliberately."""
+        import model_formats
+
+        # kinds the shared module defines but this tool has nowhere to put YET. Empty
+        # today; the adopt tool's t2i-adapter and upscaler rules will land here first
+        # and move into the map with the HEURISTICS_VERSION bump that pays for them.
+        EXEMPT: set = set()
+        produced = set()
+        for keys in (["lora_unet_x.weight"], ["model.diffusion_model.x"],
+                     ["down_blocks.0.motion_modules.0.temporal_transformer.x"],
+                     ["down_blocks.0.motion_modules.0.temporal_transformer.attention"
+                      "_blocks.0.processor.to_k_lora.down.weight"],
+                     ["control_model.x"], ["controlnet_blocks.0.x"],
+                     ["BboxHead.0.x", "ClassHead.0.x", "LandmarkHead.0.x"],
+                     ["Mconv1_stage2.bias"], ["vision_model.x"],
+                     ["vision_model.x", "model.layers.0.x"],
+                     ["text_embedding_projection.x"], ["double_blocks.0.x"],
+                     ["transformer_blocks.0.x", "img_in.x"],
+                     ["patch_embedding.x", "time_embedding.x"],
+                     ["net.blocks.0.adaln_modulation.x"], ["encoder.block.0.x"],
+                     ["first_stage_model.decoder.x"],
+                     ["encoder.down.0.x", "decoder.up.0.x"], ["t5.x"]):
+            kind = model_formats.classify_keys(keys)
+            self.assertIsNotNone(kind, f"a rule stopped firing for {keys[0]!r}")
+            produced.add(kind)
+        unmapped = produced - set(ms.KIND_TO_CATEGORY) - EXEMPT
+        self.assertEqual(unmapped, set(), f"kinds with no ComfyUI destination: {unmapped}")
+        for kind, cat in ms.KIND_TO_CATEGORY.items():
+            self.assertIn(cat, ms.CATEGORIES | {ms.POSE_STAGE_CATEGORY},
+                          f"{kind} maps to {cat}, which is not a category we link into")
 
     # --------------------------------------------------------------- inventory
     def test_inventory_skipped_and_cached(self):

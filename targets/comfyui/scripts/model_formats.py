@@ -26,19 +26,39 @@ down rather than rediscovered):
   * GGUF. model_scanner reads metadata to CLASSIFY (and stops early on a recognised
     `general.architecture`); droste-hf-adopt reads it for PROVENANCE hint keys out of a
     bounded buffer. Different keys, different stopping rules, different failure policy.
-  * the key-signature RULES themselves (tensor names -> what the file is). Both sides
-    genuinely share this knowledge -- `control_model.`, `controlnet_cond_embedding.`,
-    `first_stage_model.`, `double_blocks.`/`joint_blocks.` appear in both -- but they
-    map it to DIFFERENT vocabularies: ComfyUI category dirs on the scanner side,
-    CivitAI model types / base-model families on the adopt side. Sharing them is a
-    genuine improvement and a genuine BEHAVIOUR change, so it is a decision to be taken
-    on purpose and not a side effect of a file move. This module is where it should
-    land when it is taken.
+
+THE KEY-SIGNATURE RULES HAVE NOW LANDED HERE (s46). The note that used to sit in this
+spot said they were shared knowledge mapped to two different vocabularies, that sharing
+them was a real behaviour change rather than a file move, and that this module was where
+they should land when the decision was taken. Jei took it ("let's unify them", s41);
+the design is `~/canon/notebook/plans/classifier-unification-s41.md`.
+
+THE ONE IDEA THE DESIGN RESTS ON: **the trees are renderings; the KIND is the domain
+model.** Neither name set is ours to unify -- the scanner answers in ComfyUI loader
+directories (a file in the wrong one is not found by any loader) and the adopt tools
+answer in the A1111 layout CivitAI's ecosystem assumes -- so "one vocabulary" can only
+mean a THIRD, internal one with a mapping at each edge. That is `KIND_*` below.
+
+Two rules follow, and they decide the edge cases:
+  * **The internal kind is at least as fine as the finest consumer.** Collapsing
+    fine->coarse at a boundary is free; recovering fine from coarse is impossible. So
+    an AnimateDiff motion LORA is its own kind even where a consumer files it with
+    motion modules.
+  * **Kind answers ROLE.** Everything else -- base-model family, upscaler
+    architecture, embedded VAE, EMA weights, dtype, format -- is an ATTRIBUTE of a file,
+    not what the file IS.
+
+⚠️ MIGRATION IS DELIBERATELY STAGED (plan build order). This first stage carries the
+SCANNER's rules only, verbatim and in the same order, so 93 existing tests can prove no
+outcome changed; the adopt tool's rules (t2i-adapter, upscaler architectures) cross
+later, WITH the outcome change they imply and the HEURISTICS_VERSION bump that pays for
+it. A rule that is here is not automatically used by both tools yet.
 """
 
 from __future__ import annotations
 
 import pickle
+import re
 import zipfile
 
 # torch's LEGACY (pre-1.6, `_use_new_zipfile_serialization=False`) container is not a zip:
@@ -199,3 +219,286 @@ def read_torch_container(path, max_objects: int = 1) -> tuple[set, set, str]:
     with open(path, "rb") as f:
         keys, modules = restricted_unpickle(f, max_objects=max_objects)
     return keys, modules, f"legacy (non-zip) pickle stream, first bytes {head!r},"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# KEY-SIGNATURE RULES — what a file IS, from the names inside it
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# The internal vocabulary. Deliberately NOT either consumer's directory names: the
+# scanner answers in ComfyUI loader dirs, the adopt tools in the A1111 layout, and a
+# shared rule that returned one of those would silently make that consumer the owner of
+# the knowledge again. Each edge keeps its own map (model_scanner.KIND_TO_CATEGORY;
+# droste-civitai-adopt's KIND_TO_TYPE / TYPE_DIRS).
+#
+# FINER THAN EITHER CONSUMER, on purpose. `KIND_ANIMATEDIFF_MOTION_LORA` and
+# `KIND_ANIMATEDIFF_MOTION_MODULE` are two kinds even though a consumer may file them in
+# one directory, because collapsing at the edge is free and un-collapsing is impossible.
+KIND_LORA = "lora"
+KIND_ANIMATEDIFF_MOTION_LORA = "animatediff_motion_lora"
+KIND_ANIMATEDIFF_MOTION_MODULE = "animatediff_motion_module"
+KIND_CHECKPOINT = "checkpoint"
+KIND_DIFFUSION_MODEL = "diffusion_model"
+KIND_CONTROLNET = "controlnet"
+KIND_VAE = "vae"
+KIND_TEXT_ENCODER = "text_encoder"
+KIND_CLIP_VISION = "clip_vision"
+KIND_FACE_DETECTOR = "face_detector"
+KIND_POSE_ESTIMATOR = "pose_estimator"
+
+# AnimateDiff motion modules ride inside a UNet-shaped state dict, so the block prefix
+# plus the temporal stack hanging off it IS the discriminator -- a depth model's
+# `head.`/`pretrained.` trunk cannot reach that shape.
+ANIMATEDIFF_KEY_RE = re.compile(
+    r"(?:^|\.)(?:down_blocks|mid_block|up_blocks)\.(?:[^.]+\.)*"
+    r"(?:motion_modules|temporal_transformer)\.")
+
+# The LoRA processor that separates an AnimateDiff motion LORA from the motion MODULE it
+# adapts -- same tensor layout otherwise. Note the spelling: `.to_k_lora.down.`, never
+# `.lora_down`, which is why the generic lora rule never sees these files.
+MOTION_LORA_MARKERS = ("to_q_lora", "to_k_lora", "to_v_lora", "to_out_lora",
+                       "_lora.down.", "_lora.up.")
+
+# torch.nn.DataParallel wraps EVERY key of the model it holds in `module.`, and a
+# checkpoint saved straight off a DataParallel model carries that wrapper forever --
+# detection_Resnet50_Final.pth inspects as prefixes `_metadata, module` with keys like
+# `module.BboxHead.0.conv1x1.weight`. It is pure PACKAGING: it says nothing about what
+# the model is, and every prefix rule is blind while it is there. So it is stripped
+# ONCE, here, ahead of all rules -- doing it per-rule would oblige every future rule to
+# remember to. Only the CLASSIFIER sees the stripped names; a tool that PRINTS evidence
+# still prints the raw keys, because what is on disk is what a human is matching against.
+DATAPARALLEL_PREFIX = "module."
+
+
+def strip_dataparallel(keys) -> list:
+    """Drop a leading `module.` from every key (torch DataParallel packaging)."""
+    n = len(DATAPARALLEL_PREFIX)
+    return [k[n:] if k.startswith(DATAPARALLEL_PREFIX) else k for k in keys]
+
+
+# REAL autoencoder anatomy, in THREE spellings: ldm (`encoder.down.` / `decoder.up.`),
+# diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`) and the causal-video
+# autoencoders (`encoder.downsamples.` / `decoder.upsamples.`), plus the quantisation
+# convs that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
+#
+# Required because "has an encoder and a decoder" is not "is a VAE". parsing_parsenet.pth
+# -- ParseNet, a face-PARSING/segmentation net, 85.3 MB -- has prefixes
+# `body, decoder, encoder, out_img_conv, out_mask_conv` and won vae@0.6 x 20 parts against
+# its own correct filename (facedetection, LoFi-capped at 0.3 x 5). Plenty of models are
+# shaped like an autoencoder; only an autoencoder has an autoencoder's insides. Without
+# anatomy the vae rule simply does not fire -- it abstains rather than guessing some other
+# category -- and the naming measures decide.
+#
+# The Wan spelling is here because the quant convs are NOT: a field dump of the real
+# wan_2.1_vae.safetensors (Jei, s33) has top-level prefixes `conv1, conv2, decoder,
+# encoder` with keys like `decoder.upsamples.0.residual.0.gamma` and NO quant_conv /
+# post_quant_conv anywhere -- so the resample stack is the only anatomy such a file has
+# to offer. Both halves of that pair are now CONFIRMED against real files (s43: Wan 2.1
+# and Qwen-Image), retiring the "inferred" note this comment used to carry for
+# `encoder.downsamples.`.
+VAE_ANATOMY_PREFIXES = ("encoder.down.", "decoder.up.",
+                        "encoder.down_blocks.", "decoder.up_blocks.",
+                        "encoder.downsamples.", "decoder.upsamples.")
+
+
+def has_vae_anatomy(keys) -> bool:
+    """True when an encoder/decoder pair is backed by real autoencoder internals.
+
+    `quant_conv.` is a substring test on purpose: it covers `post_quant_conv.` in the
+    same breath, and both sit at the state-dict root in ldm and diffusers alike.
+    """
+    return any(k.startswith(VAE_ANATOMY_PREFIXES) or "quant_conv." in k for k in keys)
+
+
+# RetinaFace / facexlib detection heads. These three head names together ARE the
+# RetinaFace signature (detection_Resnet50_Final.pth, detection_mobilenet0.25_Final.pth);
+# nothing else in a model collection names a tensor `BboxHead`. Only visible once the
+# DataParallel wrapper above is stripped -- which is exactly how these files ship.
+RETINAFACE_HEAD_PREFIXES = ("BboxHead.", "ClassHead.", "LandmarkHead.")
+
+# Convolutional Pose Machine / OpenPose stage convolutions. `facenet.pth` (153.7 MB) is,
+# despite its name, a CPM LANDMARK model: prefixes `Mconv1_stage2 ... Mconv7_stage6`, keys
+# like `Mconv1_stage2.bias`. The openpose annotators already routed BY NAME
+# (body_pose_model.pth / hand_pose_model.pth) are the same architecture family and spell
+# their stages `model1_1.0.weight`, so one rule covers both -- and now covers them by
+# CONTENT, which is what a renamed or oddly-named copy needs. Anchored at the start of the
+# key and requiring the stage digits, so an ordinary `model.`/`model0.` prefix cannot match.
+POSE_STAGE_KEY_RE = re.compile(r"^(?:Mconv\d+_stage\d+|model\d+_\d+)\.")
+
+
+def classify_metadata(meta: dict) -> str | None:
+    """KIND from a safetensors `__metadata__` block (`modelspec.architecture`).
+
+    Separate from the key rules because it is a DECLARATION rather than evidence: the
+    writer said what this is. Callers that have no metadata simply skip it.
+    """
+    arch = str((meta or {}).get("modelspec.architecture", "")).lower()
+    if not arch:
+        return None
+    if "lora" in arch:
+        return KIND_LORA
+    if "controlnet" in arch:
+        return KIND_CONTROLNET
+    if arch.endswith("vae") or "/vae" in arch:
+        return KIND_VAE
+    return None
+
+
+def classify_keys(keys) -> str | None:
+    """KIND from tensor/attribute names, or None to abstain.
+
+    ⚠️ ORDER IS LOAD-BEARING THROUGHOUT and each hop is justified where it sits. The
+    short version: specific packaging beats generic shape, and unmistakable detector
+    architectures beat both. Reordering this function silently reclassifies files.
+
+    ⚠️ MATCHING IS ANCHORED (`startswith`), never substring, after the DataParallel
+    strip. The adopt tool historically matched anywhere in a key; unifying on the looser
+    form would wreck rules here (`enc.` would match `encoder.`). Anchored is the rule.
+
+    Abstains rather than guessing: None means "the names say nothing", and the caller's
+    other evidence -- filename, sidecars, API type -- decides.
+    """
+    # ONE normalization pass, ahead of every rule (see DATAPARALLEL_PREFIX).
+    keys = strip_dataparallel(keys)
+    # Only DOTTED keys have a prefix. Tensor names are always module-scoped, so this
+    # costs nothing there -- but object-pickles reach this classifier with plain
+    # ATTRIBUTE names harvested from __setstate__, and a bare `encoder`/`decoder`
+    # attribute pair would otherwise synthesize "encoder."/"decoder." and be read as an
+    # autoencoder state dict.
+    prefixes = {k.split(".", 1)[0] + "." for k in keys if "." in k}
+
+    def any_start(*pfx):
+        return any(k.startswith(pfx) for k in keys)
+
+    # loras first: lora tensor names embed base-model names (double_blocks etc.)
+    if any(k.startswith(("lora_unet_", "lora_te")) or ".lora_A" in k
+           or ".lora_B" in k or ".lora_down" in k or ".lora_up" in k for k in keys):
+        return KIND_LORA
+    if any_start("model.diffusion_model."):        # full checkpoint bundle
+        return KIND_CHECKPOINT
+    # AnimateDiff motion modules ride inside a UNet-shaped state dict (down_blocks./
+    # mid_block./up_blocks.), so they must be tested BEFORE any generic block rule --
+    # the giveaway is the temporal stack hanging off each block (ANIMATEDIFF_KEY_RE).
+    if any(ANIMATEDIFF_KEY_RE.search(k) for k in keys):
+        # ...and a motion LORA has the SAME layout as the motion module it adapts, so the
+        # only thing separating them is the LoRA processor hanging off each attention
+        # block. Without this the whole AnimateDiff-Motion-LoRAs family filed as motion
+        # MODULES, where the loader that wants them (AnimateDiffLoraLoader) never looks.
+        if any(m in k for k in keys for m in MOTION_LORA_MARKERS):
+            return KIND_ANIMATEDIFF_MOTION_LORA
+        return KIND_ANIMATEDIFF_MOTION_MODULE
+    if any_start("control_model."):
+        return KIND_CONTROLNET
+    # diffusers-format ControlNet: the zero-conv trunk that makes it a ControlNet rather
+    # than the UNet it is otherwise shaped like. `controlnet_blocks.` /
+    # `controlnet_x_embedder.` are the DiT-era spelling of the same idea (InstantX's
+    # Qwen-Image ControlNets) -- and they must keep their place ABOVE the bare-DiT rules
+    # below, which see img_in./txt_in./transformer_blocks. and call it a diffusion model
+    # at 0.99: a DiT ControlNet has all of those too, plus the trunk that overrides them.
+    if any_start("controlnet_cond_embedding.", "controlnet_down_blocks.",
+                 "controlnet_mid_block.", "controlnet_blocks.",
+                 "controlnet_x_embedder."):
+        return KIND_CONTROLNET
+    # ---- auxiliary DETECTOR / ESTIMATOR architectures. They sit above the generic model
+    # shapes below because they are unmistakable -- nothing else names a tensor `BboxHead`
+    # or `Mconv3_stage4` -- and because both families ship as bare .pth files whose only
+    # other signal is a filename that can be actively misleading (`facenet.pth` is a pose
+    # model, not a face-recognition net).
+    if any_start(*RETINAFACE_HEAD_PREFIXES):
+        return KIND_FACE_DETECTOR
+    if any(POSE_STAGE_KEY_RE.match(k) for k in keys):
+        return KIND_POSE_ESTIMATOR
+    # A vision tower is evidence that a model CAN SEE, not that it IS an image encoder.
+    # A multimodal LLM ships one bolted onto a language decoder (model.layers./
+    # language_model.) through a projector -- and one of those, a gemma-3-12b shipped as
+    # an LTX-2 text encoder, scored clip_vision@0.99 purely because `vision_model.` was
+    # present (Jei's verdict, s30: it is a text encoder). The decoder is what settles it;
+    # a real CLIP-Vision / IP-Adapter image_encoder has a vision tower and NOTHING else.
+    if any_start("vision_model."):
+        if any_start("model.layers.", "language_model.", "multi_modal_projector."):
+            return KIND_TEXT_ENCODER
+        return KIND_CLIP_VISION
+    # LTX-2 projection layer: bridges text embeddings into the AV transformer. Loads from
+    # ComfyUI/models/text_encoders despite not being an encoder itself.
+    if any_start("text_embedding_projection."):
+        return KIND_TEXT_ENCODER
+    if any_start("diffusion_model.", "double_blocks.", "joint_blocks."):
+        return KIND_DIFFUSION_MODEL
+    # BARE DENOISERS. A *checkpoint* is defined by carrying several components at once
+    # (unet + first_stage_model + conditioner); a file holding only the denoiser is a
+    # diffusion model however big it is. These are the modern DiT layouts: Qwen-Image
+    # (transformer_blocks. + img_in/txt_in), Wan (patch_embedding. + time_embedding.),
+    # and the `net.`-rooted stacks with adaLN modulation.
+    if any_start("transformer_blocks.") and any_start("img_in.", "txt_in."):
+        return KIND_DIFFUSION_MODEL
+    if any_start("patch_embedding.") and any_start("time_embedding."):
+        return KIND_DIFFUSION_MODEL
+    if any(k.startswith("net.blocks.") and "adaln_modulation" in k for k in keys):
+        return KIND_DIFFUSION_MODEL
+    if any_start("encoder.block.", "decoder.block."):   # T5-style, before generic vae
+        return KIND_TEXT_ENCODER
+    # `first_stage_model.` alone is a VAE still wearing a checkpoint's packaging; WITH
+    # `model.diffusion_model.` it is that checkpoint's VAE section, which is why the
+    # checkpoint rule above runs first. Measured, not argued (s43): it is ComfyUI's
+    # base-class `vae_key_prefix`, stripped on load and re-added on save.
+    if any_start("first_stage_model."):
+        return KIND_VAE
+    # An encoder/decoder PAIR is a shape, not an identity: it must be backed by real
+    # autoencoder internals before it may claim `vae` (see VAE_ANATOMY_PREFIXES). Bare
+    # encoder./decoder. falls through to abstain, and naming gets to decide.
+    if ("decoder." in prefixes and "encoder." in prefixes
+            and has_vae_anatomy(keys)):
+        return KIND_VAE
+    if any_start("text_model.", "t5.", "enc."):
+        return KIND_TEXT_ENCODER
+    return None
+
+
+# Signatures that name a model OUTRIGHT, as opposed to the generic encoder+decoder shape
+# that merely suggests an autoencoder (plenty of models have both).
+#
+# ⚠️ THIS EXISTS TO STOP A DRIFT THAT HAD ALREADY STARTED. It is the same knowledge the
+# rules above encode, asked a different question -- not "what is this?" but "is this
+# signature conclusive?" -- and until s46 the scanner kept a hand-maintained SECOND copy
+# of the prefix list for its confidence model. Two lists of one fact drift in the usual
+# way: add a rule, forget the other list, and a file whose shape is conclusive quietly
+# rates as a guess. Callers keep their own scales; what a conclusive signature is WORTH
+# is a policy question and stays with the tool that has a policy.
+CONCLUSIVE_PREFIXES = (
+    "model.diffusion_model.", "control_model.", "vision_model.", "diffusion_model.",
+    "double_blocks.", "joint_blocks.", "encoder.block.", "decoder.block.",
+    "first_stage_model.", "text_model.", "t5.", "enc.",
+    # diffusers-format ControlNet zero-conv trunk; LTX-2 projection layer; the bare-DiT
+    # roots (Qwen-Image / Wan / adaLN `net.` stacks). Each names its model outright.
+    "controlnet_cond_embedding.", "controlnet_down_blocks.", "controlnet_mid_block.",
+    "controlnet_blocks.", "controlnet_x_embedder.",
+    "text_embedding_projection.", "transformer_blocks.", "patch_embedding.",
+    # ...and the RetinaFace heads, which name their architecture as squarely as any of
+    # the above (defined once, up with the rule that matches them).
+) + RETINAFACE_HEAD_PREFIXES
+
+LORA_KEY_MARKERS = (".lora_A", ".lora_B", ".lora_down", ".lora_up")
+LORA_KEY_PREFIXES = ("lora_unet_", "lora_te")
+
+
+def is_lora_key_set(keys) -> bool:
+    """The generic LoRA spellings, in one place because three call sites want them."""
+    return any(k.startswith(LORA_KEY_PREFIXES) or any(m in k for m in LORA_KEY_MARKERS)
+               for k in keys)
+
+
+def names_its_architecture(keys) -> bool:
+    """True when the key set names what the file is, leaving nothing to infer.
+
+    Prefix list plus the two signatures that are PATTERNS rather than fixed prefixes:
+      * CPM/OpenPose stage convs name their architecture outright but vary per stage;
+      * the AnimateDiff temporal stack is a COMPOSITE -- its block roots (down_blocks./
+        mid_block./up_blocks.) are the generic UNet skeleton and must NEVER be treated as
+        conclusive on their own, or half a collection inherits certainty from them. A
+        temporal_transformer hanging off one of those blocks is a different matter: it
+        names AnimateDiff as squarely as `control_model.` names a ControlNet.
+    Expects keys with any DataParallel wrapper already stripped.
+    """
+    return (any(k.startswith(CONCLUSIVE_PREFIXES) for k in keys)
+            or any(POSE_STAGE_KEY_RE.match(k) for k in keys)
+            or any(ANIMATEDIFF_KEY_RE.search(k) for k in keys)
+            or is_lora_key_set(keys))

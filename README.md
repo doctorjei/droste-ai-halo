@@ -274,6 +274,22 @@ still visible. Names and sidecar files such as `config.json` are deliberately
 capped low — they are editable, and an edited one points confidently at the
 wrong answer.
 
+**When it gets one wrong, you overrule it — and the overrule sticks.** Two
+ledgers in the registry hold your decisions, and both survive the
+re-classification that a scanner upgrade triggers:
+
+```bash
+model_scanner.py inspect <part-of-a-name>   # the evidence behind a classification
+model_scanner.py categorize <name> <category>   # put it where YOU want it
+model_scanner.py categorize <name> --forget     # follow the classifier again
+model_scanner.py rename <name> <new-name>       # the link name YOU want
+```
+
+A category you set by hand *inside* the registry's `entries` is only a cache —
+the next upgrade recomputes it. A `categorize` override is a decision, and it is
+re-asserted at every sync. `--forget` drops it and clears the cached
+classification, so the file returns to whatever the rules say next time.
+
 **One box, two doors:** the same images double as `$HOME`-native interactive
 toolboxes, and that is not a second container. Each app is ONE container,
 `droste-<port>-halo`, created by `distrobox assemble` — from the record

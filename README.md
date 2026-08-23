@@ -278,12 +278,20 @@ wrong answer.
 ledgers in the registry hold your decisions, and both survive the
 re-classification that a scanner upgrade triggers:
 
+Unlike the adopt tools above, these run **inside the box** — the scanner and its
+registry live there:
+
 ```bash
-model_scanner.py inspect <part-of-a-name>   # the evidence behind a classification
-model_scanner.py categorize <name> <category>   # put it where YOU want it
-model_scanner.py categorize <name> --forget     # follow the classifier again
-model_scanner.py rename <name> <new-name>       # the link name YOU want
+distrobox enter droste-comfyui-halo
+
+model_scanner.py inspect <part-of-a-name>      # the evidence behind a classification
+model_scanner.py categorize <name> <category>  # put it where YOU want it
+model_scanner.py categorize <name> --forget    # follow the classifier again
+model_scanner.py rename <name> <new-name>      # the link name YOU want
 ```
+
+Use whatever name the tree shows you — if you renamed a file, either its name or
+the original works.
 
 A category you set by hand *inside* the registry's `entries` is only a cache —
 the next upgrade recomputes it. A `categorize` override is a decision, and it is

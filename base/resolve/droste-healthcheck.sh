@@ -60,19 +60,62 @@ set +e   # this script decides its own exit codes
 : "${DROSTE_HEALTH_TIMEOUT:=5}"
 
 serve::read_config
-if [ "${SERVE_ENABLED:-0}" -ne 1 ]; then
-    printf 'droste-healthcheck: serving is off (%s) — nothing to probe.\n' "$DROSTE_SERVE_ENV"
+# ⭐ GATE 0 IS INTENT, NOT CONFIG (s45), AND THAT SUBSTITUTION IS THE WHOLE FIX.
+# This used to read SERVE from server.env and therefore asked "is this box configured
+# to serve AT BOOT?" when the question it needs is "is this box supposed to be serving
+# RIGHT NOW?". Because of that, a user who stopped the service by hand got the
+# container restarted under them forever — server.env still said SERVE=1, so every
+# probe read the box as one that ought to be serving and podman bounced it.
+# state/.IS_ACTIVE answers the question actually being asked, and it is reset from
+# STARTUP_ENABLED at every container start, so "stopped" stays temporary.
+if ! serve::is_active; then
+    printf 'droste-healthcheck: no server is wanted right now (%s) — nothing to probe.\n' \
+        "$DROSTE_SERVE_ACTIVE"
     exit 0
 fi
 
 # Gate 1 — is OUR launch alive? Checked BEFORE the probe: it is a file read plus a
 # /proc read (no network, no timeout), and it is the gate that can tell a refusal
-# apart from a healthy server. Note that a box with SERVE=0 exited above, so a
-# missing state record here means the door was asked to serve and did not.
+# apart from a healthy server. A box that wants no server exited above, so a missing
+# state record here means the door was asked to serve and did not.
+#
+# ⭐ FAILING GATE 1 IS WHERE THE SURGICAL RECOVERY HAPPENS. Rather than reporting
+# unhealthy and letting podman's --health-on-failure=restart bounce the whole container
+# (killing every interactive shell in it), try to relaunch just the SERVICE, once,
+# inside the ~90s that --health-retries 3 at 30s gives us. The probe still reports
+# UNHEALTHY — honestly — and if the relaunch worked the next probe reports healthy and
+# podman never restarts anything. If it did not, the third failure bounces the container
+# exactly as it does today.
+# ⚠️ THE FALLBACK IS LOAD-BEARING, NOT DECORATIVE: a container bounce also re-runs the
+# init hook — mounts, model-tree scan, template seeding. If the failure is CAUSED by a
+# broken mount, relaunching the service cannot fix it and it will correctly fail all
+# three checks. Do not remove the bounce thinking the relaunch replaces it.
 if ! serve::state_ok; then
+    if serve::_relaunch_due; then
+        serve::warn_ttys "the server died. Relaunching it now.
+        If that fails, this box will restart in ~60s and your shell will close."
+        serve::relaunch
+    fi
     printf 'droste-healthcheck: UNHEALTHY — %s\n' "$SERVE_STATE_MSG"
     exit 1
 fi
+
+# Gate 1b — is the thing LISTENING on that port actually ours? (s45, board item
+# "11-residual".) Gates 1 and 2 together still had a hole: our process alive + something
+# answering the port is NOT the same as our process serving. Under host networking a
+# process that is alive but no longer listening leaves the port free for anything on the
+# machine to take, and the squatter's reply satisfied the probe — HEALTHY while serving
+# nothing, which is the worse failure because the user believes their server is up.
+# ⚠️ Only a POSITIVE identification of someone else fails here; "cannot tell" carries on
+# to the probe exactly as before. A health probe that restarts containers must never act
+# on an inconclusive read of procfs.
+serve::port_owned_by_us "$SERVE_PORT" "$SERVE_REC_PID"
+case $? in
+    1)  printf 'droste-healthcheck: UNHEALTHY — our service (pid %s) is alive but is NOT the process listening on port %s; something else holds it. See %s.\n' \
+            "$SERVE_REC_PID" "$SERVE_PORT" "$DROSTE_SERVE_LOG"
+        exit 1
+        ;;
+esac
 
 serve::read_health_spec
 

@@ -183,12 +183,18 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-ds4-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
-printf '  - %-18s → %s\n' "ds4-server" "runs by default via the image entrypoint (port $SERVE_PORT)"
+printf '  - %-18s → %s\n' "ds4-server" "starts with the box (port $SERVE_PORT)"
 printf '  - %-18s → %s\n' "config" "/opt/data/ds4.env (DS4_DROSTE_* + native DS4_* vars)"
 printf '  - %-18s → %s\n' "get a model" "download_model.sh q2-imatrix  (easy way; prints the path for DS4_DROSTE_MODEL)"
 printf '  - %-18s → %s\n' "ds4-cockpit" "TUI: model manager + server runner"
 printf '  - %-18s → %s\n' "ds4 / ds4-bench" "interactive CLI / benchmark"
 printf '  - %-18s → %s\n' "API test" "curl localhost:$SERVE_PORT/v1/chat/completions"
+echo
+printf 'Server control (acts on the SERVER, not the box):\n'
+printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
+printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
+printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
+printf '  - %-18s → %s\n' "at box start" "STARTUP_ENABLED in /opt/data/server.env"
 echo
 printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 

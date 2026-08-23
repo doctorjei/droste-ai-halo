@@ -157,6 +157,32 @@ serve_port() {
   fi
 }
 
+# serve_running — is THIS box's service up right now? Prints "<pid> <port>" and
+# returns 0, else returns 1 and prints nothing.
+#
+# Asks droste-serve.sh's own state record rather than probing the port, because a
+# probe cannot tell OUR service from a squatter — that distinction is the whole
+# point of serve::state_ok, and it is the same call the healthcheck makes. Run in
+# a SUBSHELL, like serve_port above: sourcing droste-serve.sh sets a dozen
+# DROSTE_* defaults and defines the serve:: namespace, none of which belongs in a
+# user's interactive shell. errexit/nounset off and stdin closed so a hand-edited
+# server.env cannot take the login shell down with it.
+serve_running() {
+  ( set +e +u +o pipefail
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null 2>&1 </dev/null || exit 1
+    serve::read_config >/dev/null 2>&1
+    # INTENT, not config (s45): ask whether a server is wanted right now, the same
+    # question the healthcheck asks. Reading STARTUP_ENABLED here would call a
+    # hand-stopped server "not serving because the box is interactive-only", which is
+    # the wrong reason and the wrong advice.
+    serve::is_active >/dev/null 2>&1 || exit 1
+    serve::state_ok >/dev/null 2>&1 || exit 1
+    printf '%s %s' "${SERVE_REC_PID:-?}" "${SERVE_PORT:-?}"
+  ) 2>/dev/null
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
@@ -181,9 +207,23 @@ printf 'Machine: %s\n' "$MACHINE"
 printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-comfyui-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
+# Serving state, ASKED not assumed. The pre-s34 text here said "in a
+# distrobox/toolbox shell nothing autostarts", which was true when the distrobox
+# lane and the server lane were two separate containers. Since the merge it is
+# ONE container with two doors, and the server door autostarts whenever
+# server.env says SERVE=1 — so the old line invited the user to start a second
+# ComfyUI on a port the first one already holds.
 printf 'ComfyUI server: http://localhost:%s\n' "$SERVE_PORT"
-printf '  - Run as a container → the server starts automatically (image entrypoint).\n'
-printf '  - In a distrobox/toolbox shell nothing autostarts → use: start_comfy_ui\n'
+if serve_running >/dev/null; then
+  printf '  - ALREADY SERVING on port %s. Stop it with: server_stop\n' "$SERVE_PORT"
+  printf '    Logs: tail -f /opt/data/.droste-serve.log\n'
+else
+  printf '  - Not serving right now → start it with: server_start\n'
+fi
+printf '  - server_start · server_stop · server_restart · server_status\n'
+printf '    These act on the SERVER, not the box. A stop lasts until the box\n'
+printf '    restarts; for a permanent change set STARTUP_ENABLED in\n'
+printf '    /opt/data/server.env.\n'
 echo
 printf 'Model downloaders (shared HF cache; scanner links them in at start):\n'
 printf '  get_wan22.sh · get_qwen_image.sh · get_hunyuan15.sh · get_ltx2.sh\n\n'
@@ -196,7 +236,32 @@ printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_POR
 # file exists.
 # serve_port is re-read here rather than reusing $SERVE_PORT from banner time, so
 # a server.env edited during the session takes effect on the next launch.
+# start_comfy_ui — KEPT AS AN ALIAS, because users may know this name (it predates the
+# verbs). It names the new verb once and then does what it always did: run ComfyUI in
+# the FOREGROUND of this shell, which is still the right tool for watching a run.
+# ⚠️ s45 replaced its refusal text, not its refusal. The s44 version warned and pointed
+# at `kill <pid>` + editing SERVE=0; Jei ruled against warning — "I don't think we should
+# warn the user. I think we should change our box's behavior" — so it now points at the
+# verb that does the thing properly.
 start_comfy_ui() {
+  # REFUSE if the server door already has one up. One container, two doors since
+  # s34: launching here would race the running service for the port, and ComfyUI's
+  # bind failure names neither the other instance nor the door that started it.
+  local state pid port
+  if state=$(serve_running); then
+    read -r pid port <<<"$state"
+    printf 'ComfyUI is ALREADY RUNNING (pid %s) on port %s → http://localhost:%s\n' \
+      "$pid" "$port" "$port"
+    printf '  logs: tail -f /opt/data/.droste-serve.log\n\n'
+    printf 'To run one here in the foreground instead, stop the server first:\n'
+    printf '  server_stop\n'
+    printf 'That lasts until the box restarts. For a permanent change, set\n'
+    printf 'STARTUP_ENABLED=0 in /opt/data/server.env.\n'
+    return 1
+  fi
+  printf 'Tip: server_start runs ComfyUI in the background, supervised, and\n'
+  printf 'survives you closing this shell. start_comfy_ui runs it here, in the\n'
+  printf 'foreground, which is what you want when you are watching it.\n\n'
   local extra=()
   [[ -f /opt/program-cache/extra_model_paths.yaml ]] \
     && extra=( --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml )

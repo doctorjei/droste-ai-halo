@@ -191,13 +191,19 @@ printf 'Machine: %s\n' "$MACHINE"
 printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-vllm-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
-printf 'This image runs an OpenAI-compatible vLLM server by DEFAULT (entrypoint) on\n'
-printf 'port %s. Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n\n' "$SERVE_PORT"
+printf 'This box runs an OpenAI-compatible vLLM server on port %s when it starts.\n' "$SERVE_PORT"
+printf 'Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n\n'
 printf 'Usage:\n'
 printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config.yaml (REQUIRED to start)"
-printf '  - %-18s → %s\n' "vLLM server"  "starts automatically; commented MODEL_TABLE stanzas in the config"
+printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL_TABLE stanzas in the config"
 printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host 0.0.0.0 --port $SERVE_PORT"
 printf '  - %-18s → %s\n' "API test"     "curl localhost:$SERVE_PORT/v1/chat/completions"
+echo
+printf 'Server control (acts on the SERVER, not the box):\n'
+printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
+printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
+printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
+printf '  - %-18s → %s\n' "at box start" "STARTUP_ENABLED in /opt/data/server.env"
 echo
 printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 

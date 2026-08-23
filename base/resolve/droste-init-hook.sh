@@ -133,4 +133,11 @@ cat "$RESOLVE_LOG" >&2
 # generic error and the box would become hard to enter, which is the opposite of
 # what we want when the service is the broken part. maybe_launch says nothing at
 # all unless server.env turns serving on.
+# 🚨 RESET INTENT FIRST, AND THIS CALL IS NOT OPTIONAL. state/.IS_ACTIVE means "a server
+# should be running right now"; it is defined to be reset from STARTUP_ENABLED at every
+# container start — but /opt/program-cache is a HOST directory that survives container
+# restarts, so NOTHING RESETS IT BY ITSELF. This line is the entire enforcement. Remove
+# it and a `server_stop` becomes permanent and silent, which is the exact class of bug
+# the two-setting split was built to remove.
+serve::reset_active || serve::warn "could not reset the server intent flag — continuing."
 serve::maybe_launch || serve::warn "serve step failed (exit $?) — the box is still usable interactively."

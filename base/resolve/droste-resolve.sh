@@ -40,7 +40,7 @@ set -euo pipefail
 #   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
 #                      venv upper, overlay .work dirs, copy-mode materializations,
 #                      per-box compute-cache fallback, tmp, llama slots, ds4
-#                      kv-disk, the .droste-serve.pid record. The installer may
+#                      kv-disk, the state/ server dir. The installer may
 #                      empty this whole root with the user's consent; nothing here
 #                      is ever backed up, and NOTHING outside it is ever wiped.
 #   /opt/caches        OPTIONAL SHARED compute caches ACROSS boxes (MIOpen /

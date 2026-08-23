@@ -182,12 +182,18 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image    : ghcr.io/doctorjei/droste-finetuning-halo\n'
 printf 'Repo     : https://github.com/doctorjei/droste-ai-halo\n'
 printf 'Based on : github.com/kyuz0/amd-strix-halo-llm-finetuning\n\n'
-printf 'Server mode (default): entrypoint starts JupyterLab on http://localhost:%s\n' "$SERVE_PORT"
+printf 'JupyterLab starts with the box on http://localhost:%s\n' "$SERVE_PORT"
 printf '  (auth token in the container log; set JUPYTER_TOKEN to choose your own)\n'
-printf 'In this shell (distrobox/toolbox lane), start it yourself:\n'
+printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
 printf '  jupyter lab --ip 0.0.0.0 --port %s --notebook-dir=/opt/workspace\n\n' "$SERVE_PORT"
 printf 'Workspace  : /opt/workspace — your bind; starter notebooks seed if empty\n'
 printf '             (pristine copies live in /opt/resources/templates/workspace)\n'
 printf 'Helpers    : train.py · start-finetuning-cluster.py · benchmark_configs.py ·\n'
 printf '             measure_unsloth_memory.py — read-only in /opt/resources/scripts\n\n'
+printf 'Server control (acts on the SERVER, not the box):\n'
+printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
+printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
+printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
+printf '  - %-18s → %s\n' "at box start" "STARTUP_ENABLED in /opt/data/server.env"
+echo
 printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"

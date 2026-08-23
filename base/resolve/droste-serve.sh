@@ -24,9 +24,26 @@
 #
 # server.env (default /opt/data/server.env — same format and place as llama.env /
 # ds4.env) is shell-sourceable KEY=VALUE:
-#       SERVE=1            # 1/true/yes/on = this box serves on start; anything else = no
+#       STARTUP_ENABLED=1  # 1/true/yes/on = start this box's server when the BOX starts
 #       PORT=8188          # the HOST port the service binds DIRECTLY (host networking,
 #                          # no remap: e.g. ds4 binds 8001 itself instead of 8000+remap)
+#
+# ⭐ TWO SETTINGS, AND THE IMPORTANT PART IS THE LIFETIMES (s45). server.env used to
+# carry one knob, `SERVE`, meaning two different things at once — "start at box start"
+# AND "this box is supposed to be serving". That single conflation is why stopping the
+# service by hand got the container restarted under you, forever, and why holding the
+# door shut for a test meant editing a file that SURVIVES RECREATE.
+#
+#   | | STARTUP_ENABLED           | state/.IS_ACTIVE                        |
+#   |-|--------------------------|-----------------------------------------|
+#   | what     | a KEY in server.env | a FILE in the program-cache state dir |
+#   | written  | by the USER         | by the MACHINE (the verbs, the hook)  |
+#   | lifetime | persistent, survives recreate | reset EVERY container start  |
+#   | means    | start it at box start | it SHOULD be running right now      |
+#
+# So a stop is ALWAYS TEMPORARY and the user has to remember nothing. Putting the
+# "now" flag in server.env would have re-created the original foot-gun.
+# 🚨 `SERVE` is still READ as a fallback (there are live boxes) — see read_config.
 # Missing, unreadable or malformed file => do not serve, no error: an interactive-only
 # box must never fail to start because of this file. It is read in a SUBSHELL (a
 # syntax error or a stray `exit` inside it can therefore not abort the init hook,
@@ -39,7 +56,7 @@
 # previous container start is actively cleaned up (see serve::maybe_launch).
 #
 # THE STATE RECORD (proof of ownership). Every decision this library makes about
-# the service is written to ONE line in $DROSTE_SERVE_PID on the PROGRAM-CACHE
+# the service is written to ONE line in $DROSTE_SERVE_RECORD on the PROGRAM-CACHE
 # volume (a pid record is re-obtainable bookkeeping — cache class by ruling; the
 # service LOG beside it stays on the data volume, because it is what a user reads
 # when things broke):
@@ -48,8 +65,11 @@
 #       12345 998877 4242:112233 llama-server running
 #       -     -      4242:112233 -        refused
 #
-# with "-" for any field that does not apply. `status` is running | refused |
-# failed, and it is what makes the healthcheck honest: these boxes use HOST
+# with "-" for any field that does not apply. `status` is
+# running | starting | stopped | refused | failed
+# — WORDS, not 0/1/2, by the same readability rule that named STARTUP_ENABLED
+# (`status=starting` needs no legend), and it is what makes the healthcheck honest:
+# these boxes use HOST
 # networking, so a probe of the port alone proves only that SOMETHING answers it.
 # When the door refuses to start a second listener on a port another process
 # already holds, the squatter's reply used to satisfy the probe and the box
@@ -73,7 +93,23 @@ set -euo pipefail
 : "${DROSTE_DATA_DIR:=/opt/data}"
 : "${DROSTE_PCACHE_DIR:=/opt/program-cache}"
 : "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"      # the serve config file
-: "${DROSTE_SERVE_PID:=$DROSTE_PCACHE_DIR/.droste-serve.pid}"   # the state record
+# ── The state folder (s45) ──────────────────────────────────────────────────
+# Per-start state lives in ONE folder on the PROGRAM CACHE, and the folder supplies the
+# context so the names inside it can be short (the same argument that lets server.env
+# carry a bare PORT):
+#   state/launch      the launch record  — OBSERVATION: what we launched, and how it went
+#   state/.IS_ACTIVE  0/1                — INTENT: should a server be running right now
+# Keeping those in two files is the point, not an accident: they answer different
+# questions and are written at different moments (a `stop` sets intent with no launch
+# involved). Folding intent into the record — or into server.env — would re-create the
+# very conflation this split exists to remove.
+# ⚠️ RENAMED FROM `.droste-serve.pid`: that name described one of its five fields. An
+# existing box has its record at the old path, so the first start on new code finds none;
+# state_ok already reports that honestly ("no launch record …"), so the cost is ONE
+# spurious unhealthy cycle at upgrade. Known and accepted, not discovered later.
+: "${DROSTE_SERVE_STATE_DIR:=$DROSTE_PCACHE_DIR/state}"
+: "${DROSTE_SERVE_RECORD:=$DROSTE_SERVE_STATE_DIR/launch}"      # the launch record
+: "${DROSTE_SERVE_ACTIVE:=$DROSTE_SERVE_STATE_DIR/.IS_ACTIVE}"  # the intent flag
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # The flag every one of the five services takes for its listen port (comfyui
 # main.py, jupyter lab, vllm serve, llama-server, ds4-server all spell it
@@ -88,44 +124,128 @@ serve::warn() { printf 'droste-serve: WARN: %s\n' "$*" >&2; }
 serve::err()  { printf 'droste-serve: ERROR: %s\n' "$*" >&2; }
 
 # ── Config reading ──────────────────────────────────────────────────────────
-# read_config — parse server.env into SERVE_ENABLED (0/1), SERVE_PORT (digits or
-# ""), SERVE_CONFIG_ERR (human message or ""). NEVER fails, never aborts the
+# read_config — parse server.env into SERVE_STARTUP_ENABLED (0/1), SERVE_PORT (digits
+# or ""), SERVE_CONFIG_ERR (human message or ""). NEVER fails, never aborts the
 # caller: the file is sourced inside a subshell with errexit/nounset OFF and all
-# of its output discarded, and only the two keys we care about are printed back
+# of its output discarded, and only the keys we care about are printed back
 # and then validated. So a hand-edited file with a typo degrades to "don't
 # serve" instead of taking the box down.
-# PORT is REQUIRED when SERVE is on: the healthcheck probe reads the same key, so
+# PORT is REQUIRED when startup is on: the healthcheck probe reads the same key, so
 # a serve-without-port box would run unsupervised on a port nobody agreed on.
+#
+# ⭐ THE KEY IS `STARTUP_ENABLED`, AND IT ANSWERS EXACTLY ONE QUESTION: "start the
+# server when the box starts". It does NOT mean "this box should be serving right
+# now" — that is state/.IS_ACTIVE, and conflating the two is the bug this whole
+# design exists to remove (a user who stopped the service by hand used to get the
+# container restarted under them, forever, because the box still said SERVE=1).
+# The name is Jei's, and so is the reason: "enabled" alone reads as "on right now"
+# to anyone who does not speak systemd, so STARTUP supplies the disambiguation.
+# The dropped SERVE_ prefix is no loss — server.env already supplies the noun, and
+# its other key is a bare PORT.
+#
+# 🚨 `SERVE` IS STILL READ, AS A FALLBACK, AND THE FALLBACK MUST NOT BE DROPPED IN
+# THE SAME RELEASE THAT INTRODUCES THE NEW KEY. There are live boxes whose file says
+# `SERVE=1`; a straight rename would make every one of them silently stop serving
+# with nothing saying why. Same rule as the path-spelling work: READ TOLERANTLY,
+# WRITE THE NEW FORM (the installer rewrites the file on its next modify run).
+# STARTUP_ENABLED WINS when both are present — an explicit new key is a deliberate
+# statement, and a stale SERVE beside it is what a half-migrated file looks like.
 serve::read_config() {
-    local file=${1:-$DROSTE_SERVE_ENV} raw="" k v sv="" pv=""
-    SERVE_ENABLED=0
+    local file=${1:-$DROSTE_SERVE_ENV} raw="" k v sv="" ev="" pv="" src=""
+    SERVE_STARTUP_ENABLED=0
     SERVE_PORT=""
+    SERVE_PORT_ERR=""
     SERVE_CONFIG_ERR=""
     [ -f "$file" ] && [ -r "$file" ] || return 0
     raw=$(
         set +e +u +o pipefail
         # shellcheck disable=SC1090
         . "$file" >/dev/null 2>&1
-        printf 'serve=%s\nport=%s\n' "${SERVE-}" "${PORT-}"
+        printf 'startup=%s\nserve=%s\nport=%s\n' "${STARTUP_ENABLED-}" "${SERVE-}" "${PORT-}"
     ) 2>/dev/null || raw=""
     while IFS='=' read -r k v; do
         case "$k" in
-            serve) sv=$v ;;
-            port)  pv=$v ;;
+            startup) ev=$v ;;
+            serve)   sv=$v ;;
+            port)    pv=$v ;;
         esac
     done <<<"$raw"
-    case "${sv,,}" in
-        1|true|yes|on) SERVE_ENABLED=1 ;;
-        *)             SERVE_ENABLED=0 ;;
+    # New key if it is present at all; the legacy key only when it is not.
+    if [ -n "$ev" ]; then src=STARTUP_ENABLED; else src=SERVE; ev=$sv; fi
+    case "${ev,,}" in
+        1|true|yes|on) SERVE_STARTUP_ENABLED=1 ;;
+        *)             SERVE_STARTUP_ENABLED=0 ;;
     esac
-    [ "$SERVE_ENABLED" -eq 1 ] || return 0
+    # ⭐ PORT IS PARSED ALWAYS, not only when startup is on — this MOVED in s45 and the
+    # move is load-bearing. The verbs can now start a server on a box whose
+    # STARTUP_ENABLED is 0 (Jei's ruling: starting by hand must not rewrite what the box
+    # does at boot), and that launch needs the port exactly as much as a boot-time one.
+    # Under the old early return it would have found SERVE_PORT empty.
     if [[ $pv =~ ^[0-9]+$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
         SERVE_PORT=$pv
     else
-        SERVE_ENABLED=0
-        SERVE_CONFIG_ERR="$file sets SERVE=$sv but no usable PORT (got '${pv}') — not serving. Add e.g. PORT=8188 and restart the container."
+        SERVE_PORT_ERR="$file has no usable PORT (got '${pv}') — add e.g. PORT=8188."
+    fi
+    # A box asked to serve AT STARTUP without a usable port must not serve, and must say
+    # why: the healthcheck probe reads the same key, so it would otherwise run
+    # unsupervised on a port nobody agreed on. (Unchanged behaviour, new placement.)
+    if [ "$SERVE_STARTUP_ENABLED" -eq 1 ] && [ -z "$SERVE_PORT" ]; then
+        SERVE_STARTUP_ENABLED=0
+        SERVE_CONFIG_ERR="$file sets $src=$ev but no usable PORT (got '${pv}') — not serving. Add e.g. PORT=8188 and restart the container."
     fi
     return 0
+}
+
+# ── Intent: state/.IS_ACTIVE ────────────────────────────────────────────────
+# "Should a server be running right now?" — the USER's intent, set by the verbs and
+# reset from STARTUP_ENABLED at every container start. NOT an observation: after a
+# crash, .IS_ACTIVE=1 with nothing serving is the CORRECT reading — the system wants
+# it up and is failing to keep it up, which is exactly the state the relaunch logic
+# acts on. The observation stays where it already is and is already honest
+# (serve::state_ok: pid + process start-time + port probe).
+#
+# 🚨 "RESET AT EVERY CONTAINER START" IS ENFORCED BY CODE, NOT BY THE STORAGE.
+# /opt/program-cache is a HOST directory and survives container restarts, so nothing
+# resets this file by itself — droste-init-hook.sh calls serve::reset_active on every
+# start, and that call is what makes "stop is always temporary" true.
+serve::is_active() {
+    local v=""
+    [ -f "$DROSTE_SERVE_ACTIVE" ] && [ -r "$DROSTE_SERVE_ACTIVE" ] || return 1
+    read -r v < "$DROSTE_SERVE_ACTIVE" 2>/dev/null || return 1
+    case "${v,,}" in
+        1|true|yes|on) return 0 ;;
+        *)             return 1 ;;
+    esac
+}
+
+# set_active — write the intent flag. Chowned like every other file this library
+# creates in the distrobox lane: it is written as root (a host subuid under keep-id)
+# onto a host dir the box user owns, and the VERBS write it as that user.
+serve::set_active() {  # 0|1
+    local want=$1
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$want" > "$DROSTE_SERVE_ACTIVE" 2>/dev/null || {
+        serve::warn "could not write $DROSTE_SERVE_ACTIVE"
+        return 1
+    }
+    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_ACTIVE" 2>/dev/null || true
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# reset_active — the once-per-container-start reset. Called by the init hook BEFORE
+# maybe_launch, so a box whose user stopped the service by hand comes back serving on
+# the next start with nothing to remember, and a box that was never meant to serve
+# stays off.
+serve::reset_active() {
+    serve::read_config
+    if [ "${SERVE_STARTUP_ENABLED:-0}" -eq 1 ]; then
+        serve::set_active 1
+    else
+        serve::set_active 0
+    fi
 }
 
 # read_health_spec — pull the per-box probe endpoint out of the baked build-spec
@@ -260,19 +380,22 @@ serve::_pid_is_ours() {
 # _read_pidfile — load SERVE_REC_PID / _START / _TOKEN / _CMD / _STATUS from the
 # state record. (_CMD is read back purely so the field is documented and never
 # mis-parsed; the identity check deliberately ignores it — see _pid_is_ours.)
-# A record written by an OLDER image has four fields and no status; the volume
-# outlives the image, so an empty status reads as "running" and such a record is
-# judged exactly as it was before, on pid identity alone. (An image OLDER than the
-# storage split wrote its record onto the data volume instead; nothing reads that
-# one any more — a start with no record simply relaunches, which is correct.)
+#
+# ⚠️ THE EMPTY-STATUS DEFAULT WAS FLIPPED IN s45, AND IT MATTERS. It used to read as
+# `running` — an optimistic default, harmless while every record either had a status
+# or came from a pre-status image. It becomes WRONG the moment `starting` exists: a
+# truncated or half-written record would read as "up and fine". It now FAILS CLOSED.
+# The compatibility reason for the old default is gone anyway: the record MOVED to
+# state/launch in the same change, so a pre-status record at the old path is never
+# read at all — a start with no record simply relaunches, which is correct.
 # shellcheck disable=SC2034
 serve::_read_pidfile() {
     SERVE_REC_PID="" SERVE_REC_START="" SERVE_REC_TOKEN="" SERVE_REC_CMD="" SERVE_REC_STATUS=""
-    [ -f "$DROSTE_SERVE_PID" ] || return 1
+    [ -f "$DROSTE_SERVE_RECORD" ] || return 1
     read -r SERVE_REC_PID SERVE_REC_START SERVE_REC_TOKEN SERVE_REC_CMD SERVE_REC_STATUS \
-        < "$DROSTE_SERVE_PID" 2>/dev/null || return 1
+        < "$DROSTE_SERVE_RECORD" 2>/dev/null || return 1
     [ -n "${SERVE_REC_PID:-}" ] || return 1
-    [ -n "${SERVE_REC_STATUS:-}" ] || SERVE_REC_STATUS=running
+    [ -n "${SERVE_REC_STATUS:-}" ] || SERVE_REC_STATUS=unknown   # fail closed, see above
     return 0
 }
 
@@ -285,14 +408,14 @@ serve::_read_pidfile() {
 # user's (the program-cache root).
 serve::_write_state() {
     local status=$1 pid=${2:--} start=${3:--} token=${4:--} cmd=${5:--}
-    mkdir -p "$(dirname "$DROSTE_SERVE_PID")" 2>/dev/null || true
+    mkdir -p "$(dirname "$DROSTE_SERVE_RECORD")" 2>/dev/null || true
     printf '%s %s %s %s %s\n' "$pid" "$start" "$token" "$cmd" "$status" \
-        > "$DROSTE_SERVE_PID" 2>/dev/null || {
-        serve::warn "could not write $DROSTE_SERVE_PID"
+        > "$DROSTE_SERVE_RECORD" 2>/dev/null || {
+        serve::warn "could not write $DROSTE_SERVE_RECORD"
         return 1
     }
     if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_PID" 2>/dev/null || true
+        chown "$DROSTE_USER:" "$DROSTE_SERVE_RECORD" 2>/dev/null || true
     fi
     return 0
 }
@@ -332,6 +455,19 @@ serve::_not_serving() {
     return 0
 }
 
+# _record_age — seconds since the launch record was last written, or a large number
+# when there is no record. The record's OWN MTIME is the "since when" the `starting`
+# status needs, which is why `starting` cost no new file and no format change: one
+# artifact answers "where is the launch up to?", exactly as one answers "should it be
+# running?". Prints a bare integer; never fails (a stat we cannot do reads as "old",
+# which lets a relaunch proceed rather than wedging on a missing timestamp).
+serve::_record_age() {
+    local mtime now
+    mtime=$(stat -c %Y "$DROSTE_SERVE_RECORD" 2>/dev/null) || { printf '%s' 99999; return 0; }
+    now=$(date +%s 2>/dev/null) || { printf '%s' 99999; return 0; }
+    printf '%s' $(( now - mtime ))
+}
+
 # state_ok — did OUR launch succeed, and is that exact process still alive?
 # The healthcheck's first gate (see droste-healthcheck.sh); sets SERVE_STATE_MSG
 # with the reason on failure. Deliberately says nothing about the port: the probe
@@ -340,13 +476,29 @@ serve::_not_serving() {
 serve::state_ok() {
     SERVE_STATE_MSG=""
     if ! serve::_read_pidfile; then
-        SERVE_STATE_MSG="no launch record at $DROSTE_SERVE_PID — the server door has not started a service in this container. See $DROSTE_SERVE_LOG (and the container log) for what it decided instead."
+        SERVE_STATE_MSG="no launch record at $DROSTE_SERVE_RECORD — the server door has not started a service in this container. See $DROSTE_SERVE_LOG (and the container log) for what it decided instead."
         return 1
     fi
     case "$SERVE_REC_STATUS" in
         running) ;;
+        starting)
+            # A launch is IN FLIGHT (see serve::_relaunch_due). Not serving yet, and
+            # deliberately not treated as a failure to be retried: the whole reason
+            # this value exists is that ds4 can take minutes to load and a probe every
+            # 30s would otherwise start a second launch racing the first for the port.
+            SERVE_STATE_MSG="a launch is still in progress (started $(serve::_record_age)s ago) — not serving yet. See $DROSTE_SERVE_LOG."
+            return 1
+            ;;
         refused)
             SERVE_STATE_MSG="the server door REFUSED to launch (port ${SERVE_PORT:-?} was already in use when the container started) — whatever answers that port is not this box's service. See $DROSTE_SERVE_LOG."
+            return 1
+            ;;
+        stopped)
+            # Deliberate: someone ran server_stop. Reported plainly rather than as a
+            # fault — but still `return 1`, because the question this function answers
+            # is "is our service up", and it is not. The healthcheck never sees this:
+            # a stop clears .IS_ACTIVE and the probe exits at that gate first.
+            SERVE_STATE_MSG="the server was stopped by hand (server_stop). It starts again with the box unless STARTUP_ENABLED=0 in $DROSTE_SERVE_ENV."
             return 1
             ;;
         *)
@@ -551,6 +703,13 @@ serve::launch() {
 # maybe_launch — the whole server-door decision, called once per container start
 # from droste-init-hook.sh (and again after every healthcheck-triggered restart).
 # Never returns non-zero for a reason that should keep the box from coming up.
+#
+# ⭐ THE GATE IS INTENT (state/.IS_ACTIVE), NOT CONFIG (STARTUP_ENABLED). At container
+# start those two agree, because the init hook calls serve::reset_active first — but
+# they are not the same question, and every other caller reaches this function when
+# they DISAGREE: server_start on a box whose startup is off, and the healthcheck's
+# relaunch after a user ran server_stop (intent 0 ⇒ leave it down; the old code would
+# have fought the user forever because server.env still said SERVE=1).
 serve::maybe_launch() {
     local token
     serve::read_config
@@ -558,12 +717,20 @@ serve::maybe_launch() {
         serve::warn "$SERVE_CONFIG_ERR"
         return 0
     fi
-    if [ "${SERVE_ENABLED:-0}" -ne 1 ]; then
+    if ! serve::is_active; then
         # Silent by design: interactive-only boxes are the common case, and this
         # runs on every single container start. No state record either — an
         # interactive-only box writes nothing into its host dirs, and the
-        # healthcheck answers "healthy, nothing to probe" from this same config
+        # healthcheck answers "healthy, nothing to probe" from the same flag
         # before it ever looks at the record.
+        return 0
+    fi
+    if [ -z "${SERVE_PORT:-}" ]; then
+        # Reachable now that intent and config can disagree: a box with
+        # STARTUP_ENABLED=0 and no PORT, started by hand. read_config's own
+        # startup-time check never fires for it, so say it here rather than
+        # launching a service with no agreed port.
+        serve::warn "${SERVE_PORT_ERR:-no usable PORT in $DROSTE_SERVE_ENV} — not serving."
         return 0
     fi
     token=$(serve::_instance_token)
@@ -597,6 +764,211 @@ serve::maybe_launch() {
 
     serve::apply_port "$SERVE_PORT"
     serve::launch "$token" || serve::warn "service launch failed — the box is still usable interactively; see $DROSTE_SERVE_LOG."
+    return 0
+}
+
+# ── Socket ownership: does OUR process actually hold the port? ──────────────
+# The last hole in "this box is serving": gate 1 proves our recorded process is ALIVE
+# and gate 2 proves SOMETHING answers the port, but neither proves they are the same
+# thing. A process can be alive and not listening (its server thread died, or it never
+# bound and did not exit) — and under HOST NETWORKING anything on the machine can then
+# take that port and answer the probe. The box reported HEALTHY while serving nothing.
+#
+# 🔧 PURE PROCFS, NO NEW DEPENDENCY. `ss -tlnp` is the obvious tool and iproute2 is
+# NOT installed in any of these images — adding a package to satisfy a health probe is
+# a worse trade than reading the two files the kernel already exposes. /proc/net/tcp
+# gives the inode of the LISTEN socket on our port; /proc/<pid>/fd tells us whether
+# that inode is ours.
+#
+# ⚠️ THIS GATE ONLY EVER DENIES ON POSITIVE EVIDENCE. Returns:
+#   0  ours          — our pid (or a descendant) holds a LISTEN socket on that port
+#   1  NOT ours      — someone else holds it, and we know who does not
+#   2  cannot tell   — unreadable procfs, no listener found, etc.
+# The caller treats 2 as "carry on", never as a failure. A health probe that restarts
+# containers must not act on an inconclusive read.
+serve::_listen_inodes() {  # port → inode(s) of LISTEN sockets on it, one per line
+    # The unused names are the procfs COLUMN LAYOUT, kept in full so the two fields we
+    # do read are provably the right ones: sl local rem st tx:rx tr:tm retrnsmt uid
+    # timeout inode. Collapsing them to positional junk is how a column shift goes
+    # unnoticed after a kernel format change.
+    # shellcheck disable=SC2034
+    local port=$1 hp f sl loc rem st txrx trtm retr uid tmo inode rest
+    hp=$(printf '%04X' "$port" 2>/dev/null) || return 1
+    for f in /proc/net/tcp /proc/net/tcp6; do
+        [ -r "$f" ] || continue
+        # shellcheck disable=SC2034
+        while read -r sl loc rem st txrx trtm retr uid tmo inode rest; do
+            [ "$st" = 0A ] || continue          # 0A = TCP_LISTEN (skips the header too)
+            [ "${loc##*:}" = "$hp" ] || continue
+            printf '%s\n' "$inode"
+        done < "$f"
+    done
+    return 0
+}
+
+serve::_pid_holds_inode() {  # pid, inodes → 0 holds one of them, 1 no, 2 cannot read
+    local pid=$1 inodes=$2 fd target ino want
+    [ -d "/proc/$pid/fd" ] || return 2
+    ls "/proc/$pid/fd" >/dev/null 2>&1 || return 2   # alive but not ours to inspect
+    for fd in "/proc/$pid/fd"/*; do
+        target=$(readlink "$fd" 2>/dev/null) || continue
+        case "$target" in
+            'socket:['*']') ino=${target#socket:[}; ino=${ino%]} ;;
+            *) continue ;;
+        esac
+        for want in $inodes; do
+            [ "$ino" = "$want" ] && return 0
+        done
+    done
+    return 1
+}
+
+# port_owned_by_us — the whole check. Fast path first: our own fds, ONE directory read.
+# Only when that fails do we pay for a descendant walk, because a server may hand its
+# listening socket to a worker child (vllm forks; the socket is inherited, so the fd
+# lives in a process whose ancestry reaches ours). That walk needs a pid→ppid map, and
+# under `--pid host` /proc holds every process on the machine — which is exactly why it
+# is on the rare path and not the common one.
+serve::port_owned_by_us() {  # port, pid → 0 ours | 1 not ours | 2 cannot tell
+    local port=$1 pid=$2 inodes rc p ppid depth stat
+    inodes=$(serve::_listen_inodes "$port") || return 2
+    [ -n "$inodes" ] || return 2        # nothing is listening: gate 2 will say so
+    serve::_pid_holds_inode "$pid" "$inodes"; rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 2 ] && return 2
+    # Not held by our pid directly. Look for a DESCENDANT that holds it.
+    for p in /proc/[0-9]*; do
+        p=${p#/proc/}
+        serve::_pid_holds_inode "$p" "$inodes" || continue
+        # p holds it — is p a descendant of our pid? Walk up its ppid chain.
+        depth=0
+        while [ "$p" != 1 ] && [ "$p" != 0 ] && [ -n "$p" ] && [ "$depth" -lt 32 ]; do
+            [ "$p" = "$pid" ] && return 0
+            stat=$(cat "/proc/$p/stat" 2>/dev/null) || break
+            stat=${stat##*") "}
+            # shellcheck disable=SC2086   # deliberate word split of a numeric stat line
+            set -- $stat
+            ppid=${2:-}
+            [ -n "$ppid" ] || break
+            p=$ppid
+            depth=$((depth + 1))
+        done
+        return 1        # somebody else's process is holding our port
+    done
+    return 2            # a listener exists but we could not attribute it
+}
+
+# ── Surgical recovery (used by droste-healthcheck.sh) ───────────────────────
+# The container bounce was never the GOAL — it is the MECHANISM podman gave us for
+# relaunching a dead service, because it has no "restart just the service". Killing
+# every interactive shell in the box is collateral from using a sledgehammer to do a
+# screwdriver's job. With --health-retries 3 at 30s there is a ~90-second window in
+# which we can try the screwdriver first, and still let podman restart the container if
+# it does not work. Honest reporting is preserved throughout: unhealthy is reported as
+# unhealthy on every failing probe, including the one that triggers a relaunch.
+
+# _relaunch_due — may we relaunch RIGHT NOW? The cooldown is the one non-negotiable
+# part of this feature: probes fire every 30s whether or not the previous relaunch has
+# finished, so without it a slow-starting service (ds4 loads up to 430 GB) would get a
+# SECOND launch racing the first for the port, and the feature would spawn processes
+# instead of recovering them.
+# The clock is the launch record's OWN MTIME — no new file, no new format. Default
+# cooldown is 120s: longer than the 30s interval, so AT MOST ONE relaunch happens
+# inside a 3-retry window, which is exactly the intended shape (check #1 relaunches;
+# #2 and #3 observe, and if they still fail podman bounces the container as before).
+#
+# ⚠️ ONE ACCEPTED IMPRECISION, stated rather than left to be rediscovered: the mtime is
+# the last WRITE, which for a healthy server is its launch. So a server that dies within
+# the cooldown of starting up does not get relaunched on the first failing probe — it
+# waits for the age to pass 120s, possibly using up most of the retry window. That is
+# the right way to be wrong: the alternative (relaunch immediately after a recent
+# launch) is precisely the crash-loop that spawns processes, and the cooldown's job is
+# to prevent that. A long-running server is unaffected — its record is hours old, so a
+# crash relaunches on the very next probe, which is the common case this exists for.
+: "${DROSTE_SERVE_RELAUNCH_COOLDOWN:=120}"
+serve::_relaunch_due() {
+    local age
+    age=$(serve::_record_age)
+    [ "$age" -ge "$DROSTE_SERVE_RELAUNCH_COOLDOWN" ]
+}
+
+# warn_ttys — tell anyone actually sitting in the box, BEFORE podman can eject them.
+# Today the first thing a user learns is that they have been disconnected. Best-effort
+# by construction: a tty we cannot write to is not a reason to fail a health probe.
+# ⚠️ The wording distinction here is load-bearing and must survive editing: the
+# relaunch sentence says SERVER, the fallback sentence says BOX — because that one
+# really is the container restarting.
+serve::warn_ttys() {
+    local msg=$1 pts
+    for pts in /dev/pts/*; do
+        [ -w "$pts" ] || continue
+        case "$pts" in */ptmx) continue ;; esac
+        printf '\n[droste] %s\n' "$msg" > "$pts" 2>/dev/null || true
+    done
+    return 0
+}
+
+# build_service — turn the build-spec into a final SERVICE argv, WITHOUT re-running the
+# mounts. resolve::apply_spec's steps 6+7 (source ENV_FILE, run PRE_LAUNCH) are the
+# argv-finalising half; steps 1-5 are mounts, overlays and template seeding, which
+# belong to the init hook and must not be repeated.
+#
+# 🚨 THIS LIVES HERE, NOT IN THE VERB SCRIPT, BECAUSE THE HEALTHCHECK NEEDS IT TOO.
+# Found by testing, not by reading: serve::relaunch called maybe_launch -> launch, which
+# hits `${#SERVICE[@]}` under `set -u` and died with `SERVICE: unbound variable` — the
+# healthcheck sources this library but has no argv of its own. The relaunch could never
+# have worked, and worse, it left the record stuck on `starting` so every later probe
+# reported "a launch is in progress" forever. The design note that `start` is "a thin
+# wrapper over maybe_launch" was true of the VERB (which builds the argv) and not of the
+# PROBE. One copy, both callers.
+serve::build_service() {
+    local spec=${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}
+    [ -f "$spec" ] || { serve::err "no build-spec at $spec — cannot tell what this box's server is."; return 1; }
+    SERVICE=()
+    ENV_FILE=""
+    PRE_LAUNCH=""
+    # shellcheck disable=SC2034  # consumed by resolve::apply_spec, defined for set -u
+    OVERLAYS=() SURFACES=() CRITICAL=() OPTIONAL=() CACHES=()
+    # shellcheck source=/dev/null
+    source "$spec" || { serve::err "could not read $spec"; return 1; }
+    if [ -n "${ENV_FILE:-}" ] && [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -n "${PRE_LAUNCH:-}" ]; then
+        "$PRE_LAUNCH" || serve::warn "PRE_LAUNCH reported a problem; continuing with the argv as built."
+    fi
+    [ "${#SERVICE[@]}" -gt 0 ] || { serve::err "the build-spec defines no SERVICE."; return 1; }
+    return 0
+}
+
+# relaunch — one attempt to bring the service back WITHOUT bouncing the container.
+# Marks the record `starting` first so a probe arriving mid-launch can tell "a launch is
+# in flight" from "nothing is running" — that is the whole reason `starting` was added
+# to the existing status vocabulary rather than as a second file.
+serve::relaunch() {
+    serve::_log_note "RELAUNCH: the healthcheck found the service down; relaunching without restarting the container."
+    # Build the argv BEFORE claiming a launch is starting: if the spec is unreadable
+    # there is nothing to start, and a `starting` record we never follow through on
+    # would tell every later probe that a launch is in flight forever.
+    if ! serve::build_service; then
+        serve::_write_state failed - - - -
+        return 0
+    fi
+    serve::_write_state starting - - - -
+    # maybe_launch re-reads the record it just found: pid "-" cannot match a live
+    # process (_pid_is_ours rejects it), so it falls straight through to the port check
+    # and a fresh launch — which is the intended path, not a coincidence.
+    serve::maybe_launch
+    # ⚠️ NEVER LEAVE `starting` BEHIND. maybe_launch has several early returns that write
+    # no record at all (intent cleared mid-probe, no usable port); any of them would
+    # strand the marker written above and wedge every subsequent probe on "a launch is
+    # still in progress". If nothing overwrote it, the launch did not happen.
+    if serve::_read_pidfile && [ "$SERVE_REC_STATUS" = starting ]; then
+        serve::_write_state failed - - - -
+    fi
     return 0
 }
 

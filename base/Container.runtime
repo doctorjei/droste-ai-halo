@@ -55,9 +55,16 @@ COPY rocm-version.env /etc/droste/rocm-version.env
 # Python venv with the TheRock gfx1151 RUNTIME kernels, with venv
 RUN python3 -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
+# uv is bootstrapped HERE, in the same breath as pip/setuptools/wheel, rather than further
+# down beside the constraints block where it first landed (s44). Reason is pure ordering:
+# `uv pip install` cannot be used by any line ABOVE the line that installs uv, so with the
+# old placement this ROCm-libraries install — one of the risky `${ROCM_INDEX_URL}` lines —
+# was structurally unmigratable. It still installs with pip itself, obviously.
+# The constraints file does not exist yet at this point, so this install runs unconstrained
+# exactly as it did under pip; nothing here can move the torch stack (it installs none of it).
 RUN . /etc/droste/rocm-version.env \
-    && pip install --upgrade pip setuptools wheel \
-    && pip install --index-url ${ROCM_INDEX_URL} \
+    && pip install --upgrade pip setuptools wheel uv \
+    && uv pip install --index-url ${ROCM_INDEX_URL} \
        "rocm[libraries]==${ROCM_SDK_LIBRARIES_VERSION}"
 
 # ── The ROCm stack guard ─────────────────────────────────────────────────────
@@ -70,10 +77,11 @@ RUN . /etc/droste/rocm-version.env \
 # place the version truth lives, so a constraints file transcribed by hand could
 # drift from it, which is the whole class of bug the pin file exists to prevent.
 #
-# uv is installed HERE, at the root of the FROM tree, because it is the single
-# common ancestor of every target AND every build stage — one line covers all of
-# them. ComfyUI-Manager also installs with uv at RUNTIME, so a pip-only guard
-# would be bypassed by the node-install path entirely.
+# uv lives at the root of the FROM tree because it is the single common ancestor of every
+# target AND every build stage — one install covers all of them. ComfyUI-Manager also
+# installs with uv at RUNTIME, so a pip-only guard would be bypassed by the node-install
+# path entirely. (s45: the install itself moved UP to the venv bootstrap above, so that the
+# ROCm-libraries line can use it too; only the constraints wiring stays here.)
 #
 # ⚠️ ALL THREE VARIABLES ARE REQUIRED, and they are not redundant:
 #   PIP_CONSTRAINT       pip. Also covers build dependencies.
@@ -86,11 +94,15 @@ RUN . /etc/droste/rocm-version.env \
 RUN . /etc/droste/rocm-version.env \
     && printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' \
          "${TORCH_VERSION}" "${TORCHVISION_VERSION}" "${TORCHAUDIO_VERSION}" \
-         > /etc/droste/rocm-constraints.txt \
-    && pip install uv
+         > /etc/droste/rocm-constraints.txt
 ENV PIP_CONSTRAINT=/etc/droste/rocm-constraints.txt \
     UV_CONSTRAINT=/etc/droste/rocm-constraints.txt \
-    UV_BUILD_CONSTRAINT=/etc/droste/rocm-constraints.txt
+    UV_BUILD_CONSTRAINT=/etc/droste/rocm-constraints.txt \
+    UV_NO_CACHE=1
+# UV_NO_CACHE is the twin of the PIP_NO_CACHE_DIR set above, and it exists for the same
+# reason: a package cache written during a RUN is BAKED INTO THAT LAYER. uv keeps its own
+# cache (~/.cache/uv) and does not read pip's variable, so without this the staged uv
+# migration would quietly re-add the image weight PIP_NO_CACHE_DIR was added to remove.
 
 # Group-writable venv pass: make /opt/venv DIRECTORIES group-owned by droste,
 # group-writable, and setgid. Dirs carry no data payload, so overlay copy-up of a
@@ -135,13 +147,23 @@ RUN printf '%s\n' \
 COPY resolve/droste-resolve.sh resolve/droste-entrypoint.sh \
      resolve/droste-init-hook.sh resolve/droste-serve.sh \
      resolve/droste-healthcheck.sh resolve/apply_templates.py \
-     resolve/assert-rocm-pins.sh \
+     resolve/assert-rocm-pins.sh resolve/droste-server.sh \
      /opt/resources/resolve/
 RUN chmod +x /opt/resources/resolve/assert-rocm-pins.sh \
              /opt/resources/resolve/droste-entrypoint.sh \
              /opt/resources/resolve/droste-init-hook.sh \
              /opt/resources/resolve/droste-healthcheck.sh \
+             /opt/resources/resolve/droste-server.sh \
              /opt/resources/resolve/apply_templates.py
+# The SERVER VERBS, uniform across all five boxes (Jei ruled the scope: "all five,
+# uniform" — the version that is a feature rather than a patch). SYMLINKS rather than
+# shell functions in each banner, deliberately: a function only exists in a login shell
+# that sourced the banner, while a real command on PATH also works from
+# `distrobox enter <box> -- server_status`, from a script, and from the host unit's
+# ExecStop. droste-server.sh dispatches on its own $0.
+RUN for v in server_start server_stop server_restart server_status; do \
+        ln -sfn /opt/resources/resolve/droste-server.sh "/opt/resources/resolve/$v"; \
+    done
 ENV PATH=/opt/resources/resolve:$PATH
 
 # The one container-specific volume, shared by all ports: auto-anonymous-volume when

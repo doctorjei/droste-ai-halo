@@ -183,12 +183,18 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-llama-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
-printf '  - %-18s → %s\n' "llama-server" "runs by default via the image entrypoint (port $SERVE_PORT)"
+printf '  - %-18s → %s\n' "llama-server" "starts with the box (port $SERVE_PORT)"
 printf '  - %-18s → %s\n' "config" "/opt/data/llama.env (LLAMA_ARG_* lines + LLAMA_EXTRA_ARGS)"
 printf '  - %-18s → %s\n' "models" "-hf downloads land in the shared HF cache (~/.cache/huggingface)"
 printf '  - %-18s → %s\n' "local GGUFs" "bind read-only at /opt/models"
 printf '  - %-18s → %s\n' "VRAM helper" "gguf-vram-estimator.py <model>.gguf"
 printf '  - %-18s → %s\n' "API test" "curl localhost:$SERVE_PORT/v1/chat/completions"
+echo
+printf 'Server control (acts on the SERVER, not the box):\n'
+printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
+printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
+printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
+printf '  - %-18s → %s\n' "at box start" "STARTUP_ENABLED in /opt/data/server.env"
 echo
 printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
 

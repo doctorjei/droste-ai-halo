@@ -111,6 +111,7 @@ bound read-write because the container downloads into it.
 
 import argparse
 import errno
+import fnmatch
 import hashlib
 import json
 import os
@@ -1408,6 +1409,30 @@ def carry_preview(args, src, dest, apply_mode):
 
 # ----------------------------------------------------------- file gathering
 
+# --------------------------------------------------------- exclusion filters
+
+# WHY BOTH FLAGS AND NOT ONE: --exclude-dir PRUNES, so a directory it names is
+# never descended into -- that is a different (and much cheaper) act than
+# testing every file underneath it against a glob, and on a model tree the
+# difference is thousands of stat calls.
+#
+# ⭐ AN EXPLICITLY NAMED FILE IS AN INSTRUCTION, NOT A CANDIDATE. Filters apply
+# to what a SCAN discovers, never to a path the user typed -- the same rule the
+# companion-suffix skip already follows ("named explicitly: the user means it").
+# A user who names a file AND excludes it is contradicting themselves, so that
+# one case is reported rather than resolved silently.
+def _excluded(rel, name, patterns):
+    """Does this file match any --exclude pattern? A pattern containing a
+    slash is matched against the path RELATIVE to the directory argument it
+    was found under (rsync/gitignore convention); a bare pattern is matched
+    against the file name alone, at any depth."""
+    for pat in patterns or ():
+        target = rel if "/" in pat else name
+        if fnmatch.fnmatch(target, pat):
+            return True
+    return False
+
+
 def gather_files(args, paths):
     """Expand CLI paths: files as-is; dirs scanned (non-recursive unless
     --recursive). Metadata sidecars and preview images are companions of
@@ -1421,21 +1446,44 @@ def gather_files(args, paths):
         return name.lower().endswith(companion)
 
     out = []
+    skipped = 0
+    xdirs = set(args.exclude_dir or ())
     for p in paths:
         p = Path(p).expanduser()
         if p.is_dir():
             if args.recursive:
                 for root, dirs, files in os.walk(p):
-                    dirs[:] = sorted(d for d in dirs if d != ".cache")
-                    out.extend(Path(root) / f for f in sorted(files)
-                               if not is_companion(f))
+                    dirs[:] = sorted(d for d in dirs
+                                     if d != ".cache" and d not in xdirs)
+                    for f in sorted(files):
+                        if is_companion(f):
+                            continue
+                        c = Path(root) / f
+                        if _excluded(str(c.relative_to(p)), f, args.exclude):
+                            skipped += 1
+                            continue
+                        out.append(c)
             else:
-                out.extend(sorted(c for c in p.iterdir()
-                                  if c.is_file() and not is_companion(c.name)))
+                for c in sorted(x for x in p.iterdir() if x.is_file()):
+                    if is_companion(c.name):
+                        continue
+                    if _excluded(c.name, c.name, args.exclude):
+                        skipped += 1
+                        continue
+                    out.append(c)
         elif p.is_file():
-            out.append(p)  # named explicitly: the user means it
+            # Named explicitly: the user means it (the same rule the companion
+            # skip above follows). A file both named and excluded is a
+            # contradiction, so it is reported rather than dropped in silence.
+            if _excluded(p.name, p.name, args.exclude):
+                log(args, 0, f"note: {p.name} was named explicitly, so it is "
+                             f"adopted despite matching --exclude")
+            out.append(p)
         else:
             die(f"no such file or directory: {p}")
+    if skipped:
+        log(args, 1, f"# --exclude skipped {skipped} file(s)")
+    args.excluded_count = skipped
     files = [f for f in out if f.is_file()]
     if not files:
         die("no candidate files found (empty dir? need --recursive?)")
@@ -1500,6 +1548,15 @@ def build_parser():
                         "already ends in it is used whole. Recorded in "
                         ".user.droste and reused on later runs. The run "
                         "must match exactly one file")
+    p.add_argument("--exclude", metavar="GLOB", action="append", default=[],
+                   help="skip files matching GLOB (repeatable). A pattern "
+                        "with a / matches the path relative to the directory "
+                        "argument; otherwise it matches the file name.")
+    p.add_argument("--exclude-dir", metavar="NAME", action="append",
+                   default=[],
+                   help="prune directories called NAME while scanning "
+                        "(repeatable); pruned, so their contents are never "
+                        "walked at all.")
     p.add_argument("--recursive", action="store_true",
                    help="recurse into directories")
     p.add_argument("--cache", metavar="DIR",
@@ -1862,8 +1919,10 @@ def main(argv=None):
             log(args, 0, f"  {fname}: {', '.join(keys)}")
 
     tag = " (dry-run; nothing was changed)" if not apply_mode else ""
+    nx = getattr(args, "excluded_count", 0)
+    xtra = f", {nx} excluded" if nx else ""
     log(args, 0, f"summary: {adopted} adopted, {already} already cached, "
-                 f"{refused} refused{tag}")
+                 f"{refused} refused{xtra}{tag}")
     if adopted == 0 and already == 0 and refused > 0:
         sys.exit(1)
 

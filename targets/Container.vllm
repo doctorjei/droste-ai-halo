@@ -65,12 +65,15 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     importing aiter here would fire the very JIT this copy exists to avoid. The `test -f`
 #     then proves module_aiter_enum.so actually landed, so a silent misplacement cannot go
 #     green (same idiom as the build stage's staging check).
-#  2b. UNSET PIP_CONSTRAINT for this RUN ONLY, and rely on the assertion at the end.
+#  2b. UNSET THE CONSTRAINT for this RUN ONLY, and rely on the assertion at the end. Since
+#     s46 moved this RUN to uv that is all THREE variables — `PIP_CONSTRAINT UV_CONSTRAINT
+#     UV_BUILD_CONSTRAINT` — because uv does not read pip's variable and applies a separate
+#     one to source builds. Unsetting fewer than three is silently wrong.
 #     The runtime base exports it globally so nothing can move the ROCm stack, but this
 #     step is INCOMPATIBLE with it by design, and the reason is step 3 below: the vLLM
 #     wheel is installed WITH deps on purpose, torchvision is one of them, and it is not
 #     installed yet at that moment. The intended sequence lets a PyPI torchvision arrive
-#     as a dependency and then REPLACES it from the ROCm index (the --force-reinstall
+#     as a dependency and then REPLACES it from the ROCm index (the --reinstall-package
 #     line further down) -- so a constraint demanding `torchvision==<ver>+rocm...` fails
 #     resolution against PyPI before the replacement can ever happen. Measured, CI run
 #     32592572365: `Could not find a version that satisfies torchvision==0.24.0+rocm...
@@ -84,22 +87,27 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     in this step to an index that should only ever serve the torch stack.
 #     The guard's CATCHING half is untouched -- assert-rocm-pins.sh runs at the end of
 #     this same chain and fails the build if torch or torchvision is not exactly the pin.
-#  3. vLLM wheel WITH deps so pip resolves transformers/etc. from PyPI (torch already satisfied).
-#     Use the legacy resolver for this RUN: vLLM pins `torch==2.9.1` while the installed wheel is
-#     `2.9.1+rocm7.13.0a20260501`, and the new resolvelib backtracker explores an exploding search
-#     space over that (+ the large dep graph) and dies with RecursionError in _has_route_to_root
-#     (survives even a 100k recursion limit — it's pathological backtracking, not mere depth). The
-#     legacy resolver takes the first satisfying candidate (our torch satisfies ==2.9.1) and skips
-#     the backtracking entirely. Scoped to this RUN via the env export.
-#     ⚠️ ALL OF THAT DESCRIBES pip, AND IS STILL TRUE OF pip. It is NOT a statement about uv —
-#     see the retraction above the RUN: uv resolved this same graph in ~2.4s in a dry run, so
-#     under uv this workaround is probably unnecessary. Do not cite this paragraph as a reason
-#     the step cannot migrate.
+#  3. vLLM wheel WITH deps so the resolver pulls transformers/etc. from PyPI (torch already
+#     satisfied).
+#     📜 HISTORY, kept because it explains a line that is no longer here: under pip this step
+#     needed `PIP_USE_DEPRECATED=legacy-resolver`. vLLM pins `torch==2.9.1` while the installed
+#     wheel is `2.9.1+rocm7.13.0a20260501`, and pip's resolvelib backtracker explored an
+#     exploding search space over that (+ the large dep graph) and died with RecursionError in
+#     _has_route_to_root — surviving even a 100k recursion limit, i.e. pathological
+#     backtracking, not mere depth. The legacy resolver took the first satisfying candidate and
+#     skipped the backtracking entirely.
+#     ⚠️ ALL OF THAT DESCRIBES pip AND IS STILL TRUE OF pip. It was never a statement about uv,
+#     and s46 deleted the line when this RUN moved to uv (see the block above the RUN). If this
+#     step is ever moved BACK to pip, the export has to come back with it.
 #  4. ray (upstream installs it explicitly; used by the cluster launcher paths).
-#  5. REPAIR the one constraint the legacy resolver is known to drop, then VERIFY the whole
-#     environment. The legacy resolver's "first satisfying candidate" rule (step 3) has no
-#     backtracking, so an upper bound belonging to a package resolved EARLIER is silently
-#     violated when a later candidate outruns it. Observed on hardware 2026-08-12: transformers
+#  5. REPAIR one constraint that a resolver was observed to drop, then VERIFY the whole
+#     environment. ⚠️ The CAUSE recorded here is pip's: the legacy resolver's "first satisfying
+#     candidate" rule (step 3) has no backtracking, so an upper bound belonging to a package
+#     resolved EARLIER is silently violated when a later candidate outruns it. That resolver is
+#     gone as of s46 (this RUN drives uv), so the explicit re-pin is now belt-and-braces rather
+#     than a fix for a known defect — KEEP IT ANYWAY: it costs one line, it states the bound
+#     that must hold, and it is not the durable half of this step. The gate below is.
+#     Observed on hardware 2026-08-12: transformers
 #     declares `tokenizers>=0.22.0,<=0.23.0`, PyPI had shipped 0.23.1, and the built image got
 #     0.23.1 — pip reported success and `vllm` then died at IMPORT with
 #     `ImportError: tokenizers... is required ... but found tokenizers==0.23.1`, i.e. the server
@@ -116,7 +124,8 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     31654555755); installed rather than allowlisted because it is satisfiable.
 #     pycountry: mistral_common's transcription path imports pydantic-extra-types'
 #     `language_code`, which imports pycountry unconditionally — but upstream ships it only as
-#     an extra, so pip never pulled it and `vllm serve` died with `RuntimeError: The
+#     an extra, so no resolver pulls it (pip did not; uv does not either — an extra nobody
+#     requests is not a dependency) and `vllm serve` died with `RuntimeError: The
 #     language_code module requires "pycountry"` (hardware 2026-08-14). Chain: vllm ->
 #     gguf_utils -> gguf -> mistral_common. Satisfiable, so installed, not allowlisted — the
 #     same disposition as pybind11 (a missing package is never allowlist material anyway).
@@ -131,40 +140,48 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #  7. trim /opt/fp8 to the RUNTIME import surface: keep top-level *.py + LICENSE/NOTICE +
 #     licenses/ (the live Triton JIT kernels imported via PYTHONPATH=/opt/fp8); drop the
 #     non-runtime baggage (bench/ docs/ serve_*.sh README.md .gitignore) from the checkout.
-# ⚠️ THIS ENTIRE RUN IS STILL ON pip — and the reason recorded here was WRONG. Read this
-# before either migrating it or citing it as a limit.
-# ❌ RETRACTED s45: "uv has ONE resolver and no legacy mode, and whether its PubGrub has
-# the same pathology is UNKNOWN and CANNOT BE MEASURED WITHOUT BUILDING." It was
-# measurable in two minutes, and both legs came back the other way:
-#   * `uv pip install --dry-run vllm==0.16.0` resolved the FULL dependency graph in
-#     ~2.4s — the graph pip's modern resolver dies on with RecursionError even at a
-#     100k recursion limit. No sign of the same pathology.
-#   * The specific interaction that broke pip: with a local-version torch
-#     (`2.9.1+rocm…`) installed, `uv pip install --dry-run "torch==2.9.1"` reports
-#     "Would make no changes" — uv honours PEP 440 local-version satisfaction and does
-#     not re-resolve torch.
-# ⇒ If uv drives this step, `PIP_USE_DEPRECATED=legacy-resolver` is very likely
-# unnecessary and should be DELETED rather than carried.
-# 🚨 CAVEAT, AND IT IS LOAD-BEARING: that measurement used the PYPI vllm wheel, not our
-# locally built ROCm one, and this step installs local .whl FILES rather than resolving a
-# name. Strong evidence, NOT a receipt — prove it in CI, alone, in its own commit.
-# 🚨 THE OTHER HALF IS A REAL TRAP AND STILL STANDS: `unset PIP_CONSTRAINT` (step 2b) does
-# NOTHING for uv. A uv version of this step must unset UV_CONSTRAINT *and*
-# UV_BUILD_CONSTRAINT — both — or it reproduces the s44 failure that cost a ~57 min cascade.
-# ▶ PLAN: notebook/plans/uv-migration-completion-s45.md item 3 (lands ALONE, last).
+# THIS RUN MOVED TO uv IN s46 (plan item 3), and it landed ALONE so a red job has one
+# suspect. Two things went with it — read both before touching this block.
+# 1. `PIP_USE_DEPRECATED=legacy-resolver` is DELETED, not carried. ❌ The claim that kept it
+#    ("uv has ONE resolver, and whether its PubGrub shares pip's pathology CANNOT BE
+#    MEASURED WITHOUT BUILDING") was retracted s45 — it was measurable in two minutes:
+#      * `uv pip install --dry-run vllm==0.16.0` resolved the FULL graph in ~2.4s. That is
+#        the graph pip's modern resolver dies on with RecursionError even at a 100k
+#        recursion limit. No sign of the same pathology.
+#      * The interaction that actually broke pip: with a local-version torch
+#        (`2.9.1+rocm…`) installed, `uv pip install --dry-run "torch==2.9.1"` reports
+#        "Would make no changes" — uv honours PEP 440 local-version satisfaction and does
+#        not re-resolve torch.
+#    ⚠️ That measurement used the PyPI vllm wheel, not our locally built ROCm one, and this
+#    step installs local .whl FILES rather than resolving a name. It was strong evidence,
+#    never a receipt; CI on this commit is the receipt. If it goes red for a RESOLVER
+#    reason, restore this line and the `pip` verbs — do NOT iterate in CI.
+# 2. 🚨 THE CONSTRAINT UNSET IS THE TRAP, and it is why this is three names, not one:
+#    `unset PIP_CONSTRAINT` does NOTHING for uv (uv deliberately does not read pip's
+#    variable — astral-sh/uv#10686), and UV_CONSTRAINT alone would leave source builds
+#    constrained via UV_BUILD_CONSTRAINT. All three go, or this reproduces the s44 failure
+#    that cost a ~57 min cascade. PIP_CONSTRAINT stays in the list because a source build
+#    can still shell out to pip underneath.
+#    The exemption itself is UNCHANGED and still deliberate (step 3 lets a PyPI torchvision
+#    arrive so vLLM's own deps resolve; step 6 evicts it), and `assert-rocm-pins.sh` at the
+#    end is what makes any of this safe to attempt — a resolver that behaves differently
+#    produces a RED JOB, not a GPU-less image.
+# ⚠️ Step 6 is `--reinstall-package torchvision`, NOT `--force-reinstall`: uv's flag names
+# ONE distribution where pip's applies to the whole install set, which is the narrower and
+# more honest spelling of what step 6 means. Measured caveat: a MISNAMED
+# `--reinstall-package` is a SILENT no-op, not an error — the name must be exact.
 RUN . /etc/droste/rocm-version.env \
-    && export PIP_USE_DEPRECATED=legacy-resolver \
-    && unset PIP_CONSTRAINT \
-    && pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
+    && unset PIP_CONSTRAINT UV_CONSTRAINT UV_BUILD_CONSTRAINT \
+    && uv pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
     && python /opt/resources/scripts/patch_aiter_headers.py \
     && AITER_JIT_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/aiter/jit" \
     && cp /tmp/aiter-jit/*.so "${AITER_JIT_DIR}/" \
     && test -f "${AITER_JIT_DIR}/module_aiter_enum.so" \
-    && pip install /tmp/wheels/vllm*.whl \
-    && pip install ray \
-    && pip install 'tokenizers>=0.22.0,<=0.23.0' \
-    && pip install pybind11 pycountry \
-    && pip install --no-deps --force-reinstall --index-url ${ROCM_INDEX_URL} \
+    && uv pip install /tmp/wheels/vllm*.whl \
+    && uv pip install ray \
+    && uv pip install 'tokenizers>=0.22.0,<=0.23.0' \
+    && uv pip install pybind11 pycountry \
+    && uv pip install --no-deps --reinstall-package torchvision --index-url ${ROCM_INDEX_URL} \
          "torchvision==${TORCHVISION_VERSION}" \
     && /opt/resources/resolve/assert-rocm-pins.sh torch torchvision \
     && rm -rf /tmp/wheels /tmp/aiter-jit /root/.cache/pip \

@@ -529,12 +529,24 @@ def detect_base_model(keys) -> tuple | None:
 
     Another ATTRIBUTE. Distinct architectures (FLUX/SD3/SDXL) are absolute; SD1.x vs SD2
     is uncertain, because they differ by text-encoder plumbing rather than by shape.
-    ⚠️ FLAGGED BY THE s41 AUDIT, STILL UNVERIFIED: `double_blocks.` -> FLUX.1 at
-    `absolute` may also match HunyuanVideo, in which case a correct `baseModel` gets
-    rewritten. No fixture exists either way -- check a real file before trusting OR
-    "fixing" this.
+    ⭐ THE s41 AUDIT FLAGGED `double_blocks.` -> FLUX.1 AS A POSSIBLE COLLISION WITH
+    HunyuanVideo AND IT WAS RIGHT -- MEASURED s46, both files read over HTTP range
+    requests rather than argued about:
+      * Comfy-Org/flux1-dev-fp8: `model.diffusion_model.double_blocks.*` and a txt_in
+        that is a plain linear -- exactly two keys, `txt_in.weight` / `txt_in.bias`.
+      * Comfy-Org/HunyuanVideo_repackaged (t2v 720p): `model.model.double_blocks.*`
+        (480 keys) AND `single_blocks.*` (320) -- so the FLUX rule fired on it at
+        `absolute`, and the adopt tool would have rewritten a correct HunyuanVideo
+        `baseModel` to FLUX.1.
+    They are the same DiT family, so the block names cannot separate them; the text
+    pathway can. HunyuanVideo refines text tokens through a stack
+    (`txt_in.individual_token_refiner.`, plus c_embedder / t_embedder / input_embedder),
+    where FLUX projects them once. That is why the HunyuanVideo test runs FIRST and is
+    keyed on the refiner rather than on anything about the blocks.
     """
     has = lambda sub: any(sub in k for k in keys)
+    if has("txt_in.individual_token_refiner."):
+        return ("HunyuanVideo", "absolute")
     if has("double_blocks.") or has("single_blocks."):
         return ("FLUX.1", "absolute")
     if has("joint_blocks."):

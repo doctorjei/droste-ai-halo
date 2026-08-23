@@ -1265,6 +1265,26 @@ class CivitaiAdoptTest(unittest.TestCase):
         facts = mod.sniff_content(p, p.read_bytes()[:4096])
         self.assertEqual(facts.get("embedded_vae"), (True, "absolute"))
 
+    def test_hunyuanvideo_is_not_reported_as_flux(self):
+        """⭐ A REAL DEFECT THE s41 AUDIT FLAGGED AS UNVERIFIED, AND s46 MEASURED.
+
+        HunyuanVideo is the same DiT family as FLUX and carries the same block names --
+        the ComfyUI repackaging has 480 `double_blocks.` keys and 320 `single_blocks.`
+        -- so the FLUX rule fired on it at `absolute` and this tool would have rewritten
+        a correct baseModel. Both files were read over HTTP range requests; the text
+        pathway is what separates them. FLUX projects text once (`txt_in.weight` /
+        `txt_in.bias`, two keys); HunyuanVideo refines it through a stack."""
+        hunyuan = ["model.model.double_blocks.0.img_attn.proj.weight",
+                   "model.model.single_blocks.0.linear1.weight",
+                   "model.model.txt_in.individual_token_refiner.blocks.0.mlp.fc1.weight",
+                   "model.model.txt_in.c_embedder.in_layer.weight"]
+        self.assertEqual(mod._detect_base_model(hunyuan), ("HunyuanVideo", "absolute"))
+        flux = ["model.diffusion_model.double_blocks.0.img_attn.proj.weight",
+                "model.diffusion_model.single_blocks.0.linear1.weight",
+                "model.diffusion_model.txt_in.weight",
+                "model.diffusion_model.txt_in.bias"]
+        self.assertEqual(mod._detect_base_model(flux), ("FLUX.1", "absolute"))
+
     def test_legacy_container_is_read_not_recorded_as_empty(self):
         """REGRESSION (s46): a legacy torch checkpoint was read as EMPTY, and the
         emptiness was then recorded as a FACT.

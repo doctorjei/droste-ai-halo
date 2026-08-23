@@ -786,9 +786,9 @@ serve::maybe_launch() {
 #   2  cannot tell   — unreadable procfs, no listener found, etc.
 # The caller treats 2 as "carry on", never as a failure. A health probe that restarts
 # containers must not act on an inconclusive read.
-serve::_listen_inodes() {  # port → inode(s) of LISTEN sockets on it, one per line
-    # The unused names are the procfs COLUMN LAYOUT, kept in full so the two fields we
-    # do read are provably the right ones: sl local rem st tx:rx tr:tm retrnsmt uid
+serve::_listen_rows() {  # port → "<inode> <uid>" per LISTEN socket on that port
+    # The unused names are the procfs COLUMN LAYOUT, kept in full so the fields we do
+    # read are provably the right ones: sl local rem st tx:rx tr:tm retrnsmt uid
     # timeout inode. Collapsing them to positional junk is how a column shift goes
     # unnoticed after a kernel format change.
     # shellcheck disable=SC2034
@@ -800,7 +800,7 @@ serve::_listen_inodes() {  # port → inode(s) of LISTEN sockets on it, one per 
         while read -r sl loc rem st txrx trtm retr uid tmo inode rest; do
             [ "$st" = 0A ] || continue          # 0A = TCP_LISTEN (skips the header too)
             [ "${loc##*:}" = "$hp" ] || continue
-            printf '%s\n' "$inode"
+            printf '%s %s\n' "$inode" "$uid"
         done < "$f"
     done
     return 0
@@ -830,9 +830,15 @@ serve::_pid_holds_inode() {  # pid, inodes → 0 holds one of them, 1 no, 2 cann
 # under `--pid host` /proc holds every process on the machine — which is exactly why it
 # is on the rare path and not the common one.
 serve::port_owned_by_us() {  # port, pid → 0 ours | 1 not ours | 2 cannot tell
-    local port=$1 pid=$2 inodes rc p ppid depth stat
-    inodes=$(serve::_listen_inodes "$port") || return 2
-    [ -n "$inodes" ] || return 2        # nothing is listening: gate 2 will say so
+    local port=$1 pid=$2 rows inodes rc p ppid depth stat ourid ino uid same
+    rows=$(serve::_listen_rows "$port") || return 2
+    # NOTHING LISTENING is not really "cannot tell" — under host networking the box
+    # shares the netns, so an empty result means nothing in that namespace is serving,
+    # and we know it. It returns 2 so the PROBE reports it, because "no HTTP response
+    # (curl exit 7)" is the more actionable sentence than anything this gate would say.
+    # Behaviour, not ignorance.
+    [ -n "$rows" ] || return 2
+    inodes=$(printf '%s\n' "$rows" | while read -r ino uid; do printf '%s\n' "$ino"; done)
     serve::_pid_holds_inode "$pid" "$inodes"; rc=$?
     [ "$rc" -eq 0 ] && return 0
     [ "$rc" -eq 2 ] && return 2
@@ -855,7 +861,28 @@ serve::port_owned_by_us() {  # port, pid → 0 ours | 1 not ours | 2 cannot tell
         done
         return 1        # somebody else's process is holding our port
     done
-    return 2            # a listener exists but we could not attribute it
+    # ⭐ LAST EVIDENCE BEFORE GIVING UP: the socket's OWNING UID, which /proc/net/tcp
+    # gave us for free in the same read. We get here when no pid could be attributed —
+    # the holder's /proc/<pid>/fd is unreadable, i.e. it belongs to another user. If
+    # EVERY listener on this port is owned by a different uid than our recorded
+    # process, that is POSITIVE evidence the listener is not ours, so it is a denial
+    # and not a shrug. Sound in this architecture because the whole service tree runs
+    # as the box user: setpriv sets uid AND gid and children inherit, so our own socket
+    # can only ever carry our own uid.
+    # ⚠️ A uid that MATCHES proves nothing (same user, different process), so that case
+    # stays "cannot tell". The residue — a same-uid squatter with an unreadable fd
+    # table — is a genuine limit of procfs without privileges we do not have, not a
+    # gap to be closed by being cleverer here.
+    ourid=$(stat -c %u "/proc/$pid" 2>/dev/null) || ourid=""
+    if [ -n "$ourid" ]; then
+        same=0
+        while read -r ino uid; do
+            [ -n "${uid:-}" ] || continue
+            [ "$uid" = "$ourid" ] && same=1
+        done <<<"$rows"
+        [ "$same" -eq 0 ] && return 1
+    fi
+    return 2            # a listener exists, same uid or unknown — genuinely unresolved
 }
 
 # ── Surgical recovery (used by droste-healthcheck.sh) ───────────────────────

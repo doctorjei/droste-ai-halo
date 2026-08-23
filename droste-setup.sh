@@ -314,6 +314,9 @@ if [[ $ASCII -eq 1 ]]; then
   # never spelled a third state, and inventing one ([XX]) would change rows the
   # ASCII transcript has drawn the same way since the rework.
   MK_OK="[ok]" MK_CAUT="[!!]" MK_BAD="[!!]"
+  # Hint indent = 2 (row indent) + 4 (marker width) + 1 (the space after it), so a
+  # follow-on line starts under its parent row's TEXT rather than under the marker.
+  PF_IND="       "
   BOXTL="." BOXTR="." BOXBL="'" BOXBR="'" BOXH="-" BOXV="|"
   # The two banner weights collapse onto the same ASCII drawing in --ascii.
   BANTL="." BANTR="." BANBL="'" BANBR="'" BANH="-" BANV="|"
@@ -433,6 +436,9 @@ else
   # bring their own colour, so nothing is painted onto them; the row's colour
   # opens AFTER the marker.
   MK_OK=$'\U2705' MK_CAUT=$'\U1F536' MK_BAD=$'\U1F6A8'
+  # Same arithmetic, different marker width: these are BORN-emoji and occupy exactly
+  # two display columns, so 2 + 2 + 1 = 5.
+  PF_IND="     "
   BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
   # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
   # the per-box titles. The light set above is the summary box's.
@@ -558,9 +564,15 @@ pf_ok()   { printf '  %s%s %s%s\n' "$MK_OK"   "$C_OKB"  "$1" "$RESET"; }
 pf_bad()  { printf '  %s%s %s%s\n' "$MK_BAD"  "$C_BADB" "$1" "$RESET"; }
 pf_note() { printf '  %s%s %s%s\n' "$MK_CAUT" "$C_NOTB" "$1" "$RESET"; }
 
-# Follow-on detail under a preflight row — the four-space indent and body-text
-# grey of linger_fallback_note(), with any command emph()'d inside the string.
-pf_hint() { printf '    %s%s%s\n' "$C_TEXT" "$1" "$RESET"; }
+# Follow-on detail under a preflight row — body-text grey, with any command emph()'d
+# inside the string.
+# ⚠️ THE INDENT IS MODE-DEPENDENT AND MUST BE (s45). It used to be a hardcoded four
+# spaces, inherited from linger_fallback_note() rather than measured against the row it
+# hangs under, so it landed one column left of the parent text in terminal mode and
+# THREE left in --ascii (the ASCII markers are `[ok]`/`[!!]`, four columns wide, while
+# the emoji are two). PF_IND is set beside the markers themselves, which is the only
+# place that knows how wide they are.
+pf_hint() { printf '%s%s%s%s\n' "$PF_IND" "$C_TEXT" "$1" "$RESET"; }
 
 # A titled box drawn with the banner glyphs (ASCII in --ascii mode).
 # banner text [bold]  — titles are all-ASCII so byte length == display width.
@@ -1058,9 +1070,12 @@ ask_raw() {  # $1 = prompt text (printed without newline)
   if [[ $READLINE -eq 1 ]]; then
     p=$(rl_prompt "  $ASK_LEAD$C_TEXT$1$C_IN")
     # TAB is per-prompt: the default answer where there is one, filename completion
-    # everywhere else. Restored right after the read (not by the caller) so no prompt
-    # can inherit the previous one's binding — a path prompt following a [Y/n] must
-    # complete filenames, not insert a stray "y".
+    # everywhere else. ⭐ THE FIRST CALL IS THE LOAD-BEARING ONE — every prompt SETS its
+    # own binding before reading, which is what stops a path prompt after a [Y/n] from
+    # inheriting a stray "y" macro. The trailing restore is belt-and-braces for a future
+    # caller that reaches readline without coming through here; today nothing does.
+    # (Measured, not assumed: removing the trailing restore changes no test, removing
+    # the leading one fails four — g1lab/pty.sh.)
     ask_tab_bind "$ASK_TAB"
     IFS= read -e -r -p "$p" ANS <&"$ASK_FD" || ok=0
     ask_tab_bind ""

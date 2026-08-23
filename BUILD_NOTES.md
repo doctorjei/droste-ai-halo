@@ -391,7 +391,11 @@ prefix rules.
   template carries only a comment pointing at server.env. Backend shorthands
   (`--rocm`/`--cpu`/…) and the distributed/multi-node flags are left to
   `DS4_DROSTE_EXTRA_ARGS`. The whole `~/.ds4` (kvcache sessions + browser
-  profile) is surfaced from `/opt/data/ds4`
+  profile) is surfaced from `/opt/data/internal` — renamed from `/opt/data/ds4`
+  in s47, because on this box the app's dot-dir name collides with the box's own
+  and the host path read `~/droste/data/ds4/program/ds4` (or, pre-s41,
+  `~/droste/data/ds4/ds4`, which looks like a directory made twice); the dest is
+  the app's to dictate, the source name is ours
   (sessions are user WORK, top-level, not cache/); the cockpit conf is a FILE, so
   it persists via symlink `~/.ds4-cockpit.conf → /opt/data/cockpit/…`.
   `download_model.sh` was reworked cache-native (`hf download` into the shared HF

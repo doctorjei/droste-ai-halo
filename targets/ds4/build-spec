@@ -34,11 +34,22 @@ OVERLAYS=(
 )
 
 # ── SURFACES ─────────────────────────────────────────────────────────────────
-# Whole ~/.ds4 from /opt/data/ds4 (saved sessions kvcache/ + browser/ profile +
-# anything future). On the DATA root, not the program-cache one — sessions are
-# user WORK, and this dir is never in the installer's wipe.
+# Whole ~/.ds4 from /opt/data/internal (saved sessions kvcache/ + browser/
+# profile + anything future). On the DATA root, not the program-cache one —
+# sessions are user WORK, and this dir is never in the installer's wipe.
+#
+# ⭐ NAMED `internal`, NOT `ds4` (Jei, s47). The source is named for the app's
+# dot-dir everywhere else in this file, but on THIS box that collides with the
+# box's own name: /opt/data is <data base>/<box>/program, so a source called
+# `ds4` reads `~/droste/data/ds4/program/ds4` on the host — and on a pre-s41
+# box, where /opt/data IS <data base>/<box>, it reads `~/droste/data/ds4/ds4`
+# and looks like something created the directory twice. The dest (~/.ds4) is
+# what the app dictates; the source name is ours, so it is the one that moves.
+# ⚠️ EXISTING BOXES: sessions are at /opt/data/ds4 and this row no longer looks
+# there. Same volume, same filesystem, so the fix is one in-place rename on the
+# host — `mv <data path>/ds4 <data path>/internal` with the box stopped.
 SURFACES=(
-    "/opt/data/ds4:$HOME/.ds4"
+    "/opt/data/internal:$HOME/.ds4"
 )
 
 # ── CACHES ───────────────────────────────────────────────────────────────────

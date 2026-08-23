@@ -161,8 +161,23 @@ RUN chmod +x /opt/resources/resolve/assert-rocm-pins.sh \
 # that sourced the banner, while a real command on PATH also works from
 # `distrobox enter <box> -- server_status`, from a script, and from the host unit's
 # ExecStop. droste-server.sh dispatches on its own $0.
+#
+# 🚨 AND THEY GO IN /usr/local/bin TOO, WHICH IS THE HALF THAT ACTUALLY WORKS IN A BOX.
+# Found on hardware (s47): `server_stop` in a `distrobox enter` shell was `command not
+# found`. The ENV below is real, but Debian's /etc/profile REBUILDS PATH from scratch
+# before it runs profile.d/, and `distrobox enter` gives you a LOGIN shell — so the one
+# directory these symlinks lived in was gone by the time the user got a prompt. This
+# image already carries two scars from the same wall (profile.d/01-rocm-envs.sh explains
+# it; zz-venv-last.sh exists solely to re-prepend /opt/venv/bin after the rebuild), and
+# the s45 note below chose symlinks over shell functions precisely so the verbs would be
+# reachable from a plain PATH lookup.
+# /usr/local/bin is FIRST on the PATH /etc/profile rebuilds, so it survives login shells,
+# non-login shells, scripts and the host unit's ExecStop alike — no profile.d snippet to
+# source, no ordering to get right. The ENV line stays: it is what serves a `podman exec`
+# that never reads a profile at all.
 RUN for v in server_start server_stop server_restart server_status; do \
         ln -sfn /opt/resources/resolve/droste-server.sh "/opt/resources/resolve/$v"; \
+        ln -sfn /opt/resources/resolve/droste-server.sh "/usr/local/bin/$v"; \
     done
 ENV PATH=/opt/resources/resolve:$PATH
 

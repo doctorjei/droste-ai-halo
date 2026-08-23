@@ -1912,6 +1912,47 @@ class ScannerTest(unittest.TestCase):
             self.assertNotIn("pickle.Unpickler", (scripts / tool).read_text(),
                              f"{tool} grew its own unpickler again")
 
+    # ------------------------- heuristics 13: the crossing rules (s46)
+    def test_upscaler_architecture_classifies_by_content(self):
+        """THE BIGGEST GAP THE s41 AUDIT FOUND, and it pointed the other way: the adopt
+        tool had seven upscaler-architecture rules and this scanner had NONE. An ESRGAN
+        whose filename carries no `esrgan`/`4x` token therefore got no content vote at
+        all and ended `unclassified`. It now classifies on its own tensors."""
+        for keys, label in (
+                (["model.1.sub.0.RDB1.conv1.weight"], "ESRGAN"),
+                (["RRDB_trunk.0.RDB1.conv1.weight"], "ESRGAN (alt spelling)"),
+                (["conv_first.weight", "body.0.rdb1.conv1.weight"], "RealESRGAN"),
+                (["m_head.0.weight", "m_body.0.weight", "m_tail.0.weight"], "ScuNET"),
+                (["l.0.residual_group.b.0.attn.relative_position_bias_table"], "SwinIR"),
+                (["l.0.attn.relative_position_bias_table", "conv_after_body.weight"],
+                 "HAT")):
+            hdr = {k: {} for k in keys}
+            self.assertEqual(ms.classify_safetensors_header(hdr), "upscale_models", label)
+        # ...and an ABSOLUTE architecture is conclusive evidence, not a 0.6 guess
+        self.assertEqual(ms.rate_safetensors({"model.1.sub.0.RDB1.conv1.weight": {}}),
+                         ("upscale_models", ms.EMBEDDED_MAX_RATING))
+        # ⚠️ The UNCERTAIN tier does not classify AT ALL, and that is deliberate rather
+        # than an oversight. DAT's spatial blocks and a bare SwinIR window-attention
+        # table say "some upscaler" without saying which, and the rule is SHARED: the
+        # adopt tool stamps every kind it receives as `absolute` for routing, so a kind
+        # returned on uncertain evidence would route a file over the CivitAI API's word
+        # for it. Abstaining here costs nothing -- the naming rules still catch a file
+        # called `*_dat_*` -- and it keeps content from overriding the API on a guess.
+        self.assertIsNone(ms.classify_safetensors_header({"spatial_block.0.weight": {}}))
+        self.assertIsNone(ms.rate_safetensors({"spatial_block.0.weight": {}}))
+
+    def test_t2i_adapter_classifies_by_content(self):
+        """`adapter.body.` is measured, not guessed: TencentARC's t2i-adapter-canny-sdxl
+        and -depth-midas-sdxl were read over HTTP range requests -- 38 tensors each,
+        every one under `adapter.`. It lands in controlnet, which is exactly where this
+        tool's own FILENAME rule already sends a file named `t2iadapter_*`; the content
+        rule agrees with the naming rule instead of inventing a third answer."""
+        self.assertEqual(
+            ms.classify_safetensors_header({"adapter.body.0.resnets.0.block1.bias": {}}),
+            "controlnet")
+        self.assertEqual(ms.classify_by_filename("t2iadapter_canny_sd14v1.pth"),
+                         "controlnet")
+
     # ------------------------- s46: one key-signature rule set, two vocabularies
     def test_key_rules_live_in_the_shared_module(self):
         """The rules moved to model_formats in s46 for the same reason the unpickler
@@ -1982,7 +2023,8 @@ class ScannerTest(unittest.TestCase):
                      ["patch_embedding.x", "time_embedding.x"],
                      ["net.blocks.0.adaln_modulation.x"], ["encoder.block.0.x"],
                      ["first_stage_model.decoder.x"],
-                     ["encoder.down.0.x", "decoder.up.0.x"], ["t5.x"]):
+                     ["encoder.down.0.x", "decoder.up.0.x"], ["t5.x"],
+                     ["adapter.body.0.x"], ["model.1.sub.0.RDB1.conv1.w"]):
             kind = model_formats.classify_keys(keys)
             self.assertIsNotNone(kind, f"a rule stopped firing for {keys[0]!r}")
             produced.add(kind)

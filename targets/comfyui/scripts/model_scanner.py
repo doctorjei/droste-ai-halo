@@ -184,7 +184,8 @@ try:
         read_torch_container, strip_dataparallel,
         KIND_ANIMATEDIFF_MOTION_LORA, KIND_ANIMATEDIFF_MOTION_MODULE, KIND_CHECKPOINT,
         KIND_CLIP_VISION, KIND_CONTROLNET, KIND_DIFFUSION_MODEL, KIND_FACE_DETECTOR,
-        KIND_LORA, KIND_POSE_ESTIMATOR, KIND_TEXT_ENCODER, KIND_VAE)
+        KIND_LORA, KIND_POSE_ESTIMATOR, KIND_T2I_ADAPTER, KIND_TEXT_ENCODER,
+        KIND_UPSCALER, KIND_VAE)
 except ImportError as e:  # pragma: no cover
     sys.exit(f"model-scanner: model_formats.py must sit beside this script ({e})")
 
@@ -220,10 +221,19 @@ REGISTRY_VERSION = 3
 #    controlnet_aux, so `facenet.pth` -- a pose model, not a face-recognition net --
 #    classifies by content instead of by its misleading name.
 #    Every registry must re-run.
+# 13: the classifier unification's crossing rules (s46). The upscaler ARCHITECTURE rules
+#     that lived only in droste-civitai-adopt now classify here: ScuNET / SwinIR / HAT /
+#     DAT / ESRGAN / RealESRGAN key signatures -> upscale_models, and an absolutely
+#     identified architecture rates as conclusive. Before this, an ESRGAN whose filename
+#     carried no `esrgan`/`4x` token got NO content vote at all and ended unclassified --
+#     the single biggest gap the s41 audit found, and it pointed from that tool to this
+#     one. T2I-adapters (`adapter.body.`) also classify by content now, landing in
+#     controlnet exactly where the filename rule already put them.
+#     Every registry must re-run.
 # NOT bumped by the s35 work (tree-awareness, renames, the name-is-API blacklist):
 # none of it changes what a file is classified AS. A bump costs a full re-classification
 # of every registry in the field, so it is spent on classification changes only.
-HEURISTICS_VERSION = 12
+HEURISTICS_VERSION = 13
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -771,6 +781,14 @@ KIND_TO_CATEGORY = {
     KIND_CLIP_VISION: "clip_vision",
     KIND_FACE_DETECTOR: "facedetection",
     KIND_POSE_ESTIMATOR: POSE_STAGE_CATEGORY,
+    # Crossed from the adopt tool in s46, and this is the pair that spends heuristics 13.
+    # Both destinations are the ones this tool's own FILENAME rules already answer with
+    # (`t2iadapter` -> controlnet at :692, `esrgan`/`4x` -> upscale_models at :739), so
+    # the content rule agrees with the naming rule instead of inventing a third answer --
+    # it just no longer needs the name to be right.
+    KIND_T2I_ADAPTER: "controlnet",      # no t2i_adapter category exists; ComfyUI loads
+                                         # adapters through the ControlNet dir
+    KIND_UPSCALER: "upscale_models",
 }
 
 

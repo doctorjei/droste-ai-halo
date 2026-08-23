@@ -391,6 +391,18 @@ def classify_keys(keys) -> str | None:
         if any(m in k for k in keys for m in MOTION_LORA_MARKERS):
             return KIND_ANIMATEDIFF_MOTION_LORA
         return KIND_ANIMATEDIFF_MOTION_MODULE
+    # T2I-adapter ABOVE the ControlNet rules: they are sibling conditioning mechanisms
+    # and the adapter is the more specific claim. This is where the adopt tool always had
+    # it; the scanner joined that order in s46 when the kind gained a destination, which
+    # is what made the move free (before that, a T2I kind mapped to nothing, so hoisting
+    # the rule turned chimeric files unclassified).
+    # `adapter.body.` is MEASURED on real files (TencentARC t2i-adapter-canny-sdxl and
+    # -depth-midas-sdxl: 38 tensors, every one under `adapter.`), so it anchors.
+    # `adapter_down` is a SUBSTRING and is UNVERIFIED -- it crossed over from the adopt
+    # tool, no specimen was found for it, and narrowing it silently would drop coverage
+    # on a guess.
+    if any_start("adapter.body.") or any("adapter_down" in k for k in keys):
+        return KIND_T2I_ADAPTER
     if any_start("control_model."):
         return KIND_CONTROLNET
     # diffusers-format ControlNet: the zero-conv trunk that makes it a ControlNet rather
@@ -455,28 +467,15 @@ def classify_keys(keys) -> str | None:
         return KIND_VAE
     if any_start("text_model.", "t5.", "enc."):
         return KIND_TEXT_ENCODER
-    # ---- rules that crossed from the adopt tool (s46), at the BOTTOM of the ladder.
-    # ⚠️ THE PLACEMENT IS A STAGING DECISION, NOT THE FINAL DESIGN. Down here they can
-    # only fire where every rule above has ABSTAINED, which is what keeps this stage
-    # outcome-free for the scanner (measured: 39,900 headers, zero differences).
-    # The adopt tool ran its T2I rule ABOVE its ControlNet rules, and that order is
-    # RIGHT -- they are sibling conditioning mechanisms and the adapter is the more
-    # specific claim. Restoring it here costs a scanner outcome change TODAY (measured:
-    # 825 diffs, every one a file carrying a T2I signature AND another rule's signature;
-    # no single-signature file moved), because a T2I kind currently maps to nothing.
-    # It becomes FREE the moment KIND_T2I_ADAPTER maps to `controlnet` in the scanner,
-    # which is exactly what the crossing commit does -- so the move belongs there, with
-    # the HEURISTICS_VERSION bump that pays for it, and not here.
-    # `adapter.body.` is MEASURED on real files (TencentARC t2i-adapter-canny-sdxl and
-    # -depth-midas-sdxl: 38 tensors, every one under `adapter.`), so it anchors.
-    # `adapter_down` is kept as a SUBSTRING and is UNVERIFIED -- it crossed over from the
-    # adopt tool, no specimen was found for it here, and narrowing it silently would be
-    # dropping coverage on a guess.
-    # The upscaler rule is last on merit rather than staging: an architecture fingerprint
-    # says which network this is, not what job it does, so it may only speak where every
-    # role rule has abstained.
-    if any_start("adapter.body.") or any("adapter_down" in k for k in keys):
-        return KIND_T2I_ADAPTER
+    # ---- LAST, on merit rather than staging: an architecture fingerprint says which
+    # NETWORK this is, not what job it does, so it may only speak where every role rule
+    # above has abstained. (An ESRGAN carries none of those roots, so nothing real is
+    # shadowed by the position.)
+    # ⚠️ ABSOLUTE ONLY. An uncertain architecture (DAT's spatial blocks, a bare SwinIR
+    # window-attention table) abstains rather than returning a weak kind, because this
+    # function is SHARED and the adopt tool stamps whatever it gets back as `absolute`
+    # for routing -- a kind returned on uncertain evidence would override the CivitAI
+    # API's word for the file. Both consumers still have naming rules for those files.
     if detect_upscaler_arch(keys)[1] == "absolute":
         return KIND_UPSCALER
     return None
@@ -613,4 +612,9 @@ def names_its_architecture(keys) -> bool:
     return (any(k.startswith(CONCLUSIVE_PREFIXES) for k in keys)
             or any(POSE_STAGE_KEY_RE.match(k) for k in keys)
             or any(ANIMATEDIFF_KEY_RE.search(k) for k in keys)
-            or is_lora_key_set(keys))
+            or is_lora_key_set(keys)
+            # an upscaler architecture identified ABSOLUTELY names the network as
+            # squarely as any prefix above -- `model.1.sub.` is RRDB's own layout, not a
+            # coincidence of naming. The uncertain tier (a bare SwinIR window-attention
+            # table, DAT's spatial blocks) deliberately does NOT qualify.
+            or detect_upscaler_arch(keys)[1] == "absolute")

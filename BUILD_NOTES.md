@@ -1278,16 +1278,17 @@ Deliberate upstream deltas:
 - Carrier layout mirrors the other ports: `wheels/` for pip-installables,
   `lib64/` for raw `.so`.
 - PEP517 build backends: bitsandbytes `main` uses
-  `scikit_build_core.setuptools.build_meta`, and `pip wheel
+  `scikit_build_core.setuptools.build_meta`, and `uv build --wheel
   --no-build-isolation` requires the backend importable in the venv already
   (torch does not pull it) — hence the `scikit-build-core setuptools wheel`
-  upgrade.
+  upgrade. Same requirement `pip wheel` had; the wheel step moved to `uv build`
+  in s46 (plan item 1).
 - `libdrm-dev`: RCCL's rocm_smi headers include `<libdrm/drm.h>`, and torch's
   `LoadHIP.cmake` runs `pkg_check_modules(libdrm)` via `rocm_smi-config.cmake`.
   Provides the headers + `libdrm.pc` (the build base ships neither).
 - bitsandbytes (ROCm/hip): in-source cmake (`COMPUTE_BACKEND=hip`) emits
-  `libbitsandbytes_rocm*.so` into the package tree; `pip wheel` then bundles that
-  prebuilt `.so`. OpenMP: `find_package(OpenMP)` resolves Debian's `libomp-dev`
+  `libbitsandbytes_rocm*.so` into the package tree; the wheel build then bundles
+  that prebuilt `.so`. OpenMP: `find_package(OpenMP)` resolves Debian's `libomp-dev`
   (`/usr/lib/x86_64-linux-gnu/libomp.so`) — no Fedora `/usr/lib64` path.
 - Custom RCCL: recipe lifted from the upstream build-rccl CI. hipcc is resolved
   from PATH (`/opt/venv/bin`) rather than the upstream's hardcoded
@@ -1364,7 +1365,7 @@ Toolbox submodule provenance (droste-ai-halo):
   FLAG here — "`TORCHVISION_VERSION`/`TORCHAUDIO_VERSION` are unset" — is STALE and
   was corrected s45.** Both have been locked in `base/rocm-version.env` for a while
   (`0.24.0+rocm…` / `2.9.0+rocm…`, same date as torch), and `targets/Container.vllm`
-  force-reinstalls the ROCm torchvision over whatever the wheel's own dependency
+  reinstalls the ROCm torchvision over whatever the wheel's own dependency
   resolution pulled in.
 - Python build backends (mirrors upstream): `setuptools<80` avoids the vllm/
   flash-attn `setup.py` breakage on the newer editable-install API.
@@ -1658,9 +1659,10 @@ Toolbox submodule provenance (droste-ai-halo):
   0.28.0 — built against torch 2.13.0, so its C++ ops never registered against
   our 2.9.1+rocm and `vllm serve` died at startup with `RuntimeError: operator
   torchvision::nms does not exist` (hardware 2026-08-14; the second build-green,
-  import-broken image, same lesson as tokenizers). Fix: after every pip install
-  in that RUN, `pip install --no-deps --force-reinstall --index-url
-  ${ROCM_INDEX_URL} "torchvision==${TORCHVISION_VERSION}"` — same index + `+rocm`
+  import-broken image, same lesson as tokenizers). Fix: after every install in
+  that RUN, `uv pip install --no-deps --reinstall-package torchvision --index-url
+  ${ROCM_INDEX_URL} "torchvision==${TORCHVISION_VERSION}"` (`pip install --no-deps
+  --force-reinstall …` until s46 moved the RUN to uv) — same index + `+rocm`
   date as torch, so the pair is ABI-matched by construction (the pin file has
   owned `TORCHVISION_VERSION` all along; that `RUN` sources
   `/etc/droste/rocm-version.env`, so it reads the same date its own torch base

@@ -36,9 +36,11 @@ ARG FP8_KERNELS_REF=50424f5525b8382353551e3301d0da56eca0be2b
 RUN . /etc/droste/rocm-version.env \
     && uv pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}"
 
-# Python build backends. These are what the `pip wheel --no-build-isolation` steps below
+# Python build backends. These are what the `uv build --no-build-isolation` steps below
 # compile against, so they must land in the SAME venv — they do: uv finds /opt/venv via
-# VIRTUAL_ENV (an image ENV from the runtime base), it does not follow PATH.
+# VIRTUAL_ENV (an image ENV from the runtime base), it does not follow PATH. Measured s46:
+# that holds for `uv build` too, not just `uv pip` — the build backend is executed by the
+# VIRTUAL_ENV interpreter even when the venv is off PATH entirely.
 RUN uv pip install --upgrade \
       cmake ninja packaging wheel numpy "setuptools-scm>=8" "setuptools<80.0.0" \
       scikit-build-core pybind11 numba scipy
@@ -49,20 +51,33 @@ ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE \
 
 COPY patch_aiter_headers.py /opt/patch_aiter_headers.py
 
-# ⚠️ THE pip LINES IN THE RUN BELOW ARE STILL pip — but read WHY before assuming.
-# ❌ THE ORIGINAL REASONING HERE WAS WRONG ON BOTH COUNTS — RETRACTED s45, and the
-# retraction is left in place so nobody re-derives the same mistake:
-#   * "uv has NO `pip wheel` equivalent, so these are permanently pip" — FALSE. I ran
-#     `uv pip --help`, saw no `wheel` subcommand, and generalised. Wheel-building lives
-#     under a DIFFERENT VERB: `uv build --wheel --no-build-isolation -o <dir> <src>`,
-#     measured working. `uv pip --help` is not `uv --help`.
-#   * "`--force-reinstall` maps to uv's broader `--reinstall`" — true but beside the
-#     point: `--reinstall-package <NAME>` exists and is NARROWER than pip's flag.
-# These lines stay pip ONLY because the migration has not been done and CI has not
-# proven it, NOT because it is impossible.
-# ▶ PLAN: notebook/plans/uv-migration-completion-s45.md (items 1 and 2).
-# ⚠️ The real risk when it happens is the wheel FILENAME: the next step installs by
-# glob, so a name uv spells differently breaks the chain. Check, do not assume.
+# THE RUN BELOW IS uv, NOT pip — migrated s46 (plan items 1 and 2). The claims that once
+# kept it on pip were BOTH FALSE, and the retraction stays here so nobody re-derives them:
+#   * "uv has NO `pip wheel` equivalent" — FALSE. I ran `uv pip --help`, saw no `wheel`
+#     subcommand, and generalised. Wheel-building lives under a DIFFERENT VERB:
+#     `uv build --wheel --no-build-isolation -o <dir> <src>`. `uv pip --help` is not
+#     `uv --help`.
+#   * "`--force-reinstall` maps to uv's broader `--reinstall`" — beside the point:
+#     `--reinstall-package <NAME>` exists and is NARROWER than pip's flag.
+# ✅ MEASURED against uv 0.12.5 before the swap, worst risk first:
+#   * the backend runs under $VIRTUAL_ENV's interpreter (image ENV from the runtime base)
+#     even with that venv off PATH ⇒ it compiles against the torch installed above;
+#   * uv and pip emit the SAME wheel filename (both delegate naming to the backend), so
+#     the `amd_aiter*.whl` / `flash_attn*.whl` / `vllm*.whl` globs still match — this was
+#     the one difference that would have broken the chain;
+#   * a setup.py-only project with NO pyproject.toml builds fine (ROCm/flash-attention is
+#     exactly that shape at our pin);
+#   * `--no-build-isolation` is equally lax in both — neither installer enforces
+#     build-system.requires under it, which aiter needs (its requires name flydsl, psutil
+#     and pandas, none of them installed here, and that is true of pip today too).
+# ⚠️ `--reinstall-package` takes the DISTRIBUTION name, not the wheel filename:
+# `amd-aiter`, read from aiter's own `setup.py` (`PACKAGE_NAME = "amd-aiter"`) at the
+# pinned submodule commit — do not infer it from `amd_aiter*.whl`.
+# 🚨 AND A WRONG NAME DOES NOT FAIL LOUDLY: measured, `--reinstall-package <wrong>` on an
+# already-installed package is a SILENT no-op ("Checked 1 package", nothing installed).
+# Harmless at THIS site — aiter is not installed before this line, so the wheel installs
+# as a direct requirement either way — but never trust the flag to police its own name.
+# `--no-deps` has no counterpart and needs none: `uv build` builds this project only.
 RUN mkdir -p /artifacts/wheels \
     && git clone "${FLASH_ATTENTION_REPO}" /opt/flash-attention \
     && cd /opt/flash-attention \
@@ -72,12 +87,12 @@ RUN mkdir -p /artifacts/wheels \
     && cd third_party/aiter \
     && git submodule update --init 3rdparty/composable_kernel \
     && export CK_DIR="$(pwd)/3rdparty/composable_kernel" \
-    && python -m pip wheel --no-build-isolation --no-deps -w /artifacts/wheels -v . \
-    && python -m pip install --force-reinstall /artifacts/wheels/amd_aiter*.whl \
+    && uv build --wheel --no-build-isolation -o /artifacts/wheels . \
+    && uv pip install --reinstall-package amd-aiter /artifacts/wheels/amd_aiter*.whl \
     && python /opt/patch_aiter_headers.py \
     && cd /opt/flash-attention \
     && python -c "import re; f=open('setup.py','r'); t=f.read(); f.close(); t=re.sub(r'subprocess\.run\([\s\S]*?third_party/aiter[\s\S]*?check=True,\s*\)', 'pass # patched', t); f=open('setup.py','w'); f.write(t)" \
-    && python -m pip wheel --no-build-isolation --no-deps -w /artifacts/wheels -v .
+    && uv build --wheel --no-build-isolation -o /artifacts/wheels .
 
 # vLLM
 RUN apt-get -qq update && apt-get -qq install -y --no-install-recommends \
@@ -145,7 +160,7 @@ RUN . /etc/droste/rocm-version.env \
     && export HIP_DEVICE_LIB_PATH="$(find /opt/rocm -type d -name bitcode -print -quit)" \
     && echo "Compiling vLLM for ${GFX_TARGET} with bitcode: ${HIP_DEVICE_LIB_PATH}, clang: ${CC}" \
     && export CMAKE_ARGS="-DROCM_PATH=/opt/rocm -DHIP_PATH=/opt/rocm -DAMDGPU_TARGETS=${GFX_TARGET} -DHIP_ARCHITECTURES=${GFX_TARGET}" \
-    && python -m pip wheel --no-build-isolation --no-deps -w /artifacts/wheels -v .
+    && uv build --wheel --no-build-isolation -o /artifacts/wheels .
 
 # Pure-python FP8 Triton kernels (leonyurko)
 RUN git clone "${FP8_KERNELS_REPO}" /artifacts/fp8 \

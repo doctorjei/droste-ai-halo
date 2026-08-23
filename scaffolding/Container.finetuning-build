@@ -29,10 +29,19 @@ ARG RCCL_REF=a2686c9f41e44a75459e4771b7f380358432b294
 # Install torch & upgraded dependencies
 # uv (staged migration, s45 — BUILD-ONLY image, never shipped; same measured shape as
 # Container.vllm-build's torch line).
-# ⚠️ The `pip wheel` further down is STILL pip. ❌ Its original justification — "uv has no
-# `pip wheel` equivalent" — was RETRACTED s45: `uv build --wheel` is the equivalent, under
-# a different verb. It stays pip only because that migration is unproven in CI, not
-# because it is impossible → notebook/plans/uv-migration-completion-s45.md item 1.
+# The wheel step further down is `uv build --wheel`, NOT `pip wheel` — the same operation
+# under a different VERB. ("uv has no `pip wheel` equivalent" was retracted s45; it came
+# from reading `uv pip --help`, which is not `uv --help`.) MEASURED against uv 0.12.5
+# before the swap, worst risk first:
+#   * the build backend runs under $VIRTUAL_ENV's interpreter (an image ENV from the
+#     runtime base) even with that venv off PATH ⇒ it compiles against the SAME torch the
+#     RUN above installs;
+#   * uv and pip emit the SAME wheel filename — both delegate naming to the backend — so
+#     the `bitsandbytes-*.whl` glob the next stage installs by still matches;
+#   * `--no-build-isolation` means the same thing and is equally lax in both: neither
+#     enforces build-system.requires when it is passed.
+# `--no-deps` has no counterpart and needs none: `uv build` builds this project only.
+# → notebook/plans/uv-migration-completion-s45.md item 1.
 RUN . /etc/droste/rocm-version.env && \
       uv pip install --index-url ${ROCM_INDEX_URL} "torch==${TORCH_VERSION}" && \
       uv pip install --upgrade scikit-build-core setuptools wheel
@@ -51,7 +60,7 @@ RUN . /etc/droste/rocm-version.env \
               -DBNB_ROCM_ARCH="${GFX_TARGET}" \
               -DCOMPUTE_BACKEND=hip \
     && make -j"$(nproc)" \
-    && pip wheel . --no-build-isolation --no-deps -w /artifacts/wheels
+    && uv build --wheel --no-build-isolation -o /artifacts/wheels .
 
 # Custom RCCL
 WORKDIR /opt

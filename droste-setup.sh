@@ -1010,6 +1010,34 @@ ANS=""
 # sign and the clause it introduces). Empty for every other prompt, and cleared
 # by the helper that sets it — ask_raw only reads it.
 ASK_LEAD=""
+# What TAB inserts at this prompt. Empty = leave readline's own TAB alone, which is
+# FILENAME COMPLETION — the thing that made `read -e` worth having at a path prompt.
+# Set to a short answer (a letter) by the choice helpers below, which is what makes
+# TAB fill the default in at a [Y/n], [y/n/c] or [M/r/u/k] prompt.
+#
+# Jei ruled the behaviour (s45): "tab at Y/n should fill in the default answer".
+# ⭐ It FILLS, it does not ANSWER: the macro inserts the letter into the line and the
+# user still presses Enter, so TAB never commits a choice on its own. Pre-filling with
+# `read -e -i` was the other candidate and is a different thing — it shows the default
+# as already-typed text before the user touches anything, which changes what every
+# prompt looks like.
+# ⚠️ Filename completion at a y/n prompt was never harmful (the answer is validated and
+# re-prompted); it was USELESS, and TAB is the key a user presses when they want the
+# obvious thing to happen. This makes the obvious thing happen.
+ASK_TAB=""
+# 🔧 `bind` in a NON-INTERACTIVE shell prints "line editing not enabled" on stderr and
+# still returns 0 — and the binding really does reach a later `read -e`. Measured
+# through a pty before this was written, because the warning reads like a refusal and
+# is not one. stderr is discarded for that reason, and `|| :` keeps errexit out of it.
+ask_tab_bind() {   # macro → TAB inserts it; empty → TAB is filename completion again
+  [[ $READLINE -eq 1 ]] || return 0
+  if [[ -n $1 ]]; then
+    bind "\"\\t\": \"$1\"" 2>/dev/null || :
+  else
+    bind '"\t": complete' 2>/dev/null || :
+  fi
+  return 0
+}
 ask_raw() {  # $1 = prompt text (printed without newline)
   # ONE place owns the 2-space prompt indent and the body-text colour — call
   # sites pass bare text (which may carry its own [option] colours inside).
@@ -1029,7 +1057,13 @@ ask_raw() {  # $1 = prompt text (printed without newline)
   local ok=1 p
   if [[ $READLINE -eq 1 ]]; then
     p=$(rl_prompt "  $ASK_LEAD$C_TEXT$1$C_IN")
+    # TAB is per-prompt: the default answer where there is one, filename completion
+    # everywhere else. Restored right after the read (not by the caller) so no prompt
+    # can inherit the previous one's binding — a path prompt following a [Y/n] must
+    # complete filenames, not insert a stray "y".
+    ask_tab_bind "$ASK_TAB"
     IFS= read -e -r -p "$p" ANS <&"$ASK_FD" || ok=0
+    ask_tab_bind ""
   else
     printf '  %s%s%s' "$ASK_LEAD" "$C_TEXT" "$1"
     [[ $SCRIPTED -eq 1 ]] || printf '%s' "$C_IN"
@@ -1055,12 +1089,13 @@ ANS_YN=0
 ask_yn() {  # question default(Y|N)  → ANS_YN=1/0   (renders "... [Y/n]? ")
   local q=$1 def=$2 h
   h=$(hint_yn "$def")
+  ASK_TAB=${def,,}      # TAB fills the default: y or n
   while :; do
     ask_raw "$q $h? "
     case "$ANS" in
-      "") [[ $def == Y ]] && ANS_YN=1 || ANS_YN=0; return 0 ;;
-      y|Y) ANS_YN=1; return 0 ;;
-      n|N) ANS_YN=0; return 0 ;;
+      "") [[ $def == Y ]] && ANS_YN=1 || ANS_YN=0; ASK_TAB=""; return 0 ;;
+      y|Y) ANS_YN=1; ASK_TAB=""; return 0 ;;
+      n|N) ANS_YN=0; ASK_TAB=""; return 0 ;;
     esac
   done
 }
@@ -1107,13 +1142,14 @@ opt_inline() {   # default(y|n|c) → the painted cluster
 ANS_3=""
 ask_ync() {  # "label" default(y|n|c) → ANS_3
   local q=$1 def=$2
+  ASK_TAB=$def          # TAB fills the default: y, n or c
   while :; do
     ask_raw "$q: $(opt_inline "$def")? "
     [[ -z $ANS ]] && ANS=$def
     case "${ANS,,}" in
-      y|yes)              ANS_3=y; return 0 ;;
-      n|no)               ANS_3=n; return 0 ;;
-      c|case|case-by-case) ANS_3=c; return 0 ;;
+      y|yes)              ANS_3=y; ASK_TAB=""; return 0 ;;
+      n|no)               ANS_3=n; ASK_TAB=""; return 0 ;;
+      c|case|case-by-case) ANS_3=c; ASK_TAB=""; return 0 ;;
     esac
   done
 }
@@ -1121,6 +1157,7 @@ ask_ync() {  # "label" default(y|n|c) → ANS_3
 ANS_CH=""
 ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower)
   local q=$1 letters=$2 def=${2:0:1} c
+  ASK_TAB=${def,,}      # TAB fills the default: the capitalised letter in the cluster
   # Paint a trailing "[a/b/C]" cluster per option (the cluster is part of the
   # caller's prompt text, in DISPLAY order, so it is re-wrapped here).
   if [[ $q =~ ^(.*)\[([^][]*)\]$ ]]; then
@@ -1132,6 +1169,7 @@ ask_choice() {  # prompt letters(first=default, shown capital) → ANS_CH (lower
     c=${ANS,,}
     if [[ ${#c} -eq 1 && ${letters,,} == *"$c"* ]]; then
       ANS_CH=$c
+      ASK_TAB=""
       return 0
     fi
   done

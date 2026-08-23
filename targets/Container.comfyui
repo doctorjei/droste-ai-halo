@@ -202,7 +202,19 @@ COPY templates /opt/resources/templates
 # Permissions & trims (keep compilers/headers for Triton JIT at runtime).
 # (+x on the executables only: the script dir now also holds DATA -- name-api-blacklist.yaml
 # -- and a table of filenames has no business being executable.)
+# 🚨 AND SYMLINK THEM INTO /usr/local/bin — THE ENV BELOW DOES NOT SURVIVE A LOGIN SHELL.
+# Debian's /etc/profile rebuilds PATH from scratch before running profile.d/, and
+# `distrobox enter` gives a login shell, so `model_scanner.py …` was `command not found`
+# for every interactive user despite the ENV PATH above. This is the SAME wall the four
+# server verbs hit in the runtime base (fixed there the same way, s47) and the same one
+# profile.d/01-rocm-envs.sh documents; /usr/local/bin is first on the PATH /etc/profile
+# builds, so it serves login shells, non-login shells and scripts alike.
+# ⚠️ The README tells users to run `model_scanner.py categorize …` by name. That
+# instruction is only TRUE because of this loop.
 RUN chmod +x /opt/resources/scripts/*.py /opt/resources/scripts/*.sh \
+    && for f in /opt/resources/scripts/*.py /opt/resources/scripts/*.sh; do \
+         ln -sfn "$f" "/usr/local/bin/$(basename "$f")"; \
+       done \
     && find /opt/venv -type f -name "*.so" -exec strip -s {} + 2>/dev/null || true \
     && find /opt/venv -type d -name "__pycache__" -prune -exec rm -rf {} + \
     && pip cache purge || true \

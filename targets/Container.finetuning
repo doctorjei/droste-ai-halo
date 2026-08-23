@@ -89,6 +89,18 @@ COPY scripts    /opt/resources/scripts
 COPY templates  /opt/resources/templates
 COPY build-spec /opt/resources/build-spec
 ENV PATH=/opt/resources/scripts:$PATH PYTHONPATH=/opt/resources/scripts
+# 🚨 THE ENV ABOVE DOES NOT SURVIVE A LOGIN SHELL, so the four helpers the banner
+# advertises (train.py, start-finetuning-cluster.py, benchmark_configs.py,
+# measure_unsloth_memory.py) would not resolve by name in `distrobox enter`. Debian's
+# /etc/profile rebuilds PATH before running profile.d/. Same wall as the server verbs in
+# the runtime base and the scanner in comfyui (all s47); /usr/local/bin is first on the
+# rebuilt PATH. The banner names the directory too, so nothing was ever WRONG here -- this
+# makes the ENV's implicit promise of bare invocation actually true.
+# lib.py is an import target, not a command, and is deliberately not linked.
+RUN for f in /opt/resources/scripts/*.py; do \
+      case "$(basename "$f")" in lib.py) continue ;; esac; \
+      chmod +x "$f"; ln -sfn "$f" "/usr/local/bin/$(basename "$f")"; \
+    done
 
 # /opt/workspace = the USER'S workspace bind mountpoint — ships EMPTY (CRITICAL at
 # runtime; the starter notebooks seed in from templates/workspace only when empty).

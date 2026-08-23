@@ -336,6 +336,15 @@ def classify_metadata(meta: dict) -> str | None:
     Separate from the key rules because it is a DECLARATION rather than evidence: the
     writer said what this is. Callers that have no metadata simply skip it.
     """
+    # ⭐ A `<name>_te={...}` KEY IS A DECLARATION THAT THIS FILE IS A TEXT ENCODER,
+    # and it generalizes past the file that surfaced it (s47): a repacked encoder
+    # carries its own config blob under a key naming itself, and `_te` is the
+    # ecosystem's abbreviation. Measured on qwen3vl_32b_minimax_h3_int8_convrot
+    # (`minimax_h3_te={"num_hidden_layers": 50, ...}`). The `{` test is what keeps it
+    # a declaration rather than a name that merely ends in those two letters.
+    for k, v in (meta or {}).items():
+        if k.endswith("_te") and str(v).lstrip().startswith("{"):
+            return KIND_TEXT_ENCODER
     arch = str((meta or {}).get("modelspec.architecture", "")).lower()
     if not arch:
         return None
@@ -430,7 +439,11 @@ def classify_keys(keys) -> str | None:
     # an LTX-2 text encoder, scored clip_vision@0.99 purely because `vision_model.` was
     # present (Jei's verdict, s30: it is a text encoder). The decoder is what settles it;
     # a real CLIP-Vision / IP-Adapter image_encoder has a vision tower and NOTHING else.
-    if any_start("vision_model."):
+    # ⚠️ TWO SPELLINGS OF ONE TOWER (s47): HF's CLIP/SigLIP ships `vision_model.`,
+    # open_clip and the Qwen-VL family ship `visual.`. Measured on a real file --
+    # qwen3vl_32b_minimax_h3_int8_convrot has `model.layers.` + `visual.` and nothing
+    # else, and classified as NOTHING because only the first spelling was listed.
+    if any_start("vision_model.", "visual."):
         if any_start("model.layers.", "language_model.", "multi_modal_projector."):
             return KIND_TEXT_ENCODER
         return KIND_CLIP_VISION
@@ -450,6 +463,15 @@ def classify_keys(keys) -> str | None:
     if any_start("patch_embedding.") and any_start("time_embedding."):
         return KIND_DIFFUSION_MODEL
     if any(k.startswith("net.blocks.") and "adaln_modulation" in k for k in keys):
+        return KIND_DIFFUSION_MODEL
+    # AV/video DiT (MiniMax-H3 FL2VA measured s47): a patchifier for video and/or audio
+    # feeding a transformer stack with an output head. The patch projection is an INPUT
+    # STEM -- only a denoiser has one -- and the second half of the test keeps a future
+    # video VAE (which patchifies but has no `blocks.`/`final_layer.` roots, it has
+    # encoder./decoder.) from landing here. Upstream agrees with the reading: Comfy-Org
+    # publishes this file under diffusion_models/.
+    if (any_start("video_patch_proj.", "audio_patch_proj.")
+            and any_start("blocks.", "final_layer.")):
         return KIND_DIFFUSION_MODEL
     if any_start("encoder.block.", "decoder.block."):   # T5-style, before generic vae
         return KIND_TEXT_ENCODER

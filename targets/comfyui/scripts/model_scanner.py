@@ -233,7 +233,7 @@ REGISTRY_VERSION = 3
 # NOT bumped by the s35 work (tree-awareness, renames, the name-is-API blacklist):
 # none of it changes what a file is classified AS. A bump costs a full re-classification
 # of every registry in the field, so it is spent on classification changes only.
-HEURISTICS_VERSION = 13
+HEURISTICS_VERSION = 14
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
@@ -1418,10 +1418,15 @@ def cmd_sync(args) -> int:
     dry = args.dry_run
 
     old = load_registry(args.registry)
-    reuse_cache = old.heuristics == HEURISTICS_VERSION
+    # ⚠️ A BUMP WAS THE ONLY WAY TO FORCE THIS, AND A BUMP NEEDS A REBUILD (s47).
+    # --reclassify gives the same effect on demand and keeps the renames ledger, which
+    # deleting the registry -- the other workaround -- throws away.
+    reuse_cache = (old.heuristics == HEURISTICS_VERSION
+                   and not getattr(args, "reclassify", False))
     if old.entries and not reuse_cache:
-        log(f"INFO  heuristics changed ({old.heuristics} -> {HEURISTICS_VERSION}); "
-            f"reclassifying everything")
+        why = ("--reclassify requested" if old.heuristics == HEURISTICS_VERSION
+               else f"heuristics changed ({old.heuristics} -> {HEURISTICS_VERSION})")
+        log(f"INFO  {why}; reclassifying everything")
     owned = old.owned_links()
 
     files, units = collect_sources(args.cache_dir, args.models_dir)
@@ -2172,6 +2177,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not remove owned links whose source vanished")
     s.add_argument("--hardlink", action="store_true",
                    help="hardlink blobs instead of symlinking")
+    s.add_argument("--reclassify", action="store_true",
+                   help="re-run the classifier over every known file instead of "
+                        "only the delta (the renames ledger is kept)")
     s.set_defaults(fn=cmd_sync)
 
     st = sub.add_parser("status", parents=[common],

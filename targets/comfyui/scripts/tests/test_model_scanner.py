@@ -863,6 +863,50 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(ms.classify_safetensors_header(
             {k: {} for k in ldm_vae_keys()}), "vae")
 
+    # ---------------------------------------------- heuristics 14 (s47, real files)
+    def test_av_video_dit_is_a_diffusion_model(self):
+        """MiniMax-H3 FL2VA: a video/audio patchifier feeding a transformer
+        stack. Upstream publishes it under diffusion_models/."""
+        hdr = {k: {} for k in (
+            "adaln_t_table", "audio_patch_proj.weight", "video_patch_proj.weight",
+            "blocks.0.attn.qkv_proj.weight_scale", "final_layer.weight",
+            "condition_proj.weight", "rope.freqs", "token_refiner.weight")}
+        self.assertEqual(ms.classify_safetensors_header(hdr), "diffusion_models")
+
+    def test_patch_proj_alone_does_not_claim_a_file(self):
+        """CONTROL for the rule above: the second half of the test is what
+        stops a patchifying VAE landing in diffusion_models."""
+        self.assertIsNone(ms.classify_safetensors_header(
+            {"video_patch_proj.weight": {}, "something_else.weight": {}}))
+
+    def test_qwen_vl_spelling_of_the_vision_tower(self):
+        """`visual.` is the open_clip / Qwen-VL spelling of `vision_model.`.
+        With a decoder beside it the file is a text encoder..."""
+        self.assertEqual(ms.classify_safetensors_header({k: {} for k in (
+            "model.layers.0.self_attn.q_proj.weight_scale",
+            "visual.blocks.0.attn.qkv.weight")}), "text_encoders")
+
+    def test_visual_tower_alone_is_clip_vision(self):
+        """...and ALONE it is a CLIP-Vision tower, exactly as the
+        `vision_model.` spelling already was. This one was unclassified
+        before s47 -- an unplanned but correct consequence of listing both
+        spellings, and it is asserted so it cannot regress silently."""
+        self.assertEqual(ms.classify_safetensors_header({k: {} for k in (
+            "visual.transformer.resblocks.0.attn.in_proj_weight",
+            "visual.conv1.weight")}), "clip_vision")
+
+    def test_metadata_te_key_declares_a_text_encoder(self):
+        hdr = {"model.layers.0.mlp.down_proj.weight_scale": {},
+               "__metadata__": {"minimax_h3_te": '{"num_hidden_layers": 50}'}}
+        self.assertEqual(ms.classify_safetensors_header(hdr), "text_encoders")
+
+    def test_metadata_te_needs_a_config_blob(self):
+        """CONTROL: a key that merely ENDS in those two letters is not a
+        declaration. Without the `{` test this rule would fire on a name."""
+        hdr = {"some.weight": {},
+               "__metadata__": {"trained_on_te": "yes"}}
+        self.assertIsNone(ms.classify_safetensors_header(hdr))
+
     def test_object_pickle_executes_nothing(self):
         """The stub is now a real type, so it is instantiated rather than merely called.
         It must still be inert -- construction, attribute access and state application

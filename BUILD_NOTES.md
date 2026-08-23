@@ -135,13 +135,13 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   `serve::exec_service` (server lane: the same foreground `exec "${SERVICE[@]}"`
   as always) and `serve::maybe_launch` (distrobox lane: the "server door" of the
   merged one-container shape). maybe_launch reads `/opt/data/server.env`
-  (`SERVE=1`, `PORT=<host port>`; shell-sourceable, read in a subshell so a bad
+  (`STARTUP_ENABLED=1`, `PORT=<host port>`; shell-sourceable, read in a subshell so a bad
   file can never fail the box), rewrites the port into the SERVICE argv
   (replace-or-append `--port` — all five services take it), and starts the service
   in the background as the BOX USER via `setpriv --reuid/--regid` (supplementary
   groups inherited, so the GPU device groups survive; runuser/su would not).
   Re-entrant by construction: a STATE RECORD on the data volume
-  (`.droste-serve.pid`, one line: `pid starttime token argv0 status`) records
+  (`state/launch`, one line: `pid starttime token argv0 status`) records
   pid + process start time + a per-container-start token, so a re-run of the init
   line adopts, skips or replaces the previous instance instead of double-starting.
   The `status` field (`running` | `refused` | `failed`) is rewritten by every
@@ -525,7 +525,7 @@ assumed.
   offers to clear BY LOCATION, and the hand-kept pair retired with it —
   `venv_upper_review`, `serve_env_keep_venv` and the `KEEP_OLD_VENV` key are
   all gone (a `KEEP_OLD_VENV=1` line left behind in an old `server.env` is
-  simply ignored: the box reads `SERVE` and `PORT` from that file and nothing
+  simply ignored: the box reads `STARTUP_ENABLED` (or legacy `SERVE`) and `PORT` from that file and nothing
   else). What survives in the box is `resolve::_upper_is_env`, reduced to one
   ungated WARN when an overlay upper turns out to be a whole environment, and
   mirrored nowhere.
@@ -601,8 +601,8 @@ by `distrobox assemble` from ONE record, `<box>-halo.ini`, with two doors.
   you want when the service is the broken part.
 - **Enter door** — `distrobox enter droste-<box>-halo`. Same container, so the
   environment a user pip-installs into is the one the service runs. Entering a
-  stopped box starts it, which opens the serve door with it when `SERVE=1`.
-- **server.env is the single authority** for both SERVE and PORT. It lives on
+  stopped box starts it, which opens the serve door with it when `STARTUP_ENABLED=1`.
+- **server.env is the single authority** for both STARTUP_ENABLED and PORT. It lives on
   the per-box data volume, so it survives image updates and box recreation,
   and it is re-read at EVERY start (edit + `podman restart`, no recreate).
   That authority is why the seeded per-port config files carry no active port
@@ -658,7 +658,7 @@ Three roots, container-side (host defaults in parentheses):
 - **`/opt/program-cache`** (`~/droste/caches/<box>`) — per-box PROGRAM CACHE,
   re-obtainable by construction: the venv upper and its `.work`, copy-mode
   materializations, `tmp`, llama's slots, ds4's kv-disk, comfyui's seeded
-  `extra_model_paths.yaml`, the `.droste-serve.pid` state record, and the
+  `extra_model_paths.yaml`, the `state/` server state dir, and the
   per-box compute-cache fallback under `compute/`. The installer may empty this
   ROOT WHOLE on consent, so nothing a user would miss may ever be put here.
 - **`/opt/caches`** (`~/droste/compute-caches`) — the shared compute caches,
@@ -1360,9 +1360,12 @@ Toolbox submodule provenance (droste-ai-halo):
   composable_kernel submodules via the gitlink). FP8 kernels are pinned to
   upstream's default.
 - Torch (pinned TheRock nightly) into the base venv: vLLM + flash-attn + aiter all
-  compile their C++/HIP extensions against this torch's headers/ABI. FLAG: the
-  pin's `TORCHVISION_VERSION`/`TORCHAUDIO_VERSION` are unset — vLLM multimodal
-  paths may want torchvision; add them once locked on the same `+rocm` date.
+  compile their C++/HIP extensions against this torch's headers/ABI. ✅ **The old
+  FLAG here — "`TORCHVISION_VERSION`/`TORCHAUDIO_VERSION` are unset" — is STALE and
+  was corrected s45.** Both have been locked in `base/rocm-version.env` for a while
+  (`0.24.0+rocm…` / `2.9.0+rocm…`, same date as torch), and `targets/Container.vllm`
+  force-reinstalls the ROCm torchvision over whatever the wheel's own dependency
+  resolution pulled in.
 - Python build backends (mirrors upstream): `setuptools<80` avoids the vllm/
   flash-attn `setup.py` breakage on the newer editable-install API.
 - flash-attention (ROCm fork) + aiter: upstream installs flash-attn in-place; we
@@ -1444,10 +1447,14 @@ contract (bucket B).
   SAME index into the base venv. torch's own bundled ROCm coexists with the base
   runtime kernels — do NOT add a system ROCm SDK, and do NOT re-add
   `libnss-myhostname` (the base already provides it for distrobox).
-- Pin nuance: `TORCHVISION`/`TORCHAUDIO` are left blank in the pin (not yet
-  locked) — when empty, install them unpinned (`--pre`) so pip's resolver picks
-  the wheel matching the pinned torch on the same `+rocm` date. `transformers` is
-  pinned by the app; `gguf` floats.
+- Pin nuance (**corrected s45 — the old text said they were "left blank in the pin
+  (not yet locked)", which has been false for a while**): `TORCHVISION_VERSION` and
+  `TORCHAUDIO_VERSION` ARE locked in `base/rocm-version.env`, on the same `+rocm`
+  date as torch. The Containerfile keeps its `${TORCHVISION_VERSION:+==…}`
+  conditional as a FALLBACK — when a field is empty it installs unpinned (`--pre`)
+  so pip's resolver picks the wheel matching the pinned torch — but that is the
+  degraded path, not the current one. `transformers` is pinned by the app; `gguf`
+  floats.
 - App deps + Triton runtime toolchain + pip. The base already ships
   python3-venv/pip, but pip is re-listed for explicitness.
   gcc/g++/make/binutils/python3-dev are the Triton JIT toolchain kept at runtime

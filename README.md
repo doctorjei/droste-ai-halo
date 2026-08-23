@@ -37,7 +37,7 @@ and one guide for the install:
 | File | What it is |
 |---|---|
 | `~/droste/<box>-halo.ini` | that box's whole definition — `distrobox assemble create --file` it to rebuild |
-| `server.env` (in the box's data dir) | that box's `SERVE` and `PORT`, re-read at every start |
+| `server.env` (in the box's data dir) | that box's `STARTUP_ENABLED` and `PORT`, re-read at every start |
 | `~/droste/NOTES.md` | one guide for the whole install, with your own paths in it |
 
 Re-run the installer whenever you like — it reads back what you chose last
@@ -177,7 +177,7 @@ Mount contract (all ports):
 - **`/opt/program-cache`** — the box's PROGRAM-CACHE volume: everything it can
   re-obtain by itself. The venv overlay upper (and its `.work` sibling),
   comfyui's scratch `temp/` and its seeded `extra_model_paths.yaml`, llama's
-  slot store, ds4's KV disk, the serve-state record `.droste-serve.pid`, and
+  slot store, ds4's KV disk, the server state dir `state/`, and
   the per-box compute-cache fallback under `compute/`. This root is the only
   thing `droste-setup.sh` ever empties, and only when you say yes to a question
   that names it. There is deliberately **no `VOLUME` declaration** for it in
@@ -282,20 +282,28 @@ toolboxes, and that is not a second container. Each app is ONE container,
 
 - **the serve door** — `podman start droste-<port>-halo`. Starting the
   container replays its init hook, which applies the mounts and then reads
-  `server.env` from the box's data dir: `SERVE=1` launches the service on
-  `PORT` (bound directly — boxes use host networking), `SERVE=0` brings up
-  the box and nothing else. Edit that file and `podman restart` the box; no
-  recreate, and it survives image updates. The boxes are created with a
+  `server.env` from the box's data dir: `STARTUP_ENABLED=1` launches the
+  service on `PORT` (bound directly — boxes use host networking),
+  `STARTUP_ENABLED=0` brings up the box and nothing else. Edit that file and
+  `podman restart` the box; no recreate, and it survives image updates. (That
+  key used to be called `SERVE`; old files still work.) To start or stop the
+  server WITHOUT editing anything, run `server_start` / `server_stop` /
+  `server_restart` / `server_status` inside the box — a stop that way lasts
+  until the box next starts, which is the point: you cannot leave a box
+  quietly dead and forget why. The boxes are created with a
   podman healthcheck (flags in the ini's `additional_flags`,
   `--health-on-failure=restart`) that requires the box's OWN service to be
   the thing answering — if something else already holds the port, the box
   refuses to start a second listener, appends the refusal to its serve log
   (`/opt/data/.droste-serve.log`) and reports UNHEALTHY rather than claiming
-  a stranger's port. Boxes you ask to start at host boot get a systemd user
-  unit plus lingering;
+  a stranger's port. When a server dies, the box now **relaunches just the
+  server first** and only restarts the whole container if that does not work
+  — so a crash no longer closes the shell of anyone working in the box.
+  Boxes you ask to start at host boot get a systemd user unit plus lingering
+  (and that unit asks the server to exit before stopping the container);
 - **the enter door** — `distrobox enter droste-<port>-halo`, a shell in your
   own `$HOME` with the box's toolchain. Entering a stopped box starts it, so
-  the serve door opens with it when `SERVE=1`.
+  the serve door opens with it when `STARTUP_ENABLED=1`.
 
 Both doors are the SAME environment: a `pip install` you do interactively is
 what the served process runs. The init hook performs the **same resolver
@@ -410,7 +418,7 @@ whether each box serves when it starts and whether it starts at host boot. It
 fuse-overlayfs fallback, or copy-mode. It then emits per-box **recreation
 records** into `~/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
 definition for that box, healthcheck flags and all), `server.env` in the box's
-own data dir (`SERVE` + `PORT`, re-read at every start), and a `NOTES.md` guide
+own data dir (`STARTUP_ENABLED` + `PORT`, re-read at every start), and a `NOTES.md` guide
 with your real paths baked in — and can pull images, create boxes, and start
 servers. Boxes asked to start at host boot also get a systemd **user** unit
 (`~/.config/systemd/user/droste-<box>.service`) doing `podman start`, and the

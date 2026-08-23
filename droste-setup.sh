@@ -20,7 +20,7 @@
 #                                     container definition, healthcheck flags
 #                                     and all)
 #   <data dir>/server.env            (the serve config the box reads at every
-#                                     start: SERVE=1/0 + PORT=<host port>)
+#                                     start: STARTUP_ENABLED=1/0 + PORT=<host port>)
 #   NOTES.md                         (full guide with YOUR real paths baked in)
 # and optionally pulls images / creates boxes / starts servers (build ladder).
 # Boxes asked to start at HOST BOOT also get a systemd user unit
@@ -1630,7 +1630,12 @@ parse_serve_env() {  # box
     [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
     k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
     case "$k" in
-      SERVE)
+      # STARTUP_ENABLED is the key since s45; SERVE is its predecessor and is still
+      # read, because live boxes have it. Order matters: the loop takes the LAST
+      # assignment it sees, so a file carrying both ends up with whatever is written
+      # lower — which is why emit_serve_env writes ONLY the new key and drops the old
+      # one on the next modify run, rather than leaving two keys to disagree.
+      STARTUP_ENABLED|SERVE)
         case "${v,,}" in
           1|true|yes|on) EXD_BOXSV[$box]=1 ;;
           *)             EXD_BOXSV[$box]="" ;;
@@ -2228,7 +2233,9 @@ general_setup() {
   # the defaults, so this is the moment they can be accepted wholesale).
   ask_yn "Use default ports for all services" "$SEED_PORTS"
   [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
-  # Does a box's SERVICE come up when its container starts? (server.env SERVE.)
+  # Does a box's SERVICE come up when its container starts?
+  # (server.env STARTUP_ENABLED — this asks about BOX START only, never about
+  # whether a server should be up right now; that is the box's own .IS_ACTIVE.)
   # "case-by-case" hands the question to each box's own section.
   ask_ync "Start servers at box start" "$SEED_SERVE"
   SERVE_MODE=$ANS_3
@@ -4119,8 +4126,20 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
 #
 # The rewrite carries NOTHING over: the two keys it writes are the two it asked
 # about, and any other key a user put in the file by hand is a key the box's
-# serve library ignores (it reads SERVE and PORT and nothing else), so there is
-# nothing here worth preserving across a run that was told to reconfigure.
+# serve library ignores (it reads STARTUP_ENABLED/SERVE and PORT and nothing
+# else), so there is nothing here worth preserving across a run that was told to
+# reconfigure.
+#
+# ⭐ THIS IS THE WRITE HALF OF THE s45 KEY MIGRATION: read tolerantly, write the new
+# form. The old key was `SERVE`, which meant "start at box start" AND "is supposed to
+# be serving" at the same time; it is now `STARTUP_ENABLED` and means only the first.
+# A rewritten file carries the new key ALONE — dropping `SERVE` is safe precisely
+# because the box's library still reads it as a fallback.
+# 🚨 THAT FALLBACK IS WHAT MAKES THIS SAFE, AND IT MUST NOT BE REMOVED IN THE SAME
+# RELEASE. A box the user KEEPS is never rewritten (keep = "change nothing about
+# settings"), so live boxes go on carrying `SERVE=1` until some later modify run
+# touches them — and if the library stopped reading it, every one of those boxes would
+# silently stop serving with nothing saying why.
 emit_serve_env() {  # box
   local box=$1 f
   f=$(serve_env_file "$box") || return 0
@@ -4130,11 +4149,17 @@ emit_serve_env() {  # box
   {
     printf '# server.env — read by droste-init-hook.sh at every container start.\n'
     printf '# Written by droste-setup.sh on %s; safe to edit by hand:\n' "$(date +%F)"
-    printf '#   SERVE=1  start the service when the box starts (0 = interactive only)\n'
-    printf '#   PORT=    the port the service binds (host networking: no remap)\n'
-    printf '# Take a change live with:  %s restart %s\n' \
+    printf '#   STARTUP_ENABLED=1  start this box'"'"'s server when the BOX starts\n'
+    printf '#                      (0 = interactive only, nothing is launched)\n'
+    printf '#   PORT=              the port the server binds (host networking: no remap)\n'
+    printf '#\n'
+    printf '# To start or stop the server WITHOUT changing this file, run inside the box:\n'
+    printf '#   server_start · server_stop · server_restart · server_status\n'
+    printf '# A stop that way lasts until the box restarts. THIS file is the permanent\n'
+    printf '# setting, and it survives recreating the box.\n'
+    printf '# Take a change here live with:  %s restart %s\n' \
       "${RUNTIME:-podman}" "$(box_ctr "$box")"
-    printf 'SERVE=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
+    printf 'STARTUP_ENABLED=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
     printf 'PORT=%s\n' "${CFG_PORT[$box]}"
   } > "$f" 2>/dev/null || warn "could not write $f $EMD the box will not know its serve setting"
   return 0
@@ -4159,6 +4184,16 @@ write_host_unit() {  # box → 0 when the unit file is in place
     printf 'Type=oneshot\n'
     printf 'RemainAfterExit=yes\n'
     printf 'ExecStart=%s start %s\n' "$bin" "$(box_ctr "$box")"
+    # ⭐ GRACEFUL STOP (s45). Ask the SERVER to exit before stopping the CONTAINER.
+    # Why this is the fix and not a nicety: the container's pid 1 is distrobox-init,
+    # which does NOT forward SIGTERM to the service we backgrounded — so `podman stop`
+    # never reaches the server, and it dies at the `--stop-timeout` ceiling every time.
+    # server_stop runs INSIDE the box, owns the process by launch record, sends TERM and
+    # waits. That verb is what made this fixable; before it there was nothing to call.
+    # `-` prefix = failure is not fatal: a box that is already down, has no server, or
+    # predates the verbs must never block its own shutdown. `podman stop` still follows
+    # and still has its timeout, so this can only ever make the stop cleaner.
+    printf 'ExecStop=-%s exec %s server_stop\n' "$bin" "$(box_ctr "$box")"
     printf 'ExecStop=%s stop %s\n' "$bin" "$(box_ctr "$box")"
     printf '\n[Install]\n'
     printf 'WantedBy=default.target\n'
@@ -4992,7 +5027,7 @@ create_box() {  # box
   if [[ $rc -eq 0 ]]; then
     SESSION_STATE[$box]=STOPPED
     # The [A] rung starts only the boxes whose server is meant to come up with
-    # the box (Jei's rev-2 semantics): starting a SERVE=0 box would just be an
+    # the box (Jei's rev-2 semantics): starting a STARTUP_ENABLED=0 box would be an
     # idle container. `podman start` is what replays the init line, which is
     # what launches the service — there is no separate server container.
     if [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" && -n $RUNTIME ]]; then
@@ -5183,7 +5218,7 @@ write_notes() {
     printf -- '- **Server door** — `podman start droste-<box>-halo`. Starting the\n'
     printf '  container replays its init line, which reads `server.env` from the\n'
     printf '  box%s data dir and launches the service on the port recorded there.\n' "'s"
-    printf '\nEntering a stopped box therefore starts it — and, if `SERVE=1`, its\n'
+    printf '\nEntering a stopped box therefore starts it — and, if `STARTUP_ENABLED=1`, its\n'
     printf 'service with it. Both doors are the SAME environment: a `pip install`\n'
     printf 'you do interactively is what the served process runs.\n'
     printf '\n## Your installation\n\n'
@@ -5239,7 +5274,7 @@ write_notes() {
     printf '  nothing else: the Python environment overlay and its work dir,\n'
     printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, the seeded\n' \
       "'s" "'s"
-    printf '  `extra_model_paths.yaml`, the serve pid record. Nothing in here is\n'
+    printf '  `extra_model_paths.yaml`, the server state dir. Nothing in here is\n'
     printf '  authored and nothing is irreplaceable — droste-setup.sh offers to\n'
     printf '  EMPTY it when it finds leftovers from an older generation, and the\n'
     printf '  box rebuilds what it needs at the next start.\n'
@@ -5257,19 +5292,38 @@ write_notes() {
     for box in "${SELECTED[@]}"; do
       printf '  %s\n' "$(box_ctr "$box")"
     done
-    printf '\n## The serve switch (server.env)\n\n'
-    printf 'Every box reads `<data dir>/server.env` at EVERY start:\n\n'
-    printf '    SERVE=1        # 0 = interactive only, nothing is launched\n'
-    printf '    PORT=8188      # the port the service binds (host networking)\n\n'
+    printf '\n## Starting and stopping the server\n\n'
+    printf 'There are TWO settings, and the difference is how long they last.\n\n'
+    printf '**Right now** — run these INSIDE the box (`distrobox enter <name>`):\n\n'
+    printf '    server_status     # what the box wants, and what is really true\n'
+    printf '    server_start      # start this box%s server now\n' "'s"
+    printf '    server_stop       # stop it — until the box next starts\n'
+    printf '    server_restart    # stop, then start\n\n'
+    printf 'A `server_stop` is deliberately TEMPORARY: the server comes back the\n'
+    printf 'next time the box starts, so you can never leave a box quietly dead\n'
+    printf 'and forget why. These verbs act on the SERVER; to restart the whole\n'
+    printf 'container use `podman restart <name>`.\n\n'
+    printf '**Permanently** — `<data dir>/server.env`, read at EVERY box start:\n\n'
+    printf '    STARTUP_ENABLED=1   # 0 = interactive only, nothing is launched\n'
+    printf '    PORT=8188           # the port the server binds (host networking)\n\n'
     printf 'Edit it and `podman restart <name>` — no recreate needed, and the\n'
     printf 'file survives image updates and box recreation. droste-setup.sh writes\n'
     printf 'it from your answers for every box it (re)configures, and leaves it\n'
-    printf 'alone for boxes you asked to KEEP.\n'
+    printf 'alone for boxes you asked to KEEP.\n\n'
+    printf 'If you have used droste before, this key used to be called `SERVE`.\n'
+    printf 'Old files still work — `SERVE` is still read — and the next time\n'
+    printf 'droste-setup.sh reconfigures a box it rewrites the file with the new\n'
+    printf 'name.\n'
     printf '\n## Supervision (podman healthcheck)\n\n'
     printf 'Each box is created with a healthcheck that probes its service from\n'
     printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'
-    printf 'restarts the container, which relaunches it. A box with `SERVE=0`\n'
-    printf 'always reports healthy — the probe knows it is not meant to serve.\n\n'
+    printf 'is brought back. A box that is not meant to be serving right now\n'
+    printf 'always reports healthy — the probe knows the difference.\n\n'
+    printf 'The server is relaunched ON ITS OWN first: only if that fails does\n'
+    printf 'the whole container restart, so a crashed server no longer closes\n'
+    printf 'the shells of anyone working in the box. If you stopped the server\n'
+    printf 'yourself with `server_stop`, nothing restarts anything — the box\n'
+    printf 'knows you meant it.\n\n'
     printf 'The probe checks TWO things: that the service THIS box started is\n'
     printf 'still running, and that it answers. Both are needed because the boxes\n'
     printf 'share the host network: if the port in `server.env` is already taken\n'
@@ -5285,12 +5339,15 @@ write_notes() {
     printf '\nInspect it with `podman inspect --format "{{json .State.Health}}"`.\n'
     printf '\n## Stopping: what actually happens\n\n'
     printf 'The box%s pid 1 is distrobox-init, which does NOT forward SIGTERM to\n' "'s"
-    printf 'the served process: on `podman stop`/`restart` the service is killed\n'
-    printf 'rather than asked to exit (a `--stop-timeout %s` is set as a ceiling).\n' \
+    printf 'the served process, so `podman stop` on its own cannot ask the server\n'
+    printf 'to exit — it kills it at the `--stop-timeout %s` ceiling.\n' \
       "$STOP_TIMEOUT"
-    printf 'Nothing in these images buffers state that a clean shutdown would\n'
-    printf 'flush, but if you want a graceful exit, stop the service inside the\n'
-    printf 'box first (or edit `SERVE=0` and restart).\n'
+    printf 'The systemd unit above therefore runs `server_stop` INSIDE the box\n'
+    printf 'first, which does ask it, and only then stops the container. If you\n'
+    printf 'stop a box by hand and want the same courtesy, run `server_stop` in\n'
+    printf 'the box before `podman stop`. Nothing in these images buffers state\n'
+    printf 'that a clean shutdown would flush, so this is politeness rather than\n'
+    printf 'protection.\n'
     printf '\n## Per-box quickstart\n'
     for box in "${SELECTED[@]}"; do
       data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-<data-dir>}}"

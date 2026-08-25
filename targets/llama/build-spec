@@ -60,9 +60,11 @@ OPTIONAL=(
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
-    # ENV_FILE is sourced un-exported by the resolver; llama-server reads
-    # LLAMA_ARG_* from its ENVIRONMENT, so export every LLAMA_* var (covers the
-    # env file and anything the user set) so they survive the exec.
+    # Both resolvers source ENV_FILE under `set -a`, so its assignments are already
+    # exported. This loop is belt-and-braces for a LLAMA_* the user exported into the
+    # container's create-time env instead, and for any future caller that sources the
+    # spec without it. llama-server reads LLAMA_ARG_* from its ENVIRONMENT, so they
+    # have to survive the exec either way.
     local v
     for v in $(compgen -v LLAMA_ || true); do
         export "${v?}"

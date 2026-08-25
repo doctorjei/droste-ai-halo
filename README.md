@@ -153,10 +153,11 @@ either way.
 | llama | `llama-server` | 8080 | `llama.env` — set `LLAMA_ARG_MODEL` |
 | ds4 | `ds4-server` | 8000 | `ds4.env` — set `DS4_DROSTE_MODEL` |
 
-Those ports are the in-container defaults a direct `podman run` publishes. A
-box binds the port recorded in its `server.env` instead (host networking, no
-remap) — `droste-setup.sh` offers these values, nudging ds4 to 8001 so it and
-vllm run side by side.
+Those ports are each service's own default. A box made by `droste-setup.sh`
+runs on host networking and binds the port recorded in its `server.env`
+directly — nothing the installer writes publishes or remaps a port. It
+offers these values, nudging ds4 to 8001 so it and vllm run side by side;
+publishing (`-p HOST:CONTAINER`) is the direct-`podman run` alternative.
 
 Mount contract (all ports):
 
@@ -227,8 +228,10 @@ what may be thrown away:
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.
 
-Driven by hand, that contract reads as follows — `droste-setup.sh` asks for the
-same paths and writes them into the box's ini for you:
+Driven by hand, that contract reads as follows. A direct run gets its own
+network namespace rather than the host's, so you publish the port yourself
+with `-p`; `droste-setup.sh` asks for the same paths but writes a
+host-networked box, which binds its port directly:
 
 ```bash
 podman run -d -p 8188:8188 --device /dev/kfd --device /dev/dri \

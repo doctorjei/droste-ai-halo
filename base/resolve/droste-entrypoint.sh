@@ -19,9 +19,10 @@ RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
 source "$RESOLVE_DIR/droste-resolve.sh"
 # The shared launch path (serve::exec_service below). Sourcing it is inert: the
 # library only defines functions + defaults, reads no config, and NOTHING in the
-# server lane consults server.env — this lane keeps its podman-published
-# HOST:CONTAINER port remaps, so rewriting the in-container bind port would break
-# exactly the deployments this image still has to serve.
+# server lane consults server.env — the operator of a direct run chose the port
+# on their own command line, so rewriting the in-container bind port would break
+# exactly the deployments this image still has to serve. droste ships no
+# published-port definition of its own.
 # shellcheck source=/dev/null
 source "$RESOLVE_DIR/droste-serve.sh"
 

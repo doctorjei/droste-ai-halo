@@ -9,9 +9,9 @@
 #   droste-entrypoint.sh  (SERVER lane, pid1)  -> serve::exec_service
 #       foreground exec, exactly as before this file existed. The server lane is
 #       DELIBERATELY untouched by everything else here: it never reads server.env,
-#       never rewrites the port (its ports are podman-published HOST:CONTAINER
-#       remaps — rewriting the in-container bind would break the remap), never
-#       backgrounds anything. Two-container deploys keep working from these images.
+#       never rewrites the port (the operator chose that port at run time on their
+#       own command line — droste ships no published-port definition), never
+#       backgrounds anything. A direct `podman run` still works from these images.
 #
 #   droste-init-hook.sh   (DISTROBOX lane, runs from the container's init line)
 #                                                  -> serve::maybe_launch
@@ -25,8 +25,8 @@
 # server.env (default /opt/data/server.env — same format and place as llama.env /
 # ds4.env) is shell-sourceable KEY=VALUE:
 #       STARTUP_ENABLED=1  # 1/true/yes/on = start this box's server when the BOX starts
-#       PORT=8188          # the HOST port the service binds DIRECTLY (host networking,
-#                          # no remap: e.g. ds4 binds 8001 itself instead of 8000+remap)
+#       PORT=8188          # the HOST port the service binds DIRECTLY (host networking:
+#                          # e.g. ds4 binds 8001 itself instead of its own default 8000)
 #
 # ⭐ TWO SETTINGS, AND THE IMPORTANT PART IS THE LIFETIMES (s45). server.env used to
 # carry one knob, `SERVE`, meaning two different things at once — "start at box start"

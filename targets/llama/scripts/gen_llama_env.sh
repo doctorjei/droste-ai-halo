@@ -127,13 +127,13 @@ mkdir -p "$(dirname "$OUT")"
         "# ── active defaults (droste) ─────────────────────────────────────────────────" \
         "LLAMA_ARG_HOST=$ACTIVE_HOST" \
         "" \
-        "# NO active LLAMA_ARG_PORT line ON PURPOSE — the listen port is the CONTAINER's," \
-        "# not this file's. The launcher appends '--port' to the llama-server command line" \
-        "# from PORT in /opt/data/server.env (default $DEFAULT_PORT), and llama.cpp resolves a CLI" \
-        "# flag OVER the env var without saying so — uncommenting the line below would look" \
-        "# authoritative and do nothing. Change the port in server.env, then restart the box." \
-        "# (It does still apply where nothing appends '--port': the two-container server lane," \
-        "# which reads no server.env, and a llama-server you start by hand in the box.)" \
+        "# NO active LLAMA_ARG_PORT line ON PURPOSE — it would not take effect. The launcher" \
+        "# appends '--port' to the llama-server command line from PORT in /opt/data/server.env" \
+        "# (default $DEFAULT_PORT), and llama.cpp resolves a CLI flag OVER the env var without saying" \
+        "# so — uncommenting the line below would look authoritative and do nothing. Change the" \
+        "# port in server.env, then restart the box." \
+        "# (It does still apply where nothing appends '--port': a direct 'podman run', whose" \
+        "# server lane reads no server.env, and a llama-server you start by hand in the box.)" \
         "# LLAMA_ARG_PORT=$DEFAULT_PORT" \
         "" \
         "# ── slot save/restore ────────────────────────────────────────────────────────" \

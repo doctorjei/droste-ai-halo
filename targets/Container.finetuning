@@ -48,10 +48,13 @@ RUN if [ -e "${ROCM_PATH}/lib/librccl.so.1.0" ]; then \
     && ldconfig
 
 # HF finetuning stack (upstream pins)
+# jupyterlab is PINNED although the libraries above are not: it is this box's SERVED
+# surface, so its CLI and config are a user-facing contract, not an internal dep. It was
+# bare until s48, which meant every build shipped whatever was newest that day.
 RUN uv pip install --no-cache-dir \
       jq transformers peft accelerate safetensors sentencepiece huggingface-hub datasets trl \
       einops unsloth_zoo==2026.1.4 tqdm==4.67.1 ipywidgets==8.1.7 ipykernel==6.30.1 \
-      traitlets==5.14.3 jupyter_core==5.8.1 jupyterlab
+      traitlets==5.14.3 jupyter_core==5.8.1 jupyterlab==4.6.3
 
 # Flash-Attention (ROCm Triton backend); skips CUDA C++ extension & installs pure Python/Triton
 ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE

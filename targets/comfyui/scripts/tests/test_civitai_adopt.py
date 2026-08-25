@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for droste-civitai-adopt.sh using the DROSTE_CIVITAI_API_FIXTURE
+"""Tests for droste-civitai-adopt.py using the DROSTE_CIVITAI_API_FIXTURE
 hook -- NO live network. A fixture dir stands in for the CivitAI API:
 
 - by-hash.json        batch by-hash endpoint: {sha256: version, ...} or
@@ -38,7 +38,7 @@ from collections import OrderedDict
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "droste-civitai-adopt.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "droste-civitai-adopt.py"
 # the tool imports its sibling model_formats (the shared execution-free readers); running
 # it normally puts the script's own dir on sys.path, loading it in-process does not.
 sys.path.insert(0, str(SCRIPT.parent))

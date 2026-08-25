@@ -8,4 +8,4 @@
 # (`./scripts/droste-hf-adopt.sh ...`) keeps working. It is four lines of shell, not a
 # second copy of anything: delete it the moment those docs point at the new path.
 # Everything (--help, exit codes, argv) passes straight through.
-exec python3 "$(CDPATH= cd -- "$(dirname -- "$0")/../targets/comfyui/scripts" && pwd)/droste-hf-adopt.sh" "$@"
+exec python3 "$(CDPATH= cd -- "$(dirname -- "$0")/../targets/comfyui/scripts" && pwd)/droste-hf-adopt.py" "$@"

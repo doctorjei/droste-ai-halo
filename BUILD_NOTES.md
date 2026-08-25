@@ -965,7 +965,7 @@ that keep the documented host invocation working. The design rationale:
 
 Two tools in this repo read tensor names to decide what a weight file is:
 `model_scanner.py`, which answers in ComfyUI loader directories, and
-`droste-civitai-adopt.sh`, which answers in the A1111 layout CivitAI's ecosystem
+`droste-civitai-adopt.py`, which answers in the A1111 layout CivitAI's ecosystem
 assumes. They shared the knowledge and not the code, and the copies had drifted
 in both directions — the adopt tool had seven upscaler-architecture rules the
 scanner lacked entirely, the scanner had DiT-era ControlNet spellings and the

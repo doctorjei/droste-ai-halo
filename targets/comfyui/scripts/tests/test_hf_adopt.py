@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for droste-hf-adopt.sh using the DROSTE_ADOPT_API_FIXTURE hook --
+"""Tests for droste-hf-adopt.py using the DROSTE_ADOPT_API_FIXTURE hook --
 NO live network. A fixture dir stands in for the HF API:
 
 - <org>__<name>.json           repo manifest (?blobs=true shape)
@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "droste-hf-adopt.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "droste-hf-adopt.py"
 loader = importlib.machinery.SourceFileLoader("droste_hf_adopt", str(SCRIPT))
 spec = importlib.util.spec_from_loader("droste_hf_adopt", loader)
 mod = importlib.util.module_from_spec(spec)

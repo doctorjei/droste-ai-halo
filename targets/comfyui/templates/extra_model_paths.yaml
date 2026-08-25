@@ -9,7 +9,7 @@
 #
 # Format: each top-level stanza names a model store; keys are ComfyUI model categories,
 # values are directories (relative to the stanza's base_path if one is set). Reference:
-# https://github.com/comfyanonymous/ComfyUI/blob/master/extra_model_paths.yaml.example
+# https://github.com/Comfy-Org/ComfyUI/blob/master/extra_model_paths.yaml.example
 
 # Baked model configs shipped with the image: the 11 SD/SD2 architecture yamls used by
 # the "Load Checkpoint (With Config)" node (read-only). Keep this stanza.

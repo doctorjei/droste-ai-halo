@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""droste-civitai-adopt.sh: adopt already-downloaded CivitAI model files into
+"""droste-civitai-adopt.py: adopt already-downloaded CivitAI model files into
 a shared CivitAI cache directory.
 
 WHY: droste boxes share model directories laid out the way AUTOMATIC1111-
@@ -10,7 +10,7 @@ that tree with arbitrary names and no metadata. This tool moves such files
 INTO the cache, but only when they are PROVABLY CivitAI content: the
 file's sha256 must be found by the CivitAI API and appear among the
 matched model version's published file hashes. Everything else is refused
-with a reason. Sibling to droste-hf-adopt.sh, same invariant: adopt only on
+with a reason. Sibling to droste-hf-adopt.py, same invariant: adopt only on
 hash proof, never on name similarity.
 
 HOW: every candidate file is hashed once (streamed sha256) and looked up
@@ -105,7 +105,7 @@ the host. ONE BOUNDARY applies in-box: /opt/models is bind-mounted READ-ONLY
 (build-spec OPTIONAL row; droste-setup.sh emits `<dir>:/opt/models:ro`), so
 an in-box run can hash, sniff, look up and report on a custom collection but
 cannot place a file INTO it -- adopting into /opt/models is a host-side run.
-Adopting into the HF cache is writable in-box (see droste-hf-adopt.sh); it is
+Adopting into the HF cache is writable in-box (see droste-hf-adopt.py); it is
 bound read-write because the container downloads into it.
 """
 
@@ -132,7 +132,7 @@ from pathlib import Path
 try:
     import model_formats
 except ImportError as e:  # pragma: no cover
-    sys.exit(f"droste-civitai-adopt.sh: model_formats.py must sit beside this "
+    sys.exit(f"droste-civitai-adopt.py: model_formats.py must sit beside this "
              f"script ({e})")
 
 CHUNK = 1 << 20  # 1 MiB read chunks for streamed hashing
@@ -290,23 +290,23 @@ EXAMPLES = """\
 examples:
   # Adopt a checkpoint you fetched with a browser (dry-run first). It is
   # placed under a normalized <Model>_<Version> name in the right dir:
-  droste-civitai-adopt.sh ~/Downloads/juggernautXL_v9.safetensors
-  droste-civitai-adopt.sh --apply ~/Downloads/juggernautXL_v9.safetensors
+  droste-civitai-adopt.py ~/Downloads/juggernautXL_v9.safetensors
+  droste-civitai-adopt.py --apply ~/Downloads/juggernautXL_v9.safetensors
 
   # A whole downloads dir: one batch API call identifies everything,
   # files may belong to different models/versions and route to different
   # dirs (LoRA, VAE, ControlNet vs T2IAdapter, upscaler-by-arch, ...):
-  droste-civitai-adopt.sh --apply --move ~/Downloads/mixed/
+  droste-civitai-adopt.py --apply --move ~/Downloads/mixed/
 
   # Rescue an old file CivitAI never hashed (404 by hash), when you know
   # its model version id -- adoption still requires the version to list
   # our exact sha256:
-  droste-civitai-adopt.sh --apply --version-id 128713 ~/old/dreamshaper.ckpt
+  droste-civitai-adopt.py --apply --version-id 128713 ~/old/dreamshaper.ckpt
 
   # A <Model>_<Version> name past the filesystem's 255-BYTE limit (CJK is
   # 3 bytes/char) is refused with a recommended shorter stem; adopt it
   # under your own name instead (recorded, and reused on re-runs):
-  droste-civitai-adopt.sh --apply --rename 'Wan21-FLF2V-14B-720P' ~/dl/wan.safetensors
+  droste-civitai-adopt.py --apply --rename 'Wan21-FLF2V-14B-720P' ~/dl/wan.safetensors
 
 Only files whose sha256 the CivitAI API can prove are adopted; everything
 else is refused with a reason. Each model gets three sidecars -- a pure
@@ -326,7 +326,7 @@ def log(args, level, msg):
 
 def die(msg, code=2):
     progress_clear()
-    print(f"droste-civitai-adopt.sh: error: {msg}", file=sys.stderr)
+    print(f"droste-civitai-adopt.py: error: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -1494,7 +1494,7 @@ def gather_files(args, paths):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="droste-civitai-adopt.sh",
+        prog="droste-civitai-adopt.py",
         description="Adopt already-downloaded CivitAI model files "
                     "(checkpoints, LoRAs, VAEs, embeddings, ...) into a "
                     "webui-style cache dir -- no re-download. Each file is "

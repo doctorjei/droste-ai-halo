@@ -16,6 +16,7 @@ SERVICE=(
     python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
     --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae
+    --enable-manager --preview-method taesd
     --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml
 )
 

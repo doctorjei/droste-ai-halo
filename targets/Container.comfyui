@@ -11,22 +11,35 @@ ARG BASE_IMAGE=localhost/${SERIES_NAME}-torch-base-${ARCH_NAME}
 # Overrideable Arguemnts - non-ROCm pins. The ROCm/torch versions are NOT ARGs: they
 # come from /etc/droste/rocm-version.env, inherited from the torch base.
 # ⚠️ TRANSFORMERS: a ComfyUI NODE requires >=4.57.0,<=5.8.1 (Jei, 2026-08-22), which
-# EXCLUDES the 4.56.2 this was pinned to. Pinned to the range FLOOR deliberately:
-# 4.56.2 is the version verified with 0.33.3 on gfx1151, nothing in the 5.x range has
-# been tested here, and the upper bound reads as a safety ceiling rather than a
-# preference for newest. The RANGE (not this exact number) is what gets appended to
-# the constraints file below, so a later in-box install may move within it.
+# EXCLUDES the 4.56.2 this was pinned to. Pinned near the range FLOOR deliberately:
+# nothing in the 5.x range has been tested here, and the node's upper bound reads as a
+# safety ceiling rather than a preference for newest.
+# 🚨 4.57.0 IS YANKED on PyPI ("Error in the setup causing installation issues"), and an
+# EXACT pin installs a yanked release SILENTLY (PEP 592) — which is why no build ever
+# complained. Found on hardware s49. 4.57.1 is the fix; 4.57.2 is also clean.
+# 🚨 A CEILING IS NOT A PIN. The BOUND (not the exact number) is what gets appended to
+# the constraints file below and governs later in-box installs — and `<=5.8.1` let one
+# `uv pip install` walk transformers to 5.8.1, two major versions above what we bake and
+# verify (measured on hardware, s49). Our bound is now a SUBSET of the node's: it still
+# satisfies the node and stops at the 4.x line.
 # ⚠️ finetuning has its OWN unpinned transformers and is deliberately NOT changed —
 # this bound comes from a comfyui node.
-ARG TRANSFORMERS_VERSION=4.57.0
-ARG TRANSFORMERS_BOUND=">=4.57.0,<=5.8.1"
+ARG TRANSFORMERS_VERSION=4.57.1
+ARG TRANSFORMERS_BOUND=">=4.57.1,<5"
 ARG ACCELERATE_VERSION=1.14.0
 
 ## ComfyUI & Custom Nodes (ComfyUI repinned 2026-08-22; nodes still 2026-07-05)
-#### COMFYUI_REF: comfyanonymous/ComfyUI        ESSENTIALS_REF: cubiq/ComfyUI_essentials
+#### COMFYUI_REF: Comfy-Org/ComfyUI             ESSENTIALS_REF: cubiq/ComfyUI_essentials
 #### GGUF_REF: city96/ComfyUI-GGUF              AMDGPUMONITOR_REF: kyuz0/ComfyUI-AMDGPUMonitor
-# COMFYUI_REF is the commit tagged v0.33.3 (was 985fb9d6 = v0.27.0). Upstream moved to
-# Comfy-Org/ComfyUI; the comfyanonymous URL below still redirects, so it is left alone.
+# COMFYUI_REF is the commit tagged v0.33.3 (was 985fb9d6 = v0.27.0). Upstream MOVED from
+# comfyanonymous/ComfyUI to Comfy-Org/ComfyUI, and the new owner is now named everywhere
+# (s48). s44 left the old URL in place because it still redirects for `git clone` — true,
+# and still true, but the redirect is NOT universal: GitHub's SEARCH API rejects the old
+# name outright ("repositories cannot be searched"), so anything that looks the project up
+# BY NAME rather than fetching it finds nothing and says so misleadingly.
+# ⚠️ Only ComfyUI moved — the other three node repos above are canonical where they point
+# (verified s48). And `comfyanonymous/flux_text_encoders` in droste-hf-adopt.py is a
+# HUGGING FACE repo id, a different namespace entirely: never sweep it with this rename.
 # ⚠️ gfx1151 NOTE: 0.33 keeps gfx1151 in the enable-pytorch-attention list unchanged, but
 # probes aotriton differently — a runtime can_use_flash_attention() call instead of listing
 # torch/lib/aotriton.images. Both are inside try/except, so a miss degrades to non-flash
@@ -39,16 +52,26 @@ ARG COMFYUI_REF=4da9e2dbead52fc1e68beae33fe3d7ad63b63241
 ARG ESSENTIALS_REF=9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
 ARG AMDGPUMONITOR_REF=0c584ed28ed3678d96f631a6eff91be397c0baa4
 ARG GGUF_REF=6ea2651e7df66d7585f6ffee804b20e92fb38b8a
-# ComfyUI-Manager. ⚠️ PIN BY COMMIT, NOT BY TAG: the repo's git tags (4.2.x) are NOT
-# the node's version — main declares `version = "3.41"` in pyproject.toml and reports
-# V3.41 at load. Canonical repo is Comfy-Org/ComfyUI-Manager (ltdrdata redirects).
-ARG MANAGER_REF=f39cbd56fecae0b27a446c0cd450cd591f3a8bea
+# TAESD preview decoders. Sampler previews DEFAULT TO taesd (build-spec's
+# --preview-method), and ComfyUI resolves the decoder by PREFIX out of
+# models/vae_approx — a miss is not an error, it silently degrades to latent2rgb
+# (latent_preview.py:105-109), so the files have to be in the image for the
+# default to mean what it says. ⚠️ PINNED BY COMMIT: the repo publishes the
+# weights at its root with no tags and no releases, so a SHA is the only stable
+# reference. ~5 MB each.
+ARG TAESD_REF=e87efbcfc5298d84986b5d9280f40d358b6a228d
+# ComfyUI-Manager, taken as the PyPI DISTRIBUTION rather than the classic custom node.
+# ⚠️ The repo carries TWO LINES: `main` is the 3.x custom node (pyproject says "3.41")
+# and never moved to 4.x; tag 4.2.x is a real distribution shipping a `comfyui_manager`
+# package, and THAT is what ComfyUI's `--enable-manager` imports. A git checkout of a
+# 4.2.x tag is therefore not interchangeable with this — hence a version, not a commit.
+ARG MANAGER_VERSION=4.2.2
 
 # --- IMAGE BUILD BEGINS HERE ---
 FROM ${BASE_IMAGE}
 ARG SERIES_NAME TARGET_NAME ARCH_NAME DESCRIPTION
 ARG TRANSFORMERS_VERSION
-ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF MANAGER_REF
+ARG COMFYUI_REF ESSENTIALS_REF AMDGPUMONITOR_REF GGUF_REF MANAGER_VERSION TAESD_REF
 ARG TRANSFORMERS_BOUND ACCELERATE_VERSION
 LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${DESCRIPTION}"
 
@@ -78,7 +101,7 @@ RUN . /etc/droste/rocm-version.env && \
 # the node's requirement is enforced against later in-box installs too, by pip AND uv.
 
 # ComfyUI (core)
-RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI \
+RUN git clone --depth=1 https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI \
     && if [ -n "${COMFYUI_REF}" ]; then \
          git -C /opt/ComfyUI fetch --depth=1 origin "${COMFYUI_REF}" \
          && git -C /opt/ComfyUI checkout "${COMFYUI_REF}"; \
@@ -138,19 +161,23 @@ RUN git clone --depth=1 https://github.com/city96/ComfyUI-GGUF /opt/ComfyUI/cust
          git -C /opt/ComfyUI/custom_nodes/ComfyUI-GGUF fetch --depth=1 origin "${GGUF_REF}" \
          && git -C /opt/ComfyUI/custom_nodes/ComfyUI-GGUF checkout "${GGUF_REF}"; \
        fi
-# ComfyUI-Manager. Requirements are torch-free (GitPython, pygit2, PyGithub,
+# TAESD preview decoders → models/vae_approx (see TAESD_REF above). Names are the
+# ones ComfyUI looks up: SD1.x, SDXL, SD3, FLUX.1, FLUX.2. The video decoders are
+# NOT here — three of the four names ComfyUI wants (lighttaew2_1, lighttaew2_2,
+# lighttaehy1_5) carry a `light` prefix that madebyollin/taehv does not publish.
+RUN mkdir -p /opt/ComfyUI/models/vae_approx \
+    && for f in taesd_decoder taesdxl_decoder taesd3_decoder taef1_decoder taef2_decoder; do \
+         curl -fsSL -o "/opt/ComfyUI/models/vae_approx/${f}.pth" \
+           "https://raw.githubusercontent.com/madebyollin/taesd/${TAESD_REF}/${f}.pth"; \
+       done
+# ComfyUI-Manager. Its dependencies are torch-free (GitPython, pygit2, PyGithub,
 # transformers, huggingface-hub, typer, rich, typing-extensions, toml, uv, chardet) —
 # `transformers` and `huggingface-hub` are unpinned there and would otherwise be free to
 # move ours, which the constraints file now prevents.
 # ⚠️ Manager installs custom nodes with **uv**, not pip. That is the whole reason
 # UV_CONSTRAINT/UV_BUILD_CONSTRAINT are set beside PIP_CONSTRAINT in the runtime base:
 # a pip-only guard would be bypassed by every node a user installs through the UI.
-RUN git clone --depth=1 https://github.com/Comfy-Org/ComfyUI-Manager /opt/ComfyUI/custom_nodes/comfyui-manager \
-    && if [ -n "${MANAGER_REF}" ]; then \
-         git -C /opt/ComfyUI/custom_nodes/comfyui-manager fetch --depth=1 origin "${MANAGER_REF}" \
-         && git -C /opt/ComfyUI/custom_nodes/comfyui-manager checkout "${MANAGER_REF}"; \
-       fi \
-    && uv pip install -r /opt/ComfyUI/custom_nodes/comfyui-manager/requirements.txt \
+RUN uv pip install "comfyui-manager==${MANAGER_VERSION}" \
     && /opt/resources/resolve/assert-rocm-pins.sh torch torchvision torchaudio
 # ⚠️ THE ASSERTION ABOVE MUST STAY IN THE LAST PACKAGE-INSTALLING LAYER OF THIS FILE.
 # Add an install below this point and you must move it down with them. The earlier
@@ -187,7 +214,7 @@ RUN mkdir -p /opt/resources/model_configs \
 COPY scripts/get_wan22.sh scripts/get_qwen_image.sh scripts/get_hunyuan15.sh \
      scripts/get_ltx2.sh scripts/benchmark_workflows.py scripts/collect_perf_logs.py \
      scripts/model_manager.py scripts/model_scanner.py scripts/model_formats.py \
-     scripts/droste-hf-adopt.sh scripts/droste-civitai-adopt.sh \
+     scripts/droste-hf-adopt.py scripts/droste-civitai-adopt.py \
      scripts/name-api-blacklist.yaml /opt/resources/scripts/
 ENV PATH=/opt/resources/scripts:$PATH PYTHONPATH=/opt/resources/scripts
 

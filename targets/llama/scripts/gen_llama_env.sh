@@ -189,11 +189,22 @@ TAB=$(printf '\t')
 # so there is nothing to enumerate. `timeout` guards a hang either way (exit 124
 # is just another way of having no usable output).
 mode=scan
-help_text=$(timeout 60 "$SERVER" --help 2>&1 || true)
+# ⚠️ REPORT WHY, NOT JUST THAT. This fell back on two CI builds while an earlier
+# build of the SAME layer parsed the help fine, and "unusable here" was not enough
+# to tell a crash from a hang from a format change. Exit 132 is SIGILL — the binary
+# needs CPU features the builder lacks (ggml defaults GGML_NATIVE=ON, i.e.
+# -march=native on whichever machine compiled it); 139 is SIGSEGV; 124 is the
+# timeout; 0 with output means the help format moved.
+help_rc=0
+help_text=$(timeout 60 "$SERVER" --help 2>&1) || help_rc=$?
 if ! grep -q '(env: LLAMA_ARG_' <<<"$help_text"; then
-    note "'$SERVER --help' gave no usable output on the first try — retrying with the GPUs hidden"
+    note "'$SERVER --help' gave no usable output (exit $help_rc, $(printf '%s' "$help_text" | wc -c) bytes): $(printf '%s' "$help_text" | head -c 200 | tr '\n' ' ')"
+    note "retrying with the GPUs hidden, in case it is a device probe"
+    help_rc=0
     help_text=$(HIP_VISIBLE_DEVICES=-1 ROCR_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 \
-                timeout 60 "$SERVER" --help 2>&1 || true)
+                timeout 60 "$SERVER" --help 2>&1) || help_rc=$?
+    grep -q '(env: LLAMA_ARG_' <<<"$help_text" \
+        || note "second attempt also unusable (exit $help_rc, $(printf '%s' "$help_text" | wc -c) bytes): $(printf '%s' "$help_text" | head -c 200 | tr '\n' ' ')"
 fi
 grep -q '(env: LLAMA_ARG_' <<<"$help_text" && mode=help
 

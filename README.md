@@ -147,7 +147,7 @@ either way.
 
 | Image | Service | Port | Config file (seeded if missing, on `/opt/data`) |
 |---|---|---|---|
-| comfyui | ComfyUI web UI | 8188 | `extra_model_paths.yaml` |
+| comfyui | ComfyUI web UI | 8188 | `comfyui.env` |
 | finetuning | JupyterLab | 8888 | — (token auth; see container log) |
 | vllm | `vllm serve --config` | 8000 | `vllm_config.yaml` — set `model:` |
 | llama | `llama-server` | 8080 | `llama.env` — set `LLAMA_ARG_MODEL` |

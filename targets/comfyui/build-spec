@@ -12,13 +12,26 @@
 # class per the taxonomy: a re-seeded pointer file, never user work. main.py is
 # absolute: ComfyUI derives every path from base_path = main.py's directory, not
 # CWD (PRE_LAUNCH still cd's there for any relative writes).
-SERVICE=(
+#
+# SPLIT IN TWO because the argv now has a USER-CONFIGURABLE MIDDLE: comfyui_argv
+# rebuilds SERVICE as HEAD + the flags translated from comfyui.env + TAIL. What
+# stays in these two arrays is what is NOT user-facing and survives every
+# setting — the bind address, the port (owned by server.env; the launcher rewrites
+# the token after --port), the two perf flags this build always wants, and the
+# model-paths config.
+# ⚠️ --extra-model-paths-config is nargs='+', so it STAYS LAST: any later token
+# that does not begin with `-` would be swallowed as a second config path.
+COMFYUI_ARGV_HEAD=(
     python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
-    --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae
-    --enable-manager --preview-method taesd
+    --disable-mmap --disable-smart-memory
+)
+COMFYUI_ARGV_TAIL=(
     --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml
 )
+# A usable argv on its own, and comfyui_argv rebuilds it FROM THE TWO ARRAYS
+# rather than appending to it — so calling PRE_LAUNCH twice cannot grow it.
+SERVICE=( "${COMFYUI_ARGV_HEAD[@]}" "${COMFYUI_ARGV_TAIL[@]}" )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
 # ComfyUI serves its web UI at / (200) and has no dedicated health route.
@@ -26,7 +39,12 @@ HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
-ENV_FILE=""
+# Seeded from templates/comfyui.env (templates.yaml if_missing) and never
+# overwritten — the user's edits win. ComfyUI reads NO env var for any of these
+# knobs, so comfyui_argv translates the COMFYUI_DROSTE_* values into flags.
+# No export loop (unlike ds4/llama): nothing downstream reads them from the
+# environment, they only ever become argv.
+ENV_FILE="/opt/data/comfyui.env"
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # Baked lowers are load-bearing (venv, the 3 baked custom nodes); user writes
@@ -106,6 +124,175 @@ OPTIONAL=(
 #    skipped-if-absent. A scanner failure only leaves the tree stale — log and
 #    continue, never block the server (the resolver runs under set -e; the ||
 #    branch absorbs the failure).
+# 3) Rebuild SERVICE from the COMFYUI_DROSTE_* values now that ENV_FILE has been
+#    sourced (step 6 of apply_spec; SERVICE would otherwise be final at
+#    spec-source time, before the user's file was read).
+
+# COMFYUI_DROSTE_<SUFFIX> → flag maps. Every flag, its spelling and its argparse
+# group are read from comfy/cli_args.py at the pinned COMFYUI_REF (4da9e2db =
+# v0.33.3); the value vocabulary and the defaults are the ones documented in
+# templates/comfyui.env, which is the surface the user edits — the two must be
+# changed together.
+#
+# A THIRD SHAPE, because ComfyUI's knobs are neither ds4's value flags nor its
+# booleans: nearly all of them are ENUMERATED CHOICES over an argparse
+# MUTUALLY-EXCLUSIVE GROUP, where a second member of the group is a hard parse
+# error and where the ordinary answer ("normal", every "auto") is NO FLAG AT
+# ALL. One variable per group is what makes an illegal pair unwritable, so the
+# table is one record per group:
+#
+#     "<SUFFIX>|<value>=<flags>|<value>=<flags>|…"
+#
+# ⭐ THREE PROPERTIES, ALL BY CONSTRUCTION RATHER THAN BY CARE:
+#   1. AT MOST ONE flag per group is ever emitted — one record, one match, and
+#      no flag appears in two records.
+#   2. An EMPTY right-hand side is a first-class answer: the group's absent
+#      state, which is what ComfyUI's "normal" vram mode IS (there is no
+#      --normalvram) and what every "auto" means.
+#   3. The FIRST pair is the DEFAULT. It is used when the variable is unset —
+#      the shipped state, since every line in comfyui.env is commented out — and
+#      when it holds something we do not recognise.
+# A right-hand side is word-split, so one value can emit a flag WITH its value
+# (--preview-method taesd) or TWO flags: MANAGER=legacy must say --enable-manager
+# itself. cli_args.py implies it from --enable-manager-legacy-ui, but that was
+# measured NOT to be enough on hardware.
+COMFYUI_CHOICE_FLAGS=(
+    "VRAM|gpu-only=--gpu-only|highvram=--highvram|normal=|lowvram=--lowvram|novram=--novram|cpu=--cpu"
+    "DYNAMIC_VRAM|auto=|on=--enable-dynamic-vram|off=--disable-dynamic-vram"
+    "ATTENTION|auto=|ck=--use-ck-attention|pytorch=--use-pytorch-cross-attention|quad=--use-quad-cross-attention|split=--use-split-cross-attention"
+    "COMPUTE_PRECISION|auto=|fp16=--force-fp16|fp32=--force-fp32"
+    "VAE_PRECISION|bf16=--bf16-vae|auto=|fp16=--fp16-vae|fp32=--fp32-vae"
+    "UNET_PRECISION|auto=|bf16=--bf16-unet|fp8_e4m3fn=--fp8_e4m3fn-unet|fp8_e5m2=--fp8_e5m2-unet|fp8_e8m0fnu=--fp8_e8m0fnu-unet|fp16=--fp16-unet|fp32=--fp32-unet|fp64=--fp64-unet"
+    "TEXT_ENCODER_PRECISION|auto=|bf16=--bf16-text-enc|fp8_e4m3fn=--fp8_e4m3fn-text-enc|fp8_e5m2=--fp8_e5m2-text-enc|fp16=--fp16-text-enc|fp32=--fp32-text-enc"
+    "UPCAST|auto=|on=--force-upcast-attention|off=--dont-upcast-attention"
+    "PREVIEW|taesd=--preview-method taesd|auto=--preview-method auto|latent2rgb=--preview-method latent2rgb|none=--preview-method none"
+    "CUSTOM_NODES|yes=|no=--disable-all-custom-nodes"
+    "MANAGER|modern=--enable-manager|legacy=--enable-manager --enable-manager-legacy-ui|no_ui=--enable-manager --disable-manager-ui"
+    "CUDA_MALLOC|auto=|on=--cuda-malloc|off=--disable-cuda-malloc"
+)
+
+# Plain numeric passthroughs (GiB, ds4's <SUFFIX>:<flag> shape). Unset — the
+# shipped state — means NO FLAG, which is how ComfyUI's own per-OS default
+# (400 MiB reserved on Linux) stays in force.
+COMFYUI_NUMBER_FLAGS=(
+    "RESERVE_VRAM:--reserve-vram"
+    "VRAM_HEADROOM:--vram-headroom"
+)
+
+comfyui_is_num() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+comfyui_is_int() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
+
+# comfyui_argv — COMFYUI_DROSTE_* → SERVICE. Its own function so it can be
+# driven alone (source the spec, call it, print SERVICE) without the mounts, the
+# profile.d source or the model scan.
+#
+# 🚨 A BAD VALUE IS LOUD BUT NEVER FATAL, and that is a decision, not an
+# oversight. PRE_LAUNCH runs inside resolve::apply_spec under `set -e` in BOTH
+# lanes: a non-zero return here kills the server entrypoint (container restart
+# loop) and fails the distrobox init hook, which distrobox reports as a generic
+# error — a typo in a config file would take away the easiest way to fix the
+# typo. The third caller, serve::build_service on the healthcheck's relaunch
+# path, already downgrades a failing PRE_LAUNCH to a warning and launches "with
+# the argv as built", so refusing here would not even be consistent between the
+# three doors. So every rejected value is NAMED on stderr together with the
+# value used instead (the init hook cats that log to the terminal, the
+# entrypoint sends it to the container log) and the box comes up in its
+# DOCUMENTED DEFAULT state rather than in a fourth state nobody wrote down.
+# What must never happen is a knob that looks authoritative and does nothing.
+comfyui_argv() {
+    local dyn=() entry suffix rest var val def flags pair ok list
+    local pairs=() cache mode arg nums=() n bad=0
+
+    for entry in "${COMFYUI_CHOICE_FLAGS[@]}"; do
+        suffix=${entry%%|*}
+        rest=${entry#*|}
+        IFS='|' read -r -a pairs <<<"$rest"
+        def=${pairs[0]%%=*}
+        flags=${pairs[0]#*=}
+        var="COMFYUI_DROSTE_$suffix"
+        val=${!var:-}
+        if [ -n "$val" ]; then
+            ok=0
+            for pair in "${pairs[@]}"; do
+                if [ "${pair%%=*}" = "$val" ]; then
+                    flags=${pair#*=}
+                    ok=1
+                    break
+                fi
+            done
+            if [ "$ok" -eq 0 ]; then
+                list=""
+                for pair in "${pairs[@]}"; do
+                    list="$list ${pair%%=*}"
+                done
+                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+            fi
+        fi
+        # Word-split ON PURPOSE: the right-hand side is a literal from the table
+        # above and never user input, one value may expand to a flag plus its
+        # value or to two flags, and an empty side adds nothing at all.
+        # shellcheck disable=SC2206
+        dyn+=( $flags )
+    done
+
+    for entry in "${COMFYUI_NUMBER_FLAGS[@]}"; do
+        var="COMFYUI_DROSTE_${entry%%:*}"
+        val=${!var:-}
+        [ -n "$val" ] || continue
+        if comfyui_is_num "$val"; then
+            dyn+=( "${entry#*:}" "$val" )
+        else
+            serve::err "$var='$val' is not a number of GiB — leaving the flag off, so ComfyUI's own default applies. Fix it in $ENV_FILE and restart the box."
+        fi
+    done
+
+    # CACHE is the one PARAMETERISED knob — <mode>[:<n>[,<n>]] over that same
+    # kind of mutually-exclusive group — so it is parsed rather than tabulated.
+    # It still emits exactly one member of cache_group, malformed values
+    # included: those fall back to the documented default, none.
+    cache=${COMFYUI_DROSTE_CACHE:-none}
+    mode=${cache%%:*}
+    arg=""
+    [ "$cache" = "$mode" ] || arg=${cache#*:}
+    case "$mode:$arg" in
+        none:)     dyn+=( --cache-none ) ;;
+        classic:)  dyn+=( --cache-classic ) ;;
+        high-ram:) dyn+=( --high-ram ) ;;
+        ram:)      dyn+=( --cache-ram ) ;;
+        ram:*)
+            # --cache-ram is nargs='*': one threshold, or two, and cli_args
+            # itself errors on a third.
+            IFS=',' read -r -a nums <<<"$arg"
+            ok=1
+            [ "${#nums[@]}" -le 2 ] || ok=0
+            for n in "${nums[@]}"; do
+                comfyui_is_num "$n" || ok=0
+            done
+            if [ "$ok" -eq 1 ]; then
+                dyn+=( --cache-ram "${nums[@]}" )
+            else
+                bad=1
+            fi
+            ;;
+        lru:*)
+            # N >= 1, because main.py selects LRU on `args.cache_lru > 0`:
+            # --cache-lru 0 parses fine and then silently is not LRU at all.
+            if comfyui_is_int "$arg" && [ "$arg" -ge 1 ]; then
+                dyn+=( --cache-lru "$arg" )
+            else
+                bad=1
+            fi
+            ;;
+        *) bad=1 ;;
+    esac
+    if [ "$bad" -eq 1 ]; then
+        serve::err "COMFYUI_DROSTE_CACHE='$cache' is not a valid value — using the default 'none'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
+        dyn+=( --cache-none )
+    fi
+
+    SERVICE=( "${COMFYUI_ARGV_HEAD[@]}" ${dyn[@]+"${dyn[@]}"} "${COMFYUI_ARGV_TAIL[@]}" )
+}
+
 PRE_LAUNCH="comfyui_pre_launch"
 comfyui_pre_launch() {
     # shellcheck source=/dev/null
@@ -119,5 +306,20 @@ comfyui_pre_launch() {
     mkdir -p /opt/ComfyUI/temp && chmod 1777 /opt/ComfyUI/temp
     python3 /opt/resources/scripts/model_scanner.py sync \
         || resolve::warn "model_scanner sync failed (exit $?) — model tree may be stale"
+    # 🚨 PRE_LAUNCH RUNS AS ROOT FROM BOTH DOORS, so everything the scanner just wrote
+    # belongs to the container's root — a host subuid under keep-id, i.e. NOT the user
+    # the service then runs as. save_registry writes a temp file and RENAMES it over the
+    # target (model_scanner.py: tmp.replace(path)), so the registry becomes root-owned on
+    # every sync even when it was the user's a moment earlier, and the tree's category
+    # dirs are root-owned from the run that first created them. Hand both back.
+    # ⚠️ NOT run behind the privilege drop instead: PRE_LAUNCH ASSIGNS SERVICE in its
+    # caller's shell (llama/ds4/vllm rebuild the whole argv there), so it can never be a
+    # subprocess. And a user-run scanner could not replace an already-root-owned registry
+    # on the boxes that have one — reclaiming works for those, privdropping would not.
+    serve::_own /opt/data/model-registry.yaml
+    serve::_own_dirs /opt/data/model-tree
+    # LAST, and after ENV_FILE has been sourced: turn the user's comfyui.env into
+    # the argv the server will actually run.
+    comfyui_argv
     cd /opt/ComfyUI
 }

@@ -130,7 +130,7 @@ declare -A BOX_HAS_MODELS=(
 
 # Config file seeded (if missing) onto /opt/data at first start.
 declare -A BOX_CONFIG=(
-  [comfyui]="extra_model_paths.yaml"
+  [comfyui]="comfyui.env"
   [llama]="llama.env"
   [vllm]="vllm_config.yaml"
   [ds4]="ds4.env"

@@ -17,14 +17,15 @@
 # rebuilds SERVICE as HEAD + the flags translated from comfyui.env + TAIL. What
 # stays in these two arrays is what is NOT user-facing and survives every
 # setting — the bind address, the port (owned by server.env; the launcher rewrites
-# the token after --port), the two perf flags this build always wants, and the
-# model-paths config.
+# the token after --port), and the model-paths config. The two perf flags that
+# used to sit here, --disable-mmap and --disable-smart-memory, became the
+# WEIGHT_LOADING and MODEL_RESIDENCY settings and are emitted from the table
+# below at their defaults -- so the shipped command line is unchanged.
 # ⚠️ --extra-model-paths-config is nargs='+', so it STAYS LAST: any later token
 # that does not begin with `-` would be swallowed as a second config path.
 COMFYUI_ARGV_HEAD=(
     python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
-    --disable-mmap --disable-smart-memory
 )
 COMFYUI_ARGV_TAIL=(
     --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml
@@ -166,6 +167,8 @@ COMFYUI_CHOICE_FLAGS=(
     "TEXT_ENCODER_PRECISION|auto=|bf16=--bf16-text-enc|fp8_e4m3fn=--fp8_e4m3fn-text-enc|fp8_e5m2=--fp8_e5m2-text-enc|fp16=--fp16-text-enc|fp32=--fp32-text-enc"
     "UPCAST|auto=|on=--force-upcast-attention|off=--dont-upcast-attention"
     "PREVIEW|taesd=--preview-method taesd|auto=--preview-method auto|latent2rgb=--preview-method latent2rgb|none=--preview-method none"
+    "WEIGHT_LOADING|eager=--disable-mmap|lazy=--mmap-torch-files"
+    "MODEL_RESIDENCY|cache=|evict=--disable-smart-memory"
     "CUSTOM_NODES|yes=|no=--disable-all-custom-nodes"
     "MANAGER|modern=--enable-manager|legacy=--enable-manager --enable-manager-legacy-ui|no_ui=--enable-manager --disable-manager-ui"
     "CUDA_MALLOC|auto=|on=--cuda-malloc|off=--disable-cuda-malloc"
@@ -176,7 +179,6 @@ COMFYUI_CHOICE_FLAGS=(
 # (400 MiB reserved on Linux) stays in force.
 COMFYUI_NUMBER_FLAGS=(
     "RESERVE_VRAM:--reserve-vram"
-    "VRAM_HEADROOM:--vram-headroom"
 )
 
 comfyui_is_num() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
@@ -250,7 +252,7 @@ comfyui_argv() {
     # kind of mutually-exclusive group — so it is parsed rather than tabulated.
     # It still emits exactly one member of cache_group, malformed values
     # included: those fall back to the documented default, none.
-    cache=${COMFYUI_DROSTE_CACHE:-none}
+    cache=${COMFYUI_DROSTE_CACHE:-ram}
     mode=${cache%%:*}
     arg=""
     [ "$cache" = "$mode" ] || arg=${cache#*:}
@@ -286,9 +288,18 @@ comfyui_argv() {
         *) bad=1 ;;
     esac
     if [ "$bad" -eq 1 ]; then
-        serve::err "COMFYUI_DROSTE_CACHE='$cache' is not a valid value — using the default 'none'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
-        dyn+=( --cache-none )
+        serve::err "COMFYUI_DROSTE_CACHE='$cache' is not a valid value — using the default 'ram'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
+        dyn+=( --cache-ram )
     fi
+
+    # Raw catch-all, appended after every tabulated knob so a user's own option
+    # is the later one wherever ComfyUI lets a later option win. It stays INSIDE
+    # dyn on purpose: COMFYUI_ARGV_TAIL's --extra-model-paths-config is nargs='+'
+    # and must remain the last thing on the line. Deliberate word-split,
+    # unset-safe; quoting inside the value is not honoured (documented in
+    # comfyui.env), matching LLAMA_EXTRA_ARGS and DS4_DROSTE_EXTRA_ARGS.
+    # shellcheck disable=SC2206
+    dyn+=( ${COMFYUI_DROSTE_EXTRA_ARGS:-} )
 
     SERVICE=( "${COMFYUI_ARGV_HEAD[@]}" ${dyn[@]+"${dyn[@]}"} "${COMFYUI_ARGV_TAIL[@]}" )
 }

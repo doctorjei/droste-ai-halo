@@ -160,10 +160,72 @@ hook::seal_state() {
     return 0
 }
 
+# ── Keep the stamp ALIVE while apply_spec works (s48) ───────────────────────
+# 🚨 A STAMP IS A TIMESTAMP, AND A TIMESTAMP GOES STALE WHILE THE WORK IT DESCRIBES IS
+# STILL GOING ON. serve::_relaunch_due measures the relaunch cooldown from this record's
+# own mtime, and NOTHING between the stamp above and the server door below writes the
+# record again — so an apply_spec that outlasts DROSTE_SERVE_RELAUNCH_COOLDOWN (120s)
+# let the probe conclude the launch was stuck and relaunch the service into a
+# HALF-MOUNTED BOX. That is the very hole the stamp exists to close, and a FRESH INSTALL
+# walks straight into it: the model-tree scan runs for minutes on a box with no registry
+# yet, which is exactly the box a first start has.
+# The fix is a heartbeat rather than a bigger cooldown, because the number was never
+# wrong — the clock was. See serve::heartbeat_starting for the other half.
+#
+# ⚠️ IT MUST NOT MAKE A WEDGED HOOK IMMORTAL, and the two guards below are that promise:
+#   * it stops the moment the working process is gone, so a hook killed without running
+#     its EXIT trap leaves the record to go stale and the stale-`starting` relaunch
+#     recovers it — the behaviour g1lab/initstamp.sh checks 19-20 pin down, and the
+#     reason "never relaunch while the status says starting" was rejected as the fix;
+#   * it stops after HOOK_HEARTBEAT_MAX beats regardless, so a recycled pid cannot keep
+#     a dead launch looking alive for the life of the container.
+# A hook wedged INSIDE apply_spec does keep beating, and that is DELIBERATE rather than
+# an oversight: a relaunch cannot fix a mount that never returned — droste-healthcheck.sh
+# says so itself ("if the failure is CAUSED by a broken mount, relaunching the service
+# cannot fix it") — it can only start the service without one, which is the corruption
+# this whole block exists to prevent. Recovery for that case is podman's container
+# bounce, which is driven by the probe's EXIT CODE and is untouched by any of this: the
+# probe still reports UNHEALTHY on every beat, so the retry counter still advances.
+# ⚙️ $BASHPID, not $$: they are the same in production (the hook is sourced by the shell
+# that then runs apply_spec) but differ inside a subshell, where $$ stays the outer
+# shell's pid — a heartbeat that outlives its work is the one thing this must not be.
+: "${HOOK_HEARTBEAT_INTERVAL:=30}"   # seconds between beats (the probe's own interval)
+: "${HOOK_HEARTBEAT_MAX:=240}"       # hard cap; 240 × 30s = 2h, past every start period
+HEARTBEAT_PID=""
+
+hook::heartbeat() {  # <pid of the working process>
+    local parent=$1 beats=0
+    while [ "$beats" -lt "$HOOK_HEARTBEAT_MAX" ]; do
+        sleep "$HOOK_HEARTBEAT_INTERVAL"
+        kill -0 "$parent" 2>/dev/null || return 0   # the work is gone; let it go stale
+        serve::heartbeat_starting || return 0       # the launch has an owner again
+        beats=$((beats + 1))
+    done
+    return 0
+}
+
+hook::stop_heartbeat() {
+    [ -n "$HEARTBEAT_PID" ] || return 0
+    kill "$HEARTBEAT_PID" 2>/dev/null || true
+    HEARTBEAT_PID=""
+    return 0
+}
+
 # On ANY non-zero exit (including resolve::critical's internal exit 1) seal the launch
 # record and dump the log to stderr with a pointer; on success this is a no-op.
-trap 'ec=$?; if [ "$ec" -ne 0 ]; then hook::seal_state || :; { printf "droste-init-hook: resolver FAILED (exit %s). Detail (also saved to %s):\n" "$ec" "$RESOLVE_LOG"; tail -n 30 "$RESOLVE_LOG" 2>/dev/null; } >&2; fi' EXIT
+# ⚙️ The heartbeat is stopped on EVERY exit, not only the failing one — it is the one
+# thing here that outlives the shell if nobody reaps it.
+trap 'ec=$?; hook::stop_heartbeat || :; if [ "$ec" -ne 0 ]; then hook::seal_state || :; { printf "droste-init-hook: resolver FAILED (exit %s). Detail (also saved to %s):\n" "$ec" "$RESOLVE_LOG"; tail -n 30 "$RESOLVE_LOG" 2>/dev/null; } >&2; fi' EXIT
+# ⚙️ FDS DETACHED, DELIBERATELY. A background child inherits the init line's stdout, and
+# anything holding that pipe open holds up whoever is reading it — distrobox-init here,
+# and a `$(...)` around the hook in g1lab/initstamp.sh. The heartbeat prints nothing by
+# design, so it has no use for them.
+if serve::is_active; then
+    hook::heartbeat "$BASHPID" >/dev/null 2>&1 </dev/null &
+    HEARTBEAT_PID=$!
+fi
 resolve::apply_spec 2>"$RESOLVE_LOG"
+hook::stop_heartbeat
 # Success path: surface the resolver's own INFO/WARN lines (fuse fallback, etc.) too.
 cat "$RESOLVE_LOG" >&2
 

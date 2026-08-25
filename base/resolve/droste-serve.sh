@@ -123,6 +123,85 @@ serve::info() { printf 'droste-serve: INFO: %s\n' "$*" >&2; }
 serve::warn() { printf 'droste-serve: WARN: %s\n' "$*" >&2; }
 serve::err()  { printf 'droste-serve: ERROR: %s\n' "$*" >&2; }
 
+# ── Identity: DERIVED HERE, NEVER INHERITED ─────────────────────────────────
+# 🚨 DROSTE_LANE/DROSTE_USER ARE PROCESS-LOCAL TO THE INIT HOOK. It exports them
+# (droste-init-hook.sh:33,48) — but droste-healthcheck.sh and the host unit's
+# ExecStop reach this library through `podman exec`, which inherits NOTHING from
+# that process and runs as container root (no image sets USER). So every deviation
+# gated on those names was silently OFF there, and _privdrop_prefix returned at its
+# LANE test — above its own "will run as root" warning, so it said nothing at all.
+# The healthcheck's surgical relaunch therefore ran the SERVICE as container root,
+# which under keep-id is a host subuid: comfyui's user/default/comfy.settings.json
+# was created unwritable by the very user the next start runs it as.
+# The derivation below is the hook's, verbatim, so there is ONE rule and not two.
+#
+# ⚠️ THE CONTAINER TEST IS LOAD-BEARING, NOT BELT-AND-BRACES. A lab that sources this
+# library on a normal host has a uid>=1000 user in /etc/passwd too, and must keep
+# defaulting to the server lane — otherwise a harness driving serve::launch would try
+# to setpriv into whoever happens to be uid 1000 on the developer's machine.
+# ⚠️ AND THE MARKER IS THE BUILD-SPEC, NOT /run/.containerenv. The obvious podman
+# marker was MEASURED and rejected: it exists in every podman container including the
+# agent box this was written in, so it separates "a container" from "a host" and not
+# "a droste box" from "anything else". /opt/resources/build-spec is baked by all five
+# target images (targets/Container.*: `COPY build-spec /opt/resources/build-spec`) and
+# by nothing else, and it is already this file's own answer to "what is this box"
+# (see read_health_spec / build_service). A user with uid>=1000 beside it can only be
+# distrobox-init's: no image creates one (base/Container.runtime:42 adds a GROUP).
+# Absent marker ⇒ lane stays `server` ⇒ exactly today's behaviour. Fails closed.
+SERVE_IDENTITY_DERIVED=""
+serve::_derive_identity() {
+    local guess=""
+    [ -z "$SERVE_IDENTITY_DERIVED" ] || return 0
+    SERVE_IDENTITY_DERIVED=1
+    # GUESS ONLY WHEN THE CALLER TOLD US NOTHING — an explicit lane is never overridden,
+    # and an explicit `server` must not pick up a box user either: launch's HOME reads
+    # DROSTE_USER_HOME, so a guessed one would move the server lane's home out from
+    # under it on the strength of a stray passwd entry.
+    if [ -z "${DROSTE_LANE:-}" ] && [ -z "${DROSTE_USER:-}" ] \
+       && [ -f "${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}" ]; then
+        guess=$(awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }' /etc/passwd)
+    fi
+    if [ -n "$guess" ]; then
+        DROSTE_LANE=distrobox
+        DROSTE_USER=$guess
+        [ -n "${DROSTE_USER_HOME:-}" ] || \
+            DROSTE_USER_HOME=$(awk -F: '$3 >= 1000 && $3 < 65534 { print $6; exit }' /etc/passwd)
+    fi
+    : "${DROSTE_LANE:=server}" "${DROSTE_USER:=}" "${DROSTE_USER_HOME:=}"
+    export DROSTE_LANE DROSTE_USER DROSTE_USER_HOME
+    return 0
+}
+
+# _own — hand ONE path we just created to the box user, or do nothing. The four call
+# sites below used to spell this inline, each carrying its own copy of the lane gate;
+# one helper is what makes "derive first" impossible to forget at a fifth. Best effort
+# by construction (it is EPERM when a verb runs this as the box user, who already owns
+# the file): a chown we could not do must never fail a start or a health probe.
+serve::_own() {
+    serve::_derive_identity
+    [ "$DROSTE_LANE" = distrobox ] && [ -n "$DROSTE_USER" ] || return 0
+    chown "$DROSTE_USER:" "$1" 2>/dev/null || true
+    return 0
+}
+
+# _own_dirs — hand the DIRECTORIES under <root> to the box user, never the entries.
+# The twin of resolve::_own_dirs, and it lives HERE for the same reason _own does:
+# PRE_LAUNCH runs as root from BOTH doors, and the healthcheck's door sources this
+# library ALONE (droste-healthcheck.sh:57), so nothing in droste-resolve.sh is
+# reachable from it.
+# ⚠️ DIRECTORIES ONLY — and here that is a CORRECTNESS rule, not the cost argument its
+# twin makes. A model-tree entry is a SYMLINK into the user's HF cache, or under
+# --hardlink a second name for the cache blob itself; chowning entries would reach
+# through into the user's own data. Adding or removing a link is a directory-entry
+# operation, so owning the directories is both sufficient and the whole requirement.
+serve::_own_dirs() {
+    serve::_derive_identity
+    [ "$DROSTE_LANE" = distrobox ] && [ -n "$DROSTE_USER" ] || return 0
+    [ -d "$1" ] || return 0
+    find "$1" -type d ! -user "$DROSTE_USER" -exec chown "$DROSTE_USER:" {} + 2>/dev/null || true
+    return 0
+}
+
 # ── Config reading ──────────────────────────────────────────────────────────
 # read_config — parse server.env into SERVE_STARTUP_ENABLED (0/1), SERVE_PORT (digits
 # or ""), SERVE_CONFIG_ERR (human message or ""). NEVER fails, never aborts the
@@ -228,10 +307,8 @@ serve::set_active() {  # 0|1
         serve::warn "could not write $DROSTE_SERVE_ACTIVE"
         return 1
     }
-    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_ACTIVE" 2>/dev/null || true
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
-    fi
+    serve::_own "$DROSTE_SERVE_ACTIVE"
+    serve::_own "$DROSTE_SERVE_STATE_DIR"
     return 0
 }
 
@@ -414,9 +491,7 @@ serve::_write_state() {
         serve::warn "could not write $DROSTE_SERVE_RECORD"
         return 1
     }
-    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_RECORD" 2>/dev/null || true
-    fi
+    serve::_own "$DROSTE_SERVE_RECORD"
     return 0
 }
 
@@ -435,9 +510,7 @@ serve::_log_note() {
     esac
     printf '=== droste-serve: %s — %s\n' "$(date -Is 2>/dev/null || true)" "$msg" \
         >>"$DROSTE_SERVE_LOG" 2>/dev/null || return 0
-    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_LOG" 2>/dev/null || true
-    fi
+    serve::_own "$DROSTE_SERVE_LOG"
     return 0
 }
 
@@ -466,6 +539,31 @@ serve::_record_age() {
     mtime=$(stat -c %Y "$DROSTE_SERVE_RECORD" 2>/dev/null) || { printf '%s' 99999; return 0; }
     now=$(date +%s 2>/dev/null) || { printf '%s' 99999; return 0; }
     printf '%s' $(( now - mtime ))
+}
+
+# heartbeat_starting — refresh a `starting` record's mtime, and report whether it is
+# still `starting`. The second hand of the clock serve::_relaunch_due reads.
+#
+# 🚨 WHY THE CLOCK NEEDED ONE (s48, the fresh-install failure). _record_age measures
+# "since the record was last WRITTEN", and the init hook writes `starting` exactly ONCE,
+# before resolve::apply_spec (droste-init-hook.sh) — which on a fresh install spends
+# MINUTES in the model-tree scan and never touches the record again. So the age crossed
+# the 120s cooldown while the launch pipeline was healthily working, _relaunch_due said
+# yes, and the probe launched the service INTO A HALF-MOUNTED BOX: precisely the hole
+# the stamp was added to close, reopened by the stamp's own timestamp going stale.
+# A heartbeat makes the mtime mean "when did this launch last show a SIGN OF LIFE"
+# rather than "when did it begin" — which is the question the cooldown was always
+# asking, and the reason the fix is here and not in a bigger number.
+# ⚠️ ONLY `starting` IS EVER REFRESHED, and that is a safety property rather than
+# tidiness: touching a `refused` or `failed` record would postpone the very relaunch
+# that is supposed to recover from it. Any other status returns 1 — which doubles as
+# the beating caller's stop condition, since a record whose status changed has an owner
+# again and no longer needs anyone keeping it warm.
+serve::heartbeat_starting() {
+    serve::_read_pidfile || return 1
+    [ "${SERVE_REC_STATUS:-}" = starting ] || return 1
+    touch "$DROSTE_SERVE_RECORD" 2>/dev/null || return 1
+    return 0
 }
 
 # state_ok — did OUR launch succeed, and is that exact process still alive?
@@ -578,9 +676,10 @@ serve::_stop_stale() {
 # door never opened in any box.
 serve::_privdrop_prefix() {
     local uid gid
-    [ "${DROSTE_LANE:-server}" = distrobox ] || return 0
+    serve::_derive_identity
+    [ "$DROSTE_LANE" = distrobox ] || return 0
     [ "$(id -u)" = "0" ] || return 0            # not root: nothing to drop
-    [ -n "${DROSTE_USER:-}" ] || { serve::warn "no box user derived — the service will run as root."; return 0; }
+    [ -n "$DROSTE_USER" ] || { serve::warn "no box user derived — the service will run as root."; return 0; }
     uid=$(id -u "$DROSTE_USER" 2>/dev/null) || uid=""
     gid=$(id -g "$DROSTE_USER" 2>/dev/null) || gid=""
     if [ -z "$uid" ] || [ -z "$gid" ]; then
@@ -621,6 +720,10 @@ serve::_log_tail() {
 # nothing here is interactive, and the init hook's stdin is pid 1's.
 serve::launch() {
     local token=$1 prefix=() pid fields start cmd0 died=0
+    # IN THIS SHELL, not only inside _privdrop_prefix: the mapfile below runs that
+    # function in a PROCESS SUBSTITUTION, so everything it exports dies with the
+    # subshell and the HOME line further down would still read the caller's.
+    serve::_derive_identity
     if [ "${#SERVICE[@]}" -eq 0 ]; then
         serve::err "no SERVICE defined in the build-spec — nothing to serve."
         return 1
@@ -636,7 +739,7 @@ serve::launch() {
     fi
     serve::_log_note "launching: ${SERVICE[*]}"
 
-    HOME="${HOME:-/root}" \
+    HOME="${DROSTE_USER_HOME:-${HOME:-/root}}" \
     USER="${DROSTE_USER:-${USER:-root}}" \
     LOGNAME="${DROSTE_USER:-${LOGNAME:-root}}" \
         ${prefix[@]+"${prefix[@]}"} "${SERVICE[@]}" \
@@ -678,9 +781,7 @@ serve::launch() {
     # Keep the log deletable by the box user too (it is on the host's data dir;
     # written here as root, which is a subuid on the host under keep-id — the
     # state record is chowned by _write_state for the same reason).
-    if [ "${DROSTE_LANE:-server}" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
-        chown "$DROSTE_USER:" "$DROSTE_SERVE_LOG" 2>/dev/null || true
-    fi
+    serve::_own "$DROSTE_SERVE_LOG"
     # Report what actually happened. The old code announced "service started" from
     # the mere fact that a fork had returned a pid, so a service that died on its
     # first instruction left a container log claiming success and a port nobody was
@@ -757,6 +858,17 @@ serve::maybe_launch() {
     fi
 
     if serve::_port_busy "$SERVE_PORT"; then
+        # ⭐ OURS ALREADY? The refusal below is the right answer for a squatter and the
+        # WRONG one for our own server. The healthcheck's surgical relaunch comes
+        # through this function, so a launch record that goes bad while the service is
+        # genuinely up made every retry find the port held by the very process it was
+        # trying to start: refuse, stamp `refused`, fail gate 1 on that stamp, relaunch,
+        # refuse — for as long as the box lives. The adopt branch above cannot cover it,
+        # because it is nested inside a VALID record and a bad record is exactly what
+        # this case has. See serve::adopt_running for the proofs it demands first.
+        if serve::adopt_running "$SERVE_PORT" "$token"; then
+            return 0
+        fi
         serve::_not_serving refused "$token" - - \
             "port $SERVE_PORT is already in use (host networking: another droste box or a host process?) — not starting a second listener. Change PORT in $DROSTE_SERVE_ENV or free the port, then restart the container."
         return 0
@@ -883,6 +995,122 @@ serve::port_owned_by_us() {  # port, pid → 0 ours | 1 not ours | 2 cannot tell
         [ "$same" -eq 0 ] && return 1
     fi
     return 2            # a listener exists, same uid or unknown — genuinely unresolved
+}
+
+# ── Adoption: the port is busy — is the holder THIS BOX'S OWN SERVICE? ──────
+# The INVERSE of serve::port_owned_by_us, and the reason that one could not simply be
+# called from the refusal path: it verifies a pid we already have, and the refusal path
+# is precisely the path with no pid to verify (serve::relaunch writes the record's pid
+# field as "-", which _pid_is_ours rejects by design). Same two procfs files, same two
+# helpers, opposite direction: name the holder first, then decide whether it is ours.
+#
+# ⚠️ ADOPTION IS A STRONGER CLAIM THAN REFUSAL AND CARRIES A HEAVIER BURDEN OF PROOF.
+# Refusing needs only "something is on that port". Adopting writes `running` into the
+# launch record, which is the one thing that makes droste-healthcheck.sh call this box
+# healthy — and it hands server_stop a pid it is willing to signal. So ALL THREE proofs
+# below must hold; any one of them failing refuses exactly as before, and no path here
+# ever starts a process.
+
+# _port_holder_pid — which visible pid holds a LISTEN socket on <port>? Fails when there
+# is no listener, or when no holder's fd table is ours to read (a process outside our
+# user namespace) — both of which mean "cannot claim it", which is a refusal.
+#
+# ⭐ IT ANSWERS WITH THE ANCESTOR, AND THAT IS NOT A REFINEMENT — IT IS THE ANSWER.
+# A listening socket is INHERITED across fork (the same reason serve::port_owned_by_us
+# walks descendants at all: vllm hands its listener to workers), so several pids hold
+# ONE inode and /proc's glob order between them is lexical, i.e. arbitrary — "1001"
+# sorts before "999". Naming a worker would put a worker's pid in the launch record,
+# and server_stop signals exactly the pid in the record: it would kill one worker, watch
+# _pid_is_ours go false, and report "Server stopped." while the parent kept serving.
+# So: collect every holder, then answer with the one whose PARENT is not also a holder.
+# That costs the full /proc walk instead of stopping at the first match — the same walk
+# port_owned_by_us already pays on its rare path, and this path is rarer still (only a
+# busy port reaches it).
+serve::_port_holder_pid() {
+    local port=$1 rows inodes p holders="" stat ppid
+    # shellcheck disable=SC2034   # ino/uid name the procfs columns; only ino is used
+    local ino uid
+    rows=$(serve::_listen_rows "$port") || return 1
+    [ -n "$rows" ] || return 1
+    inodes=$(printf '%s\n' "$rows" | while read -r ino uid; do printf '%s\n' "$ino"; done)
+    for p in /proc/[0-9]*; do
+        p=${p#/proc/}
+        serve::_pid_holds_inode "$p" "$inodes" || continue
+        holders="$holders $p"
+    done
+    holders=${holders# }
+    [ -n "$holders" ] || return 1
+    for p in $holders; do
+        stat=$(cat "/proc/$p/stat" 2>/dev/null) || continue
+        stat=${stat##*") "}
+        # shellcheck disable=SC2086   # deliberate word split of a numeric stat line
+        set -- $stat
+        ppid=${2:-}
+        case " $holders " in *" $ppid "*) continue ;; esac
+        printf '%s' "$p"
+        return 0
+    done
+    # Every holder's parent is also a holder (the top of the tree exited between the two
+    # walks, or its stat was unreadable). Any of them still proves the port is held by
+    # this box; take the first rather than refuse over a race.
+    printf '%s' "${holders%% *}"
+    return 0
+}
+
+# _same_container — is <pid> a process of THIS container? The MOUNT namespace answers it
+# in both shapes these boxes run in: podman always gives the container its own, and it
+# does not depend on whether the box was created with `--pid host` (under which /proc
+# lists the whole machine and mere visibility proves nothing). An unreadable link is a
+# NO, not a shrug: /proc/<pid>/ns/* needs ptrace-read on the target, which we have for
+# our own container's processes and do not have for a stranger's — so the failure mode
+# points at refusal, which is the safe direction.
+serve::_same_container() {
+    local pid=$1 mine theirs
+    mine=$(readlink "/proc/self/ns/mnt" 2>/dev/null) || return 1
+    theirs=$(readlink "/proc/$pid/ns/mnt" 2>/dev/null) || return 1
+    [ -n "$mine" ] && [ "$mine" = "$theirs" ]
+}
+
+# _endpoint_ok — does the BOX'S OWN endpoint answer acceptably on <port>? The same
+# question droste-healthcheck.sh's gate 2 asks (build-spec HEALTH_PATH / HEALTH_ACCEPT),
+# and deliberately NOT the question serve::_port_busy asks: that one counts a TIMEOUT as
+# occupied, which is right for "may I bind?" and catastrophic for "may I call this
+# mine?". A wedged holder must keep refusing, not get adopted and reported healthy.
+serve::_endpoint_ok() {
+    local port=$1 code
+    command -v curl >/dev/null 2>&1 || return 1
+    serve::read_health_spec
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+        --max-time "${DROSTE_HEALTH_TIMEOUT:-5}" \
+        "http://127.0.0.1:${port}${HEALTH_PATH}" 2>/dev/null) || return 1
+    [ -n "$code" ] && [ "$code" != 000 ] || return 1
+    case "$HEALTH_ACCEPT" in
+        any) return 0 ;;
+    esac
+    [ "$code" -ge 200 ] && [ "$code" -lt 400 ]
+}
+
+# adopt_running — claim an already-running server as this box's own, or decline.
+# On success the record reads exactly as if we had launched it (pid + START TIME, so
+# _pid_is_ours pins the identity the same way) under THIS call's token, which puts the
+# next maybe_launch of this container start on the "already launched" fast path.
+# Says so loudly in both logs: this is a recovery from a state that should not happen,
+# and the note is the breadcrumb that lets the cause be found later — today the
+# `refused` stamp erases it.
+serve::adopt_running() {  # port, token → 0 adopted (record written) | 1 not ours
+    local port=$1 token=$2 pid fields start comm
+    pid=$(serve::_port_holder_pid "$port") || return 1
+    serve::_same_container "$pid" || return 1
+    fields=$(serve::_proc_fields "$pid") || return 1
+    [ "${fields% *}" != Z ] || return 1
+    start=${fields#* }
+    serve::_endpoint_ok "$port" || return 1
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null) || comm=""
+    comm=${comm//[[:space:]]/_}          # the record is 5 SPACE-separated fields
+    serve::info "port $port is already served by a process of this box (pid $pid) — adopting it rather than refusing to start a second one."
+    serve::_log_note "ADOPTED: pid $pid (${comm:--}) already holds port $port and answers this box's health endpoint; recording it as this box's server."
+    serve::_write_state running "$pid" "$start" "$token" "${comm:--}"
+    return 0
 }
 
 # ── Surgical recovery (used by droste-healthcheck.sh) ───────────────────────

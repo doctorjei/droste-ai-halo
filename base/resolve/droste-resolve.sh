@@ -667,7 +667,17 @@ resolve::_write_marker() {
             "# e.g.  -v /host/models:$(dirname "$marker")" \
             "# (This file was created to note you have been informed; deleting it re-shows the notice.)" \
             > "$marker"
+    fi || return 1
+    # The marker FILE is ours — we create it, as root in the distrobox lane — so hand it
+    # over. ⚠️ NOT its DIRECTORY: /opt/models is routinely the user's own bind, and the
+    # docs recommend mounting it :ro, so a _mkuserdir on the path above would chown
+    # something we did not make and would turn a read-only models dir into a failed
+    # start. Best-effort, and kept out of the return value: the caller reads that as
+    # "could the marker be written", which is a different question.
+    if [ "$DROSTE_LANE" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
+        chown "$DROSTE_USER:" "$marker" 2>/dev/null || true
     fi
+    return 0
 }
 
 resolve::optional() {
@@ -698,7 +708,11 @@ resolve::optional() {
 # forgot-to-bind signal is the ANONYMOUS-volume shape (_anon_volume), warned on below.
 resolve::ensure_data() {
     local dir=${1:-$DROSTE_DATA_DIR}
-    mkdir -p "$dir"
+    # _mkuserdir, not a bare mkdir: this root is created here whenever it is NOT bound
+    # (an anonymous volume, or a plain dir in the container layer), and the distrobox
+    # hook is root — a root-owned root is one the box user cannot write the volume's own
+    # top level into. Same reason every src under it goes through this helper.
+    resolve::_mkuserdir "$dir"
     if ! resolve::is_bound "$dir"; then
         resolve::warn "$dir is not a bound volume — using an image-provided (anonymous) volume; bind it with -v <host>:$dir to persist across container recreation."
     elif resolve::_anon_volume "$dir"; then
@@ -720,7 +734,7 @@ resolve::ensure_data() {
 # not). The anonymous-volume branch stays for the user who binds one by hand.
 resolve::ensure_pcache() {
     local dir=${1:-$DROSTE_PCACHE_DIR}
-    mkdir -p "$dir"
+    resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_data
     if ! resolve::is_bound "$dir"; then
         resolve::warn "$dir is not a bound volume — the venv overlay upper and the box's other program caches will live in the container's writable layer, so in-box installs are LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/caches/<box>:$dir\")."
     elif resolve::_anon_volume "$dir"; then

@@ -178,11 +178,24 @@ TAB=$(printf '\t')
 # ── 1) enumerate env-having flags → table of "NAME<TAB>DEFAULT" lines ─────────
 # timeout: --help may probe for a GPU and hang on a GPU-less builder; a timeout
 # (exit 124) is treated like any other --help failure → string-scan fallback.
-mode=help
-help_text=$(timeout 60 "$SERVER" --help 2>&1) || mode=scan
-if [ "$mode" = help ] && ! grep -q '(env: LLAMA_ARG_' <<<"$help_text"; then
-    mode=scan
+# 🚨 EXIT STATUS IS THE WRONG TEST, and using it cost a build (s51). This step ran
+# in `help` mode on one CI build and fell back to `scan` on the very next one with
+# no source change between them: llama-server PRINTS the whole help and can then
+# exit non-zero on its way out on a GPU-less builder, and the old `|| mode=scan`
+# threw away output that was already complete. The only question that matters is
+# whether we HAVE usable help, so that is the only thing tested now.
+#
+# Two attempts, because the failure is a device probe: the second hides the GPUs
+# so there is nothing to enumerate. `timeout` guards a hang either way (exit 124
+# is just another way of having no usable output).
+mode=scan
+help_text=$(timeout 60 "$SERVER" --help 2>&1 || true)
+if ! grep -q '(env: LLAMA_ARG_' <<<"$help_text"; then
+    note "'$SERVER --help' gave no usable output on the first try — retrying with the GPUs hidden"
+    help_text=$(HIP_VISIBLE_DEVICES=-1 ROCR_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 \
+                timeout 60 "$SERVER" --help 2>&1 || true)
 fi
+grep -q '(env: LLAMA_ARG_' <<<"$help_text" && mode=help
 
 if [ "$mode" = help ]; then
     table=$(awk '

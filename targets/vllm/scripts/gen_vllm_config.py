@@ -71,11 +71,39 @@ def emit_header(out):
     out.append("#")
     out.append("# This YAML mirrors the `vllm serve` command-line arguments: each key is a long")
     out.append("# CLI flag without the leading `--` (e.g. `max-model-len:` == `--max-model-len`).")
+    out.append("#")
+    out.append("# ⭐ EVERY long `vllm serve` flag is a legal key here — all ~211 of them, not just")
+    out.append("# the dozen this file happens to name. Run `vllm serve --help=all` in the box to")
+    out.append("# see the whole list, then add the ones you want as keys. The high-impact ones for")
+    out.append("# this hardware are listed at the bottom of this header.")
+    out.append("#")
+    out.append("# 🚨 `key: false` DOES NOT TURN A SETTING OFF — it emits nothing at all, so the")
+    out.append("# setting keeps its default. To turn OFF something that is on by default, write")
+    out.append("# the negated flag as its own key:  `no-enable-prefix-caching: true`.  This bites")
+    out.append("# on every one of vLLM's ~60 boolean options and it is upstream's behaviour, not")
+    out.append("# ours.")
+    out.append("#")
     out.append("# These values are the LOWEST precedence — anything you pass on the command line or")
     out.append("# via $VLLM_EXTRA_ARGS overrides what is set here (vLLM's config-merge order).")
+    out.append("# $VLLM_EXTRA_ARGS and $VLLM_CONFIG are set in /opt/data/vllm.env, which is this")
+    out.append("# box's other config file: it holds the ~209 runtime VLLM_* ENVIRONMENT VARIABLES,")
+    out.append("# including the ROCm performance switches, which cannot be expressed as YAML keys.")
     out.append("#")
     out.append("# The container serves THIS file by default ($VLLM_CONFIG=/opt/data/vllm_config.yaml).")
     out.append("# Edit it in place; it lives on the persisted /opt/data volume.")
+    out.append("#")
+    out.append("# ⚠️ THESE FLAGS TAKE THE BOX DOWN, though vLLM accepts them. The box's healthcheck")
+    out.append("# probes http://127.0.0.1:$PORT/health with the scheme hardcoded, and a failed probe")
+    out.append("# restarts the container — so anything that stops that exact URL from answering")
+    out.append("# produces a restart loop rather than an error:")
+    out.append("#   ssl-keyfile, ssl-certfile, ssl-ca-certs, ssl-cert-reqs, ssl-ciphers,")
+    out.append("#   enable-ssl-refresh   (TLS: the probe still speaks http)")
+    out.append("#   uds                  (a unix socket: nothing answers TCP)")
+    out.append("#   headless             (no API server at all)")
+    out.append("# Terminate TLS in a proxy in front of the box instead.")
+    out.append("#")
+    out.append("# ✅ `api-key:` is safe: vLLM's auth middleware skips any path outside /v1, so")
+    out.append("# /health still answers and the healthcheck keeps working.")
     out.append("#")
     out.append("# Stale compiled-graph note: this image sets VLLM_DISABLE_COMPILE_CACHE=1, so vLLM")
     out.append("# does not persist torch.compile graphs. If vLLM crashes right after a version bump,")
@@ -101,6 +129,57 @@ def emit_header(out):
     out.append("# gpu-memory-utilization: 0.90")
     out.append("# max-num-batched-tokens: 8192")
     out.append("")
+    emit_key_guide(out)
+
+
+def emit_key_guide(out):
+    """The keys a single-user Strix Halo box actually reaches for.
+
+    Not a wish list and not the full 211 — a signpost, so a user who read upstream's
+    docs can tell that the rest of the surface is legal here. Grouped the way vLLM's
+    own config classes group them, since that is how `--help=all` prints.
+    """
+    out.append("# ══ Keys worth knowing on this box (all legal, none set) ═════════════════════")
+    out.append("#   the full list is `vllm serve --help=all`; these are the ones that bite here")
+    out.append("#")
+    out.append("# Memory — the story does not stop at gpu-memory-utilization")
+    out.append("#   kv-cache-memory-bytes  an ABSOLUTE figure, far more predictable than a")
+    out.append("#                          fraction of a pool the GPU shares with the system")
+    out.append("#   swap-space             silently reserves 4 GiB of host RAM by default")
+    out.append("#   cpu-offload-gb, block-size, num-gpu-blocks-override, kv-cache-dtype")
+    out.append("#   enable-prefix-caching  ON by default — to disable: no-enable-prefix-caching: true")
+    out.append("#")
+    out.append("# Compute")
+    out.append("#   attention-backend      one key, its own group, and the most likely thing to")
+    out.append("#                          try on a GPU architecture this new")
+    out.append("#   optimization-level (-O), enforce-eager, compilation-config, dtype,")
+    out.append("#   quantization, calculate-kv-scales")
+    out.append("#   ⚠️ enforce-eager appears inside some model stanzas below as the documented")
+    out.append("#      Strix Halo workaround; it is a global key too. To undo a stanza's, use")
+    out.append("#      no-enforce-eager: true")
+    out.append("#")
+    out.append("# Local weights / air-gap")
+    out.append("#   download-dir, load-format, ignore-patterns, safetensors-load-strategy,")
+    out.append("#   hf-token, revision, served-model-name, model-impl")
+    out.append("#   (VLLM_MODEL_REDIRECT_PATH in vllm.env maps repo ids to local paths)")
+    out.append("#")
+    out.append("# Scheduling")
+    out.append("#   enable-chunked-prefill, async-scheduling, scheduling-policy,")
+    out.append("#   long-prefill-token-threshold, max-num-partial-prefills, stream-interval")
+    out.append("#")
+    out.append("# Serving / frontend")
+    out.append("#   api-key, chat-template, response-role, allowed-origins, max-log-len,")
+    out.append("#   uvicorn-log-level, disable-fastapi-docs, enable-offline-docs")
+    out.append("#")
+    out.append("# Multimodal and LoRA")
+    out.append("#   limit-mm-per-prompt, skip-mm-profiling, video-pruning-rate,")
+    out.append("#   mm-processor-cache-gb   ⚠️ reserves 4 GiB by DEFAULT on a multimodal model")
+    out.append("#   enable-lora, max-loras, max-lora-rank, lora-modules")
+    out.append("#")
+    out.append("# Advanced")
+    out.append("#   speculative-config, structured-outputs-config, additional-config,")
+    out.append("#   max-logprobs, generation-config, hf-overrides, enable-sleep-mode")
+    out.append("")
 
 
 def emit_model(out, repo, spec):
@@ -113,11 +192,16 @@ def emit_model(out, repo, spec):
 
     env = spec.get("env") or {}
     if env:
-        out.append("#   env (shell vars — set BEFORE launch, they cannot live in this yaml):")
+        # These cannot be YAML keys, and telling the user to `export` them is advice
+        # that does not survive a container restart. /opt/data/vllm.env is where an
+        # env var for the SERVED process goes — before that file existed this stanza
+        # named opt-ins the user had no way to take, and could not tell apart from the
+        # ones the image already bakes.
+        out.append("#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):")
         for k, v in env.items():
-            out.append(f"#     export {k}={v}")
+            out.append(f"#     {k}={v}")
     else:
-        out.append("#   env (shell vars — set BEFORE launch): <none>")
+        out.append("#   env (lines for /opt/data/vllm.env): <none>")
 
     ctx = spec.get("ctx")
     if ctx:
@@ -134,14 +218,20 @@ def emit_model(out, repo, spec):
     if spec.get("max_tokens") is not None:
         out.append(f"# max-model-len: {spec['max_tokens']}")
 
-    if "trust_remote" in spec:
-        out.append(f"# trust-remote-code: {str(bool(spec['trust_remote'])).lower()}")
+    # ⚠️ NEVER emit `<key>: false`. vLLM's config reader drops a false boolean
+    # instead of negating it, so such a line teaches an idiom that silently does
+    # nothing (see the header). A boolean upstream records as False is simply the
+    # default, so the honest rendering is to leave it out.
+    if spec.get("trust_remote"):
+        out.append("# trust-remote-code: true")
     if spec.get("enforce_eager"):
         out.append("# enforce-eager: true")
 
     for key, val in parse_extra_flags(spec.get("extra_flags") or []):
         if val is None:
             out.append(f"# {key}: true")
+        elif str(val).lower() == "false":
+            out.append(f"# no-{key}: true   # (upstream writes --{key} false; that is a no-op in yaml)")
         else:
             out.append(f"# {key}: {val}")
 

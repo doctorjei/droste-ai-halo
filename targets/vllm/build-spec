@@ -25,8 +25,23 @@ HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE (optional) ──────────────────────────────────────────────────────
-# vLLM's config is a YAML consumed via --config, not a sourced env file.
-ENV_FILE=""
+# Seeded from templates/vllm.env (templates.yaml if_missing). vLLM's SERVE FLAGS
+# live in the YAML consumed via --config; this file carries the ~209 runtime
+# VLLM_* ENVIRONMENT VARIABLES, which are not expressible as YAML keys — several
+# are read before any config is parsed. Two mechanisms, so two files.
+#
+# ⚠️ It is also the only place $VLLM_EXTRA_ARGS and $VLLM_CONFIG can be set. Both
+# were advertised by this box (here and in the generated YAML header) while no
+# file existed to hold them, which made the catch-all itself unreachable in the
+# lane that serves. server.env cannot stand in: it is read in a subshell whose
+# output is discarded except for three keys.
+#
+# ⭐ ORDERING IS LOAD-BEARING AND ALREADY CORRECT: the resolver sources this file
+# AFTER the build-spec and BEFORE PRE_LAUNCH, and PRE_LAUNCH re-reads $VLLM_CONFIG
+# when it rebuilds SERVICE — so a user's VLLM_CONFIG here wins over the default
+# set at the top of this file. Do not move the `: "${VLLM_CONFIG:=...}"` line into
+# PRE_LAUNCH, and do not hardcode the path in the rebuild.
+ENV_FILE="/opt/data/vllm.env"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Overlay the persisted upper over the WHOLE baked venv (captures bin/ console

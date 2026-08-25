@@ -2126,7 +2126,7 @@ class ScannerTest(unittest.TestCase):
         scripts = Path(ms.__file__).resolve().parent
         self.assertIn("pickle.Unpickler",
                       (scripts / "model_formats.py").read_text())
-        for tool in ("model_scanner.py", "droste-civitai-adopt.sh"):
+        for tool in ("model_scanner.py", "droste-civitai-adopt.py"):
             self.assertNotIn("pickle.Unpickler", (scripts / tool).read_text(),
                              f"{tool} grew its own unpickler again")
 
@@ -2738,6 +2738,70 @@ class ScannerTest(unittest.TestCase):
         # old generic-named link (ours) was pruned; provenance name took over
         self.assertNotIn("text_encoders/model.safetensors", links)
         self.assertIn("text_encoders/FLUX.1-Fill-dev--text_encoder.safetensors", links)
+
+    # ------------------------- s48: one HF cache rule, not one per tool
+    def _cache_default(self, **env) -> Path:
+        """The --cache-dir the CLI lands on under this environment. Goes through
+        build_parser, not just the helper: the DEFAULT is the site that was wrong."""
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("HF_HUB_CACHE", "HF_HOME")}
+        clean["HOME"] = str(self.fx.root / "fakehome")
+        clean.update(env)
+        with mock.patch.dict(os.environ, clean, clear=True):
+            resolved = ms.resolve_cache_dir()
+            parsed = ms.build_parser().parse_args(["sync"]).cache_dir
+        self.assertEqual(parsed, resolved, "parser default drifted from the helper")
+        return resolved
+
+    def test_hf_hub_cache_alone_is_honored(self):
+        self.assertEqual(self._cache_default(HF_HUB_CACHE="/media/drive/hub"),
+                         Path("/media/drive/hub"))
+
+    def test_hf_home_alone_is_honored(self):
+        """THE DEFECT (s48): this scanner read HF_HUB_CACHE only, so the form HF's own
+        docs lead with -- `export HF_HOME=/media/user/drive/HF_Cache` -- left it scanning
+        ~/.cache and reporting an EMPTY cache, with no error, while droste-hf-adopt.py
+        followed the user to the drive."""
+        self.assertEqual(self._cache_default(HF_HOME="/media/drive/HF_Cache"),
+                         Path("/media/drive/HF_Cache/hub"))
+
+    def test_hf_hub_cache_wins_over_hf_home(self):
+        """huggingface_hub's own precedence: HF_HUB_CACHE is the specific setting and
+        overrides the HF_HOME-derived one."""
+        self.assertEqual(self._cache_default(HF_HUB_CACHE="/media/drive/hub",
+                                             HF_HOME="/media/drive/HF_Cache"),
+                         Path("/media/drive/hub"))
+
+    def test_neither_set_falls_back_to_the_default(self):
+        home = self.fx.root / "fakehome"
+        self.assertEqual(self._cache_default(), home / ".cache/huggingface/hub")
+        # an env var set to EMPTY is not a setting -- same reading in both tools
+        self.assertEqual(self._cache_default(HF_HUB_CACHE="", HF_HOME=""),
+                         home / ".cache/huggingface/hub")
+
+    def test_hf_cache_resolution_matches_the_adopt_tool(self):
+        """The rule is shared knowledge with droste-hf-adopt.py, but a shared MODULE
+        would need its own COPY line in Container.comfyui -- so the two copies are held
+        together here instead. Anything that changes one and not the other fails."""
+        import importlib.machinery
+        import importlib.util
+
+        script = Path(ms.__file__).resolve().parent / "droste-hf-adopt.py"
+        loader = importlib.machinery.SourceFileLoader("droste_hf_adopt", str(script))
+        adopt = importlib.util.module_from_spec(
+            importlib.util.spec_from_loader("droste_hf_adopt", loader))
+        loader.exec_module(adopt)
+        for env in ({}, {"HF_HUB_CACHE": "/media/drive/hub"},
+                    {"HF_HOME": "/media/drive/HF_Cache"},
+                    {"HF_HUB_CACHE": "/media/drive/hub",
+                     "HF_HOME": "/media/drive/HF_Cache"},
+                    {"HF_HOME": "~/HF_Cache"}):
+            clean = {k: v for k, v in os.environ.items()
+                     if k not in ("HF_HUB_CACHE", "HF_HOME")}
+            clean["HOME"] = str(self.fx.root / "fakehome")
+            clean.update(env)
+            with mock.patch.dict(os.environ, clean, clear=True):
+                self.assertEqual(ms.resolve_cache_dir(), adopt.resolve_cache(None), env)
 
     def test_default_verb_is_sync_and_help_works(self):
         populate_standard(self.fx)

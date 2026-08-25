@@ -2300,13 +2300,32 @@ def cmd_rename(args) -> int:
 
 # --------------------------------------------------------------------------------- cli
 
+def resolve_cache_dir() -> Path:
+    """Where the HF hub cache is: $HF_HUB_CACHE > $HF_HOME/hub > the default.
+
+    IDENTICAL to droste-hf-adopt.py's resolve_cache(), and it has to be: honouring
+    HF_HUB_CACHE alone (what this did until s48) silently misses the form HF's own
+    docs lead with -- `export HF_HOME=/media/user/drive/HF_Cache` moves the cache,
+    the adopt tool follows it, and this scanner reported an EMPTY cache instead of
+    an error. One implementation would need a new module, and a new module needs a
+    COPY line in Container.comfyui; the two copies are held together by a test
+    (test_hf_cache_resolution_matches_the_adopt_tool) rather than by an import.
+    huggingface_hub also reads $XDG_CACHE_HOME on the last rung; neither tool does,
+    and they must not disagree about it separately.
+    """
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]).expanduser() / "hub"
+    return Path(DEFAULT_CACHE_DIR).expanduser()
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cache-dir", type=lambda s: Path(s).expanduser(),
-                        default=Path(os.environ.get("HF_HUB_CACHE",
-                                                    DEFAULT_CACHE_DIR)).expanduser(),
+                        default=resolve_cache_dir(),
                         help=f"HF hub cache (default {DEFAULT_CACHE_DIR}, "
-                             f"honors $HF_HUB_CACHE)")
+                             f"honors $HF_HUB_CACHE and $HF_HOME)")
     common.add_argument("--models-dir", type=lambda s: Path(s).expanduser(),
                         default=Path(DEFAULT_MODELS_DIR),
                         help=f"optional local models dir (default {DEFAULT_MODELS_DIR}; "

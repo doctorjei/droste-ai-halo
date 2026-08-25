@@ -6,7 +6,17 @@
 # workspace. A user who deleted/moved the starters expressed intent — any entry at
 # all (dotfiles included) skips the seed, so nothing is ever resurrected.
 #
-# No if_missing entries: finetuning has no generated config file.
-
 if_empty:
   workspace: /opt/workspace
+
+# The box's CONFIG SURFACE, in two halves — the user's own edits, so DATA class
+# (/opt/data, never in the installer's wipe) and never overwritten once seeded.
+#
+# finetuning.env carries the environment variables; it is this box's ENV_FILE.
+# jupyter_server_config.py carries the ~220 traits, and is only ON JUPYTER'S
+# SEARCH PATH because finetuning.env sets JUPYTER_CONFIG_DIR to the directory
+# below. The two are a pair: seeding the trait file without the env file would
+# put it somewhere Jupyter never looks.
+if_missing:
+  finetuning.env: /opt/data/finetuning.env
+  jupyter_server_config.py: /opt/data/jupyter/jupyter_server_config.py

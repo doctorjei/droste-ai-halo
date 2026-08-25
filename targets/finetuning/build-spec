@@ -5,10 +5,15 @@
 # See base/resolve/build-spec.example for the full contract.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
+# Placeholder argv; finetuning_pre_launch REBUILDS it after ENV_FILE is sourced
+# so JUPYTER_DROSTE_EXTRA_ARGS can join the command line. Keep the two in step.
+#
 # JupyterLab, rooted at the user workspace so relative output-*/ dirs from
 # train.py land on the persistent workspace mount. --notebook-dir is a live
-# jupyter-server alias for ServerApp.root_dir. Default token auth stays ON
-# (random token printed in the container log; set JUPYTER_TOKEN to fix one).
+# jupyter-server alias for ServerApp.root_dir. Default token auth stays ON — the
+# token rerolls every start and `jupyter server list` is how you read it;
+# JUPYTER_TOKEN in ENV_FILE fixes one (which only became reachable when this box
+# got an ENV_FILE at all).
 SERVICE=( jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
           --no-browser --allow-root )
 
@@ -20,8 +25,16 @@ HEALTH_PATH="/"
 HEALTH_ACCEPT="any"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
-# None: finetuning has no env-file style config (jupyter takes flags).
-ENV_FILE=""
+# Seeded from templates/finetuning.env (templates.yaml if_missing). Both resolvers
+# source it under `set -a`, so every assignment reaches the JupyterLab process —
+# and that is the ONLY mechanism that can act before Jupyter reads any config,
+# which is what makes JUPYTER_CONFIG_DIR (and therefore the seeded trait file)
+# work at all. server.env cannot do this: it is read in a subshell whose output is
+# discarded except for three keys.
+#
+# ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
+# in neither — a knob present but inert, which is worse than an absent one.
+ENV_FILE="/opt/data/finetuning.env"
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # venv overlay (universal): user pip installs land on /opt/program-cache (CACHE
@@ -73,4 +86,14 @@ PRE_LAUNCH="finetuning_pre_launch"
 finetuning_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-env-for-triton.sh
+
+    # Rebuild SERVICE now that JUPYTER_DROSTE_EXTRA_ARGS is known. It goes LAST
+    # deliberately: a Jupyter command-line flag beats every config file AND a
+    # repeated flag resolves to the later one, so appending is what makes the
+    # catch-all able to override an argument droste sets (--ip is the one users
+    # ask for). Deliberate word-split, unset-safe; quoting inside the value is
+    # not honoured (documented in finetuning.env), matching the other ports.
+    # shellcheck disable=SC2206
+    SERVICE=( jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
+              --no-browser --allow-root ${JUPYTER_DROSTE_EXTRA_ARGS:-} )
 }

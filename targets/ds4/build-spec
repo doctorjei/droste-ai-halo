@@ -118,13 +118,44 @@ DS4_BOOL_FLAGS=(
 
 PRE_LAUNCH="ds4_pre_launch"
 ds4_pre_launch() {
-    # ENV_FILE is sourced un-exported by the resolver; export every DS4_* var so
-    # the NATIVE ones (DS4_THREADS etc.) reach the binary across the exec.
-    # (Exported DS4_DROSTE_* are harmless — the binary ignores them.)
-    local v
+    # Both resolvers source ENV_FILE under `set -a`, so its assignments are already
+    # exported. This loop is belt-and-braces for a DS4_* the USER exported into the
+    # container's create-time env instead, and for any future caller that sources the
+    # spec without it. (Exported DS4_DROSTE_* are harmless — the binary ignores them.)
+    local v var
     for v in $(compgen -v DS4_ || true); do
         export "${v?}"
     done
+
+    # ── refuse the two settings that make ds4-server EXIT AT STARTUP ─────────
+    # Both are values a user can reach by following upstream's help, and both kill
+    # the box AFTER the model has been opened — the worst moment to fail. ds4.env no
+    # longer offers either, but it is seeded `if_missing`, so a box created before
+    # this change still has the old lines. Warn loudly and drop the flag: a box that
+    # starts and says why beats a box that restart-loops. Same stance as comfyui's
+    # invalid-value handling.
+    #
+    # 1) SSD expert streaming is Metal-only (`ds4.c:24549`: "--ssd-streaming is
+    #    currently supported only with --metal"). The three companions feed only
+    #    that path, so they go with it.
+    if [ "${DS4_DROSTE_BACKEND:-rocm}" != metal ]; then
+        for v in SSD_STREAMING SSD_STREAMING_COLD SSD_STREAMING_CACHE_EXPERTS \
+                 SSD_STREAMING_PRELOAD_EXPERTS; do
+            var="DS4_DROSTE_$v"
+            case "${!var:-}" in
+                ""|0|false|no|off) continue ;;
+            esac
+            serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DS4_DROSTE_BACKEND:-rocm} backend. Ignoring it; remove the line from $ENV_FILE."
+            unset "$var"
+        done
+    fi
+    # 2) A steering SCALE with no steering FILE is fatal, not ignored
+    #    (`ds4.c:24504`: "directional steering needs --dir-steering-file").
+    if [ -z "${DS4_DROSTE_DIR_STEERING_FILE:-}" ] \
+       && { [ -n "${DS4_DROSTE_DIR_STEERING_FFN:-}" ] || [ -n "${DS4_DROSTE_DIR_STEERING_ATTN:-}" ]; }; then
+        serve::err "DS4_DROSTE_DIR_STEERING_FFN/_ATTN are set without DS4_DROSTE_DIR_STEERING_FILE — ds4-server would exit at startup. Ignoring the scales; set a steering file in $ENV_FILE or remove them."
+        unset DS4_DROSTE_DIR_STEERING_FFN DS4_DROSTE_DIR_STEERING_ATTN
+    fi
 
     # Pre-create the KV disk dir (active default /opt/program-cache/kv-disk —
     # CACHE class, regenerable session state, and outside compute/ because it is
@@ -144,7 +175,7 @@ ds4_pre_launch() {
     fi
 
     # Translate DS4_DROSTE_* → argv. Native DS4_* untouched (binary reads them).
-    local argv=( ds4-server ) entry var flag val
+    local argv=( ds4-server ) entry flag val
     for entry in "${DS4_VALUE_FLAGS[@]}"; do
         var="DS4_DROSTE_${entry%%:*}"
         flag=${entry#*:}

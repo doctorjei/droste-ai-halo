@@ -75,8 +75,14 @@ OPTIONAL=(
 )
 
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
-# DS4_DROSTE_<SUFFIX> → flag maps (mirror the derivation rule documented in
-# templates/ds4.env; source-verified against pinned kyuz0/ds4 @00e64ea).
+# DS4_DROSTE_<SUFFIX> → flag maps. Source-verified against pinned kyuz0/ds4
+# @00e64ea.
+# ⭐ THESE TABLES ARE THE ONLY MAPPING. ds4.env used to document a flag→variable
+# derivation rule and no longer does (Jei, s51): once ENABLE_EXACT_DSML_TOOL_REPLAY
+# inverted its sense, the rule had an exception, and a rule with an exception is
+# worse than none — a reader who derives a name gets a variable nothing reads.
+# So the file names every variable explicitly and these arrays decide what each
+# one emits. Adding a setting means editing BOTH; there is nothing to fall back on.
 DS4_VALUE_FLAGS=(
     "MODEL:--model"
     "MTP:--mtp"
@@ -118,14 +124,12 @@ DS4_BOOL_FLAGS=(
 # engine's default is the positive state. `on` emits nothing (the feature is
 # already on); `off` emits the disabling flag.
 #
-# ⭐ THE VARIABLE NAME DELIBERATELY DOES NOT FOLLOW THE DERIVATION RULE, and that is
-# the point (Jei): `DS4_DROSTE_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double
-# negative, and nobody should have to work out that "false" means the feature is
-# running. The rule documented in ds4.env buys predictability everywhere else; here
-# it costs comprehension, so the name is inverted and this table does the work.
-# ⚠️ Which means the name here and the name in ds4.env must be changed TOGETHER —
-# there is no derivation to fall back on. A mismatch is a silently inert setting,
-# which is exactly how this row was found.
+# ⭐ THE NAME IS NOT DERIVED FROM THE FLAG, and that is the point (Jei):
+# `DS4_DROSTE_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double negative, and nobody
+# should have to work out that "false" means the feature is running. This row is
+# why ds4.env no longer documents a derivation rule at all.
+# ⚠️ The name here and the name in ds4.env must therefore be changed TOGETHER. A
+# mismatch is a silently inert setting, which is exactly how this row was found.
 DS4_BOOL_FLAGS_INVERTED=(
     "ENABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
 )

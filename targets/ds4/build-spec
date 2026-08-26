@@ -136,10 +136,9 @@ DS4_BOOL_FLAGS_INVERTED=(
 
 # ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognised.
 # ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.env's documented vocabulary is
-# `on`/`off`, so `Off` and `OFF` are what a user will actually type. The older
-# positive loop below still treats those as ON (it tests a blacklist of exact
-# lowercase strings) — a known defect, not fixed here because it changes the
-# meaning of six shipped settings. This helper is the shape that fix would take.
+# `on`/`off`, so `Off`, `OFF` and a stray trailing space are what a user will
+# actually type. Every boolean in this file goes through here — both tables and the
+# SSD guard — so there is exactly one answer to "what counts as off".
 ds4_bool() {
     local v=${1:-}
     v=${v,,}; v=${v// /}
@@ -177,8 +176,15 @@ ds4_pre_launch() {
         for v in SSD_STREAMING SSD_STREAMING_COLD SSD_STREAMING_CACHE_EXPERTS \
                  SSD_STREAMING_PRELOAD_EXPERTS; do
             var="DS4_DROSTE_$v"
-            case "${!var:-}" in
-                ""|0|false|no|off) continue ;;
+            # ⚠️ Two of these four are VALUE flags (…CACHE_EXPERTS, …PRELOAD_EXPERTS),
+            # so "is it on" is "is it non-empty" for those and a real on/off read for
+            # the other two. ds4_bool returns "" for a count like `8`, hence the
+            # second test. Using ds4_bool here rather than a second blacklist is what
+            # keeps `SSD_STREAMING=Off` from warning here while reading as off below.
+            case "$(ds4_bool "${!var:-}")" in
+                on) ;;
+                off) continue ;;
+                *) [ -n "${!var:-}" ] || continue ;;
             esac
             serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DS4_DROSTE_BACKEND:-rocm} backend. Ignoring it; remove the line from $ENV_FILE."
             unset "$var"
@@ -252,12 +258,21 @@ ds4_pre_launch() {
             argv+=( "$flag" "$val" )
         fi
     done
+    # Positive bools: `on` emits the flag, `off` or unset emits nothing (which for
+    # every one of these IS ds4's default — none of them has a --no-X form).
+    # ⚠️ THIS USED TO BE A BLACKLIST — anything outside ""|0|false|no|off emitted the
+    # flag — so `Off`, `FALSE` and `disabled` all turned a setting ON, which is the
+    # dangerous direction: a user trying to disable something enabled it. Measured,
+    # not theorised. Now a whitelist, case-folded, matching ds4.env's own on/off
+    # vocabulary; an unrecognised value warns and leaves the flag off.
     for entry in "${DS4_BOOL_FLAGS[@]}"; do
         var="DS4_DROSTE_${entry%%:*}"
         flag=${entry#*:}
-        case "${!var:-}" in
-            ""|0|false|no|off) ;;
-            *) argv+=( "$flag" ) ;;
+        val=${!var:-}
+        case "$(ds4_bool "$val")" in
+            on)  argv+=( "$flag" ) ;;
+            off) ;;
+            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving $flag off. Use on or off." ;;
         esac
     done
     # Inverted bools: emit the negating flag only for an explicit `off`. An

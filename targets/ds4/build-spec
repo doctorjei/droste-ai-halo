@@ -214,6 +214,16 @@ ds4_pre_launch() {
     # root that can never exist. /opt/models is the bind point this image advertises
     # for a local GGUF collection, and the filename is upstream's own.
     : "${DS4_DROSTE_MODEL=/opt/models/ds4flash.gguf}"
+    # Context: 64K, against ds4's own 32768. Unlike the two above, the engine's
+    # default here works fine — this is droste deliberately overriding a usable
+    # value. Jei's reasoning (s51): everyone wants a larger context, but it has to
+    # work out of the box, and 64K is the middle ground. The cost is paid up front,
+    # not per request — cpu_decode_scratch_init sizes its buffers from ctx_size at
+    # startup — which is exactly why the number has to be chosen conservatively.
+    # ⚠️ NOT a step toward Think Max. That gate is a cliff at 393216
+    # (DS4_THINK_MAX_MIN_CONTEXT): below it, ds4_think_mode_for_context silently
+    # returns HIGH for every request asking for max. 64K and 32K are identical there.
+    : "${DS4_DROSTE_CTX=65536}"
 
     # Pre-create the KV disk dir. ⚠️ NOT tidiness: ds4-server opens the disk cache
     # only `if (cfg.kv_disk_dir)` (ds4_server.c:11730), so no directory means no disk

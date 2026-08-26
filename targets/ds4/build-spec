@@ -202,6 +202,14 @@ ds4_pre_launch() {
     # That last state is a deliberate opt-out, and `:=` would silently overwrite it
     # with our default — turning "I don't want a disk cache" into "here, have one".
     : "${DS4_DROSTE_KV_DISK_DIR=/opt/program-cache/kv-disk}"
+    # The model path is a droste default for the same reason, and here the engine's
+    # own fallback is not merely different — it is unusable. ds4-server defaults to
+    # the RELATIVE "ds4flash.gguf" (ds4_server.c parse_options), no Containerfile
+    # sets WORKDIR and nothing in the entrypoint chain cd's, so the service runs with
+    # cwd `/` and that resolves to /ds4flash.gguf: a path on the read-only container
+    # root that can never exist. /opt/models is the bind point this image advertises
+    # for a local GGUF collection, and the filename is upstream's own.
+    : "${DS4_DROSTE_MODEL=/opt/models/ds4flash.gguf}"
 
     # Pre-create the KV disk dir. ⚠️ NOT tidiness: ds4-server opens the disk cache
     # only `if (cfg.kv_disk_dir)` (ds4_server.c:11730), so no directory means no disk

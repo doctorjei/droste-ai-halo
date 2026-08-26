@@ -109,12 +109,43 @@ DS4_VALUE_FLAGS=(
 DS4_BOOL_FLAGS=(
     "CORS:--cors"
     "KV_CACHE_REJECT_DIFFERENT_QUANT:--kv-cache-reject-different-quant"
-    "DISABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
     "QUALITY:--quality"
     "SSD_STREAMING:--ssd-streaming"
     "SSD_STREAMING_COLD:--ssd-streaming-cold"
     "WARM_WEIGHTS:--warm-weights"
 )
+# INVERTED bools — the VARIABLE reads positively, the FLAG is a negation, and the
+# engine's default is the positive state. `on` emits nothing (the feature is
+# already on); `off` emits the disabling flag.
+#
+# ⭐ THE VARIABLE NAME DELIBERATELY DOES NOT FOLLOW THE DERIVATION RULE, and that is
+# the point (Jei): `DS4_DROSTE_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double
+# negative, and nobody should have to work out that "false" means the feature is
+# running. The rule documented in ds4.env buys predictability everywhere else; here
+# it costs comprehension, so the name is inverted and this table does the work.
+# ⚠️ Which means the name here and the name in ds4.env must be changed TOGETHER —
+# there is no derivation to fall back on. A mismatch is a silently inert setting,
+# which is exactly how this row was found.
+DS4_BOOL_FLAGS_INVERTED=(
+    "ENABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
+)
+
+# ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognised.
+# ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.env's documented vocabulary is
+# `on`/`off`, so `Off` and `OFF` are what a user will actually type. The older
+# positive loop below still treats those as ON (it tests a blacklist of exact
+# lowercase strings) — a known defect, not fixed here because it changes the
+# meaning of six shipped settings. This helper is the shape that fix would take.
+ds4_bool() {
+    local v=${1:-}
+    v=${v,,}; v=${v// /}
+    case "$v" in
+        1|true|yes|on)  printf 'on' ;;
+        0|false|no|off) printf 'off' ;;
+        "")             printf '' ;;
+        *)              printf '' ;;
+    esac
+}
 
 PRE_LAUNCH="ds4_pre_launch"
 ds4_pre_launch() {
@@ -157,10 +188,25 @@ ds4_pre_launch() {
         unset DS4_DROSTE_DIR_STEERING_FFN DS4_DROSTE_DIR_STEERING_ATTN
     fi
 
-    # Pre-create the KV disk dir (active default /opt/program-cache/kv-disk —
-    # CACHE class, regenerable session state, and outside compute/ because it is
-    # deliberately per-box, see CACHES above; follows the var if the user
-    # re-pointed or blanked it).
+    # ── droste defaults, delivered by the WIRING rather than by an active line ──
+    # ⭐ Jei's ruling: a value we want every box to have belongs here, not as an
+    # uncommented line in ds4.env — the file seeds `if_missing`, so an active line
+    # only ever reaches boxes created after it was written, while this reaches every
+    # box on its next start. The line in ds4.env becomes an OVERRIDE.
+    #
+    # 🚨 `=` NOT `:=`, and the difference is the whole design. `${VAR=default}`
+    # substitutes only when the variable is UNSET, so:
+    #     line absent/commented  -> unset -> our default
+    #     VAR=/some/path         -> their path
+    #     VAR=          (blank)  -> stays blank -> NO flag emitted
+    # That last state is a deliberate opt-out, and `:=` would silently overwrite it
+    # with our default — turning "I don't want a disk cache" into "here, have one".
+    : "${DS4_DROSTE_KV_DISK_DIR=/opt/program-cache/kv-disk}"
+
+    # Pre-create the KV disk dir. ⚠️ NOT tidiness: ds4-server opens the disk cache
+    # only `if (cfg.kv_disk_dir)` (ds4_server.c:11730), so no directory means no disk
+    # cache AT ALL — not a cache somewhere else. CACHE class, regenerable session
+    # state, and outside compute/ because it is deliberately per-box (see CACHES).
     if [ -n "${DS4_DROSTE_KV_DISK_DIR:-}" ]; then
         mkdir -p "$DS4_DROSTE_KV_DISK_DIR"
     fi
@@ -190,6 +236,19 @@ ds4_pre_launch() {
         case "${!var:-}" in
             ""|0|false|no|off) ;;
             *) argv+=( "$flag" ) ;;
+        esac
+    done
+    # Inverted bools: emit the negating flag only for an explicit `off`. An
+    # unrecognised value keeps the engine's default and says so — turning a typo
+    # into a silent feature change is the failure this whole row came from.
+    for entry in "${DS4_BOOL_FLAGS_INVERTED[@]}"; do
+        var="DS4_DROSTE_${entry%%:*}"
+        flag=${entry#*:}
+        val=${!var:-}
+        case "$(ds4_bool "$val")" in
+            off) argv+=( "$flag" ) ;;
+            on)  ;;
+            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving it on (ds4's default). Fix it in $ENV_FILE and restart the box." ;;
         esac
     done
     # Raw catch-all, appended last. Deliberate word-split, unset-safe; quoting

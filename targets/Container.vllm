@@ -299,10 +299,13 @@ ENV PYTHONPATH=/opt/fp8 \
 # ⚠️ SO DO NOT RE-ADD A GENERATOR STEP HERE. Re-adding one silently overwrites the
 # authored file with generated output and the template goes inert again — which is
 # exactly the state this line replaced.
-# ▶ gen_vllm_config.py and upstream/models.py stay in the TREE (models.py is the record
-#   of where the MODEL_TABLE stanzas came from); whether the generator is deleted or
-#   demoted to a dev-time drift check is an open question, and either way it is not
-#   something the IMAGE needs to carry.
+# ▶ THE GENERATOR IS NOW scripts/vllm-models.py, A DEV-TIME REPORT (same move as
+#   gen_llama_env.sh -> scripts/llama-options.sh). It renders the stanza each entry in
+#   the vendored upstream/models.py implies and diffs it against the authored YAML, so
+#   the link between the two survives without anything writing that file. Run it when
+#   models.py is re-fetched at a new toolbox pin. upstream/models.py therefore stays in
+#   the TREE as the record of where the stanzas came from; neither file is COPYed, and
+#   the IMAGE carries neither.
 COPY build-spec                 /opt/resources/build-spec
 COPY templates/                 /opt/resources/templates/
 

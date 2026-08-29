@@ -438,6 +438,93 @@ vllm_env() {
     return 0
 }
 
+# ── the config must yield at least one key, or vLLM dies before it starts ────
+# 🚨 THE FAILURE THIS PREVENTS IS A TRACEBACK, NOT A BAD SETTING.
+# vllm/utils/argparse_utils.py:484 is `config = yaml.safe_load(config_file)` and
+# :492 is `for key, value in config.items():` with NO None guard between them. A
+# config whose keys are ALL commented out loads as None, so `.items()` raises
+# AttributeError before the server binds, logs a line of its own, or reports
+# anything a user could act on.
+# ⭐ WHICH IS WHY vllm_config.yaml KEEPS ONE DELIBERATELY INERT KEY ACTIVE, under a
+# "Do NOT comment out this line or remove it!" note. `enable-layerwise-nvtx-tracing`
+# was chosen precisely BECAUSE it does nothing here: :493-495 emits no argument at
+# all for a false bool, so the anchor cannot collide with any real configuration.
+# That is the right choice of key — and it is still a kludge, because it defends by
+# asking a user to heed a comment. This guard is the part that does not.
+#
+# ⭐ ASK THE QUESTION THE READER ASKS. "Is there a line that is not a comment" is a
+# heuristic that can disagree with the parser over quoting, indentation or a
+# document marker. safe_load IS the authority on what vLLM will see, so the test
+# runs the same loader.
+#
+# 🚨 AND ONLY ONE OF THE FAILING SHAPES IS REPAIRABLE — appending to the other two
+# makes them WORSE, which is how the first version of this guard was wrong:
+#   None            an all-comment file. Appending a key yields a valid mapping.
+#                   ANCHORABLE, and this is the case that actually happens.
+#   a dict          safe, INCLUDING an empty one: `{}.items()` iterates zero times,
+#                   so vLLM starts with no config-supplied arguments. Not our
+#                   business to second-guess.
+#   list / scalar   `.items()` fails just as it does on None, but appending a
+#                   mapping key to a list document is a SYNTAX ERROR — measured.
+#                   The "repair" would trade a reported failure for a parse error,
+#                   so we warn plainly and pass it through instead.
+# ⚠️ A file that will not parse at all is NOT our failure to pre-empt either: vLLM
+# reports it at :485-489 WITH THE PATH, which is more useful than anything we could
+# say. We stay quiet and let it through.
+#
+# ⚠️ THE USER'S FILE IS NEVER REWRITTEN. The anchor goes into a COPY, in the program
+# cache's state dir (which resets every container start, so it cannot go stale), and
+# --config is pointed at the copy. Editing a file the user authored, to fix a
+# condition the user created, would hide the very thing the warning is announcing.
+: "${VLLM_CONFIG_ANCHOR:=enable-layerwise-nvtx-tracing: false}"
+vllm_config_guard() {
+    local src=${1:-} derived shape
+    [ -n "$src" ] && [ -r "$src" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    # ok | empty | notmap | unreadable — a WORD, not an exit status, so a future
+    # shape can be added without renumbering anything.
+    shape=$(python3 -c '
+import sys, yaml
+try:
+    with open(sys.argv[1]) as fh:
+        cfg = yaml.safe_load(fh)
+except Exception:
+    print("unreadable"); raise SystemExit(0)
+if cfg is None:
+    print("empty")
+elif isinstance(cfg, dict):
+    print("ok")
+else:
+    print("notmap")
+' "$src" 2>/dev/null) || shape=unreadable
+
+    case "$shape" in
+        ok|unreadable|"") return 0 ;;
+        notmap)
+            serve::warn "$src does not describe a set of settings — it parses as a list or a bare value, not as 'key: value' pairs. vLLM will abort while loading it. Droste cannot repair this shape (adding a key to it would make the file unparseable), so it is being passed through unchanged for vLLM to report. Fix the top-level structure of $src and restart the box."
+            return 0 ;;
+    esac
+
+    derived=${DROSTE_SERVE_STATE_DIR:-/tmp}/vllm_config.anchored.yaml
+    mkdir -p "$(dirname "$derived")" 2>/dev/null || true
+    if ! cp -- "$src" "$derived" 2>/dev/null ||
+       ! printf '\n# Added by droste — see the warning in the container log.\n%s\n' \
+            "$VLLM_CONFIG_ANCHOR" >>"$derived" 2>/dev/null; then
+        serve::warn "$src DEFINES NO SETTINGS and the anchored copy could not be written to $derived — vLLM is about to fail on AttributeError while loading it. Uncomment a setting in $src, or restore its '$VLLM_CONFIG_ANCHOR' anchor line."
+        return 0
+    fi
+
+    # ⚠️ WORDING IS DELIBERATELY BROADER THAN "every line is commented out". That is
+    # the case that actually happens, but the test is "does it load as a NON-EMPTY
+    # MAPPING", which a list-shaped or scalar file also fails — and a message that
+    # named the wrong cause would send someone hunting for a comment marker that is
+    # not there.
+    serve::warn "$src DEFINES NO SETTINGS — it does not load as a mapping of keys, which is what happens when every line is commented out. vLLM cannot use such a file: it aborts before startup instead of reporting the problem. Droste is serving an anchored COPY ($derived) with '$VLLM_CONFIG_ANCHOR' appended so this box can still start. YOUR FILE WAS NOT MODIFIED. Restore that anchor line in $src, or uncomment a real setting, and restart the box."
+    DROSTE_VLLM_CONFIG=$derived
+    return 0
+}
+
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
 # SERVICE-rebuild (see build-spec.example): fold $VLLM_EXTRA_ARGS into the argv —
 # CLI args placed after --config override the config file's values (vLLM's own
@@ -447,6 +534,10 @@ vllm_env() {
 PRE_LAUNCH="vllm_pre_launch"
 vllm_pre_launch() {
     vllm_env
+
+    # Runs BEFORE SERVICE is built: the guard may repoint $DROSTE_VLLM_CONFIG at an
+    # anchored copy, and the argv has to carry the path we actually intend to serve.
+    vllm_config_guard "$DROSTE_VLLM_CONFIG"
 
     # Quote-aware split (droste::split_args): a value may contain spaces.
     # shellcheck disable=SC2206

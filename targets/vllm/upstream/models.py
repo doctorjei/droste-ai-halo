@@ -2,9 +2,13 @@
 # Source: github.com/kyuz0/amd-strix-halo-vllm-toolboxes  scripts/models.py
 # Pinned at the toolbox submodule provenance sha recorded in BUILD_NOTES.md:
 #   6446b9595273f289e11586c3c7d3e1e6f2945888
-# Fetched 2026-07-08 (raw.githubusercontent.com at that sha) so the image build is
-# hermetic (gen_vllm_config.py parses THIS copy at build; drift is visible in git).
-# To refresh: re-fetch scripts/models.py at the new toolbox pin and replace below.
+# Fetched 2026-07-08 (raw.githubusercontent.com at that sha). NOTHING READS THIS FILE
+# AT BUILD TIME and it is not COPYed into the image; it is the record of where the
+# MODEL_TABLE stanzas in targets/vllm/templates/vllm_config.yaml came from, so drift is
+# visible in git rather than as a silent build change.
+# To refresh: re-fetch scripts/models.py at the new toolbox pin, replace below, then run
+# `scripts/vllm-models.py` — it reports which stanzas in that hand-authored YAML the new
+# table disagrees with. The report never writes the YAML; the edits are yours to make.
 
 MODEL_TABLE = {
     # 1. Llama 3.1 8B Instruct

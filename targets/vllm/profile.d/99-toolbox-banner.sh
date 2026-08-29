@@ -192,9 +192,10 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-vllm-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'This box runs an OpenAI-compatible vLLM server on port %s when it starts.\n' "$SERVE_PORT"
-printf 'Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n\n'
+printf 'Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n'
+printf 'With no model: set there, vLLM serves its own default, Qwen/Qwen3-0.6B.\n\n'
 printf 'Usage:\n'
-printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config.yaml (REQUIRED to start)"
+printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config.yaml"
 printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL_TABLE stanzas in the config"
 printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host 0.0.0.0 --port $SERVE_PORT"
 printf '  - %-18s → %s\n' "API test"     "curl localhost:$SERVE_PORT/v1/chat/completions"

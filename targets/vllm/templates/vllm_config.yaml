@@ -36,10 +36,9 @@
 # - Setting a key to false (`key: false`) doesn't disable the setting; instead,
 #   it reverts to a *default* value. Instead, negate the key (`no-key: true`).
 #
-#
-# At least one key must remain uncommented to avoid AttributeError on load. Do
-# NOT comment out this line or remove it!
-enable-layerwise-nvtx-tracing: false    # NVTX per-layer ranges; inert on ROCm.
+# - At least one key must remain uncommented to avoid AttributeError on load.
+# **Do NOT comment out this line or remove it!** This flag is inert (ideal).
+enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMOVE!
 
 
 
@@ -611,3 +610,26 @@ enable-layerwise-nvtx-tracing: false    # NVTX per-layer ranges; inert on ROCm.
 # model: cyankiwi/MiniMax-M2.7-AWQ-4bit
 # tensor-parallel-size: 2
 # max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: minimax_m2
+# reasoning-parser: deepseek_r1
+
+# ===========================================================================
+# ayysasha/MiniMax-M2.7-AWQ-G32-STRIX-2H
+#   valid tensor-parallel sizes on Strix Halo: [2]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_USE_TRITON_AWQ=1
+#   ctx (upstream field): 131072  (raise max-model-len below to use full context)
+# ---------------------------------------------------------------------------
+# model: ayysasha/MiniMax-M2.7-AWQ-G32-STRIX-2H
+# tensor-parallel-size: 2
+# max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: minimax_m2
+# reasoning-parser: deepseek_r1

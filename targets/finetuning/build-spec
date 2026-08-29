@@ -5,17 +5,25 @@
 # See base/resolve/build-spec.example for the full contract.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
-# Placeholder argv; finetuning_pre_launch REBUILDS it after ENV_FILE is sourced
-# so JUPYTER_DROSTE_EXTRA_ARGS can join the command line. Keep the two in step.
-#
 # JupyterLab, rooted at the user workspace so relative output-*/ dirs from
 # train.py land on the persistent workspace mount. --notebook-dir is a live
 # jupyter-server alias for ServerApp.root_dir. Default token auth stays ON — the
 # token rerolls every start and `jupyter server list` is how you read it;
 # JUPYTER_TOKEN in ENV_FILE fixes one (which only became reachable when this box
 # got an ENV_FILE at all).
-SERVICE=( jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
-          --no-browser --allow-root )
+#
+# ONE array, used twice. SERVICE is a usable argv on its own AND
+# finetuning_pre_launch REBUILDS it FROM THIS ARRAY once ENV_FILE has been
+# sourced, so DROSTE_JUPYTER_EXTRA_ARGS can join the command line. Rebuilding
+# from the array rather than appending to SERVICE means calling PRE_LAUNCH twice
+# cannot grow the argv, and it retires the old "keep the two copies in step"
+# hazard — there is only one copy now. (comfyui's HEAD/TAIL split is the same
+# idea; this box needs no TAIL because nothing here is nargs-greedy.)
+JUPYTER_ARGV_BASE=(
+    jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
+    --no-browser --allow-root
+)
+SERVICE=( "${JUPYTER_ARGV_BASE[@]}" )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
 # JupyterLab has no unauthenticated health route: / redirects to /login (302) and
@@ -31,6 +39,11 @@ HEALTH_ACCEPT="any"
 # which is what makes JUPYTER_CONFIG_DIR (and therefore the seeded trait file)
 # work at all. server.env cannot do this: it is read in a subshell whose output is
 # discarded except for three keys.
+#
+# ⭐ `set -a` is also why a NATIVE spelling never needs wiring to keep working: a
+# user's own JUPYTER_*/TRAITLETS_* line is already exported by the time PRE_LAUNCH
+# runs. What the wiring below adds is the droste-named surface on top of it, plus
+# the defaults that cannot live in a seeded file (jupyter_env, N1a).
 #
 # ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
 # in neither — a knob present but inert, which is worse than an absent one.
@@ -77,6 +90,154 @@ CRITICAL=(
 # None: finetuning pulls models/datasets from the HF hub — no /opt/models role.
 OPTIONAL=()
 
+# ── DROSTE_JUPYTER_* → the native variables ──────────────────────────────────
+# This box's droste-owned settings are named for the APP, not the box (Jei's call
+# when he reviewed finetuning.env: the box is `finetuning`, the server is
+# Jupyter), so the prefix is DROSTE_JUPYTER_ and not DROSTE_FINETUNING_.
+#
+# 🚨 FIVE READERS, FIVE DIALECTS, IN ONE BOX. Read at the pinned versions
+# (Container.finetuning: jupyter_core 5.8.1, jupyter_server 2.21.0, traitlets
+# 5.14.3), which is why the table carries a true-wire AND a false-wire column per
+# row instead of one shared "1"/"0" — no single pair of values works everywhere:
+#
+#   envset()                          jupyter_core/paths.py:49-60 — TRUE unless
+#     the value is one of {no,n,false,off,0,0.0}; a BLANK therefore reads TRUE
+#   .lower() in ("true","1")          jupyter_core/paths.py:1031
+#   .lower() in ["true","yes"]        jupyter_server/serverapp.py:1348-1350
+#     🚨 `1` reads as FALSE here — the true-wire MUST be the word `true`. A BLANK
+#     is falsy to the getenv guard on :1348, so it falls through to Bool(True)
+#   env_flag and env_flag != "0"      traitlets/utils/warnings.py:55-57 — any
+#     non-empty value except "0" is TRUE
+#   strict {0,1,true,false,""}        traitlets/config/application.py:85-93 —
+#     anything else raises ValueError AT IMPORT, i.e. the server does not start
+#
+#     "<SUFFIX>:<native var>:<true-wire>:<false-wire>"
+JUPYTER_BOOL_VARS=(
+    # .lower() in ["true","yes"] — see the trap above; `1` would mean "no"
+    "ALLOW_UNAUTH_ACCESS:JUPYTER_SERVER_ALLOW_UNAUTHENTICATED_ACCESS:true:false"
+    # .lower() in ("true","1")
+    "ALLOW_INSECURE_WRITES:JUPYTER_ALLOW_INSECURE_WRITES:1:0"
+    # envset() — "0" is in its false list, so this pair is safe
+    "PLATFORM_DIRS:JUPYTER_PLATFORM_DIRS:1:0"
+    # anything but "0" is TRUE
+    "ALL_DEPRECATIONS:TRAITLETS_ALL_DEPRECATIONS:1:0"
+    # strict whitelist; "1" and "0" are two of the five values it accepts
+    "RAISE_CONFIG_ERROR:TRAITLETS_APPLICATION_RAISE_CONFIG_FILE_ERROR:1:0"
+)
+
+# jupyter_env — DROSTE_JUPYTER_* → the native environment, exported for the served
+# process. Its own function so it can be driven alone (source the spec, call it,
+# print the environment) without the mounts or the profile.d source.
+#
+# ⚠️ EXPORT IS REQUIRED. resolve::apply_spec runs `set +a` before PRE_LAUNCH, so a
+# bare assignment here would never reach the Jupyter process — a silent no-op.
+# ⚠️ `${VAR=default}`, never `:=`: absent ⇒ ours, set ⇒ theirs, and a BLANK is a
+# value the user typed, passed through verbatim rather than replaced.
+# 🚨 A BAD VALUE IS LOUD BUT NEVER FATAL, as in every other port: PRE_LAUNCH runs
+# under `set -e` in BOTH lanes, so a non-zero return here would kill the server
+# entrypoint and fail the distrobox init hook — taking away the easiest way to fix
+# the typo. Every rejected value is named on stderr together with what happens
+# instead, and the box comes up in its DOCUMENTED state.
+jupyter_env() {
+    local entry suffix rest var on off val
+
+    # ── the two natives where a BLANK is not "unset" ────────────────────────────
+    # 🚨 finetuning.env prints both blank with an annotation that SAYS unset —
+    # `IPYTHONDIR=  # IPython profiles; unset: ~/.ipython` and `QT_API=  # unset:
+    # first importable`. ENV_FILE is sourced under `set -a`, so uncommenting either
+    # line hands the server an EMPTY STRING, and neither reader tests emptiness:
+    #   IPython/paths.py:36  `env.get("IPYTHONDIR", None)` then `if ipdir is None`
+    #     ⇒ "" survives, os.path.normpath("") is ".", and profiles are written into
+    #       whatever directory the server happens to be in.
+    #   qtpy/__init__.py     `os.environ.get(QT_API, "pyqt5")` then a membership
+    #     check against API_NAMES ⇒ "" is no binding and the import RAISES.
+    # Every OTHER blank on this box is safe and was checked one at a time: the
+    # jupyter_core/jupyterlab path variables all test truthiness (paths.py:156,
+    # :175, :207, :298, :397; commands.py:143, :150, :158), JUPYTER_TOKEN and
+    # JUPYTER_TOKEN_FILE are `os.getenv` truthiness (auth/identity.py:211-214), and
+    # MPLBACKEND is `if os.environ.get('MPLBACKEND')` (matplotlib/__init__.py:1295).
+    droste::blank_is_unset IPYTHONDIR QT_API
+
+    # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
+    # Three of them. Every other setting on this box agrees with its package's own
+    # default, so the wiring says nothing at all unless the user does.
+    # 🚨 WITHOUT THE FIRST OF THESE THE WHOLE TRAIT FILE IS INERT, SILENTLY.
+    # templates.yaml seeds jupyter_server_config.py to /opt/data/, beside this box's
+    # ENV_FILE, and that directory is on Jupyter's config search path ONLY because
+    # JUPYTER_CONFIG_DIR names it (jupyter_core/paths.py:156-157).
+    # ⭐ FLAT ON PURPOSE (Jei, s56): the two halves of the config surface sit
+    # together where a user looks for them. /opt/data holds nothing else but
+    # droste's own .droste-serve.log — /opt/workspace is a separate bind and
+    # OPTIONAL is empty — so what Jupyter itself writes into a config dir
+    # (jupyter_server_config.json from `jupyter server password`,
+    # jupyter_server_config.d/, the frontend config dir) lands among config,
+    # not among the user's data. An active line in finetuning.env
+    # cannot supply this: the file is seeded if_missing, so it would reach NEW
+    # boxes only and every existing box would start with ~130 traits sitting at
+    # their defaults, no warning, server healthy.
+    # ✅ Blank is a real off-state, not a broken one: paths.py:156 tests
+    # truthiness, so JUPYTER_CONFIG_DIR= falls through to Jupyter's own location.
+    : "${JUPYTER_CONFIG_DIR=/opt/data}"
+    export JUPYTER_CONFIG_DIR
+    # Prefer the USER config/data dirs over the venv's when the two disagree —
+    # /opt/venv is a baked lower under an overlay, the user's answer is the one
+    # that should win. ⚠️ envset() again: a BLANK here reads as TRUE (= prefer the
+    # env), so blank is not an off-state on this row. That is upstream's rule
+    # applied to a value the user typed, not something the wiring can improve.
+    : "${JUPYTER_PREFER_ENV_PATH=0}"
+    export JUPYTER_PREFER_ENV_PATH
+    # ⚠️ THIRD DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
+    # finetuning.env:62-63 documents `{yes, no}` and SHOWS
+    # DROSTE_JUPYTER_ALLOW_UNAUTH_ACCESS=yes, so droste's default is YES and the
+    # wiring's job is to deliver exactly that (the config file is the
+    # specification). jupyter_server's own default agrees today —
+    # allow_unauthenticated_access = Bool(True), serverapp.py:1327 — but we state
+    # the default in a file the user reads, so we pin it instead of inheriting it:
+    # an upstream flip (the trait's own help text says "subject to change in the
+    # future") must not silently change what this box does.
+    # 🚨 DIALECT TRAP: the reader is `.lower() in ["true","yes"]`
+    # (serverapp.py:1348-1350), so the true-wire MUST be a word — `1` reads FALSE.
+    # ✅ Blank is still the user's own off-state: getenv on :1348 is falsy for an
+    # empty string, which falls through to Bool(True)… i.e. blank ALSO means yes
+    # here. That is upstream's rule, and it happens to agree with our default.
+    : "${JUPYTER_SERVER_ALLOW_UNAUTHENTICATED_ACCESS=true}"
+    export JUPYTER_SERVER_ALLOW_UNAUTHENTICATED_ACCESS
+
+    # ── the tabulated booleans ──────────────────────────────────────────────────
+    for entry in "${JUPYTER_BOOL_VARS[@]}"; do
+        suffix=${entry%%:*}; rest=${entry#*:}
+        var=${rest%%:*};     rest=${rest#*:}
+        on=${rest%%:*};      off=${rest#*:}
+        val="DROSTE_JUPYTER_$suffix"; val=${!val:-}
+        # Unset or blank leaves the native variable exactly as it is: the user's
+        # own native line, or a default set above, or the package's own.
+        [ -n "$val" ] || continue
+        case "$(droste::bool "$val")" in
+            on)  export "$var=$on" ;;
+            off) export "$var=$off" ;;
+            *)   serve::err "DROSTE_JUPYTER_$suffix='$val' is not a yes/no value — leaving $var as it is. Use yes or no. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    # ── SKIP_CONFIG, the row that cannot be tabulated ───────────────────────────
+    # JUPYTER_NO_CONFIG is read as BARE TRUTHINESS (jupyter_core/paths.py:153 and
+    # :390 — `if env.get(...)`), so THERE IS NO FALSE-WIRE: `0`, `no` and `false`
+    # all turn it ON. The only way to say no is for the variable not to exist, so
+    # `off` UNSETS it — which also overrides a native JUPYTER_NO_CONFIG the user
+    # set in the same file, because the droste answer is the later word.
+    # ⚠️ What a true value does here is worse than the name suggests: it makes
+    # jupyter_config_dir() return a throwaway temp dir, so the seeded trait file is
+    # silently ignored along with every other config file.
+    val=${DROSTE_JUPYTER_SKIP_CONFIG:-}
+    if [ -n "$val" ]; then
+        case "$(droste::bool "$val")" in
+            on)  export JUPYTER_NO_CONFIG=1 ;;
+            off) unset JUPYTER_NO_CONFIG ;;
+            *)   serve::err "DROSTE_JUPYTER_SKIP_CONFIG='$val' is not a yes/no value — leaving config files loading normally. Use yes or no. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    fi
+}
+
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 # The server lane never sources /etc/profile.d (no login shell), but the Triton
 # HIP toolchain env (TRITON_HIP_LLD_PATH/_CLANG_PATH + SDK LD_LIBRARY_PATH) it
@@ -87,13 +248,16 @@ finetuning_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-env-for-triton.sh
 
-    # Rebuild SERVICE now that JUPYTER_DROSTE_EXTRA_ARGS is known. It goes LAST
+    # After ENV_FILE has been sourced: turn the user's finetuning.env into the
+    # environment the server will actually see.
+    jupyter_env
+
+    # Rebuild SERVICE now that DROSTE_JUPYTER_EXTRA_ARGS is known. It goes LAST
     # deliberately: a Jupyter command-line flag beats every config file AND a
     # repeated flag resolves to the later one, so appending is what makes the
     # catch-all able to override an argument droste sets (--ip is the one users
-    # ask for). Deliberate word-split, unset-safe; quoting inside the value is
-    # not honoured (documented in finetuning.env), matching the other ports.
-    # shellcheck disable=SC2206
-    SERVICE=( jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
-              --no-browser --allow-root ${JUPYTER_DROSTE_EXTRA_ARGS:-} )
+    # ask for). Quote-aware split (droste::split_args), matching the other ports:
+    # a value MAY contain spaces, and it is not glob-expanded.
+    mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_JUPYTER_EXTRA_ARGS:-}")
+    SERVICE=( "${JUPYTER_ARGV_BASE[@]}" ${_extra[@]+"${_extra[@]}"} )
 }

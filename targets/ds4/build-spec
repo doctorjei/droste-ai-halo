@@ -6,7 +6,7 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; ds4_pre_launch REBUILDS it after ENV_FILE is sourced,
-# translating the DS4_DROSTE_* vars (ds4 has no native per-flag env) into flags.
+# translating the DROSTE_DS4_* vars (ds4 has no native per-flag env) into flags.
 SERVICE=( ds4-server )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
@@ -21,7 +21,7 @@ HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/ds4.env (templates.yaml if_missing); carries active
-# DS4_DROSTE_* values + the commented full flag list + native DS4_* passthroughs.
+# DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
 ENV_FILE="/opt/data/ds4.env"
 
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ SURFACES=(
 )
 
 # ── CACHES ───────────────────────────────────────────────────────────────────
-# None. The KV disk cache is CONSUMED in place: DS4_DROSTE_KV_DISK_DIR points
+# None. The KV disk cache is CONSUMED in place: DROSTE_DS4_KV_DISK_DIR points
 # INTO /opt/program-cache directly (dir pre-created in ds4_pre_launch). It stays
 # OUT of this array on purpose — a CACHES row is what offers a src to the
 # cross-box shared store, and one box's KV cache means nothing to another: cache
@@ -68,14 +68,14 @@ CRITICAL=(
 )
 
 # ── OPTIONAL ─────────────────────────────────────────────────────────────────
-# Read-only bind point for a local GGUF collection (DS4_DROSTE_MODEL can point
+# Read-only bind point for a local GGUF collection (DROSTE_DS4_MODEL can point
 # here). Tell-once marker body: templates/mount_shared_models_here.
 OPTIONAL=(
     "models:/opt/models:/opt/models/mount_shared_models_here"
 )
 
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
-# DS4_DROSTE_<SUFFIX> → flag maps. Source-verified against pinned kyuz0/ds4
+# DROSTE_DS4_<SUFFIX> → flag maps. Source-verified against pinned kyuz0/ds4
 # @00e64ea.
 # ⭐ THESE TABLES ARE THE ONLY MAPPING. ds4.env used to document a flag→variable
 # derivation rule and no longer does (Jei, s51): once ENABLE_EXACT_DSML_TOOL_REPLAY
@@ -125,7 +125,7 @@ DS4_BOOL_FLAGS=(
 # already on); `off` emits the disabling flag.
 #
 # ⭐ THE NAME IS NOT DERIVED FROM THE FLAG, and that is the point (Jei):
-# `DS4_DROSTE_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double negative, and nobody
+# `DROSTE_DS4_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double negative, and nobody
 # should have to work out that "false" means the feature is running. This row is
 # why ds4.env no longer documents a derivation rule at all.
 # ⚠️ The name here and the name in ds4.env must therefore be changed TOGETHER. A
@@ -139,27 +139,41 @@ DS4_BOOL_FLAGS_INVERTED=(
 # `on`/`off`, so `Off`, `OFF` and a stray trailing space are what a user will
 # actually type. Every boolean in this file goes through here — both tables and the
 # SSD guard — so there is exactly one answer to "what counts as off".
-ds4_bool() {
-    local v=${1:-}
-    v=${v,,}; v=${v// /}
-    case "$v" in
-        1|true|yes|on)  printf 'on' ;;
-        0|false|no|off) printf 'off' ;;
-        "")             printf '' ;;
-        *)              printf '' ;;
-    esac
-}
+# ⭐ PROMOTED TO droste::bool (s53) so every box answers "what counts as off" the
+# same way — One Surface, Five Servers. This wrapper stays because ds4's tables and
+# its SSD guard call it by name in a dozen places, and because a spec-level
+# definition is required: serve::build_service re-sources this file from scratch.
+ds4_bool() { droste::bool "${1:-}"; }
 
 PRE_LAUNCH="ds4_pre_launch"
 ds4_pre_launch() {
     # Both resolvers source ENV_FILE under `set -a`, so its assignments are already
-    # exported. This loop is belt-and-braces for a DS4_* the USER exported into the
-    # container's create-time env instead, and for any future caller that sources the
-    # spec without it. (Exported DS4_DROSTE_* are harmless — the binary ignores them.)
+    # exported. This loop is belt-and-braces for a NATIVE DS4_* (DS4_THREADS, …) that
+    # the USER exported into the container's create-time env instead, and for any
+    # future caller that sources the spec without `set -a`.
+    # ⚠️ It deliberately does NOT reach the droste settings any more: they are spelled
+    # DROSTE_DS4_* since s54, so `compgen -v DS4_` no longer matches them. That is
+    # correct — the binary never reads them, this hook does, and `${!var}` reads a
+    # plain shell variable as happily as an exported one.
     local v var
     for v in $(compgen -v DS4_ || true); do
         export "${v?}"
     done
+
+    # ── the three natives where a BLANK is not "unset" ──────────────────────────
+    # 🚨 ds4.env SHOWS these blank, and its comments say "if 1, recovery is
+    # disabled" / "if 1, spec. path is disabled". THE BINARY DOES NOT ASK FOR 1 —
+    # it asks whether the variable EXISTS: `getenv(...) == NULL`
+    # (ds4_server.c:10372 and :10407, ds4.c:11230). So uncommenting either line
+    # exactly as the file prints it DISABLES the feature, which is the opposite of
+    # a no-op and the opposite of what the comment beside it promises.
+    # The file states the default ("unset"); this is the wiring that delivers it.
+    # ⚠️ A NAMED LIST, not a sweep — see droste::blank_is_unset. Every DROSTE_DS4_*
+    # setting keeps its blank, because there a blank IS the documented opt-out
+    # (KV_DISK_DIR= means "no disk cache", and must go on meaning that).
+    droste::blank_is_unset DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY \
+                           DS4_MTP_SPEC_DISABLE \
+                           DS4_METAL_GRAPH_DUMP_PREFIX
 
     # ── refuse the two settings that make ds4-server EXIT AT STARTUP ─────────
     # Both are values a user can reach by following upstream's help, and both kill
@@ -172,10 +186,10 @@ ds4_pre_launch() {
     # 1) SSD expert streaming is Metal-only (`ds4.c:24549`: "--ssd-streaming is
     #    currently supported only with --metal"). The three companions feed only
     #    that path, so they go with it.
-    if [ "${DS4_DROSTE_BACKEND:-rocm}" != metal ]; then
+    if [ "${DROSTE_DS4_BACKEND:-rocm}" != metal ]; then
         for v in SSD_STREAMING SSD_STREAMING_COLD SSD_STREAMING_CACHE_EXPERTS \
                  SSD_STREAMING_PRELOAD_EXPERTS; do
-            var="DS4_DROSTE_$v"
+            var="DROSTE_DS4_$v"
             # ⚠️ Two of these four are VALUE flags (…CACHE_EXPERTS, …PRELOAD_EXPERTS),
             # so "is it on" is "is it non-empty" for those and a real on/off read for
             # the other two. ds4_bool returns "" for a count like `8`, hence the
@@ -186,16 +200,16 @@ ds4_pre_launch() {
                 off) continue ;;
                 *) [ -n "${!var:-}" ] || continue ;;
             esac
-            serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DS4_DROSTE_BACKEND:-rocm} backend. Ignoring it; remove the line from $ENV_FILE."
+            serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DROSTE_DS4_BACKEND:-rocm} backend. Ignoring it; remove the line from $ENV_FILE."
             unset "$var"
         done
     fi
     # 2) A steering SCALE with no steering FILE is fatal, not ignored
     #    (`ds4.c:24504`: "directional steering needs --dir-steering-file").
-    if [ -z "${DS4_DROSTE_DIR_STEERING_FILE:-}" ] \
-       && { [ -n "${DS4_DROSTE_DIR_STEERING_FFN:-}" ] || [ -n "${DS4_DROSTE_DIR_STEERING_ATTN:-}" ]; }; then
-        serve::err "DS4_DROSTE_DIR_STEERING_FFN/_ATTN are set without DS4_DROSTE_DIR_STEERING_FILE — ds4-server would exit at startup. Ignoring the scales; set a steering file in $ENV_FILE or remove them."
-        unset DS4_DROSTE_DIR_STEERING_FFN DS4_DROSTE_DIR_STEERING_ATTN
+    if [ -z "${DROSTE_DS4_DIR_STEERING_FILE:-}" ] \
+       && { [ -n "${DROSTE_DS4_DIR_STEERING_FFN:-}" ] || [ -n "${DROSTE_DS4_DIR_STEERING_ATTN:-}" ]; }; then
+        serve::err "DROSTE_DS4_DIR_STEERING_FFN/_ATTN are set without DROSTE_DS4_DIR_STEERING_FILE — ds4-server would exit at startup. Ignoring the scales; set a steering file in $ENV_FILE or remove them."
+        unset DROSTE_DS4_DIR_STEERING_FFN DROSTE_DS4_DIR_STEERING_ATTN
     fi
 
     # ── droste defaults, delivered by the WIRING rather than by an active line ──
@@ -211,7 +225,7 @@ ds4_pre_launch() {
     #     VAR=          (blank)  -> stays blank -> NO flag emitted
     # That last state is a deliberate opt-out, and `:=` would silently overwrite it
     # with our default — turning "I don't want a disk cache" into "here, have one".
-    : "${DS4_DROSTE_KV_DISK_DIR=/opt/program-cache/kv-disk}"
+    : "${DROSTE_DS4_KV_DISK_DIR=/opt/program-cache/kv-disk}"
     # The model path is a droste default for the same reason, and here the engine's
     # own fallback is not merely different — it is unusable. ds4-server defaults to
     # the RELATIVE "ds4flash.gguf" (ds4_server.c parse_options), no Containerfile
@@ -219,7 +233,7 @@ ds4_pre_launch() {
     # cwd `/` and that resolves to /ds4flash.gguf: a path on the read-only container
     # root that can never exist. /opt/models is the bind point this image advertises
     # for a local GGUF collection, and the filename is upstream's own.
-    : "${DS4_DROSTE_MODEL=/opt/models/ds4flash.gguf}"
+    : "${DROSTE_DS4_MODEL=/opt/models/ds4flash.gguf}"
     # Context: 64K, against ds4's own 32768. Unlike the two above, the engine's
     # default here works fine — this is droste deliberately overriding a usable
     # value. Jei's reasoning (s51): everyone wants a larger context, but it has to
@@ -229,14 +243,27 @@ ds4_pre_launch() {
     # ⚠️ NOT a step toward Think Max. That gate is a cliff at 393216
     # (DS4_THINK_MAX_MIN_CONTEXT): below it, ds4_think_mode_for_context silently
     # returns HIGH for every request asking for max. 64K and 32K are identical there.
-    : "${DS4_DROSTE_CTX=65536}"
+    : "${DROSTE_DS4_CTX=65536}"
+    # 🚨 THE BIND ADDRESS, AND IT WAS THE ONE DEFAULT NOTHING DELIVERED.
+    # ds4.env's "Reserved by Droste" block shows DROSTE_DS4_HOST=0.0.0.0, and every
+    # sibling box hard-codes the same thing in its argv (comfyui `--listen 0.0.0.0`,
+    # finetuning `--ip 0.0.0.0`). ds4-server's own default is the OPPOSITE —
+    # `.host = "127.0.0.1"` (ds4_server.c:11508) — so with no line in the file and
+    # no default here the box came up reachable only from the host itself, on a
+    # port the installer had just published to the LAN.
+    # ⚠️ INVISIBLE TO THE HEALTHCHECK BY CONSTRUCTION: serve::probe asks
+    # 127.0.0.1, which a loopback-only listener answers perfectly. Nothing in the
+    # box could have reported this; only reading the file against the source does.
+    # ✅ `=` not `:=` here as everywhere: a user who writes DROSTE_DS4_HOST= (blank)
+    # emits no --host and gets ds4's loopback default back, which is a real answer.
+    : "${DROSTE_DS4_HOST=0.0.0.0}"
 
     # Pre-create the KV disk dir. ⚠️ NOT tidiness: ds4-server opens the disk cache
     # only `if (cfg.kv_disk_dir)` (ds4_server.c:11730), so no directory means no disk
     # cache AT ALL — not a cache somewhere else. CACHE class, regenerable session
     # state, and outside compute/ because it is deliberately per-box (see CACHES).
-    if [ -n "${DS4_DROSTE_KV_DISK_DIR:-}" ]; then
-        mkdir -p "$DS4_DROSTE_KV_DISK_DIR"
+    if [ -n "${DROSTE_DS4_KV_DISK_DIR:-}" ]; then
+        mkdir -p "$DROSTE_DS4_KV_DISK_DIR"
     fi
 
     # Cockpit state: ~/.ds4-cockpit.conf is a FILE (not a dir) → persist it at
@@ -248,10 +275,10 @@ ds4_pre_launch() {
         ln -sf /opt/data/cockpit/ds4-cockpit.conf "$HOME/.ds4-cockpit.conf"
     fi
 
-    # Translate DS4_DROSTE_* → argv. Native DS4_* untouched (binary reads them).
+    # Translate DROSTE_DS4_* → argv. Native DS4_* untouched (binary reads them).
     local argv=( ds4-server ) entry flag val
     for entry in "${DS4_VALUE_FLAGS[@]}"; do
-        var="DS4_DROSTE_${entry%%:*}"
+        var="DROSTE_DS4_${entry%%:*}"
         flag=${entry#*:}
         val=${!var:-}
         if [ -n "$val" ]; then
@@ -266,7 +293,7 @@ ds4_pre_launch() {
     # not theorised. Now a whitelist, case-folded, matching ds4.env's own on/off
     # vocabulary; an unrecognised value warns and leaves the flag off.
     for entry in "${DS4_BOOL_FLAGS[@]}"; do
-        var="DS4_DROSTE_${entry%%:*}"
+        var="DROSTE_DS4_${entry%%:*}"
         flag=${entry#*:}
         val=${!var:-}
         case "$(ds4_bool "$val")" in
@@ -279,7 +306,7 @@ ds4_pre_launch() {
     # unrecognised value keeps the engine's default and says so — turning a typo
     # into a silent feature change is the failure this whole row came from.
     for entry in "${DS4_BOOL_FLAGS_INVERTED[@]}"; do
-        var="DS4_DROSTE_${entry%%:*}"
+        var="DROSTE_DS4_${entry%%:*}"
         flag=${entry#*:}
         val=${!var:-}
         case "$(ds4_bool "$val")" in
@@ -288,10 +315,11 @@ ds4_pre_launch() {
             *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving it on (ds4's default). Fix it in $ENV_FILE and restart the box." ;;
         esac
     done
-    # Raw catch-all, appended last. Deliberate word-split, unset-safe; quoting
-    # inside the value is not honoured (documented in ds4.env).
+    # Raw catch-all, appended last. Quote-aware, unset-safe; quoting
+    # inside the value IS honoured since s52 (droste::split_args).
     # shellcheck disable=SC2206
-    argv+=( ${DS4_DROSTE_EXTRA_ARGS:-} )
+    mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_DS4_EXTRA_ARGS:-}")
+    argv+=( ${_extra[@]+"${_extra[@]}"} )
 
     SERVICE=( "${argv[@]}" )
 }

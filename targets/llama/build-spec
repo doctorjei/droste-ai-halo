@@ -19,7 +19,14 @@ HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
-# LLAMA_ARG_* lines (llama-server reads them natively) + LLAMA_EXTRA_ARGS.
+# LLAMA_ARG_* lines (llama-server reads them natively), the 69 DROSTE_LLAMA_* settings
+# the tables below translate, and LLAMA_EXTRA_ARGS.
+# ⚠️ It is NOT sourced into this shell: droste::load_env_file runs it in a CHILD shell
+# and applies the difference, so a typo in it is a warning rather than a dead box.
+# The practical consequence for anything written here is that the file is DATA — the
+# SHELL STATE it builds (a cd, a function, a trap) dies with the child and only the
+# variables it leaves behind reach us. Not a sandbox: a filesystem write in there still
+# happens, because the child is a real shell.
 ENV_FILE="/opt/data/llama.env"
 
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
@@ -57,14 +64,248 @@ OPTIONAL=(
     "models:/opt/models:/opt/models/mount_shared_models_here"
 )
 
+# ── The llama.env → argv tables ──────────────────────────────────────────────
+# ⭐ THESE TABLES ARE THE ONLY MAPPING. llama.env names a setting; this file says
+# which flag it emits. There is NO derivation rule and there must never be one —
+# 62 of the 69 names below happen to match `--$(lower suffix)` and seven do not
+# (AUTO_MODEL, HF_TOKEN_FILE, BUILTIN_SPEC_DEFAULT, DRY_SEQ_BREAKERS and the three
+# ENDPOINT_*), so a derivation would need seven exceptions. Jei's ruling on ds4
+# stands here: A RULE WITH AN EXCEPTION IS WORSE THAN NO RULE, because a reader who
+# derives a name gets a variable nothing reads. Adding a setting means editing
+# llama.env AND this file; there is nothing to fall back on.
+#
+# Every row was generated from the PINNED binary's own option table (paren-balanced
+# parse of arg.cpp at 337f08e8) and not from llama.env's inline comments — three of
+# those comments name the wrong flag today.
+#
+# 🚨 THE THREE BOOLEAN KINDS ARE NOT INTERCHANGEABLE, and this is the whole reason
+# every one of them is droste-named:
+#   BOOL   has a real `--no-x` twin. on ⇒ `--x`, off ⇒ `--no-x`.
+#   SWITCH is upstream `handler_void`: it has NO negation and is applied only
+#          `if (is_truthy(value))`, so `off`/`no`/`false` are SILENTLY DISCARDED by
+#          llama itself. off ⇒ WE EMIT NOTHING, which is the only way "off" can mean
+#          off. A user cannot tell these two kinds apart by looking, which is why we
+#          never expose the native names for either.
+#   CHOICE is a menu where one value means "emit nothing" (comfyui's shape).
+# ⚠️ UNSET IS A THIRD STATE, DISTINCT FROM off. An unset bool emits NEITHER flag, so
+# upstream's own default stands. That matters for --kv-unified, whose help says the
+# effective default is "enabled if number of slots is auto": emitting --no-kv-unified
+# just because the line is commented out would suppress that.
+#
+# "<SUFFIX>:<flag>" — the variable is DROSTE_LLAMA_<SUFFIX>.
+LLAMA_VALUE_FLAGS=(
+    "TEMP:--temp"                       "TOP_P:--top-p"
+    "MIN_P:--min-p"                     "TOP_N_SIGMA:--top-nsigma"
+    "XTC_PROBABILITY:--xtc-probability" "XTC_THRESHOLD:--xtc-threshold"
+    "TYPICAL_P:--typical-p"             "REPEAT_LAST_N:--repeat-last-n"
+    "REPEAT_PENALTY:--repeat-penalty"   "PRESENCE_PENALTY:--presence-penalty"
+    "FREQUENCY_PENALTY:--frequency-penalty"
+    "DRY_MULTIPLIER:--dry-multiplier"   "DRY_BASE:--dry-base"
+    "DRY_ALLOWED_LENGTH:--dry-allowed-length"
+    "DRY_PENALTY_LAST_N:--dry-penalty-last-n"
+    "DYNATEMP_RANGE:--dynatemp-range"   "DYNATEMP_EXP:--dynatemp-exp"
+    "ADAPTIVE_TARGET:--adaptive-target" "ADAPTIVE_DECAY:--adaptive-decay"
+    "MIROSTAT:--mirostat"               "MIROSTAT_LR:--mirostat-lr"
+    "MIROSTAT_ENT:--mirostat-ent"       "SEED:--seed"
+    "GRAMMAR:--grammar"                 "GRAMMAR_FILE:--grammar-file"
+    "JSON_SCHEMA:--json-schema"         "JSON_SCHEMA_FILE:--json-schema-file"
+    "SAMPLERS:--samplers"               "SAMPLING_SEQ:--sampler-seq"
+)
+# "<SUFFIX>:<on-flag>:<off-flag>"
+LLAMA_BOOL_FLAGS=(
+    "MODELS_AUTOLOAD:--models-autoload:--no-models-autoload"
+    "UI:--ui:--no-ui"
+    "UI_MCP_PROXY:--ui-mcp-proxy:--no-ui-mcp-proxy"
+    "CACHE_PROMPT:--cache-prompt:--no-cache-prompt"
+    "CACHE_IDLE_SLOTS:--cache-idle-slots:--no-cache-idle-slots"
+    "CONTEXT_SHIFT:--context-shift:--no-context-shift"
+    "KV_UNIFIED:--kv-unified:--no-kv-unified"
+    "JINJA:--jinja:--no-jinja"
+    "PREFILL_ASSISTANT:--prefill-assistant:--no-prefill-assistant"
+    "SKIP_CHAT_PARSING:--skip-chat-parsing:--no-skip-chat-parsing"
+    "ENDPOINT_SLOTS:--slots:--no-slots"
+    "PERF:--perf:--no-perf"
+    "MMPROJ_AUTO:--mmproj-auto:--no-mmproj-auto"
+    "MMPROJ_OFFLOAD:--mmproj-offload:--no-mmproj-offload"
+    "CONT_BATCHING:--cont-batching:--no-cont-batching"
+    "MMAP:--mmap:--no-mmap"
+    "DIRECT_IO:--direct-io:--no-direct-io"
+    "KV_OFFLOAD:--kv-offload:--no-kv-offload"
+    "REPACK:--repack:--no-repack"
+    "LOG_PREFIX:--log-prefix:--no-log-prefix"
+    "LOG_TIMESTAMPS:--log-timestamps:--no-log-timestamps"
+)
+# handler_void — no negation exists upstream. off ⇒ emit nothing.
+# ⚠️ NO_HOST IS A POSITIVE FLAG. `--no-host` is llama's own spelling for "bypass the
+# host buffer"; there is no `--host` boolean it negates. Any future "strip the --no-
+# to turn it off" cleverness must never touch this row.
+LLAMA_SWITCH_FLAGS=(
+    "BUILTIN_SPEC_DEFAULT:--spec-default" "SPEC_DRAFT_CPU_MOE:--spec-draft-cpu-moe"
+    "SWA_FULL:--swa-full"                 "ENDPOINT_METRICS:--metrics"
+    "ENDPOINT_PROPS:--props"              "EMBEDDINGS:--embeddings"
+    "RERANKING:--reranking"               "REUSE_PORT:--reuse-port"
+    "OFFLINE:--offline"                   "MLOCK:--mlock"
+    "CPU_MOE:--cpu-moe"                   "NO_HOST:--no-host"
+    "BACKEND_SAMPLING:--backend-sampling" "IGNORE_EOS:--ignore-eos"
+)
+# Upstream takes ONE item per occurrence and expects the flag REPEATED; the user
+# gives us a `;`-separated list and we do the repeating. "<SUFFIX>:<flag>"
+# ⚠️ --dry-sequence-breaker clears llama's four built-in breakers on its FIRST
+# invocation only, so one combined argument would install a single absurd breaker
+# rather than the four the user wrote.
+LLAMA_LIST_FLAGS=(
+    "DRY_SEQ_BREAKERS:--dry-sequence-breaker"
+    "LOGIT_BIAS:--logit-bias"
+)
+# comfyui's record shape: "<SUFFIX>|<value>=<flags>|…", FIRST pair is the default,
+# an EMPTY right-hand side emits nothing at all.
+# 🚨 NUMA IS HERE AND NOT IN THE VALUE TABLE, and that is the fix for a real trap:
+# arg.cpp:2298 reads `value == "distribute" || value == ""`, so passing --numa with
+# an EMPTY argument turns NUMA **on** in distribute mode. `off` has to mean "emit no
+# flag", which a value row cannot express. Anything llama does not recognise throws
+# and kills startup, so the menu is closed.
+LLAMA_CHOICE_FLAGS=(
+    "NUMA|off=|distribute=--numa distribute|isolate=--numa isolate|numactl=--numa numactl"
+    "AUTO_MODEL|none=|embd-gemma=--embd-gemma-default|fim-qwen-1.5b=--fim-qwen-1.5b-default|fim-qwen-3b=--fim-qwen-3b-default|fim-qwen-7b=--fim-qwen-7b-default|fim-qwen-7b-spec=--fim-qwen-7b-spec|fim-qwen-14b-spec=--fim-qwen-14b-spec|fim-qwen-30b=--fim-qwen-30b-default|gpt-oss-20b=--gpt-oss-20b-default|gpt-oss-120b=--gpt-oss-120b-default|vision-gemma-4b=--vision-gemma-4b-default|vision-gemma-12b=--vision-gemma-12b-default"
+)
+# Settings that write the SAME field upstream, so more than one is a silent
+# last-wins race. We say so instead of letting argument order decide.
+LLAMA_EXCLUSIVE_GROUPS=(
+    "GRAMMAR GRAMMAR_FILE JSON_SCHEMA JSON_SCHEMA_FILE"
+    "SAMPLERS SAMPLING_SEQ"
+)
+
+# llama_argv — DROSTE_LLAMA_* → SERVICE. Its own function, comfyui-style, so it can
+# be driven alone (source the spec, call it, print SERVICE) without the mkdir, the
+# HF token read or the health-prefix write. With 69 settings that is the difference
+# between a testable translator and one nobody can check.
+# ⚠️ It REBUILDS SERVICE from constants rather than appending: serve::build_service
+# can run PRE_LAUNCH a second time in the same process, and a doubled argv of this
+# length would be very hard to read in a log.
+llama_argv() {
+    local dyn=() entry suffix var val flag onf offf rest pairs=() pair def flags ok list
+    local -a items=()
+    local g first seen
+
+    # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
+    # ⭐ ONE, and it is here rather than as an active line in llama.env because that
+    # file seeds `if_missing`: an uncommented line would reach NEW boxes only.
+    # llama.env's Speculative Decoding block stars `on` in its `{on*, off}` menu AND
+    # shows `DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT=on`, so the file states this default
+    # twice. It is a SWITCH (handler_void), so an unset variable emitted nothing at
+    # all and the box came up with ngram speculative decoding OFF — the file
+    # asserting a default the box did not deliver.
+    # ⚠️ IT IS A REAL BEHAVIOUR CHANGE, not a no-op: --spec-default pushes
+    # COMMON_SPECULATIVE_TYPE_NGRAM_MOD and sets ngram_mod n_match/n_min/n_max to
+    # 24/48/64 (arg.cpp:4168-4181 at the pinned 337f08e8). That is what the file
+    # asks for.
+    # ✅ `=` not `:=`: a user writing DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT= (blank) gets
+    # llama's own unspeculated default back, which is a real answer, and an explicit
+    # `off` emits nothing for the same reason.
+    : "${DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT=on}"
+
+    for entry in "${LLAMA_VALUE_FLAGS[@]}"; do
+        var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
+        [ -n "$val" ] && dyn+=( "$flag" "$val" )
+    done
+
+    for entry in "${LLAMA_BOOL_FLAGS[@]}"; do
+        var="DROSTE_LLAMA_${entry%%:*}"; rest=${entry#*:}
+        onf=${rest%%:*}; offf=${rest#*:}; val=${!var:-}
+        # Unset/blank emits NEITHER flag — upstream's own default stands.
+        [ -n "$val" ] || continue
+        case "$(droste::bool "$val")" in
+            on)  dyn+=( "$onf" ) ;;
+            off) dyn+=( "$offf" ) ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $onf at llama's default. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    for entry in "${LLAMA_SWITCH_FLAGS[@]}"; do
+        var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
+        [ -n "$val" ] || continue
+        case "$(droste::bool "$val")" in
+            on)  dyn+=( "$flag" ) ;;
+            off) ;;   # upstream has no negation; emitting nothing IS off
+            *)   serve::err "$var='$val' is not on/off — leaving $flag off. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    for entry in "${LLAMA_LIST_FLAGS[@]}"; do
+        var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
+        [ -n "$val" ] || continue
+        mapfile -d '' -t items < <(droste::split_list ';' "$val")
+        for pair in ${items[@]+"${items[@]}"}; do dyn+=( "$flag" "$pair" ); done
+    done
+
+    for entry in "${LLAMA_CHOICE_FLAGS[@]}"; do
+        suffix=${entry%%|*}; rest=${entry#*|}
+        IFS='|' read -r -a pairs <<<"$rest"
+        def=${pairs[0]%%=*}; flags=${pairs[0]#*=}
+        var="DROSTE_LLAMA_$suffix"; val=${!var:-}
+        if [ -n "$val" ]; then
+            ok=0
+            for pair in "${pairs[@]}"; do
+                if [ "${pair%%=*}" = "$val" ]; then flags=${pair#*=}; ok=1; break; fi
+            done
+            if [ "$ok" -eq 0 ]; then
+                list=""; for pair in "${pairs[@]}"; do list="$list ${pair%%=*}"; done
+                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+            fi
+        fi
+        # Word-split ON PURPOSE: the right-hand side is a literal from the table
+        # above, never user input, and one value may expand to a flag plus its value.
+        # shellcheck disable=SC2206
+        dyn+=( $flags )
+    done
+
+    # Two settings that write one upstream field are a silent last-wins race. Name it.
+    for g in "${LLAMA_EXCLUSIVE_GROUPS[@]}"; do
+        first=""; seen=""
+        for suffix in $g; do
+            var="DROSTE_LLAMA_$suffix"
+            [ -n "${!var:-}" ] || continue
+            [ -n "$first" ] && seen="$seen $var" || first=$var
+        done
+        [ -n "$seen" ] && serve::err "$first and$seen all set the same thing in llama, so the last one on the command line silently wins. Set ONE of them in $ENV_FILE."
+    done
+
+    # Ordering: droste's own flags FIRST, the user's catch-all LAST, because llama
+    # parses argv left to right and a later occurrence wins — so the user beats us on
+    # every conflict, deliberately. --slot-save-path rides here too (no env var).
+    # shellcheck disable=SC2206
+    mapfile -d '' -t _extra < <(droste::split_args "${LLAMA_EXTRA_ARGS:-}")
+    SERVICE=( llama-server --slot-save-path /opt/program-cache/slots
+              ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
+}
+
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
-    # Both resolvers source ENV_FILE under `set -a`, so its assignments are already
-    # exported. This loop is belt-and-braces for a LLAMA_* the user exported into the
-    # container's create-time env instead, and for any future caller that sources the
-    # spec without it. llama-server reads LLAMA_ARG_* from its ENVIRONMENT, so they
+    # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
+    # llama.env:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
+    # f16 and :3 promises the shown value IS the default — the file contradicting
+    # itself, so no rule could settle it. Jei ruled: "our default should be turbo3."
+    # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
+    # values, not a value the parser would reject.
+    # ⚠️ REAL BEHAVIOUR CHANGE, and unmeasured on hardware: KV quantisation buys
+    # cache footprint at some quality cost. Both K and V, because the file shows both.
+    # ✅ `=` not `:=`, and set BEFORE the compgen loop below so it is exported with
+    # every other LLAMA_*: llama-server reads these from its ENVIRONMENT, not argv,
+    # so the default has to cross the exec like a user's own value would.
+    : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
+    : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
+
+    # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
+    # the file introduced (see droste-envfile.sh), so its assignments already survive
+    # the exec. This loop is belt-and-braces for a LLAMA_* the user exported into the
+    # container's create-time env instead, and for any future caller that applies the
+    # file some other way. llama-server reads LLAMA_ARG_* from its ENVIRONMENT, so they
     # have to survive the exec either way.
+    # ⭐ IT DELIBERATELY DOES NOT COVER DROSTE_LLAMA_*, and that is not an oversight of
+    # the s54 rename: those names are OURS, llama-server has never heard of them, and
+    # llama_argv reads them out of this shell by indirect expansion whether they are
+    # exported or not. Nothing droste-named needs to cross the exec.
     local v
     for v in $(compgen -v LLAMA_ || true); do
         export "${v?}"
@@ -80,9 +321,44 @@ llama_pre_launch() {
     # Rebuild SERVICE now that LLAMA_EXTRA_ARGS is known. The pinned fork's
     # --slot-save-path carries no env annotation, so it rides the command line —
     # OUR flag FIRST so a user's own --slot-save-path inside LLAMA_EXTRA_ARGS
-    # (parsed later) wins. Deliberate word-split, unset-safe; quoting inside the
-    # value is not honoured (documented in llama.env).
-    # shellcheck disable=SC2206
-    SERVICE=( llama-server --slot-save-path /opt/program-cache/slots
-              ${LLAMA_EXTRA_ARGS:-} )
+    # (parsed later) wins.
+    # Quote-aware split (droste::split_args): a value MAY contain spaces, so
+    # --grammar, -j/--json-schema, -r/--reverse-prompt, --override-kv and paths
+    # with spaces are reachable through the catch-all. It also does not glob.
+    # A token FILE has no upstream flag — llama-server reads the token from HF_TOKEN
+    # or --hf-token and nowhere else (arg.cpp:2665; download.cpp consumes only
+    # opts.bearer_token), and it does NOT read huggingface-cli's login cache. So this
+    # setting is ours to implement, and exporting beats emitting --hf-token "$(cat …)"
+    # because the flag form would put the secret in the process command line where
+    # any `ps` in the box can read it.
+    if [ -n "${DROSTE_LLAMA_HF_TOKEN_FILE:-}" ]; then
+        if [ -r "$DROSTE_LLAMA_HF_TOKEN_FILE" ]; then
+            HF_TOKEN=$(head -n1 "$DROSTE_LLAMA_HF_TOKEN_FILE" 2>/dev/null | tr -d '\r\n')
+            if [ -n "$HF_TOKEN" ]; then
+                export HF_TOKEN
+            else
+                serve::err "DROSTE_LLAMA_HF_TOKEN_FILE=$DROSTE_LLAMA_HF_TOKEN_FILE is empty — no Hugging Face token set. Gated repositories will fail to download."
+            fi
+        else
+            serve::err "DROSTE_LLAMA_HF_TOKEN_FILE=$DROSTE_LLAMA_HF_TOKEN_FILE cannot be read — no Hugging Face token set. Gated repositories will fail to download."
+        fi
+    fi
+
+    # Build the argv. Everything above is a side effect; this is the product.
+    llama_argv
+
+    # --api-prefix moves EVERY route, /health included (server-http.cpp:529 registers
+    # `api_prefix + path` for all of them), so HEALTH_PATH above would 404 and the box
+    # would restart-loop. Tell the probe where the routes went.
+    # ⭐ OBSERVED, NOT OWNED: llama reads LLAMA_ARG_API_PREFIX itself and ENV_FILE was
+    # sourced under `set -a` before this hook ran, so the value is simply here to be
+    # read. We pass it through unprocessed and only watch it — which is why it keeps
+    # llama's own name rather than becoming a DROSTE_LLAMA_* setting.
+    # Command line beats environment in llama (env is applied first, argv second), and
+    # _extra lands on the command line, so a prefix there wins the same way it does for
+    # the server.
+    local _prefix
+    _prefix=$(droste::arg_value --api-prefix ${_extra[@]+"${_extra[@]}"})
+    [ -n "$_prefix" ] || _prefix=${LLAMA_ARG_API_PREFIX:-}
+    droste::set_health_prefix "$_prefix"
 }

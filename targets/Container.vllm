@@ -287,16 +287,24 @@ ENV PYTHONPATH=/opt/fp8 \
     VLLM_NO_USAGE_STATS=1 \
     PYTHONNOUSERSITE=1
 
-# Droste runtime contract: per-port build-spec + config template + shared entrypoint.
-# gen_vllm_config.py runs at BUILD, harvesting the pinned upstream MODEL_TABLE (vendored,
-# hermetic) into the config template that templates.yaml seeds to /opt/data on first run.
+# Droste runtime contract: per-port build-spec + config templates + shared entrypoint.
+#
+# 🚨 vllm_config.yaml IS A TEMPLATE NOW, NOT BUILD-TIME OUTPUT. It used to be written
+# here by gen_vllm_config.py, which harvested the vendored upstream MODEL_TABLE into a
+# generated file. That generation is RETIRED: its one structural benefit — stanzas that
+# follow upstream/models.py automatically — never fired (that file has a single commit),
+# while the cost was that the shipped config was 126 out.append() calls of prose nobody
+# could edit by hand. The file the box seeds is now an authored, reviewed template and it
+# arrives with every other template on the COPY below.
+# ⚠️ SO DO NOT RE-ADD A GENERATOR STEP HERE. Re-adding one silently overwrites the
+# authored file with generated output and the template goes inert again — which is
+# exactly the state this line replaced.
+# ▶ gen_vllm_config.py and upstream/models.py stay in the TREE (models.py is the record
+#   of where the MODEL_TABLE stanzas came from); whether the generator is deleted or
+#   demoted to a dev-time drift check is an open question, and either way it is not
+#   something the IMAGE needs to carry.
 COPY build-spec                 /opt/resources/build-spec
 COPY templates/                 /opt/resources/templates/
-COPY scripts/gen_vllm_config.py /opt/resources/scripts/gen_vllm_config.py
-COPY upstream/models.py         /opt/resources/scripts/vllm_models_pinned.py
-RUN python3 /opt/resources/scripts/gen_vllm_config.py \
-      --models /opt/resources/scripts/vllm_models_pinned.py \
-      --out    /opt/resources/templates/vllm_config.yaml
 
 # Group-writable venv so the distrobox-lane box user (in group `droste`) can
 # pip-install into the baked venv after overlay copy-up (dirs setgid → copy-up

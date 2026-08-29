@@ -19,8 +19,14 @@
 # setting — the bind address, the port (owned by server.env; the launcher rewrites
 # the token after --port), and the model-paths config. The two perf flags that
 # used to sit here, --disable-mmap and --disable-smart-memory, became the
-# WEIGHT_LOADING and MODEL_RESIDENCY settings and are emitted from the table
-# below at their defaults -- so the shipped command line is unchanged.
+# WEIGHT_LOADING and MODEL_RESIDENCY settings and are emitted from the table below
+# at their defaults.
+# ⚠️ THAT IS NOT THE SAME COMMAND LINE, and it is deliberate: WEIGHT_LOADING's
+# default `eager` still emits --disable-mmap, but MODEL_RESIDENCY's default is
+# `cache`, whose right-hand side is EMPTY — so --disable-smart-memory is no longer
+# on the shipped line. `9f95652 Expose the last two overrides, and change two
+# comfyui defaults` is where that happened; comfyui.env's `{evict, cache*}` is the
+# authority on which default is current, and this comment follows it.
 # ⚠️ --extra-model-paths-config is nargs='+', so it STAYS LAST: any later token
 # that does not begin with `-` would be swallowed as a second config path.
 COMFYUI_ARGV_HEAD=(
@@ -42,7 +48,7 @@ HEALTH_ACCEPT="ok"
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/comfyui.env (templates.yaml if_missing) and never
 # overwritten — the user's edits win. ComfyUI reads NO env var for any of these
-# knobs, so comfyui_argv translates the COMFYUI_DROSTE_* values into flags.
+# knobs, so comfyui_argv translates the DROSTE_COMFYUI_* values into flags.
 # No export loop (unlike ds4/llama): nothing downstream reads them from the
 # environment, they only ever become argv.
 ENV_FILE="/opt/data/comfyui.env"
@@ -125,11 +131,11 @@ OPTIONAL=(
 #    skipped-if-absent. A scanner failure only leaves the tree stale — log and
 #    continue, never block the server (the resolver runs under set -e; the ||
 #    branch absorbs the failure).
-# 3) Rebuild SERVICE from the COMFYUI_DROSTE_* values now that ENV_FILE has been
+# 3) Rebuild SERVICE from the DROSTE_COMFYUI_* values now that ENV_FILE has been
 #    sourced (step 6 of apply_spec; SERVICE would otherwise be final at
 #    spec-source time, before the user's file was read).
 
-# COMFYUI_DROSTE_<SUFFIX> → flag maps. Every flag, its spelling and its argparse
+# DROSTE_COMFYUI_<SUFFIX> → flag maps. Every flag, its spelling and its argparse
 # group are read from comfy/cli_args.py at the pinned COMFYUI_REF (4da9e2db =
 # v0.33.3); the value vocabulary and the defaults are the ones documented in
 # templates/comfyui.env, which is the surface the user edits — the two must be
@@ -184,7 +190,7 @@ COMFYUI_NUMBER_FLAGS=(
 comfyui_is_num() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 comfyui_is_int() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
 
-# comfyui_argv — COMFYUI_DROSTE_* → SERVICE. Its own function so it can be
+# comfyui_argv — DROSTE_COMFYUI_* → SERVICE. Its own function so it can be
 # driven alone (source the spec, call it, print SERVICE) without the mounts, the
 # profile.d source or the model scan.
 #
@@ -211,7 +217,7 @@ comfyui_argv() {
         IFS='|' read -r -a pairs <<<"$rest"
         def=${pairs[0]%%=*}
         flags=${pairs[0]#*=}
-        var="COMFYUI_DROSTE_$suffix"
+        var="DROSTE_COMFYUI_$suffix"
         val=${!var:-}
         if [ -n "$val" ]; then
             ok=0
@@ -238,7 +244,7 @@ comfyui_argv() {
     done
 
     for entry in "${COMFYUI_NUMBER_FLAGS[@]}"; do
-        var="COMFYUI_DROSTE_${entry%%:*}"
+        var="DROSTE_COMFYUI_${entry%%:*}"
         val=${!var:-}
         [ -n "$val" ] || continue
         if comfyui_is_num "$val"; then
@@ -252,7 +258,7 @@ comfyui_argv() {
     # kind of mutually-exclusive group — so it is parsed rather than tabulated.
     # It still emits exactly one member of cache_group, malformed values
     # included: those fall back to the documented default, none.
-    cache=${COMFYUI_DROSTE_CACHE:-ram}
+    cache=${DROSTE_COMFYUI_CACHE:-ram}
     mode=${cache%%:*}
     arg=""
     [ "$cache" = "$mode" ] || arg=${cache#*:}
@@ -288,18 +294,19 @@ comfyui_argv() {
         *) bad=1 ;;
     esac
     if [ "$bad" -eq 1 ]; then
-        serve::err "COMFYUI_DROSTE_CACHE='$cache' is not a valid value — using the default 'ram'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
+        serve::err "DROSTE_COMFYUI_CACHE='$cache' is not a valid value — using the default 'ram'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
         dyn+=( --cache-ram )
     fi
 
     # Raw catch-all, appended after every tabulated knob so a user's own option
     # is the later one wherever ComfyUI lets a later option win. It stays INSIDE
     # dyn on purpose: COMFYUI_ARGV_TAIL's --extra-model-paths-config is nargs='+'
-    # and must remain the last thing on the line. Deliberate word-split,
-    # unset-safe; quoting inside the value is not honoured (documented in
+    # and must remain the last thing on the line. Quoting inside the value IS
+    # honoured since s52 and it is not glob-expanded (see
     # comfyui.env), matching LLAMA_EXTRA_ARGS and DS4_DROSTE_EXTRA_ARGS.
     # shellcheck disable=SC2206
-    dyn+=( ${COMFYUI_DROSTE_EXTRA_ARGS:-} )
+    mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_COMFYUI_EXTRA_ARGS:-}")
+    dyn+=( ${_extra[@]+"${_extra[@]}"} )
 
     SERVICE=( "${COMFYUI_ARGV_HEAD[@]}" ${dyn[@]+"${dyn[@]}"} "${COMFYUI_ARGV_TAIL[@]}" )
 }

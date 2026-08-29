@@ -5,17 +5,28 @@
 # full contract. SOURCED bash: plain arrays/vars, zero dependencies.
 
 # ── SERVICE (required) ───────────────────────────────────────────────────────
-# vLLM serves the model named in the config file. $VLLM_CONFIG is a deliberate env
-# knob (a config-file SELECTOR with a smart default — not a raw path the user must
+# vLLM serves the model named in the config file. $DROSTE_VLLM_CONFIG is a deliberate
+# env knob (a config-file SELECTOR with a smart default — not a raw path the user must
 # know); $VLLM_EXTRA_ARGS (folded in by PRE_LAUNCH below) is the other. Default =
-# the persisted /opt/data copy that templates.yaml seeds (if_missing) from the
-# build-generated template. User may point it elsewhere.
-# No model in the config => vLLM exits immediately with "model is required" — a natural,
-# self-explanatory failure (the template's model line is REQUIRED + prominent), so we add
-# no custom pre-flight for it.
-: "${VLLM_CONFIG:=/opt/data/vllm_config.yaml}"
-export VLLM_CONFIG
-SERVICE=( vllm serve --config "$VLLM_CONFIG" )
+# the persisted /opt/data copy that templates.yaml seeds (if_missing) from the shipped
+# template. User may point it elsewhere.
+#
+# ⚠️ IT IS OURS, NOT UPSTREAM'S — it is not in vllm/envs.py, and argparse_utils.py
+# reads only the `--config` FLAG. So it carries the DROSTE_ prefix like every other
+# droste-owned setting, and the OLD `VLLM_CONFIG` spelling is simply gone (no backward
+# compatibility is owed; a native VLLM_* spelling would be, this was never one).
+# ⚠️ Substring noise — VLLM_CONFIG_ROOT and VLLM_CONFIGURE_LOGGING are real and
+# UNRELATED upstream variables. A bare grep for VLLM_CONFIG is untrustworthy.
+#
+# 🚨 A CONFIG WITH NO MODEL DOES NOT FAIL. This comment used to say vLLM exits with
+# "model is required"; it does not. ModelConfig.model defaults to Qwen/Qwen3-0.6B
+# (config/model.py:103), `model_tag` is nargs="?", and validate_parsed_serve_args
+# never checks — so an unedited box DOWNLOADS AND SERVES Qwen3-0.6B and reads
+# HEALTHY. What to do about that is a ruling, not a wiring decision (board N21);
+# recorded here so the next reader does not inherit the false version.
+: "${DROSTE_VLLM_CONFIG:=/opt/data/vllm_config.yaml}"
+export DROSTE_VLLM_CONFIG
+SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
 # vLLM's OpenAI server exposes /health (200 when the engine is ready). Weight
@@ -30,17 +41,28 @@ HEALTH_ACCEPT="ok"
 # VLLM_* ENVIRONMENT VARIABLES, which are not expressible as YAML keys — several
 # are read before any config is parsed. Two mechanisms, so two files.
 #
-# ⚠️ It is also the only place $VLLM_EXTRA_ARGS and $VLLM_CONFIG can be set. Both
-# were advertised by this box (here and in the generated YAML header) while no
+# ⚠️ It is also the only place $VLLM_EXTRA_ARGS and $DROSTE_VLLM_CONFIG can be set.
+# Both were advertised by this box (here and in the generated YAML header) while no
 # file existed to hold them, which made the catch-all itself unreachable in the
 # lane that serves. server.env cannot stand in: it is read in a subshell whose
 # output is discarded except for three keys.
 #
 # ⭐ ORDERING IS LOAD-BEARING AND ALREADY CORRECT: the resolver sources this file
-# AFTER the build-spec and BEFORE PRE_LAUNCH, and PRE_LAUNCH re-reads $VLLM_CONFIG
-# when it rebuilds SERVICE — so a user's VLLM_CONFIG here wins over the default
-# set at the top of this file. Do not move the `: "${VLLM_CONFIG:=...}"` line into
-# PRE_LAUNCH, and do not hardcode the path in the rebuild.
+# AFTER the build-spec and BEFORE PRE_LAUNCH, and PRE_LAUNCH re-reads
+# $DROSTE_VLLM_CONFIG when it rebuilds SERVICE — so a user's DROSTE_VLLM_CONFIG here
+# wins over the default set at the top of this file. Do not move the
+# `: "${DROSTE_VLLM_CONFIG:=...}"` line into PRE_LAUNCH, and do not hardcode the path
+# in the rebuild.
+# ▶ OPEN QUESTION, NOT RESOLVED HERE: vllm.env's Reserved section lists
+#   DROSTE_VLLM_CONFIG among the settings a user must NOT set, while this block says
+#   a user's value wins. Both cannot be true. TODAY'S BEHAVIOUR IS "the user's value
+#   wins" and this wiring keeps it unchanged; the disagreement is queued for a
+#   ruling, not settled by whoever edits next.
+#
+# ⭐ AND IT IS SOURCED UNDER `set -a`, WHICH IS WHY NATIVE LINES NEED NO WIRING.
+# Every `VLLM_FOO=bar` a user uncomments is exported by the resolver itself. Only
+# the DROSTE_VLLM_* names below need translating — they are the settings where
+# passing the user's word through unprocessed would be wrong or fatal.
 ENV_FILE="/opt/data/vllm.env"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
@@ -88,16 +110,318 @@ OPTIONAL=(
     "models:/opt/models:/opt/models/mount_shared_models_here"
 )
 
+# ── The vllm.env → environment table ─────────────────────────────────────────
+# vllm.env offers yes/no (or a short menu); vLLM reads its own variables from the
+# environment. This table is the translation, and it is the ONLY mapping — adding a
+# setting means editing vllm.env AND this file.
+#
+# 🚨 THERE IS NO SINGLE WIRE VALUE THAT WORKS FOR ALL OF THEM, which is the whole
+# reason these are droste-owned rather than passed through. vLLM's own env table
+# uses SIX incompatible boolean readers, measured at the pin (vllm/envs.py, v0.16.0):
+#
+#   bool(int(x))                  "1" only — "true" raises ValueError, server dies
+#   .lower() in ("true","1")       either
+#   .lower() == "true"             "true" ONLY — "1" reads as False
+#   == "1"                         "1" ONLY — "true" reads as False
+#   .strip().lower() in ('1','true')  either, and it strips surrounding space
+#   is_true() (huggingface_hub's)  upper-cases, matches {1,ON,YES,TRUE}
+#
+# So the true/false spelling is PER VARIABLE. A user writing `yes` would hit a
+# ValueError on the bool(int) rows and a silent False on several others; that is
+# exactly the fall-through we do not make users carry.
+#
+# "<SUFFIX>:<native var>:<ON wire>:<OFF wire>" — ours is DROSTE_VLLM_<SUFFIX>.
+#
+# ⚠️ THE COLUMNS ARE "WHAT WE WRITE WHEN THE USER SAYS ON/OFF", NOT "TRUE/FALSE".
+# Five rows are marked INVERTED: upstream spells the setting as a DISABLE/SKIP, so
+# the user's `on` writes a 0. That is not a typo and swapping it back silently
+# inverts a working box. Each one names the upstream variable it flips.
+VLLM_BOOL_VARS=(
+    # ── Model sources ──
+    # huggingface_hub's is_true(), not vLLM's: {"1","ON","YES","TRUE"} upper-cased
+    "HF_HUB_OFFLINE:HF_HUB_OFFLINE:1:0"
+    # .lower() == "true" — "1" would read as FALSE here
+    "USE_MODELSCOPE:VLLM_USE_MODELSCOPE:true:false"
+    # ── LoRA adapters ── .strip().lower() in ('1','true')
+    "RT_LORA_UPDATES_OK:VLLM_ALLOW_RUNTIME_LORA_UPDATING:1:0"
+    # ── Caches & config ── bool(int) ×3, == "1" ×1
+    "USE_TRITON_AWQ:VLLM_USE_TRITON_AWQ:1:0"
+    "DISABLE_COMPILE_CACHE:VLLM_DISABLE_COMPILE_CACHE:1:0"
+    "ASSETS_CACHE_MODEL_CLEAN:VLLM_ASSETS_CACHE_MODEL_CLEAN:1:0"
+    "V1_USE_OUTLINES_CACHE:VLLM_V1_USE_OUTLINES_CACHE:1:0"
+    # ── Server liveness ── bool(int)
+    "KEEP_ALIVE:VLLM_KEEP_ALIVE_ON_ENGINE_DEATH:1:0"
+    # ── Tuning ──
+    # .strip().lower() in ('1','true'). ⚠️ NOT a quality knob: exceeding the derived
+    # length gives nan (RoPE) or a device-side out-of-bounds error. It only downgrades
+    # a startup ValueError to a warning.
+    "LONG_MAX_MODEL_LEN_OK:VLLM_ALLOW_LONG_MAX_MODEL_LEN:1:0"
+    # ours, read by this image's patched FP8 kernels — not in vllm/envs.py
+    "STRIX_FP8_TRITON:VLLM_STRIX_FP8_TRITON:1:0"
+    # ── ROCm per-kernel toggles ── bool(int) ×2, .lower() in ("true","1") ×1
+    "ROCM_FP8_PADDING:VLLM_ROCM_FP8_PADDING:1:0"
+    "ROCM_MOE_PADDING:VLLM_ROCM_MOE_PADDING:1:0"
+    "ROCM_CUSTOM_PAGED_ATTN:VLLM_ROCM_CUSTOM_PAGED_ATTN:1:0"
+    # ── Idle behaviour ── bool(int)
+    "SLEEP_WHEN_IDLE:VLLM_SLEEP_WHEN_IDLE:1:0"
+    # ── Security ── bool(int)   (DO_NOT_TRACK is special-cased below: two variables)
+    "INSEC_SERIAL_OK:VLLM_ALLOW_INSECURE_SERIALIZATION:1:0"
+    # ── API, tool calling & parsing ── bool(int) ×3
+    "RESPONSES_API_STORE:VLLM_ENABLE_RESPONSES_API_STORE:1:0"
+    "TOOL_JSON_ERROR_AUTOMATIC_RETRY:VLLM_TOOL_JSON_ERROR_AUTOMATIC_RETRY:1:0"
+    "GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS_OK:VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS:1:0"
+    # ── MoE models ── bool(int) ×4
+    "FUSED_MOE_GROUPED_TOPK:VLLM_USE_FUSED_MOE_GROUPED_TOPK:1:0"
+    "FUSED_MOE_ACTIVATION_CHUNKING:VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING:1:0"
+    "MOE_DP_CHUNK:VLLM_ENABLE_MOE_DP_CHUNK:1:0"
+    "SHARED_EXPERTS_STREAM:VLLM_DISABLE_SHARED_EXPERTS_STREAM:0:1"   # INVERTED (DISABLE_)
+    # ── KV cache & attention ──
+    "USE_MLA:VLLM_MLA_DISABLE:0:1"                                   # INVERTED (_DISABLE)
+    "ROCM_FP8_MFMA_PAGE_ATTN:VLLM_ROCM_FP8_MFMA_PAGE_ATTN:1:0"
+    "CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE_OK:VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE:1:0"
+    # ── Multimodal input ── bool(int)
+    "MEDIA_REDIRECTS_OK:VLLM_MEDIA_URL_ALLOW_REDIRECTS:1:0"
+    # ── Multi-node serving ──
+    # .lower() in ("true","1") — "1" chosen for consistency with its neighbours
+    "PYNCCL:VLLM_DISABLE_PYNCCL:0:1"                                 # INVERTED (DISABLE_)
+    "P2P_CHECK:VLLM_SKIP_P2P_CHECK:0:1"                              # INVERTED (SKIP_)
+    "RANDOMIZE_DP_DUMMY_INPUTS:VLLM_RANDOMIZE_DP_DUMMY_INPUTS:1:0"
+    "RAY_COMPILED_DAG_OVERLAP_COMM:VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM:1:0"
+    "RAY_WRAPPED_PP_COMM:VLLM_USE_RAY_WRAPPED_PP_COMM:1:0"
+    # ── Compilation & startup cost ── (AOT_COMPILE is tri-state, special-cased below)
+    "FORCE_AOT_LOAD:VLLM_FORCE_AOT_LOAD:1:0"
+    "MEGA_AOT_ARTIFACT:VLLM_USE_MEGA_AOT_ARTIFACT:1:0"
+    "INDUCTOR_MAX_AUTOTUNE:VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE:1:0"
+    "INDUCTOR_COORDINATE_DESCENT_TUNING:VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING:1:0"
+    "STANDALONE_COMPILE:VLLM_USE_STANDALONE_COMPILE:1:0"
+    "BYTECODE_HOOK:VLLM_USE_BYTECODE_HOOK:1:0"
+    # ── Logging ── (LEVEL/COLOR/STREAM are menus, special-cased below)
+    "CONFIGURE_LOGGING:VLLM_CONFIGURE_LOGGING:1:0"
+    "DEBUG_LOG_API_SRV_RESP:VLLM_DEBUG_LOG_API_SERVER_RESPONSE:true:false"
+    "LOG_LOGO:VLLM_DISABLE_LOG_LOGO:0:1"                             # INVERTED (DISABLE_)
+    # ── Tracing & diagnostics ──
+    # int(), not bool(int): a level, but the file offers the on/off it is used as
+    "TRACE_FUNCTION:VLLM_TRACE_FUNCTION:1:0"
+    # a STRING upstream (""/"0" off · "1" on · JSON for detail); malformed = silent off
+    "GC_DEBUG:VLLM_GC_DEBUG:1:0"
+    "DEBUG_WORKSPACE:VLLM_DEBUG_WORKSPACE:1:0"
+    "LOG_MODEL_INSPECTION:VLLM_LOG_MODEL_INSPECTION:1:0"
+    "DEBUG_MFU_METRICS:VLLM_DEBUG_MFU_METRICS:1:0"
+    "COMPUTE_NANS_IN_LOGITS:VLLM_COMPUTE_NANS_IN_LOGITS:1:0"
+    "CUSTOM_SCOPES_FOR_PROFILING:VLLM_CUSTOM_SCOPES_FOR_PROFILING:1:0"
+    # ── Development ── bool(int) ×2
+    "SERVER_DEV_MODE:VLLM_SERVER_DEV_MODE:1:0"
+    "USE_V2_MODEL_RUNNER:VLLM_USE_V2_MODEL_RUNNER:1:0"
+    # ── Experimental ── bool(int) ×1, .lower() in ("true","1") ×2
+    "EXPERIMENTAL_PARSER_CONTEXT:VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT:1:0"
+    "ROCM_AITER_UNIFIED_ATTENTION:VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION:1:0"
+    "ROCM_AITER:VLLM_ROCM_USE_AITER:1:0"
+)
+
+# ── vllm_menu / vllm_pick — the settings whose answer is a MENU, not a bool ──
+#
+# ⭐ WHY A SEPARATE MECHANISM. A boolean has two answers and both are always
+# expressible. A menu has N, and for several of these ONE MEMBER MEANS "DO NOT SET
+# THE VARIABLE AT ALL" — VLLM_KV_CACHE_LAYOUT is validated by env_with_choices()
+# against ["NHD","HND"], which RAISES ValueError for any other value INCLUDING the
+# empty string, so `auto` cannot be spelled on the wire: it has to be an absence.
+# A wire of "-" is exactly that instruction.
+#
+# vllm_pick <SUFFIX> <user value> <member=wire> … — prints the wire, or warns and
+# fails. The user's value is case-folded and space-stripped (`Auto`, `AUTO ` are
+# what people type); the WIRE is emitted verbatim, because upstream's own
+# validation is case-SENSITIVE.
+vllm_pick() {
+    # `given` keeps the user's ORIGINAL spelling for the message — `$2` is a menu
+    # member by the time the loop runs, and quoting one of those back at a user who
+    # never typed it is worse than saying nothing.
+    local suffix=$1 given=$2 val=$2; shift 2
+    local pair menu=""
+    val=${val,,}; val=${val// /}
+    for pair in "$@"; do
+        menu="$menu ${pair%%=*}"
+        [ "${pair%%=*}" = "$val" ] && { printf '%s' "${pair#*=}"; return 0; }
+    done
+    serve::err "DROSTE_VLLM_$suffix='$given' is not one of:$menu — leaving the setting at its default. Fix it in $ENV_FILE and restart the box."
+    return 1
+}
+
+# vllm_menu <SUFFIX> <native var> <member=wire> … — the whole read/validate/export.
+vllm_menu() {
+    local suffix=$1 var=$2; shift 2
+    local ref="DROSTE_VLLM_$suffix" val wire
+    val=${!ref:-}
+    # Unset/blank leaves the native variable alone, exactly as for the booleans.
+    [ -n "$val" ] || return 0
+    wire=$(vllm_pick "$suffix" "$val" "$@") || return 0
+    [ "$wire" = "-" ] && return 0
+    export "$var=$wire"
+}
+
+# vllm_env — DROSTE_VLLM_* → the native variables, exported for the served process.
+# Its own function so it can be driven alone (source the spec, call it, print the
+# environment) without building the argv.
+# ⚠️ EXPORT IS REQUIRED. resolve::apply_spec runs `set +a` before PRE_LAUNCH, so a
+# bare assignment here would never reach the vLLM process — it would be a silent
+# no-op, which is the same defect in a different costume.
+vllm_env() {
+    local entry suffix rest var on off val
+
+    # ── the booleans ──
+    for entry in "${VLLM_BOOL_VARS[@]}"; do
+        suffix=${entry%%:*}; rest=${entry#*:}
+        var=${rest%%:*};     rest=${rest#*:}
+        on=${rest%%:*};      off=${rest#*:}
+        val="DROSTE_VLLM_$suffix"; val=${!val:-}
+        # Unset/blank leaves the variable alone: the image's baked value or vLLM's
+        # own default stands. Setting it here would turn an opt-out into an opt-in.
+        [ -n "$val" ] || continue
+        # droste::bool normalises BOTH user vocabularies to one internal answer, so
+        # there are two arms here and not four. yes/no and on/off are not synonyms
+        # in the FILE — one answers a question ("never reach the network?"), the
+        # other names a state ("padding is on") — and each setting is worded as
+        # whichever it actually is. That distinction is the user's to read; by the
+        # time a value reaches here it has been resolved and the wording is spent.
+        case "$(droste::bool "$val")" in
+            on)  export "$var=$on" ;;
+            off) export "$var=$off" ;;
+            *) serve::err "DROSTE_VLLM_$suffix='$val' is not a yes/no or on/off value — leaving $var as it is. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    # ── the menus ──
+    #
+    # 🚨 KV_CACHE_LAYOUT AND VIDEO_LOAD_BACKEND ARE THE SAME DEFECT WITH OPPOSITE
+    # FIXES — DO NOT UNIFY THEM. The layout is a CLOSED ENUM: the valid names are a
+    # literal list in vllm/envs.py, nothing can add to it, so an unknown value is a
+    # typo and the right answer is to whitelist. The video backend is an OPEN
+    # REGISTRY: a plugin may register a loader under any name, so at PRE_LAUNCH time
+    # a typo and a legitimate plugin name are INDISTINGUISHABLE and refusing would
+    # break a working deployment. Whitelist the closed one; pass the open one
+    # through with a warning. (See the VIDEO_LOAD_BACKEND block below.)
+    #
+    # `auto` = "do not set it": env_with_choices raises for anything outside
+    # NHD/HND, and that includes both `auto` and the empty string.
+    vllm_menu KV_CACHE_LAYOUT VLLM_KV_CACHE_LAYOUT auto=- nhd=NHD hnd=HND
+
+    # `auto` here is upstream's own COMPUTED default (torch version + whether the
+    # compile cache is disabled), so it likewise has to be an absence — there is no
+    # literal that means "work it out yourself".
+    vllm_menu AOT_COMPILE VLLM_USE_AOT_COMPILE auto=- on=1 off=0
+
+    # ⚠️ `notset` IS NOT "unset". Python resolves NOTSET on a handler by walking up
+    # to the root logger's effective level, which lands on WARNING — QUIETER than
+    # leaving the variable alone (unset ⇒ vLLM's own "INFO"). Two "unsets" one layer
+    # apart, and the file offers the one that surprises people. Upstream .upper()s
+    # the value, so the wire is the canonical spelling.
+    vllm_menu LOGGING_LEVEL VLLM_LOGGING_LEVEL \
+        debug=DEBUG info=INFO warning=WARNING warn=WARN \
+        error=ERROR critical=CRITICAL fatal=FATAL notset=NOTSET
+
+    # ⚠️ THE NATIVE VARIABLE IS NOT A WORD, IT IS A DIGIT. logger.py:30-38 tests
+    # `== "0"` then `== "1"` and treats EVERYTHING ELSE as auto — so `always` and
+    # `never`, the words a person would reach for, both silently mean auto. That is
+    # the whole reason this one is droste-named. `auto` is wired to the literal
+    # upstream default rather than to "-" because writing it is faithful: it names
+    # the isatty branch that upstream itself falls through to.
+    # (NO_COLOR is honoured by upstream ahead of all three; we do not touch it.)
+    vllm_menu LOGGING_COLOR VLLM_LOGGING_COLOR auto=auto always=1 never=0
+
+    # ⚠️ The native value is a logging-dictConfig `ext://` REFERENCE, not a word.
+    # A value that resolves to a non-stream object configures CLEANLY and then
+    # AttributeErrors on every single log record; only an unresolvable ext:// fails
+    # at startup. So the menu is closed and short on purpose.
+    vllm_menu LOGGING_STREAM VLLM_LOGGING_STREAM \
+        stdout=ext://sys.stdout stderr=ext://sys.stderr
+
+    # ── the settings that are not a bool and not a menu ──
+
+    # 🚨 ONE ANSWER, TWO VARIABLES — AND THE "OFF" WIRE IS AN ABSENCE.
+    # vLLM reads `VLLM_DO_NOT_TRACK or DO_NOT_TRACK or "0"` and compares to "1"
+    # (envs.py:629-634). Python's `or` SELECTS the first non-EMPTY operand, so
+    # writing VLLM_DO_NOT_TRACK=0 would MASK a bare DO_NOT_TRACK=1 the user set for
+    # every tool on the machine — a privacy setting silently reversed by us. So
+    # `no` UNSETS ours and lets the generic one through, and only VLLM_NO_USAGE_STATS
+    # (which has no such chain, and which the IMAGE bakes to 1) is written to 0.
+    # ⚠️ There is a third opt-out we do not manage: a file at
+    # $VLLM_CONFIG_ROOT/do_not_track. This image does not persist ~/.config/vllm.
+    val=${DROSTE_VLLM_DO_NOT_TRACK:-}
+    if [ -n "$val" ]; then
+        case "$(droste::bool "$val")" in
+            on)  export VLLM_DO_NOT_TRACK=1 VLLM_NO_USAGE_STATS=1 ;;
+            off) unset VLLM_DO_NOT_TRACK; export VLLM_NO_USAGE_STATS=0 ;;
+            *) serve::err "DROSTE_VLLM_DO_NOT_TRACK='$val' is not a yes/no value — leaving telemetry as the image set it (opted out). Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    fi
+
+    # OPEN REGISTRY (see the note above): warn, then pass through VERBATIM — no
+    # case folding, because a registry key is matched exactly. The three names below
+    # are what vLLM itself ships at the pin; a plugin may add more, and a name that
+    # nothing registers fails with an AssertionError during startup.
+    val=${DROSTE_VLLM_VIDEO_LOAD_BACKEND:-}
+    if [ -n "$val" ]; then
+        case "$val" in
+            opencv|opencv_dynamic|molmo2) ;;
+            *) serve::warn "DROSTE_VLLM_VIDEO_LOAD_BACKEND='$val' is not one of the loaders vLLM ships (opencv, opencv_dynamic, molmo2). Passing it through in case a plugin registers it — if nothing does, startup fails with an AssertionError." ;;
+        esac
+        export VLLM_VIDEO_LOADER_BACKEND="$val"
+    fi
+
+    # A PATH, not a switch — vllm.env:320 shows it BLANK and offers no menu, so the
+    # value goes through verbatim and blank is the off-state.
+    # 🚨 AND THE OFF-STATE HAS TO BE AN ABSENCE, NOT AN EMPTY STRING. envs.py:573
+    # reads `os.environ.get("VLLM_DEBUG_DUMP_PATH", None)` and the default is
+    # `str | None = None` (envs.py:218), so a blank is NOT None and every
+    # `is not None` gate downstream fires on it. Exporting the blank the file shows
+    # would switch the mechanism on and dump to "" — which is why the guard below is
+    # load-bearing rather than tidiness.
+    val=${DROSTE_VLLM_DEBUG_DUMP_PATH:-}
+    [ -n "$val" ] && export VLLM_DEBUG_DUMP_PATH="$val"
+
+    # ⚠️ int(), so a non-numeric value is a ValueError at import — before any log
+    # line the user could read. Digits only, and we refuse rather than guess.
+    val=${DROSTE_VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS:-}
+    if [ -n "$val" ]; then
+        case "$val" in
+            ''|*[!0-9]*) serve::err "DROSTE_VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS='$val' is not a whole number of seconds — leaving it at vLLM's default of 1. Fix it in $ENV_FILE and restart the box." ;;
+            *) export VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS="$val" ;;
+        esac
+    fi
+
+    # 🚨 THE VALUE IS THE NAME OF AN fx GRAPH NODE, AND THE GATE IS `is not None`.
+    # pass_manager.py:61-63 forwards whatever it finds to torch's
+    # TORCHINDUCTOR_PATTERN_MATCH_DEBUG, and torch compares it `== node.name`
+    # (_inductor/pattern_matcher.py:1979). envs.py:573-574 reads
+    # `os.environ.get("VLLM_PATTERN_MATCH_DEBUG", None)` against a `str | None = None`
+    # default (envs.py:217), so an EMPTY value is NOT None: it switches the mechanism
+    # on and then matches no node. **The blank vllm.env:321 shows must reach the wire
+    # as an ABSENCE**, which is exactly what the `-n` guard does.
+    # ⭐ A PLAIN VALUE SETTING, NOT A BOOLEAN (vllm.env, s56 — Jei moved this line and
+    # DEBUG_DUMP_PATH OUT of the `{on, off*}` block above them). It therefore has no
+    # menu, takes no on/off, and MUST NOT warn about one: `on` is simply a node name
+    # that nothing will match, and second-guessing the user's node name is not ours to
+    # do. The earlier bool-parsing version refused `on` and read `off` as "unset" —
+    # both are gone with the menu that justified them.
+    val=${DROSTE_VLLM_PATTERN_MATCH_DEBUG:-}
+    [ -n "$val" ] && export VLLM_PATTERN_MATCH_DEBUG="$val"
+    # ⚠️ `[ -n … ] && …` returns non-zero on a blank, and this is the LAST command in
+    # the function — under `set -e` in both lanes that would fail PRE_LAUNCH for every
+    # box that never set the variable, i.e. all of them. Return success explicitly.
+    return 0
+}
+
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
 # SERVICE-rebuild (see build-spec.example): fold $VLLM_EXTRA_ARGS into the argv —
 # CLI args placed after --config override the config file's values (vLLM's own
 # CLI-over-config merge), exactly as the generated config header documents.
-# No env->argv translation otherwise (vLLM reads --config natively); the model
-# rides the config; stale-graph handling is a documented one-liner (compile cache
-# is disabled), not an automated pre-launch step.
+# The model rides the config; stale-graph handling is a documented one-liner
+# (compile cache is disabled), not an automated pre-launch step.
 PRE_LAUNCH="vllm_pre_launch"
 vllm_pre_launch() {
-    # Deliberate word-split, unset-safe; quoting inside the value is not honoured.
+    vllm_env
+
+    # Quote-aware split (droste::split_args): a value may contain spaces.
     # shellcheck disable=SC2206
-    SERVICE=( vllm serve --config "$VLLM_CONFIG" ${VLLM_EXTRA_ARGS:-} )
+    mapfile -d '' -t _extra < <(droste::split_args "${VLLM_EXTRA_ARGS:-}")
+    SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" ${_extra[@]+"${_extra[@]}"} )
 }

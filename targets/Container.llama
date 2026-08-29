@@ -33,13 +33,26 @@ RUN chmod +x /usr/local/bin/gguf-vram-estimator.py && \
 # (baked RO under /opt/resources; the resolver/entrypoint live in the runtime base).
 COPY build-spec  /opt/resources/build-spec
 COPY templates/  /opt/resources/templates/
-COPY scripts/gen_llama_env.sh /opt/resources/scripts/gen_llama_env.sh
 
-# BUILD-TIME generate the llama.env template from the pinned llama-server's arg
-# table (enumerates every env-having flag; VERIFIES the active LLAMA_ARG_* names
-# exist — an upstream rename fails the build here, by design).
-RUN chmod +x /opt/resources/scripts/gen_llama_env.sh \
-    && /opt/resources/scripts/gen_llama_env.sh /opt/resources/templates/llama.env
+# llama.env is a HAND-AUTHORED template (templates/llama.env), copied above with
+# the rest. It used to be generated here from the pinned binary's own --help;
+# that is now a DEV-TIME step (scripts/llama-options.sh, run at a pin bump on a
+# machine with a GPU) whose output is DIFFED against the template by a human.
+# ⭐ Two reasons, and the second is why it changed: presentation has to be ours to
+# control, and `llama-server --help` CANNOT RUN on a GPU-less CI runner — it dies
+# with SIGILL after "no ROCm-capable device", so the generated file shipped
+# degraded on every build that mattered.
+#
+# What that costs, and what replaces it: generating here also VERIFIED that the
+# LLAMA_ARG_* names we depend on still exist, failing the build on an upstream
+# rename. The check below keeps that guarantee without running the binary — the
+# arg table stores env names as plain string literals, so a scan finds them on
+# any runner, GPU or not.
+RUN for v in LLAMA_ARG_HOST LLAMA_ARG_PORT LLAMA_ARG_MODEL; do \
+        grep -qa "$v" "$(command -v llama-server)" \
+        || { echo "gen-drift: $v is NOT in the pinned llama-server — upstream rename? Fix targets/llama/templates/llama.env and the launch flags before shipping."; exit 1; }; \
+    done \
+    && echo "llama drift gate: LLAMA_ARG_HOST/PORT/MODEL present in the pinned binary"
 
 # Runtime shell banner (interactive/toolbox lane)
 COPY profile.d/99-toolbox-banner.sh /etc/profile.d/99-toolbox-banner.sh

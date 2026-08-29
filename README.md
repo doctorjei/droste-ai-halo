@@ -149,9 +149,15 @@ either way.
 |---|---|---|---|
 | comfyui | ComfyUI web UI | 8188 | `comfyui.env` |
 | finetuning | JupyterLab | 8888 | — (token auth; see container log) |
-| vllm | `vllm serve --config` | 8000 | `vllm_config.yaml` — set `model:` |
+| vllm | `vllm serve --config` | 8000 | `vllm_config.yaml` — set `model:`\* |
 | llama | `llama-server` | 8080 | `llama.env` — set `LLAMA_ARG_MODEL` |
-| ds4 | `ds4-server` | 8000 | `ds4.env` — set `DS4_DROSTE_MODEL` |
+| ds4 | `ds4-server` | 8001 | `ds4.env` — set `DROSTE_DS4_MODEL` |
+
+\* vllm is the one box that starts without being told which model to serve:
+leave `model:` commented and vLLM falls back to its own default,
+`Qwen/Qwen3-0.6B`, which it downloads on the first start and then serves.
+The box reads healthy either way, so set `model:` before first use unless
+that tiny model is genuinely what you wanted.
 
 Those ports are each service's own default. A box made by `droste-setup.sh`
 runs on host networking and binds the port recorded in its `server.env`
@@ -400,7 +406,7 @@ box user.
   inside the box: `/opt/resources/templates/`. Two known cases. An old
   `vllm_config.yaml` carries a `port:` key: delete the line — the container
   owns the listen port (`server.env`), and the same goes for `LLAMA_ARG_PORT`
-  in `llama.env` or `DS4_DROSTE_PORT` in `ds4.env` if you re-add them. And a
+  in `llama.env` or `DROSTE_DS4_PORT` in `ds4.env` if you re-add them. And a
   `ds4.env` seeded before the storage split still points
   `DS4_DROSTE_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
   persistent volume: repoint it to `/opt/program-cache/kv-disk`.

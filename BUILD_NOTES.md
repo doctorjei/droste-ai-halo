@@ -349,11 +349,14 @@ prefix rules.
   notebooks seed from templates only into a completely empty workspace —
   seed-if-empty semantics honor user deletions.
 - **vllm** — the upstream TUI's MODEL_TABLE is vendored at toolbox sha
-  `6446b9595273f289e11586c3c7d3e1e6f2945888` (`targets/vllm/upstream/models.py`)
-  and `vllm_config.yaml` is GENERATED AT IMAGE BUILD from it
-  (`scripts/gen_vllm_config.py`) — hermetic, and upstream drift is visible as a
-  vendored-file diff, not a silent build change. The generated config carries
-  `host:` but deliberately NO `port:` key (2026-08-14): the launcher owns the
+  `6446b9595273f289e11586c3c7d3e1e6f2945888` (`targets/vllm/upstream/models.py`).
+  `vllm_config.yaml` is HAND-AUTHORED (`targets/vllm/templates/`) and ships on the
+  ordinary `COPY templates/`. It was GENERATED AT IMAGE BUILD until s57, which made
+  the authored file inert — same defect and same fix as llama below. The vendored
+  table stays as the record of where the MODEL_TABLE stanzas came from, and drift
+  between it and the YAML is caught at a pin bump by `scripts/vllm-models.py`, a
+  report that cannot write the YAML (no output path exists). The config carries no
+  `port:` key, deliberately (2026-08-14): the launcher owns the
   listen port (`droste-serve.sh::serve::apply_port` appends `--port $PORT` from
   server.env), and setting it in both places made vLLM log `Found duplicate keys
   --port` at every start. `VLLM_NO_USAGE_STATS=1` is baked

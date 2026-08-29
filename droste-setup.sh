@@ -5424,11 +5424,13 @@ write_notes() {
         vllm)
           printf -- '- BEFORE first use: edit `%s/vllm_config.yaml` and set\n' "$data"
           printf '  `model:` (HF repo id or /opt/models path). Seeded at first start.\n'
+          printf '  Left unset the box still starts, but serves vLLM'"'"'s own default\n'
+          printf '  model, `Qwen/Qwen3-0.6B`, downloading it first.\n'
           printf -- '- OpenAI-compatible API: http://localhost:%s/v1.\n' "$port"
           ;;
         ds4)
           printf -- '- BEFORE first use: edit `%s/ds4.env` and set\n' "$data"
-          printf '  `DS4_DROSTE_MODEL` (GGUF path). Seeded at first start.\n'
+          printf '  `DROSTE_DS4_MODEL` (GGUF path). Seeded at first start.\n'
           printf -- '- API: http://localhost:%s (ds4-server).\n' "$port"
           ;;
         finetuning)

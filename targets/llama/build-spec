@@ -331,6 +331,56 @@ llama_pre_launch() {
         unset LLAMA_ARG_THREADS
     fi
 
+    # ── the NATIVE lines llama.env shows BLANK (s56) ───────────────────────────
+    # 🚨 A BLANK IS NOT "NO VALUE" TO llama-server. get_value_from_env (arg.cpp:120-135,
+    # pinned 337f08e8) returns TRUE for an empty string, so uncommenting a line the file
+    # prints blank hands the handler "" — and TWELVE of the thirteen below then THROW,
+    # rethrown as a fatal startup error (arg.cpp:526-528). The blank is CORRECT
+    # documentation: the flag genuinely is unused by default. Making it reach the wire as
+    # an ABSENCE is what delivers what each line already claims, with no template edit.
+    # Same shape, and the same `unset`-not-blank reasoning, as the THREADS block above.
+    # Read one by one from the pinned sources:
+    #   API_KEY_FILE / UI_CONFIG_FILE / CHAT_TEMPLATE_FILE  ifstream("") / read_file("")
+    #   CHAT_TEMPLATE_KWARGS      json::parse("") throws
+    #   DEVICE                    parse_device_list("") ⇒ [""] ⇒ `invalid device:`
+    #   POOLING, ROPE_SCALING_TYPE  "" falls to the else arm and throws — the real
+    #                             default (UNSPECIFIED) has no spelling in either menu
+    #   ROPE_SCALE, N_GPU_LAYERS_DRAFT   stof("") / stoi("") throw
+    #   SPEC_TYPE                 `unknown speculative type:`
+    #   OVERRIDE_TENSOR           no `=` in the value ⇒ `invalid value`
+    #   RPC                       add_rpc_devices("") registers an EMPTY endpoint
+    #   TOOLS                     ⚠️ THE ONE THAT DOES NOT THROW, and so the worst:
+    #                             parse_csv_row("") ⇒ [""], one bogus tool named "",
+    #                             where the default is an empty vector. The box comes up
+    #                             — silently wrong beats loudly dead only for the user
+    #                             who never looks.
+    # ⚠️ N_GPU_LAYERS_DRAFT now SHOWS -1 rather than a blank. It is on the list anyway:
+    # showing a value and defending against a user who clears it are independent, and a
+    # cleared one still reaches stoi("").
+    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment is the rule.
+    # Every DROSTE_LLAMA_* keeps its blank, because there a blank is the documented N1a
+    # opt-out (BUILTIN_SPEC_DEFAULT= means "don't", and must go on meaning it).
+    # ⭐ PLACEMENT IS ORDERING, NOT LOCATION. Nothing between here and the exec reads
+    # these names, and `unset` drops the export mark along with the variable, so before
+    # or after the compgen loop below is identical — measured, exactly as for THREADS.
+    # What it must not do is run BEFORE a `${LLAMA_ARG_X=…}` droste default (the two
+    # above it), because that would turn a user's blank opt-out back into our value.
+    # No name is on both lists today; sitting last of the native-name blocks keeps it
+    # that way by construction if one ever is.
+    droste::blank_is_unset LLAMA_ARG_API_KEY_FILE \
+                           LLAMA_ARG_DEVICE \
+                           LLAMA_ARG_N_GPU_LAYERS_DRAFT \
+                           LLAMA_ARG_UI_CONFIG_FILE \
+                           LLAMA_ARG_TOOLS \
+                           LLAMA_ARG_SPEC_TYPE \
+                           LLAMA_ARG_CHAT_TEMPLATE_FILE \
+                           LLAMA_ARG_CHAT_TEMPLATE_KWARGS \
+                           LLAMA_ARG_POOLING \
+                           LLAMA_ARG_ROPE_SCALING_TYPE \
+                           LLAMA_ARG_ROPE_SCALE \
+                           LLAMA_ARG_OVERRIDE_TENSOR \
+                           LLAMA_ARG_RPC
+
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive
     # the exec. This loop is belt-and-braces for a LLAMA_* the user exported into the

@@ -154,7 +154,7 @@ declare -A BOX_NOTE=(
   [llama]="Model: @DATA@/llama.env"
   [vllm]="Model: @DATA@/vllm_config.yaml"
   [ds4]="Model: @DATA@/ds4.env"
-  [finetuning]="Token: podman logs droste-finetuning-halo"
+  [finetuning]="Token: @DATA@/.droste-serve.log (grep token=)"
 )
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
@@ -186,6 +186,25 @@ INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 HEALTH_CMD="/opt/resources/resolve/droste-healthcheck.sh"
 HEALTH_INTERVAL="30s"
 HEALTH_RETRIES=3
+# 🚨 TIMEOUT IS NOT THE SAME KNOB AS START PERIOD, AND LEAVING IT UNSET WAS A BUG.
+# podman defaults --health-timeout to 30s (verified against podman 5.4.2's own
+# --help) and kills a probe that overruns it, which on-failure=restart then counts
+# as a failure and bounces the container.
+# ⭐ WHAT IT ACTUALLY BOUNDS IS PRE_LAUNCH, NOT MODEL LOADING. The service is
+# launched in the BACKGROUND (droste-serve.sh:856 ends in `&`), so a probe never
+# waits for weights; the start period below is what covers those. But when the
+# healthcheck finds the service down it calls serve::relaunch, which runs the
+# box's PRE_LAUNCH synchronously inside the probe — and comfyui's rescans the
+# whole model tree. On a large tree that alone exceeds 30s, so the box that most
+# needs a relaunch is the one whose relaunch gets killed and restart-looped.
+# ⚠️ GENEROUS EVERYWHERE, deliberately (Jei): the boxes that load models can have
+# slow pre-launch paths we have not found, and the only cost of erring long is a
+# later detection of a genuinely wedged probe — the same trade the start periods
+# already make. A value above the interval is safe here because the `starting`
+# state record makes a second concurrent relaunch a no-op.
+declare -A BOX_HEALTH_TIMEOUT=(
+  [comfyui]=10m [llama]=5m [vllm]=5m [ds4]=5m [finetuning]=2m
+)
 # ⚠️ START PERIOD IS THE LOAD-BEARING NUMBER (P1 finding). Failures inside it do
 # not count, so it must comfortably cover the box's WORST first-start: these
 # services answer nothing (llama actively 503s on /health) until multi-GB
@@ -4061,6 +4080,7 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # box whose server.env is turned on later is supervised without a recreate.
     flags+=" --health-cmd $HEALTH_CMD"
     flags+=" --health-interval $HEALTH_INTERVAL"
+    flags+=" --health-timeout ${BOX_HEALTH_TIMEOUT[$box]}"
     flags+=" --health-retries $HEALTH_RETRIES"
     flags+=" --health-start-period ${BOX_HEALTH_START[$box]}"
     flags+=" --health-on-failure=restart"
@@ -5436,7 +5456,12 @@ write_notes() {
         finetuning)
           printf -- '- JupyterLab: http://localhost:%s — get the login token with\n' \
             "$port"
-          printf '    podman logs %s\n' "$(box_ctr finetuning)"
+          # NOT `podman logs`: droste-serve.sh redirects the server's stdout AND
+          # stderr into $DROSTE_SERVE_LOG, so the container log never carries the
+          # token line. finetuning.env documents this exact command; keep them
+          # the same, and if one moves, move both.
+          printf "    podman exec %s grep -o 'token=[0-9a-f]*' /opt/data/.droste-serve.log | tail -1\n" \
+            "$(box_ctr finetuning)"
           printf -- '- Notebooks + trained adapters live in your workspace:\n'
           printf '  `%s`.\n' \
             "${PATHS["$box:workspace"]:-${EXD_PATH["$box:workspace"]:-?}}"

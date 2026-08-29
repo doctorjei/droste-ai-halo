@@ -146,7 +146,7 @@ OPTIONAL=(
 
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
 # Name of a bash FUNCTION defined in THIS file; run after ENV_FILE, before exec.
-# Examples: comfyui model_scanner sync; ds4 DS4_DROSTE_* -> argv translation.
+# Examples: comfyui model_scanner sync; ds4 DROSTE_DS4_* -> argv translation.
 PRE_LAUNCH=""
 # PRE_LAUNCH="port_pre_launch"
 # port_pre_launch() {

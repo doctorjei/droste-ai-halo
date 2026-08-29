@@ -388,14 +388,14 @@ prefix rules.
   pre-created in PRE_LAUNCH. (The slots were on `/opt/data` until the
   2026-08-15 storage taxonomy moved them to the program-cache root.)
 - **ds4** — ds4 has no native per-flag env vars, so PRE_LAUNCH translates
-  `DS4_DROSTE_*` → argv (arity source-verified against pinned kyuz0/ds4
+  `DROSTE_DS4_*` → argv (arity source-verified against pinned kyuz0/ds4
   `@00e64ea`); NATIVE `DS4_*` vars (DS4_THREADS, …) pass through untouched — the
-  binary reads them itself. `DS4_DROSTE_PORT` is deliberately NOT among the
+  binary reads them itself. `DROSTE_DS4_PORT` is deliberately NOT among the
   seeded active lines (2026-08-14, same rule as vllm/llama): `apply_port` would
   overwrite the `--port` it produces with server.env's `PORT` anyway, so the
   template carries only a comment pointing at server.env. Backend shorthands
   (`--rocm`/`--cpu`/…) and the distributed/multi-node flags are left to
-  `DS4_DROSTE_EXTRA_ARGS`. The whole `~/.ds4` (kvcache sessions + browser
+  `DROSTE_DS4_EXTRA_ARGS`. The whole `~/.ds4` (kvcache sessions + browser
   profile) is surfaced from `/opt/data/internal` — renamed from `/opt/data/ds4`
   in s47, because on this box the app's dot-dir name collides with the box's own
   and the host path read `~/droste/data/ds4/program/ds4` (or, pre-s41,
@@ -404,7 +404,7 @@ prefix rules.
   (sessions are user WORK, top-level, not cache/); the cockpit conf is a FILE, so
   it persists via symlink `~/.ds4-cockpit.conf → /opt/data/cockpit/…`.
   `download_model.sh` was reworked cache-native (`hf download` into the shared HF
-  cache, prints the snapshot path for `DS4_DROSTE_MODEL`); the upstream copy is
+  cache, prints the snapshot path for `DROSTE_DS4_MODEL`); the upstream copy is
   REMOVED from `/usr/local/bin` — it downloaded via `--local-dir`, bypassing the
   cache on the project's biggest files (80–430 GB quants).
 
@@ -616,7 +616,7 @@ by `distrobox assemble` from ONE record, `<box>-halo.ini`, with two doors.
   and it is re-read at EVERY start (edit + `podman restart`, no recreate).
   That authority is why the seeded per-port config files carry no active port
   line — `serve::apply_port` would overwrite it anyway; see the vllm
-  (`port:` key), llama (`LLAMA_ARG_PORT`) and ds4 (`DS4_DROSTE_PORT`) notes
+  (`port:` key), llama (`LLAMA_ARG_PORT`) and ds4 (`DROSTE_DS4_PORT`) notes
   above, all dated 2026-08-14 for this reason.
 - **Ports are BOUND, not published.** distrobox containers use HOST
   networking, so there is no `HOST:CONTAINER` remap to make: `PORT` is the
@@ -1618,7 +1618,7 @@ kernels already live in the base).
   kento `pipx install --global`.
 - Server by default: `ENTRYPOINT` = the shared `droste-entrypoint.sh` (build-spec:
   whole-`~/.ds4` surface, HF-cache CRITICAL, `ds4.env` seeding, the
-  `DS4_DROSTE_*` → argv translation in PRE_LAUNCH, then execs `ds4-server`);
+  `DROSTE_DS4_*` → argv translation in PRE_LAUNCH, then execs `ds4-server`);
   distrobox/toolbx override the entrypoint for the interactive lane. The
   upstream `download_model.sh` is REMOVED from `/usr/local/bin` (superseded by
   the cache-native rework at `/opt/resources/scripts/`); `PYTHONNOUSERSITE=1` +

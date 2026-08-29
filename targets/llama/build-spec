@@ -331,55 +331,167 @@ llama_pre_launch() {
         unset LLAMA_ARG_THREADS
     fi
 
-    # ── the NATIVE lines llama.env shows BLANK (s56) ───────────────────────────
-    # 🚨 A BLANK IS NOT "NO VALUE" TO llama-server. get_value_from_env (arg.cpp:120-135,
-    # pinned 337f08e8) returns TRUE for an empty string, so uncommenting a line the file
-    # prints blank hands the handler "" — and TWELVE of the thirteen below then THROW,
-    # rethrown as a fatal startup error (arg.cpp:526-528). The blank is CORRECT
-    # documentation: the flag genuinely is unused by default. Making it reach the wire as
-    # an ABSENCE is what delivers what each line already claims, with no template edit.
+    # ── the NATIVE lines that KILL THE BOX when a user CLEARS them (s57) ───────
+    # 🚨 A BLANK IS NOT "NO VALUE" TO llama-server. get_value_from_env (arg.cpp:120-137,
+    # pinned 337f08e8) returns TRUE for an empty string, so a line the user uncommented
+    # and then emptied hands the handler "" — and the env loop (arg.cpp:509-530) passes
+    # it to the handler with NO guard of any kind:
+    #     handler_int      opt.handler_int(params, std::stoi(value))        :516
+    #     handler_bool     opt.handler_bool(params, parse_bool_value(value)) :519
+    #     handler_string   opt.handler_string(params, value)                :522
+    # `std::stoi("")` throws std::invalid_argument; `parse_bool_value("")` throws
+    # (arg.cpp:422-430, since "" is neither truthy nor falsey); and a handler_string
+    # body throws whenever it PARSES rather than assigns. Whatever is thrown is
+    # rethrown as `error while handling environment variable "…"` (arg.cpp:526-528)
+    # and llama-server never starts. Making the blank reach the wire as an ABSENCE is
+    # what delivers what each line already claims, with NO template edit.
     # Same shape, and the same `unset`-not-blank reasoning, as the THREADS block above.
-    # Read one by one from the pinned sources:
-    #   API_KEY_FILE / UI_CONFIG_FILE / CHAT_TEMPLATE_FILE  ifstream("") / read_file("")
-    #   CHAT_TEMPLATE_KWARGS      json::parse("") throws
-    #   DEVICE                    parse_device_list("") ⇒ [""] ⇒ `invalid device:`
-    #   POOLING, ROPE_SCALING_TYPE  "" falls to the else arm and throws — the real
-    #                             default (UNSPECIFIED) has no spelling in either menu
-    #   ROPE_SCALE, N_GPU_LAYERS_DRAFT   stof("") / stoi("") throw
-    #   SPEC_TYPE                 `unknown speculative type:`
-    #   OVERRIDE_TENSOR           no `=` in the value ⇒ `invalid value`
-    #   RPC                       add_rpc_devices("") registers an EMPTY endpoint
-    #   TOOLS                     ⚠️ THE ONE THAT DOES NOT THROW, and so the worst:
-    #                             parse_csv_row("") ⇒ [""], one bogus tool named "",
-    #                             where the default is an empty vector. The box comes up
-    #                             — silently wrong beats loudly dead only for the user
-    #                             who never looks.
-    # ⚠️ N_GPU_LAYERS_DRAFT now SHOWS -1 rather than a blank. It is on the list anyway:
-    # showing a value and defending against a user who clears it are independent, and a
-    # cleared one still reaches stoi("").
-    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment is the rule.
-    # Every DROSTE_LLAMA_* keeps its blank, because there a blank is the documented N1a
-    # opt-out (BUILTIN_SPEC_DEFAULT= means "don't", and must go on meaning it).
+    #
+    # 🚨 THE SELECTION CRITERION IS THE HANDLER, NOT THE DISPLAYED VALUE. This list
+    # used to hold 13 names and the reason recorded here was "the lines llama.env shows
+    # BLANK". That criterion selects the wrong set: measured against the pin, llama.env
+    # carries 83 settable native lines, of which 13 were protected, 60 are fatal on a
+    # clear and only 23 are genuinely harmless. It caught 12 blanks and missed EVERY
+    # line that shows a value — even though `0`, `-1`, `256`, `4096` and `turbo3` all
+    # behave identically once the user empties them. Jei's ruling (s57) replaces it:
+    # ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY STRING, WE UNSET IF EMPTY.
+    # All 60 are named below. The 23 left off only ASSIGN their value — model paths, HF
+    # repo ids, --alias, --tags, --path, --log-file, the deprecated --defrag-thold — and
+    # each was read to confirm the assignment is a real no-op (ALIAS and TAGS split on
+    # `,` but skip empty items; STATIC_PATH's and UI_CONFIG's consumers are `.empty()`
+    # gated; LOG_FILE's fopen("") returns NULL and every write is `if (file)` gated).
+    #
+    # ⚠️ THE OLD NOTE ON LLAMA_ARG_TOOLS WAS WRONG AND IS GONE. It called TOOLS "THE ONE
+    # THAT DOES NOT THROW… The box comes up — silently wrong". The PARSE half is right:
+    # parse_csv_row("") (arg.cpp:1004-1046) never enters its loop and unconditionally
+    # pushes the accumulated field at :1042, so it yields {""} — one bogus tool named ""
+    # — rather than the empty vector that is the default. But the CONCLUSION is wrong,
+    # because {""} is NON-empty: server.cpp:258 enters, tools.setup() runs, the
+    # validation loop at server-tools.cpp:756-763 throws `unknown tool ""`, and
+    # server.cpp:259-263 logs it and `return 1`s out of llama_server(). ⭐ On this pin
+    # there is NO native line that survives a clear into a running-but-silently-wrong
+    # server: 59 of the 60 die in arg parsing and TOOLS dies at startup.
+    #
+    # ⚠️ TENSOR_SPLIT and FIT_TARGET were the one pair a read-only survey could not
+    # settle, and they ARE fatal. Both split with
+    # `std::sregex_token_iterator{begin, end, regex{"[,/]+"}, -1}` (arg.cpp:2404-2430,
+    # :2469-2493). libstdc++'s regex_token_iterator::_M_init (bits/regex.tcc:644-664)
+    # sets `_M_has_m1` for the -1 submatch and, when no match is found, makes the whole
+    # input a single SUFFIX token with `matched = true` and a non-null `_M_result` —
+    # so the split of "" is {""}, not zero tokens. std::stof("") / std::stoull("") then
+    # throw. (No C++ compiler in this box; this is read from the header, not run.)
+    #
+    # ⚠️ THREADS IS ON THIS LIST *AND* KEEPS ITS `-1` BLOCK ABOVE — the two defects are
+    # orthogonal. `-1` is SILENTLY WRONG (the documented math-core auto-detect never
+    # runs); `""` is FATAL. Fixing either does not fix the other, so do not merge them.
+    # THREADS_HTTP is the deliberate contrast: it needs the blank guard and must NEVER
+    # get a `-1` guard, because its `-1` is honest — the handler is a plain assignment
+    # (arg.cpp:3053-3057), the default is already -1 (common/common.h:598) and the
+    # derivation happens downstream at server-http.cpp:290-293.
+    #
+    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment
+    # (base/resolve/droste-common.sh:85-90) is the rule, and it forbids a blanket
+    # policy. Every DROSTE_LLAMA_* keeps its blank, because there a blank is the
+    # documented N1a opt-out (BUILTIN_SPEC_DEFAULT= means "don't", and must go on
+    # meaning it). No DROSTE_-owned name appears below; that is a standing invariant,
+    # not an accident of the current contents.
     # ⭐ PLACEMENT IS ORDERING, NOT LOCATION. Nothing between here and the exec reads
     # these names, and `unset` drops the export mark along with the variable, so before
     # or after the compgen loop below is identical — measured, exactly as for THREADS.
-    # What it must not do is run BEFORE a `${LLAMA_ARG_X=…}` droste default (the two
-    # above it), because that would turn a user's blank opt-out back into our value.
-    # No name is on both lists today; sitting last of the native-name blocks keeps it
-    # that way by construction if one ever is.
-    droste::blank_is_unset LLAMA_ARG_API_KEY_FILE \
-                           LLAMA_ARG_DEVICE \
-                           LLAMA_ARG_N_GPU_LAYERS_DRAFT \
-                           LLAMA_ARG_UI_CONFIG_FILE \
-                           LLAMA_ARG_TOOLS \
-                           LLAMA_ARG_SPEC_TYPE \
-                           LLAMA_ARG_CHAT_TEMPLATE_FILE \
-                           LLAMA_ARG_CHAT_TEMPLATE_KWARGS \
-                           LLAMA_ARG_POOLING \
-                           LLAMA_ARG_ROPE_SCALING_TYPE \
-                           LLAMA_ARG_ROPE_SCALE \
-                           LLAMA_ARG_OVERRIDE_TENSOR \
-                           LLAMA_ARG_RPC
+    # 🚨 What it MUST NOT do is run BEFORE a `${LLAMA_ARG_X=…}` droste default, and as
+    # of s57 that is no longer hypothetical: CACHE_TYPE_K and CACHE_TYPE_V are on BOTH
+    # lists. Running last is what makes a user's `LLAMA_ARG_CACHE_TYPE_K=` mean "give me
+    # llama's own f16 back" instead of silently restoring our turbo3 — the `=` (not
+    # `:=`) at :296-297 lets the blank through on purpose, and this call turns it into
+    # the absence llama needs. Reverse the order and the opt-out disappears.
+    #
+    # An array rather than 60 backslash continuations, because a `\`-continued command
+    # cannot carry the per-section comments — and without them a 60-name list is a wall.
+    # Order is llama.env's own line order, section by section, which is the order the
+    # original 13 were already in.
+    local -a _fatal_on_clear=(
+        # Model & security
+        LLAMA_ARG_API_KEY_FILE              # ifstream("") ⇒ throw
+        # Context & KV Cache
+        LLAMA_ARG_CTX_SIZE                  # int
+        LLAMA_ARG_CACHE_TYPE_K              # kv_cache_type_from_str ⇒ Unsupported cache type
+        LLAMA_ARG_CACHE_TYPE_V              # kv_cache_type_from_str ⇒ Unsupported cache type
+        LLAMA_ARG_N_PREDICT                 # int
+        # GPU Setup
+        LLAMA_ARG_DEVICE                    # parse_device_list("") ⇒ [""] ⇒ invalid device
+        LLAMA_ARG_MAIN_GPU                  # int
+        LLAMA_ARG_N_GPU_LAYERS              # not auto/all ⇒ stoi("")
+        LLAMA_ARG_N_GPU_LAYERS_DRAFT        # int
+        LLAMA_ARG_TENSOR_SPLIT              # regex split ⇒ [""] ⇒ stof("")
+        LLAMA_ARG_SPLIT_MODE                # closed menu ⇒ else arm throws
+        # Multi-Model Serving
+        LLAMA_ARG_MODELS_MAX                # int
+        # Web UI, tools & MCP
+        LLAMA_ARG_UI_CONFIG_FILE            # read_file("") ⇒ throw
+        LLAMA_ARG_TOOLS                     # [""] ⇒ unknown tool "" ⇒ server.cpp returns 1
+        # Speculative Decoding (draft model)
+        LLAMA_ARG_SPEC_DRAFT_N_MAX          # int
+        LLAMA_ARG_SPEC_DRAFT_N_MIN          # int
+        LLAMA_ARG_SPEC_DRAFT_P_MIN          # stof("")
+        LLAMA_ARG_SPEC_DRAFT_P_SPLIT        # stof("")
+        LLAMA_ARG_SPEC_TYPE                 # unknown speculative type
+        LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K   # kv_cache_type_from_str
+        LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V   # kv_cache_type_from_str
+        # Attention & Context Reuse
+        LLAMA_ARG_FLASH_ATTN                # on/off/auto menu ⇒ else arm throws
+        LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT # int
+        LLAMA_ARG_CTX_CHECKPOINTS           # int
+        LLAMA_ARG_CACHE_REUSE               # int
+        LLAMA_ARG_CACHE_RAM                 # int
+        # Chat Templates & Reasoning
+        LLAMA_ARG_CHAT_TEMPLATE_FILE        # read_file("") ⇒ throw
+        LLAMA_ARG_CHAT_TEMPLATE_KWARGS      # json::parse("") ⇒ throw
+        LLAMA_ARG_THINK                     # Unknown reasoning format (chat.cpp:785-799)
+        LLAMA_ARG_REASONING                 # on/off/auto menu ⇒ else arm throws
+        LLAMA_ARG_THINK_BUDGET              # int
+        # Endpoints, Slots, & Server Identity
+        LLAMA_ARG_TIMEOUT                   # int
+        LLAMA_ARG_SSE_PING_INTERVAL         # int
+        LLAMA_ARG_POOLING                   # closed menu ⇒ else arm throws; the real
+                                            # default (UNSPECIFIED) has no spelling in it
+        # Multimodal
+        LLAMA_ARG_IMAGE_MIN_TOKENS          # int
+        LLAMA_ARG_IMAGE_MAX_TOKENS          # int
+        LLAMA_ARG_MTMD_BATCH_MAX_TOKENS     # int
+        # Batching & Parallelism
+        LLAMA_ARG_BATCH                     # int
+        LLAMA_ARG_UBATCH                    # int
+        LLAMA_ARG_N_PARALLEL                # int (registered twice: arg.cpp:2161, :2172)
+        LLAMA_ARG_THREADS_HTTP              # int — blank guard ONLY, never a -1 guard
+        LLAMA_ARG_THREADS                   # int — this AND the -1 block above
+        # Memory, Offload, & NUMA
+        LLAMA_ARG_N_CPU_MOE                 # int
+        # Fitting to available memory
+        LLAMA_ARG_FIT                       # on/off menu ⇒ else arm throws
+        LLAMA_ARG_FIT_TARGET                # regex split ⇒ [""] ⇒ stoull("")
+        LLAMA_ARG_FIT_CTX                   # int
+        # Numeric Tweaks
+        LLAMA_ARG_TOP_K                     # int
+        # RoPE & YaRN context scaling
+        LLAMA_ARG_ROPE_SCALING_TYPE         # closed menu ⇒ else arm throws; ditto
+                                            # UNSPECIFIED having no spelling
+        LLAMA_ARG_ROPE_SCALE                # 1.0f/stof("")
+        LLAMA_ARG_ROPE_FREQ_BASE            # stof("")
+        LLAMA_ARG_ROPE_FREQ_SCALE           # stof("")
+        LLAMA_ARG_YARN_ORIG_CTX             # int
+        LLAMA_ARG_YARN_EXT_FACTOR           # stof("")
+        LLAMA_ARG_YARN_ATTN_FACTOR          # stof("")
+        LLAMA_ARG_YARN_BETA_FAST            # stof("")
+        LLAMA_ARG_YARN_BETA_SLOW            # stof("")
+        # Additional Advanced Flags
+        LLAMA_ARG_OVERRIDE_TENSOR           # no `=` in the token ⇒ invalid value
+        # Logging & diagnostics
+        LLAMA_ARG_LOG_COLORS                # on/off/auto menu ⇒ else arm throws
+        LLAMA_ARG_LOG_VERBOSITY             # int
+        # RPC
+        LLAMA_ARG_RPC                       # add_rpc_devices("") ⇒ [""] ⇒ throw / "" endpoint
+    )
+    droste::blank_is_unset "${_fatal_on_clear[@]}"
 
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive

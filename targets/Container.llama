@@ -48,8 +48,18 @@ COPY templates/  /opt/resources/templates/
 # rename. The check below keeps that guarantee without running the binary — the
 # arg table stores env names as plain string literals, so a scan finds them on
 # any runner, GPU or not.
+#
+# 🚨 SCAN THE SHIPPED SET, NOT `command -v llama-server` — that spelling FAILED CI on
+# its first real run (33269833780, LLAMA_ARG_HOST "missing" in 0.043s). This fork
+# links TWO objects: a thin `llama-server` executable from main.cpp, and
+# `libllama-server-impl.so` which is where arg.cpp's string literals actually live.
+# Grepping the executable alone can never find them, so the gate could only ever
+# report a false rename. Both land in /usr/local/bin AND /usr/local/lib64
+# (Container.llama-build:86-88 copies build/bin wholesale and then every lib*.so*),
+# hence the recursive scan over both rather than a named .so — the library's name is
+# upstream's to change, and this gate exists precisely to survive that.
 RUN for v in LLAMA_ARG_HOST LLAMA_ARG_PORT LLAMA_ARG_MODEL; do \
-        grep -qa "$v" "$(command -v llama-server)" \
+        grep -qar "$v" /usr/local/bin /usr/local/lib64 \
         || { echo "gen-drift: $v is NOT in the pinned llama-server — upstream rename? Fix targets/llama/templates/llama.env and the launch flags before shipping."; exit 1; }; \
     done \
     && echo "llama drift gate: LLAMA_ARG_HOST/PORT/MODEL present in the pinned binary"

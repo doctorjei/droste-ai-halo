@@ -141,22 +141,43 @@ JUPYTER_BOOL_VARS=(
 jupyter_env() {
     local entry suffix rest var on off val
 
-    # ── the two natives where a BLANK is not "unset" ────────────────────────────
-    # 🚨 finetuning.env prints both blank with an annotation that SAYS unset —
-    # `IPYTHONDIR=  # IPython profiles; unset: ~/.ipython` and `QT_API=  # unset:
-    # first importable`. ENV_FILE is sourced under `set -a`, so uncommenting either
-    # line hands the server an EMPTY STRING, and neither reader tests emptiness:
+    # ── the three natives where a BLANK is not "unset" ──────────────────────────
+    # 🚨 finetuning.env prints all three blank with an annotation that SAYS unset —
+    # `IPYTHONDIR=  # IPython profiles; unset: ~/.ipython`, `QT_API=  # unset:
+    # first importable` and `JUPYTER_DEFAULT_PROVISIONER_NAME=  # alternate kernel
+    # provisioner`. ENV_FILE is sourced under `set -a`, so uncommenting any of them
+    # hands the server an EMPTY STRING, and none of the readers tests emptiness:
     #   IPython/paths.py:36  `env.get("IPYTHONDIR", None)` then `if ipdir is None`
     #     ⇒ "" survives, os.path.normpath("") is ".", and profiles are written into
     #       whatever directory the server happens to be in.
     #   qtpy/__init__.py     `os.environ.get(QT_API, "pyqt5")` then a membership
     #     check against API_NAMES ⇒ "" is no binding and the import RAISES.
+    #   jupyter_client/provisioning/factory.py:45 (8.10.0)
+    #     `getenv("JUPYTER_DEFAULT_PROVISIONER_NAME", "local-provisioner")` — the
+    #     fallback fires ONLY when the name is absent, so "" becomes the provisioner
+    #     NAME. ipykernel's kernelspec carries no kernel_provisioner stanza
+    #     (kernelspec.py:69, metadata = {"debugger": True}), so factory.py:143-149
+    #     falls through to that trait for EVERY kernel, and factory.py:88-90 raises
+    #     `ModuleNotFoundError: Kernel provisioner '' has not been registered.`
+    #     ⇒ the server starts healthy and every notebook fails to get a kernel: the
+    #     worst shape of this defect, since the health probe still says green.
+    #     ⚠️ jupyter_client is the one reader here that is NOT pinned in
+    #     Container.finetuning (it arrives transitively via jupyter_server/ipykernel);
+    #     re-read that line on a bump.
     # Every OTHER blank on this box is safe and was checked one at a time: the
     # jupyter_core/jupyterlab path variables all test truthiness (paths.py:156,
-    # :175, :207, :298, :397; commands.py:143, :150, :158), JUPYTER_TOKEN and
+    # :175, :207, :298, :397; commands.py:143, :150, :158), XDG_DATA_HOME is
+    # `env.get(...)` then `if not xdg` (paths.py:191-193), JUPYTER_TOKEN and
     # JUPYTER_TOKEN_FILE are `os.getenv` truthiness (auth/identity.py:211-214), and
-    # MPLBACKEND is `if os.environ.get('MPLBACKEND')` (matplotlib/__init__.py:1295).
-    droste::blank_is_unset IPYTHONDIR QT_API
+    # MPLBACKEND is `if os.environ.get('MPLBACKEND')` (matplotlib/__init__.py:1288
+    # at 3.11.1 — matplotlib is unpinned, so that line number moves).
+    # ⚠️ JUPYTER_USE_PROGRAMDATA reads blank as TRUE (envset(), paths.py:214) but is
+    # `os.name == "nt"`-gated at every use (paths.py:217, :222, :343), so it is inert
+    # here rather than guarded — the template already files it under Wrong Platform.
+    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment is the rule.
+    # Every DROSTE_JUPYTER_* keeps its blank: there a blank is the documented N1a
+    # opt-out, and the loops below already treat it as "leave the native alone".
+    droste::blank_is_unset IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME
 
     # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
     # Three of them. Every other setting on this box agrees with its package's own

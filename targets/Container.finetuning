@@ -128,6 +128,56 @@ RUN chmod 0644 /etc/profile.d/*.sh \
 # Jupyter kernel points at the venv python; friendly display name (upstream parity).
 RUN /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/opt/venv
 
+# Droste's OWN Jupyter trait defaults, BAKED (N1a, the trait half).
+# ⭐ BAKED, NOT SEEDED. templates.yaml seeds the user's jupyter_server_config.py to
+# /opt/data `if_missing`, so a default living there reaches NEW boxes only. This file
+# ships with the image and therefore reaches EXISTING ones on the next pull, while still
+# LOSING to the user's file: jupyter_config_path() returns directories in descending
+# priority and traitlets loads them backwards (application.py:904), so the system dirs
+# load first and /opt/data loads last.
+# 📐 /etc/jupyter, the LOWER-priority of the two Linux system dirs
+# (SYSTEM_CONFIG_PATH = ["/usr/local/etc/jupyter", "/etc/jupyter"], jupyter_core/paths.py:
+# 358-362) — /usr/local/etc/jupyter stays free for a local override that must beat droste.
+COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
+# 🚨 AND THE SECOND PATH, BECAUSE A DOCUMENTED KNOB MOVES THE FIRST ONE OUT FROM UNDER US.
+# SYSTEM_CONFIG_PATH is chosen at IMPORT by use_platform_dirs() (paths.py:342): with
+# JUPYTER_PLATFORM_DIRS truthy it becomes platformdirs.site_config_dir(...) — MEASURED as
+# ['/etc/xdg/jupyter'] — and /etc/jupyter is not on the search path at all. Since
+# DROSTE_JUPYTER_PLATFORM_DIRS is a setting finetuning.env offers, turning it on would
+# silently drop every droste default below. A DIRECTORY SYMLINK covers both spellings with
+# one file, so the two can never drift apart.
+# ⚠️ It follows the DEFAULT XDG_CONFIG_DIRS (/etc/xdg). A user who re-points that variable
+# is past what an image can anticipate. Delete this one line to have /etc/jupyter only.
+RUN chmod 0644 /etc/jupyter/jupyter_server_config.py \
+    && mkdir -p /etc/xdg && ln -sfn /etc/jupyter /etc/xdg/jupyter \
+    && /opt/venv/bin/python -c "\
+from traitlets.config.loader import PyFileConfigLoader; \
+c = PyFileConfigLoader('jupyter_server_config.py', path='/etc/jupyter').load_config(); \
+n = sum(len(c[s]) for s in c); \
+print('droste: baked %d Jupyter trait defaults' % n); \
+raise SystemExit(0 if n == 39 else 'baked trait count changed — update this number and re-run jupyter-traits-drift.py')"
+# ⭐ THE LOAD IS THE GUARD, and it is deliberately NOT the drift report. A syntax error or
+# a stray `get_config()` in that file would not fail anything downstream — it would make
+# EVERY `jupyter` command in the box print a config error and carry on with the trait
+# unset, which is precisely the silent shape N23 exists to remove. Loading it through
+# traitlets' own PyFileConfigLoader is the cheapest thing that proves it will be read.
+# ⚠️ Comparing DEFAULTS against upstream is the DEV-TIME report's job
+# (jupyter-traits-drift.py), on purpose: it reads jupyter_client too, which is NOT pinned,
+# so gating the build on it would let a floating dependency turn a green build red.
+
+# …and make JUPYTER_NO_CONFIG skip the USER'S config without discarding the file above.
+# Stock, it collapses the WHOLE search path to a throwaway temp dir (paths.py:390-392), so
+# DROSTE_JUPYTER_SKIP_CONFIG=yes would silently drop all 39 trait defaults as well. The script
+# carries the anchor guard: exactly 1 occurrence before, 1 after, and it re-measures that
+# the NORMAL search path is unchanged — a pin bump that reflows that return statement must
+# break the build rather than quietly restore all-or-nothing behaviour.
+# ⚠️ MUST STAY AFTER THE LAST LAYER THAT INSTALLS jupyter_core (the HF/Jupyter stack
+# above); a reinstall would put a stock paths.py back and nothing later would notice.
+# ⚠️ chmod HERE: the symlink loop above only chmods `*.py` (they are user-facing
+# commands), and this one is deliberately NOT a command — it must not land on PATH.
+RUN chmod 0755 /opt/resources/scripts/patch-jupyter-no-config.sh \
+    && /opt/resources/scripts/patch-jupyter-no-config.sh
+
 # Group-writable venv so the distrobox-lane box user (in group `droste`) can
 # pip-install into the baked venv after overlay copy-up (dirs setgid → copy-up
 # is metadata-only; new files inherit the group). Re-applied here AFTER this

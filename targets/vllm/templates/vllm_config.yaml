@@ -14,8 +14,8 @@
 #
 #  ~ port                               [this build] set PORT in /opt/data/server.env instead
 #  ~ config                             [this build] Droste passes this; a config naming another is not supported
-# host is the box's one ACTIVE key. port is Droste's — see NOT USEFUL HERE.
-#host: "0.0.0.0"                              # bind address — ACTIVE, and one key must stay active (see header)
+# port is Droste's — see NOT USEFUL HERE.
+#host: "0.0.0.0"                              # bind address
 #
 # Config Information
 # ------------------

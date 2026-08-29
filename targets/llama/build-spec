@@ -296,6 +296,41 @@ llama_pre_launch() {
     : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
     : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
 
+    # ── a NATIVE line whose PRINTED value does not do what it is annotated to ──
+    # 🚨 llama.env:262 prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
+    # machine's math cores)` and :3 promises the values shown ARE the defaults — but
+    # uncommenting that line ROUGHLY DOUBLES the thread count on an SMT machine, the
+    # classic llama.cpp oversubscription regression.
+    # The handler normalises before the auto-detect can ever run: arg.cpp:1159-1163
+    # (pinned 337f08e8) is `n_threads = value; if (n_threads <= 0) { n_threads =
+    # std::thread::hardware_concurrency(); }` — ALL SMT THREADS — and an environment
+    # variable goes through that very lambda (arg.cpp:511-518 calls handler_int with
+    # std::stoi(value)). Leaving the variable UNSET instead leaves common.h:59's
+    # `n_threads = -1` standing for postprocess_cpu_params (common.cpp:277-281), whose
+    # `< 0` branch calls common_cpu_get_num_math() — PHYSICAL/math cores
+    # (common.cpp:195-212). Because the handler has already turned -1 positive, that
+    # branch never fires. So the file's annotation is true only while the line stays
+    # commented, and the fix is to make the documented value an ABSENCE.
+    #
+    # ⚠️ ONLY THE EXACT STRING `-1`, AND THE NARROWNESS IS THE POINT. `0` and other
+    # negatives reach the same `<= 0` branch, but they reach it IDENTICALLY whether
+    # they arrive on the command line or through the environment — there is no
+    # discrepancy there for us to fix, and swallowing them would invent a behaviour
+    # upstream does not have and this file does not document. `-1` is the one value
+    # the file prints, the one it annotates, and the only one whose printed meaning
+    # the wiring fails to deliver.
+    # ⚠️ AND IT MUST BE AN `unset`, NOT A BLANK. A blank is not "no value" to llama:
+    # get_value_from_env (arg.cpp:120-135) returns true for an empty string, so the
+    # empty value still reaches handler_int as std::stoi("") — which throws and is
+    # rethrown as a fatal startup error (arg.cpp:526-528). Nothing would start.
+    # ⭐ Placement is for READABILITY, not correctness: it sits with the other
+    # LLAMA_ARG_* handling above the export loop, but `unset` drops the export mark
+    # along with the variable (measured), so after the loop would work identically.
+    # Do not read the position as load-bearing and do not "fix" it by exporting.
+    if [ "${LLAMA_ARG_THREADS:-}" = "-1" ]; then
+        unset LLAMA_ARG_THREADS
+    fi
+
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive
     # the exec. This loop is belt-and-braces for a LLAMA_* the user exported into the

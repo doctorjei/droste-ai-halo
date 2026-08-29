@@ -19,4 +19,4 @@ if_empty:
 # put it somewhere Jupyter never looks.
 if_missing:
   finetuning.env: /opt/data/finetuning.env
-  jupyter_server_config.py: /opt/data/jupyter/jupyter_server_config.py
+  jupyter_server_config.py: /opt/data/jupyter_server_config.py

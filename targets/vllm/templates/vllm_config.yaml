@@ -1,0 +1,613 @@
+# vllm_config.yaml -- vLLM serve configuration (half of this box's config surface).
+#
+# This file mirrors `vllm serve` CLI arguments; keys are from flags, sans '--'
+# prefix (`--awesomesauce` => `awesomesauce`). There are two settings files:
+#
+#   /opt/data/vllm_config.yaml (this)   FLAGS. Each flag is a key.
+#   /opt/data/vllm.env                  ENVIRONMENT VARIABLES. Processed first.
+#
+# Reserved by Droste — do not set
+# -------------------------------
+# --config is how the box hands vLLM this very file. --port is appended to
+# the serve command line from PORT in /opt/data/server.env; setting it here
+# is overridden anyway and makes vLLM log 'Found duplicate keys --port'.
+#
+#  ~ port                               [this build] set PORT in /opt/data/server.env instead
+#  ~ config                             [this build] Droste passes this; a config naming another is not supported
+# host is the box's one ACTIVE key. port is Droste's — see NOT USEFUL HERE.
+#host: "0.0.0.0"                              # bind address — ACTIVE, and one key must stay active (see header)
+#
+# Config Information
+# ------------------
+# YAML values have LOWEST precedence; CLI & environment variables override
+# them. Descriptions follow upstream (pinned commit v0.16.0) with notes for
+# clarity; they are not necessarily identical to upstream documentation.
+#
+# Every setting ships commented out. There are three important shapes:
+#
+#   # key: value      Value shown IS default; uncommenting does nothing itself.
+#   ~ key             Runtime determination; unset result is described.
+#   # auto: (A*, B)   Selects A if compatible & available; otherwise, B.
+#
+# There are also three easy-to-misunderstand aspects of the settings:
+# - A key with no value (`key: `) becomes 'null' ('None'), which yields either
+# a fatal or silent error. If a value isn't being used, leave it commented.
+#
+# - Setting a key to false (`key: false`) doesn't disable the setting; instead,
+#   it reverts to a *default* value. Instead, negate the key (`no-key: true`).
+#
+#
+# At least one key must remain uncommented to avoid AttributeError on load. Do
+# NOT comment out this line or remove it!
+enable-layerwise-nvtx-tracing: false    # NVTX per-layer ranges; inert on ROCm.
+
+
+
+# ===============
+#  MAIN SETTINGS
+# ===============
+#
+# Model Selection
+# ---------------
+# model: Qwen/Qwen3-0.6B    # HF repo id or absolute local path — SET THIS
+# ~ max-model-len           # unset: model config's maximum length [per model]
+# ~ quantization            # unset: model's quant. config, or none [per model]
+# ~ pooler-config           # unset: model's pooling behavior [per model]
+#
+# {auto*, draft, generate, pooling}
+# runner: auto              # auto: {generate, pooling} [by model]
+#
+# {auto*, classify, embed, none}
+# convert: auto            # auto: only convert if needed by runner [by model]
+#
+# {auto*, half, float16, bfloat16, float, float32}
+# dtype: auto              # auto: torch_dtype; float32 -> bfloat16 [by model]
+#
+# {auto*, transformers, terratorch, vllm}
+# model-impl: auto        # auto: (vllm*, transformers) [by model]
+
+
+# Model Sourcing
+# -----------------------
+# trust-remote-code: false            # run model-repo Python (some archs need)
+# ignore-patterns: ["original/**/*"]  # repo skip patterns (duplicates, etc.)
+# ~ download-dir                      # unset: HuggingFace cache
+# ~ revision                          # unset: repo default branch
+# ~ code-revision                     # unset: repo default branch, model CODE
+# ~ hf-config-path                    # unset: model's config in repo
+# ~ hf-token                          # unset: (cached HF token*, anonymous)
+#
+# {auto*, bitsandbytes, dummy, gguf, hf, mistral, pt, npcache, safetensors, fastsafetensors, runai_streamer, runai_streamer_sharded, sharded_state, tensorizer}
+# load-format: auto           # auto: (safetensors*, .bin/.pt) [by model]
+#
+# {eager, lazy*}
+# safetensors-load-strategy: lazy      # lazy = mmap; eager reads first
+#
+# {auto*, hf, mistral}
+# config-format: auto                  # auto: (HF format*, Mistral) [by model]
+
+
+# Tokenizer
+# ---------
+# ~ tokenizer                          # unset: model's tokenizer [by model]
+# ~ tokenizer-revision                 # unset: repo's default branch
+#
+# {auto*, deepseek_v32, hf, mistral, slow}
+# tokenizer-mode: auto                 # auto: (mistral_common*, HF) [by model]
+
+
+# Served Identity & Authentication
+# --------------------------------
+#  ~ api-key                           # unset: NO AUTHENTICATION
+#  ~ served-model-name                 # unset ⇒ API answers to model (above)
+
+
+# Network, CORS and TLS
+# ---------------------
+# enable-ssl-refresh: false    # reload SSL context when cert files change
+# ~ ssl-keyfile                # unset: server speaks PLAIN HTTP
+# ~ ssl-certfile               # unset: plain HTTP; use ssl-keyfile for HTTPS
+# ~ ssl-ca-certs               # unset: client certificates are not verified
+# ~ ssl-ciphers                # unset: Python default for TLS 1.2 and below
+# ~ root-path                  # unset: routes served at / with no prefix
+#
+# allow-credentials: false     # CORS: allow credentialed requests
+# allowed-origins: ["*"]       # CORS origins; ["*"] -> every origin
+# allowed-methods: ["*"]       # CORS methods; ["*"] -> every method
+# allowed-headers: ["*"]       # CORS headers; ["*"] -> every header
+#
+# {0*, 1, 2}
+# ssl-cert-reqs: 0             # 0: none, 1: optional, 2: required (stdlib ssl)
+
+
+# Chat Template
+# -------------
+# trust-request-chat-template: false  # let request override server template
+# ~ chat-template                     # unset: template in model [per model]
+# ~ default-chat-template-kwargs      # unset: no extra kwargs merged in
+#
+# {auto*, openai, string}
+# chat-template-content-format: auto  # auto: detected from template [by model]
+
+
+# Tool Calling & Reasoning
+# ------------------------
+# enable-auto-tool-choice: false             # needs --tool-call-parser
+# exclude-tools-when-tool-choice-none: false # drop tool defs when tool_choice='none'
+# tool-parser-plugin: ""                     # path to an out-of-tree tool parser
+# reasoning-parser: ""                       # parser for reasoning-style models
+# reasoning-parser-plugin: ""                # path to an out-of-tree reasoning parser
+#
+# ~ tool-call-parser        # unset: no parsing; enable-auto-tool-choice errors
+# ~ tool-server             # unset: no external tool server is contacted
+
+
+# API Behavior
+# ------------
+# max-logprobs: 20                       # cap on logprobs per token
+# response-role: assistant               # role for enabled generation prompt
+# override-generation-config: {}         # unset: model's gen. config stands
+# enable-prompt-embeds: false            # accept prompt_embeds tensors (v0)
+# enable-prompt-tokens-details: false    # prompt_tokens_details in usage
+# enable-force-include-usage: false      # put usage on every response
+# enable-request-id-headers: false       # add X-Request-Id to responses
+# enable-tokenizer-info-endpoint: false  # /tokenizer_info; may expose template
+# enable-offline-docs: false             # vendored docs assets (air-gapped)
+# disable-fastapi-docs: false            # no OpenAPI schema, Swagger, ReDoc
+# return-tokens-as-token-ids: false      # render tokens as 'token_id:<n>'
+# generation-config: auto                # auto: defaults from repo [by model]
+#
+# {raw_logprobs*, raw_logits, processed_logprobs, processed_logits}
+# logprobs-mode: raw_logprobs
+
+
+# Structured Outputs
+# ------------------
+# ~ structured-outputs-config         # unset: StructuredOutputsConfig defaults
+
+# LoRA Adapters
+# -------------
+# max-loras: 1                         # adapters live in one batch
+# max-lora-rank: 16                    # largest rank you will load
+# enable-tower-connector-lora: false   # also adapt vision tower/connector
+# ~ enable-lora                        # unset: LoRA is OFF
+# ~ lora-modules                       # unset: no adapters pre-loaded
+# ~ default-mm-loras                   # unset: no per-modality adapter applied
+#
+# {auto*, bfloat16, float16}
+# lora-dtype: auto                     # auto: base dtype [by model]
+
+
+# Multimodal Inputs
+# -----------------
+# enable-mm-embeds: false        # accept pre-computed multimodal embeddings
+# interleave-mm-strings: false   # fully interleaved multimodal prompts
+# limit-mm-per-prompt: {}        # unset: 999 items allowed per modality
+# media-io-kwargs: {}            # unset: each modality decodes with its own defaults
+# allowed-local-media-path: ""   # empty: API may NOT read media off local disk
+# ~ allowed-media-domains        # unset: media URLs from ANY domain fetched
+
+
+
+# ========
+#  TUNING
+# ========
+#
+# GPU Memory & KV Cache
+# -----------------------
+# gpu-memory-utilization: 0.9        # fraction of GPU pool for model executor
+# swap-space: 4                      # GiB of CPU swap per GPU; always reserved
+# cpu-offload-gb: 0                  # GiB of weights to keep in CPU memory
+# block-size: 16                     # On ROCm, (both Aiter switches ? 64 : 16)
+#
+# enable-sleep-mode: false           # engine sleep/wake (cuda & hip)
+# calculate-kv-scales: false         # k/v scales at runtime if dtype is fp8
+# ~ enable-prefix-caching            # unset ⇒ ON if supported [per model]
+# ~ kv-cache-memory-bytes            # unset: by gpu mem profiling [per device]
+# ~ num-gpu-blocks-override          # unset: the profiled block count stands
+# ~ disable-hybrid-kv-cache-manager  # unset ⇒ vLLM decides & logs [per model]
+# ~ kv-offloading-size               # unset: no KV offloading buffer allocated
+#
+# {auto*, bfloat16, fp8, fp8_e4m3, fp8_e5m2, fp8_inc, fp8_ds_mla}
+# kv-cache-dtype: auto               # auto: what dtype resolved to [by model]
+#
+# {sha256*, sha256_cbor, xxhash, xxhash_cbor}
+# prefix-caching-hash-algo: sha256
+#
+# {native*, lmcache}
+# kv-offloading-backend: native
+
+
+# Attention & Compilation
+# -------------------------
+# enforce-eager: false             # skip cudagraph capture (Halo workaround)
+# optimization-level: 2            # -O0: fastes, -O3: slowest / steadiest
+# disable-cascade-attn: false      # force non-cascade path (numerics differ)
+# disable-sliding-window: false    # cap the model at its sliding-window size
+#
+# ~ attention-backend          # unset: TRITON_ATTN or TRITON_MLA [all Halo]
+# ~ compilation-config         # unset: CompilationConfig default for -O level
+# ~ cudagraph-capture-sizes    # unset: infer (max-num-seqs & cudagraph mode)
+# ~ max-cudagraph-capture-size # unset: largest inferred capture size
+
+
+# Scheduling & Batching
+# ---------------------
+# long-prefill-token-threshold: 0   # "long" prompt length; 0 = 4% of ctx
+# max-long-partial-prefills: 1      # long prompts prefilling concurrently
+# max-num-partial-prefills: 1       # seq. partially prefilling concurrently
+# stream-interval: 1                # tokens buffered / chunk; 1 => smoothest
+# disable-chunked-mm-input: false   # never split multimodal item across chunks
+#
+# ~ enable-chunked-prefill          # unset: ON if supported [by model]
+# ~ max-num-seqs                    # unset: VRAM >= 70 GiB ? 1024: 256
+# ~ max-num-batched-tokens          # unset: VRAM >= 70 GiB ? 8192: 2048
+# ~ async-scheduling                # unset: ON, if compatible options set
+#
+# {fcfs, priority}
+# scheduling-policy: fcfs
+
+
+# Speculative decoding
+# --------------------
+# ~ speculative-config         # unset: no speculative decoding
+
+
+# Multimodal performance
+# ----------------------
+# mm-processor-cache-gb: 4                # GiB for processed-media cache
+# mm-shm-cache-max-object-size-mb: 128    # per-object cap for shm cache
+# skip-mm-profiling: false                # profile with language backbone only
+#
+# ~ mm-encoder-attn-backend    # unset: encoder follows main attention choice
+# ~ video-pruning-rate         # unset: video pruning is OFF
+#
+# {lru*, shm}
+# mm-processor-cache-type: lru
+
+
+# LoRA Performance
+# ----------------
+# specialize-active-lora: false    # build the kernel grid from the ACTIVE adapter count
+# max-cpu-loras: 1                 # uset: resolves to max-loras (1)
+
+
+# Mamba & Hybrid Models
+# -----------------------
+# ~ mamba-block-size    # unset: follows block-size; requires prefix caching
+#
+# {align, all, none*}
+# mamba-cache-mode: none
+#
+# {auto, float32, float16}
+# mamba-cache-dtype: auto       # auto: dtype (Mamba-layered only) [per model]
+# mamba-ssm-cache-dtype: auto   # auto: follows mamba-cache-dtype [per model]
+
+
+# Frontend scale
+# --------------
+# h11-max-header-count: 256              # HTTP header-count cap (h11)
+# h11-max-incomplete-event-size: 4194304 # bytes of incomplete HTTP event (h11)
+# api-server-count: 1                    # API server processes
+
+
+
+# =========================
+#  DEBUGGING & DEVELOPMENT
+# =========================
+
+# Request & Server Logging
+# ------------------------
+# disable-uvicorn-access-log: false  # silence uvicorn's access log entirely
+# enable-log-outputs: false          # log generations — needs enable-log-requests
+# enable-log-deltas: true            # To disable, use "no-enable-log-deltas"
+# use-tqdm-on-load: true             # To disable, use "no-use-tqdm-on-load"
+# log-error-stack: false             # log a stack trace on error responses
+# enable-log-requests: false         # log every request
+# ~ disable-log-stats                # unset: periodic throughput stats logged
+# ~ max-log-len                      # unset: logged prompts are NOT truncated
+# ~ disable-access-log-for-endpoints # unset: every path appears in access log
+# ~ log-config-file                  # unset: vLLM built-in or VLLM_LOGGING_CONFIG_PATH
+#
+# {debug, info, warning, error,critical, trace}
+# uvicorn-log-level: info
+
+
+# Metrics
+# -------
+# cudagraph-metrics: false                 # token counts & dispatch modes
+# enable-mfu-metrics: false                # Model FLOPs Utilization
+# kv-cache-metrics: false                  # KV lifetime, idle time, reuse gaps
+# kv-cache-metrics-sample: 0.01            # blocks fraction sampled (metrics)
+# enable-server-load-tracking: false       # track server_load_metrics in state
+# enable-logging-iteration-details: false  # per-iteration EngineCore details
+# ~ show-hidden-metrics-for-version        # unset: deprecated metrics hidden
+
+
+# Tracing & Profiling
+# ---------------------
+# ~ profiler-config            # unset: profiling off (ProfilerConfig defaults)
+# ~ otlp-traces-endpoint       # unset: no traces are exported
+# ~ collect-detailed-traces    # unset: no per-module timings
+
+
+# Reproducibility
+# ---------------
+# seed: 0                      # global RNG seed
+
+
+# Extension Points (load your code)
+# ---------------------------------
+# disable-frontend-multiprocessing: false  # run API server in engine process
+#
+# skip-tokenizer-init: false   # expects prompt_token_ids in, no detokenization
+# worker-cls: auto             # auto: vllm.v1.worker.gpu_worker.Worker [ROCm]
+# worker-extension-cls: ""     # empty: no extra methods mixed into worker
+# middleware: []               # empty: only vLLM's own ASGI middleware runs
+# ~ logits-processors          # unset: none are loaded
+# ~ logits-processor-pattern   # unset: request may not name logits processor
+# ~ io-processor-plugin        # unset: no IOProcessor plugin is loaded
+# ~ scheduler-cls              # unset: vllm.v1.core.sched.scheduler.Scheduler
+
+
+# Overrides & Escape Hatches
+# --------------------------
+# allow-deprecated-quantization: false  # permit upstream-retired quants
+# enable-return-routed-experts: false   # return MoE routing with output
+# pt-load-map-location: cpu             # torch.load map_location for .bin
+# hf-overrides: {}                      # empty: HF config used as published
+# model-loader-extra-config: {}         # empty: load-format runs w. defaults
+# additional-config: {}                 # empty: no platform-spec. overrides
+# ~ override-attention-dtype            # unset: attention uses model/kv dtype
+# ~ mm-processor-kwargs                 # unset: media proc. default [by model]
+# ~ attention-config                    # unset: AttentionConfig defaults
+# ~ kernel-config                       # unset: KernelConfig defaults
+
+
+
+# =================
+#  NOT USEFUL HERE
+# =================
+#
+# Legal keys that cannot pay off on this box, plus the ones that take it down.
+# Nothing here is a vLLM defect — it is hardware and topology.
+
+
+# Fatal (take down health check)
+# ------------------------------
+# ~ headless       # [this build] no API server at all
+# ~ uds            # [this build] listens on unix socket; host & port ignored
+# ~ tokens-only    # [this build] serves only the Tokens In<>Out endpoint
+
+
+# Multiple GPUs
+# -------------
+# tensor-parallel-size: 1             # shard a layer across GPUs
+# pipeline-parallel-size: 1           # split layers across GPUs
+# decode-context-parallel-size: 1     # DCP groups
+# prefill-context-parallel-size: 1    # PCP groups
+# cp-kv-cache-interleave-size: 1      # KV interleave under DCP/PCP
+# dcp-kv-cache-interleave-size: 1     # replaced upstream by key above
+# disable-custom-all-reduce: false    # fall back to NCCL for multi-GPU
+# fully-sharded-loras: false          # shard LoRA computation across TP ranks
+# mm-encoder-tp-mode: weights         # weights|data; vision encoder use of TP
+# enable-dbo: false                   # dual batch overlap compute, collectives
+# dbo-decode-token-threshold: 32      # DBO decode threshold
+# dbo-prefill-token-threshold: 512    # DBO prefill threshold
+# ubatch-size: 0                      # microbatch size for DBO
+
+
+# Multiple Nodes
+# --------------
+# data-parallel-size: 1                  # DP groups
+# data-parallel-size-local: 1            # DP groups on this node
+# data-parallel-rank: 0                  # this process's DP rank
+# data-parallel-rpc-port: 29550          # DP messaging port
+# data-parallel-external-lb: false       # external DP load-balancer mode
+# data-parallel-hybrid-lb: false         # hybrid DP load-balancer mode
+# nnodes: 1                              # node count
+# node-rank: 0                           # this node's rank
+# master-addr: 127.0.0.1                 # distributed master address
+# master-port: 29501                     # distributed master port
+# ~ data-parallel-address                # unset: no DP cluster head contacted
+# ~ data-parallel-start-rank             # unset: 0; useful on secondary node
+# ~ disable-nccl-for-dp-synchronization  # unset ⇒ NCCL, when DP sync happens
+# ~ aggregate-engine-logging             # unset: per-engine stats
+#
+# {mp*, ray}
+# data-parallel-backend: mp
+#
+# {ray, mp, uni, external_launcher}
+# ~ distributed-executor-backend  # unset: "uni" (world_size 1)
+
+
+# Mixture-of-Experts Parallelism
+# ------------------------------
+# enable-expert-parallel: false   # expert parallelism instead (vs tensor)
+# enable-eplb: false              # expert-parallel load balancing
+# ~ eplb-config                   # unset: EPLBConfig defaults (inert w/o EPLB)
+#
+# {linear*, round_robin}
+# expert-placement-strategy: linear
+#
+# {allgather_reducescatter*, naive, pplx, mori, deepep_high_throughput, deepep_low_latency, flashinfer_all2allv}
+# all2all-backend: allgather_reducescatter
+
+
+# Disaggregated Serving & External Transfer
+# -------------------------------------------
+# mm-encoder-only: false        # run vision encoder without language model
+#  ~ kv-transfer-config         # unset: no KV cache transferred off instance
+#  ~ kv-events-config           # unset: no KV events are published
+#  ~ ec-transfer-config         # unset: no EC cache transfer
+#  ~ weight-transfer-config     # unset: no weight streaming
+
+
+# NVIDIA-Only
+# -----------
+# ray-workers-use-nsight: false           # profile Ray workers under Nsight
+#  ~ enable-flashinfer-autotune           # unset: off [ROCm]
+
+
+# Inert / Deprecated
+# ------------------
+# kv-sharing-fast-prefill: false     # work in progress
+# disable-log-requests: true         # DEPRECATED — use enable-log-requests
+# ~ max-parallel-loading-workers     # IGNORED; vLLM logs "not supported"
+
+
+# ══ MODEL_TABLE — verified Strix Halo models (uncomment ONE stanza) ══════════
+#   harvested at build from the pinned upstream scripts/models.py (12 models)
+
+# ===========================================================================
+# meta-llama/Meta-Llama-3.1-8B-Instruct
+#   valid tensor-parallel sizes on Strix Halo: [1, 2]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: meta-llama/Meta-Llama-3.1-8B-Instruct
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 32768
+# enable-auto-tool-choice: true
+# tool-call-parser: llama3_json
+
+# ===========================================================================
+# RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic
+#   valid tensor-parallel sizes on Strix Halo: [1]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_STRIX_FP8_TRITON=1
+#     VLLM_ROCM_USE_AITER=0
+# ---------------------------------------------------------------------------
+# model: RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 32768
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: llama3_json
+
+# ===========================================================================
+# google/gemma-4-26B-A4B-it
+#   valid tensor-parallel sizes on Strix Halo: [1, 2]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: google/gemma-4-26B-A4B-it
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 32768
+# enable-auto-tool-choice: true
+# tool-call-parser: gemma4
+# reasoning-parser: gemma4
+
+# ===========================================================================
+# google/gemma-4-31B-it
+#   valid tensor-parallel sizes on Strix Halo: [1, 2]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: google/gemma-4-31B-it
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 32768
+# enable-auto-tool-choice: true
+# tool-call-parser: gemma4
+# reasoning-parser: gemma4
+
+# ===========================================================================
+# openai/gpt-oss-20b
+#   valid tensor-parallel sizes on Strix Halo: [1, 2]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: openai/gpt-oss-20b
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 8192
+# trust-remote-code: true
+# enable-auto-tool-choice: true
+# tool-call-parser: openai
+# reasoning-parser: openai_gptoss
+
+# ===========================================================================
+# openai/gpt-oss-120b
+#   valid tensor-parallel sizes on Strix Halo: [1]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: openai/gpt-oss-120b
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 8192
+# trust-remote-code: true
+# enable-auto-tool-choice: true
+# tool-call-parser: openai
+# reasoning-parser: openai_gptoss
+
+# ===========================================================================
+# Qwen/Qwen3.6-35B-A3B
+#   valid tensor-parallel sizes on Strix Halo: [1]
+#   env (lines for /opt/data/vllm.env): <none>
+# ---------------------------------------------------------------------------
+# model: Qwen/Qwen3.6-35B-A3B
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enable-auto-tool-choice: true
+# tool-call-parser: qwen3_coder
+# reasoning-parser: qwen3
+
+# ===========================================================================
+# cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+#   valid tensor-parallel sizes on Strix Halo: [1]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_USE_TRITON_AWQ=1
+# ---------------------------------------------------------------------------
+# model: cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: qwen3_coder
+# reasoning-parser: qwen3
+
+# ===========================================================================
+# cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit
+#   valid tensor-parallel sizes on Strix Halo: [1, 2]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_USE_TRITON_AWQ=1
+# ---------------------------------------------------------------------------
+# model: cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit
+# tensor-parallel-size: 1
+# max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: qwen3_coder
+# reasoning-parser: qwen3
+
+# ===========================================================================
+# cyankiwi/Qwen3.5-122B-A10B-AWQ-8bit
+#   valid tensor-parallel sizes on Strix Halo: [2]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_USE_TRITON_AWQ=1
+# ---------------------------------------------------------------------------
+# model: cyankiwi/Qwen3.5-122B-A10B-AWQ-8bit
+# tensor-parallel-size: 2
+# max-num-seqs: 64
+# max-model-len: 16384
+# trust-remote-code: true
+# enforce-eager: true
+# enable-auto-tool-choice: true
+# tool-call-parser: qwen3_coder
+# reasoning-parser: qwen3
+
+# ===========================================================================
+# cyankiwi/MiniMax-M2.7-AWQ-4bit
+#   valid tensor-parallel sizes on Strix Halo: [2]
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#     VLLM_USE_TRITON_AWQ=1
+# ---------------------------------------------------------------------------
+# model: cyankiwi/MiniMax-M2.7-AWQ-4bit
+# tensor-parallel-size: 2
+# max-num-seqs: 64

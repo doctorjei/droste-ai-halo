@@ -245,3 +245,50 @@ droste::split_args() {
     [ "$have" = 1 ] && acc+=( "$cur" )
     [ ${#acc[@]} -eq 0 ] || printf '%s\0' "${acc[@]}"
 }
+
+# ── droste::ld_library_path_add — EXTEND the library search path, never replace ──
+# Usage:  droste::ld_library_path_add "${DROSTE_<BOX>_LD_LIBRARY_PATH_ADD:-}"
+# Each argument may itself be a colon-separated list; they are appended in order.
+#
+# ⭐ WHY THE SETTING IS AN "ADD" AND NOT THE NATIVE VARIABLE. Every image here BAKES
+# LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64 (base/Container.runtime:125), so a
+# config file offering the native name offers a REPLACE: the user adds one directory
+# of their own and silently discards the ROCm ones. That is the destructive reading of
+# a value nobody means destructively, so the surface asks for ADDITIONS and this
+# helper does the joining.
+#
+# 🚨 APPEND AFTER, NEVER PREPEND — a ruling, not a preference. A user directory
+# searched BEFORE /opt/rocm/lib can shadow a ROCm library with another copy of the
+# same soname. The user does not then see "my extra directory broke something"; they
+# see a missing symbol, a HIP init failure, or a GPU that is not there — a hardware
+# fault, which is the most expensive wrong diagnosis we can hand somebody.
+#
+# ⚠️ BLANK OR UNSET DOES NOTHING AT ALL: LD_LIBRARY_PATH is not created, not emptied,
+# not touched. Blank is the shipped default, so anything else would mean uncommenting
+# the line as printed changes the box.
+# ⚠️ EMPTY COMPONENTS ARE DROPPED — the ones a leading, trailing or doubled `:` in the
+# user's value produces, and the one an unset LD_LIBRARY_PATH would produce if we
+# joined unconditionally. An empty entry means THE CURRENT DIRECTORY to the dynamic
+# linker, which is both a surprise and a way to load a library from wherever the
+# service happened to start.
+# ⚠️ A COMPONENT ALREADY ON THE PATH IS SKIPPED, which makes the call idempotent.
+# PRE_LAUNCH is not run once per box: serve::build_service runs it again on every
+# relaunch, and a search path that grew another copy of itself each time would be a
+# slow leak in a long-lived container.
+droste::ld_library_path_add() {
+    local arg field add=''
+    for arg in "$@"; do
+        while [ -n "$arg" ]; do
+            field=${arg%%:*}
+            if [ "$field" = "$arg" ]; then arg=''; else arg=${arg#*:}; fi
+            [ -n "$field" ] || continue
+            # The pattern side is QUOTED, so a glob character in a directory name is
+            # matched literally rather than expanded.
+            case ":${LD_LIBRARY_PATH:-}:$add:" in *":$field:"*) continue ;; esac
+            add=${add:+$add:}$field
+        done
+    done
+    [ -n "$add" ] || return 0
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$add"
+    return 0
+}

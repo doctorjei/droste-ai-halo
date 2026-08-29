@@ -258,14 +258,33 @@ vllm_menu() {
     export "$var=$wire"
 }
 
-# vllm_env — DROSTE_VLLM_* → the native variables, exported for the served process.
-# Its own function so it can be driven alone (source the spec, call it, print the
-# environment) without building the argv.
+# vllm_env — the environment the served process gets: DROSTE_VLLM_* translated to
+# the native variables, plus the one NATIVE line whose blank the file promises is a
+# no-op. Its own function so it can be driven alone (source the spec, call it, print
+# the environment) without building the argv.
 # ⚠️ EXPORT IS REQUIRED. resolve::apply_spec runs `set +a` before PRE_LAUNCH, so a
 # bare assignment here would never reach the vLLM process — it would be a silent
 # no-op, which is the same defect in a different costume.
 vllm_env() {
     local entry suffix rest var on off val
+
+    # ── a blank NATIVE line has to mean what the file says: nothing ────────────
+    # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (vllm.env:220) AND UNCOMMENTING IT AS
+    # PRINTED TAKES EVERY GPU AWAY. Both resolvers source the file under `set -a`, so
+    # the line arrives as CUDA_VISIBLE_DEVICES="" and reaches the server:
+    # droste-envfile.sh:155 exports it, and the name is not in the `loud` list at :70,
+    # so it does not even warn on the way past.
+    # The ROCm RUNTIME would shrug — rocclr/device/rocm/rocdevice.cpp:390-392 only
+    # filters when `ordinals[0] != '\0'` — but TORCH'S PYTHON PARSER IS STRICTER THAN
+    # THE RUNTIME IT WRAPS. torch/cuda/__init__.py:736-805 `_parse_visible_devices()`
+    # returns `list(range(64))` when the variable is UNSET and `[]` for "" (`_strtoul("")`
+    # is -1, and a negative aborts the sequence), and :938-940 `_device_count_amdsmi()`
+    # returns 0 for an empty list. vLLM reads exactly that path on ROCm
+    # (vllm/utils/torch_utils.py:609-620 at v0.16.0) and never falls back, because the
+    # fallback is gated on `raw_count < 0` and 0 is not negative.
+    # ⇒ the blank must reach the wire as an ABSENCE — and absence IS this box's real
+    # default: nothing in any image or profile.d sets CUDA_VISIBLE_DEVICES.
+    droste::blank_is_unset CUDA_VISIBLE_DEVICES
 
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do
@@ -387,6 +406,15 @@ vllm_env() {
             *) export VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS="$val" ;;
         esac
     fi
+
+    # ⭐ AN "ADD TO", NOT A "REPLACE" (vllm.env:221). The native LD_LIBRARY_PATH used to
+    # be on the config surface, shown blank — a default the box does not deliver, since
+    # base/Container.runtime:125 bakes /opt/rocm/lib:/opt/rocm/lib64 — and its semantics
+    # are REPLACE, so uncommenting it as printed threw the ROCm library paths away. The
+    # setting is now additive, and the addition goes AFTER the baked value: a user
+    # directory searched first could shadow a ROCm library, and that reads as a hardware
+    # fault rather than as a config mistake. Blank (the shipped default) does nothing.
+    droste::ld_library_path_add "${DROSTE_VLLM_LD_LIBRARY_PATH_ADD:-}"
 
     # 🚨 THE VALUE IS THE NAME OF AN fx GRAPH NODE, AND THE GATE IS `is not None`.
     # pass_manager.py:61-63 forwards whatever it finds to torch's

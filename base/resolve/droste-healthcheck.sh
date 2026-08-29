@@ -119,9 +119,14 @@ esac
 
 serve::read_health_spec
 
-url="http://127.0.0.1:${SERVE_PORT}${HEALTH_PATH}"
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$DROSTE_HEALTH_TIMEOUT" "$url" 2>/dev/null)
+# serve::probe speaks whichever scheme this box's server answers (see the block above
+# serve::probe in droste-serve.sh) and passes -k, so a TLS box with the self-signed
+# cert that a local box normally has is probed correctly instead of failing cert
+# verification. Without both halves a TLS box read UNHEALTHY forever and
+# --health-on-failure=restart turned that into a restart loop.
+code=$(serve::probe "$SERVE_PORT" "$HEALTH_PATH" "$DROSTE_HEALTH_TIMEOUT")
 rc=$?
+url="$(serve::probe_scheme)://127.0.0.1:${SERVE_PORT}${HEALTH_PATH}"
 
 # curl could not get an HTTP response at all (refused, timeout, reset): 000.
 if [ -z "$code" ] || [ "$code" = "000" ]; then

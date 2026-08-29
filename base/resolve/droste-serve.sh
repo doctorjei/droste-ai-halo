@@ -82,6 +82,17 @@
 #
 # Sourced by a caller that has already set `set -euo pipefail`; kept in effect here.
 set -euo pipefail
+# Helpers a build-spec may call in EITHER lane (droste::split_args, and serve::*
+# fallbacks). ⚠️ Sourced UNCONDITIONALLY: a build-spec's PRE_LAUNCH runs here too,
+# and before s52 a serve::err call from one was `command not found` under set -e,
+# which killed the lane instead of printing a warning.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
+# droste::load_env_file — the child-shell apply step for a box's config file. It only
+# CALLS serve::err/warn/info, so it is safe to source before this library defines its
+# own prefixed versions: the names resolve when the function runs, not when it loads.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 
 # ── Config (override via env before sourcing) ───────────────────────────────
 # Two per-box roots, same names and defaults as droste-resolve.sh (this library is
@@ -110,6 +121,8 @@ set -euo pipefail
 : "${DROSTE_SERVE_STATE_DIR:=$DROSTE_PCACHE_DIR/state}"
 : "${DROSTE_SERVE_RECORD:=$DROSTE_SERVE_STATE_DIR/launch}"      # the launch record
 : "${DROSTE_SERVE_ACTIVE:=$DROSTE_SERVE_STATE_DIR/.IS_ACTIVE}"  # the intent flag
+: "${DROSTE_SERVE_SCHEME:=$DROSTE_SERVE_STATE_DIR/.SCHEME}"     # http|https, LEARNED
+: "${DROSTE_SERVE_PREFIX:=$DROSTE_SERVE_STATE_DIR/.PREFIX}"     # path prefix, DECLARED
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # The flag every one of the five services takes for its listen port (comfyui
 # main.py, jupyter lab, vllm serve, llama-server, ds4-server all spell it
@@ -351,6 +364,16 @@ serve::read_health_spec() {
         /*) ;;
         *)  HEALTH_PATH="/$HEALTH_PATH" ;;
     esac
+    # A path prefix moves EVERY route, /health included, so the probe has to follow
+    # it or 404 forever (see droste::set_health_prefix). Written by the box's own
+    # PRE_LAUNCH, which is the only code that has seen the user's config; absent =
+    # no prefix, which is the overwhelmingly common case and costs one stat.
+    # Prepended VERBATIM so we compute the same string the server computed.
+    if [ -r "$DROSTE_SERVE_PREFIX" ]; then
+        read -r _hp_prefix <"$DROSTE_SERVE_PREFIX" 2>/dev/null || _hp_prefix=""
+        [ -n "${_hp_prefix:-}" ] && HEALTH_PATH="${_hp_prefix}${HEALTH_PATH}"
+        unset _hp_prefix
+    fi
     case "$HEALTH_ACCEPT" in
         ok|any) ;;
         *)      HEALTH_ACCEPT="ok" ;;
@@ -358,10 +381,90 @@ serve::read_health_spec() {
     return 0
 }
 
+# ── Talking to our own server: scheme, and the one probe ────────────────────
+# Four of the five ports can serve HTTPS (vllm 5 flags, comfyui 2, llama 2,
+# finetuning 2 Jupyter traits; ds4 none), and until now every probe here spoke
+# `http://` and nothing else. A box serving TLS therefore read as unhealthy, and
+# with --health-on-failure=restart that is a restart loop; adopt_running could not
+# recognise its own server either. That is OUR defect, not a property of TLS, and
+# the fix belongs here rather than in a caveat telling users not to enable it.
+#
+# WHY DETECT RATHER THAN DECLARE. TLS is turned on by the USER, in the per-box
+# config file, and each port spells it differently — llama LLAMA_ARG_SSL_CERT_FILE,
+# vllm --ssl-keyfile in YAML or VLLM_EXTRA_ARGS, comfyui --tls-keyfile in the
+# catch-all, and finetuning a `certfile` TRAIT IN A PYTHON FILE. The build-spec is
+# baked and cannot know; a config scan would need four parsers and would still miss
+# the Python one. Asking the socket works the same way on all five, which is the
+# "mechanism differences are ours to absorb" rule applied literally.
+#
+# MEASURED, not inferred — curl against a real TLS server and a real plain one:
+#   nothing listening       both schemes  rc 7            → DOWN, not a mismatch
+#   plain server, http://   code 200 rc 0                 → right
+#   plain server, https://  rc 35 (SSL connect error)     → wrong scheme
+#   TLS server,   http://   rc 56, code 000               → wrong scheme
+#   TLS server,   https://  rc 60 (cert verify) WITHOUT -k
+#   TLS server,   https://  code 200 WITH -k
+# Two things fall out of that table and BOTH are needed:
+#   1. `-k` is not optional. A local box's cert is self-signed as a matter of
+#      course, so without it every TLS box fails cert verification and we would
+#      have "fixed" the scheme and still reported unhealthy. We are calling our own
+#      server over loopback and identifying it by pid and mount namespace elsewhere;
+#      certificate validation adds nothing here that those do not already do better.
+#   2. rc 7 stays DOWN. Connection refused means nothing is listening, on either
+#      scheme, so it is not a scheme question and is answered without a retry.
+#      ⚠️ HONESTLY: this one is for CLARITY, not for correctness or speed — measured,
+#      removing it changes no outcome (the retry also gets rc 7 / 000, remembers
+#      nothing and logs nothing) and no measurable time (76ms vs 74ms, because a
+#      refused connection returns instantly rather than waiting out the timeout).
+#      It earns its place by saying "refused means down, full stop" in one place.
+serve::probe_scheme() {
+    local cached
+    if [ -r "$DROSTE_SERVE_SCHEME" ]; then
+        read -r cached <"$DROSTE_SERVE_SCHEME" 2>/dev/null || cached=""
+        case "$cached" in http|https) printf '%s\n' "$cached"; return 0 ;; esac
+    fi
+    printf 'http\n'
+}
+
+serve::_remember_scheme() {
+    case "$1" in http|https) ;; *) return 0 ;; esac
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || return 0
+    printf '%s\n' "$1" >"$DROSTE_SERVE_SCHEME" 2>/dev/null || return 0
+    serve::_own "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+}
+
+# serve::probe — ask our own endpoint, learning the scheme if it moved. Echoes the
+# HTTP code (or 000) and returns curl's rc for the attempt that produced it, so a
+# caller can still tell "refused" from "answered badly" exactly as before.
+# The learned scheme lives in the state folder, so it resets every container start:
+# a user who turns TLS on and restarts is re-detected rather than remembered wrong.
+serve::probe() {
+    local port=$1 path=${2:-/} timeout=${3:-${DROSTE_HEALTH_TIMEOUT:-5}}
+    local scheme other code rc=0
+    command -v curl >/dev/null 2>&1 || { printf '000\n'; return 1; }
+    scheme=$(serve::probe_scheme)
+    code=$(curl -s -k -o /dev/null -w '%{http_code}' --max-time "$timeout" \
+        "$scheme://127.0.0.1:${port}${path}" 2>/dev/null) || rc=$?
+    # Answered, or nothing is listening at all: either way the scheme is not the
+    # question. rc 7 must not trigger a retry — see the table above.
+    if { [ -n "$code" ] && [ "$code" != 000 ]; } || [ "$rc" -eq 7 ]; then
+        printf '%s\n' "${code:-000}"; return "$rc"
+    fi
+    case "$scheme" in http) other=https ;; *) other=http ;; esac
+    rc=0
+    code=$(curl -s -k -o /dev/null -w '%{http_code}' --max-time "$timeout" \
+        "$other://127.0.0.1:${port}${path}" 2>/dev/null) || rc=$?
+    if [ -n "$code" ] && [ "$code" != 000 ]; then
+        serve::_remember_scheme "$other"
+        serve::info "the endpoint answers ${other}, not ${scheme}; probing ${other} from now on."
+    fi
+    printf '%s\n' "${code:-000}"; return "$rc"
+}
+
 # ── Port plumbing ───────────────────────────────────────────────────────────
 # apply_port — put the configured port into the SERVICE argv, in place. Replace
 # the value after every existing $SERVE_PORT_FLAG (comfyui/jupyter carry one in
-# the spec; ds4's PRE_LAUNCH emits one only if a user re-adds DS4_DROSTE_PORT,
+# the spec; ds4's PRE_LAUNCH emits one only if a user re-adds DROSTE_DS4_PORT,
 # which templates/ds4.env now deliberately omits), else append the flag
 # (llama/vllm/ds4 otherwise take their port from an env file / config file /
 # their own built-in default — a trailing CLI flag wins over all of those in
@@ -392,7 +495,14 @@ serve::apply_port() {
 serve::_port_busy() {
     local port=$1 rc=0
     command -v curl >/dev/null 2>&1 || return 1
-    curl -s -o /dev/null --max-time 3 "http://127.0.0.1:$port/" >/dev/null 2>&1 || rc=$?
+    # -k so a TLS listener with a self-signed cert is not mistaken for a free port:
+    # without it curl exits 60 (cert verify), which is already "not 7" and so already
+    # reads as busy — the right answer for the wrong reason. Keeping the scheme plain
+    # http:// is deliberate here and NOT an oversight: this asks "may I bind?", and a
+    # TLS server answers that question by refusing to speak HTTP, which is not exit 7.
+    # Every mismatch rc measured (35, 56, 60) is likewise not 7, so the verdict is
+    # correct on both schemes without a second probe on the hot path.
+    curl -s -k -o /dev/null --max-time 3 "http://127.0.0.1:$port/" >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne 7 ]
 }
 
@@ -1080,9 +1190,11 @@ serve::_endpoint_ok() {
     local port=$1 code
     command -v curl >/dev/null 2>&1 || return 1
     serve::read_health_spec
-    code=$(curl -s -o /dev/null -w '%{http_code}' \
-        --max-time "${DROSTE_HEALTH_TIMEOUT:-5}" \
-        "http://127.0.0.1:${port}${HEALTH_PATH}" 2>/dev/null) || return 1
+    # serve::probe speaks whichever scheme this box's server actually answers, so a
+    # TLS box can be recognised as our own instead of being refused forever. Its rc
+    # is deliberately ignored here: a TLS handshake can leave a non-zero exit behind
+    # an HTTP code we did receive, and the code is the whole question at this gate.
+    code=$(serve::probe "$port" "$HEALTH_PATH") || true
     [ -n "$code" ] && [ "$code" != 000 ] || return 1
     case "$HEALTH_ACCEPT" in
         any) return 0 ;;
@@ -1186,12 +1298,11 @@ serve::build_service() {
     OVERLAYS=() SURFACES=() CRITICAL=() OPTIONAL=() CACHES=()
     # shellcheck source=/dev/null
     source "$spec" || { serve::err "could not read $spec"; return 1; }
-    if [ -n "${ENV_FILE:-}" ] && [ -f "$ENV_FILE" ]; then
-        set -a
-        # shellcheck source=/dev/null
-        source "$ENV_FILE"
-        set +a
-    fi
+    # Child-shell apply, identical to the distrobox lane's step 6 — one behaviour, both
+    # doors. This lane matters even more than the other: a config typo here would abort
+    # serve::build_service, which the HEALTHCHECK also calls, so it would take out the
+    # relaunch path as well as the launch path. See droste-envfile.sh.
+    droste::load_env_file "${ENV_FILE:-}"
     if [ -n "${PRE_LAUNCH:-}" ]; then
         "$PRE_LAUNCH" || serve::warn "PRE_LAUNCH reported a problem; continuing with the argv as built."
     fi

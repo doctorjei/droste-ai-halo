@@ -29,6 +29,17 @@
 # Sourced by a caller that has already set `set -euo pipefail`; kept in effect here so a
 # failing primitive aborts container startup loudly.
 set -euo pipefail
+# Helpers a build-spec may call in EITHER lane (droste::split_args, and serve::*
+# fallbacks). ⚠️ Sourced UNCONDITIONALLY: a build-spec's PRE_LAUNCH runs here too,
+# and before s52 a serve::err call from one was `command not found` under set -e,
+# which killed the lane instead of printing a warning.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
+# droste::load_env_file — the child-shell apply step for a box's config file. MUST come
+# after droste-common.sh (it calls serve::err/warn/info) and MUST be present in BOTH
+# lanes, for the same reason droste-common.sh is: the two doors share no other code.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 
 # ── THREE ROOTS (storage taxonomy) ──────────────────────────────────────────
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
@@ -816,15 +827,13 @@ resolve::apply_spec() {
     # 5) templates.yaml seeding (AFTER mounts)
     resolve::apply_templates "$RESOLVE_TEMPLATES_DIR"
 
-    # 6) ENV_FILE source (generate-if-absent handled by templates' if_missing above)
-    # set -a exports every var the file assigns, so plain VAR= lines reach the
-    # service across the exec (llama-server reads LLAMA_ARG_* from its environment).
-    if [ -n "${ENV_FILE:-}" ] && [ -f "$ENV_FILE" ]; then
-        set -a
-        # shellcheck disable=SC1090
-        source "$ENV_FILE"
-        set +a
-    fi
+    # 6) ENV_FILE apply (generate-if-absent handled by templates' if_missing above).
+    # The file is run in a CHILD shell and the difference in its environment is exported
+    # here, so plain VAR= lines still reach the service across the exec (llama-server
+    # reads LLAMA_ARG_* from its environment) while a typo in the user's config warns
+    # instead of aborting this resolver under `set -euo pipefail`. Rationale, costs and
+    # the sentinel trick: droste-envfile.sh.
+    droste::load_env_file "${ENV_FILE:-}"
 
     # 7) PRE_LAUNCH function (defined in build-spec)
     if [ -n "${PRE_LAUNCH:-}" ]; then

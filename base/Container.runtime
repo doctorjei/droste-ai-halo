@@ -144,7 +144,8 @@ RUN printf '%s\n' \
 # in) and deliberately NO `HEALTHCHECK`: the probe is opt-in per DEPLOYMENT
 # (droste-setup.sh passes --health-cmd/--health-on-failure at create time), so the
 # existing server-lane containers keep their current, health-less `podman ps` shape.
-COPY resolve/droste-resolve.sh resolve/droste-entrypoint.sh \
+COPY resolve/droste-common.sh resolve/droste-envfile.sh resolve/droste-resolve.sh \
+     resolve/droste-entrypoint.sh \
      resolve/droste-init-hook.sh resolve/droste-serve.sh \
      resolve/droste-healthcheck.sh resolve/apply_templates.py \
      resolve/assert-rocm-pins.sh resolve/droste-server.sh \

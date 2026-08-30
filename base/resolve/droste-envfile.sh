@@ -37,9 +37,32 @@
 #     already run anything as this box's user.) An earlier draft of this comment did
 #     claim it, and g1lab/envfile.sh went red on the claim — the row is still there.
 #   · The child inherits only the EXPORTED environment, so a config file can no longer
-#     read a plain (unexported) shell variable belonging to the resolver. No shipped
-#     template does; the only `$` on any template's right-hand side is vllm's
-#     `${XDG_CACHE_HOME:-~/.cache}` form, which is unset-safe anyway.
+#     read a plain (unexported) shell variable belonging to the resolver.
+#     ⭐ AND THE RULE FOR A TEMPLATE IS NOT "NO `$`" (Jei, s57: "there may be isolated
+#     cases where the user wants to grab a value from another variable"). It is a
+#     WHITELIST OF ONE SHAPE: a `$` on a right-hand side may only be written
+#     `${NAME<op>…}`, where NAME is a plain variable name and <op> is one of `-`, `:-`,
+#     `+`, `:+`; nesting is allowed provided every level obeys the rule; nothing else is.
+#     So `${OTHER-}`, `${OTHER:-x}` and `${OTHER+x}` are fine, while `$OTHER` and
+#     `${OTHER}` are BOTH box-killers, because braces alone do not help.
+#     🚨 IT IS A WHITELIST AND NOT THE PROPERTY IT USED TO BE ("every `$` carries a
+#     fallback"), because that property had a HOLE and could not see one form at all:
+#     `${!IND-}` CARRIES THE FALLBACK AND ABORTS ANYWAY — bash answers "invalid indirect
+#     expansion" whether or not a `-` is there — and `$((OTHER+1))` aborts on a name that
+#     carries no `$`, so nothing anchored on `$` could ever have looked at it. Under the
+#     whitelist neither needs to be thought of: `!IND` is not a plain NAME and `$((` is
+#     not `${`, so both simply are not the shape.
+#     🚨 AND `${OTHER=x}` IS REFUSED THOUGH IT SOURCES FINE — the one place the rule is
+#     deliberately stricter than bash. `=` ASSIGNS, so the child comes back holding
+#     OTHER, `set -a` has exported it, and the diff below applies OTHER as a setting the
+#     user never wrote. A config file may not conjure a setting out of a fallback.
+#     scripts/check-env-fallbacks.sh enforces exactly that over the shipped templates (it
+#     carries the whole measured form table), and the last section of g1lab/envfile.sh is
+#     its suite.
+#     ⚠️ SO THE COST LANDS ON THE FALLBACK, NOT ON AN ERROR PATH. A cross-reference to a
+#     name the resolver holds unexported — or to one PRE_LAUNCH only sets LATER, since
+#     this file is sourced first — is not reported as anything. It quietly takes the
+#     fallback and looks like it worked. Document that; do not forbid it.
 #
 # 🚨 THE CHILD RUNS `set -euo pipefail`, THE SAME AS PRODUCTION, ON PURPOSE. Loosening
 # it would turn a typo'd `$LLAMA_ARG_MDOEL` into a silently empty value — a box that

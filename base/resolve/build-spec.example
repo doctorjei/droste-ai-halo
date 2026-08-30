@@ -28,7 +28,7 @@
 # ── WHICH ROOT A ROW USES IS ITS CLASS DECLARATION ───────────────────────────
 # Three container-side roots; the prefix of a src/upper is the whole classification,
 # so nothing downstream has to guess from a path's contents (see droste-resolve.sh):
-#   /opt/data           PERSISTENT, per box, backed up. Configs (server.env, *.env,
+#   /opt/data           PERSISTENT, per box, backed up. Configs (server.env, *.cfg,
 #                       vllm_config.yaml), comfyui user/ + custom_nodes upper +
 #                       model-tree, ds4 sessions/ + cockpit/, finetuning workspace.
 #   /opt/program-cache  PROGRAM CACHE, per box, re-obtainable: the venv upper (and
@@ -76,7 +76,7 @@ HEALTH_ACCEPT="ok"
 # PRE_LAUNCH so the spec stays self-sufficient under other callers).
 # Leave "" if unused.
 ENV_FILE=""
-# ENV_FILE="/opt/data/llama.env"
+# ENV_FILE="/opt/data/llama.cfg"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Kernel overlayfs mounted OVER the baked <lower> dir; user writes land in <upper>
@@ -159,7 +159,7 @@ PRE_LAUNCH=""
 # array in PRE_LAUNCH, which runs AFTER the env file is sourced:
 #
 #   SERVICE=( llama-server )                       # placeholder argv
-#   ENV_FILE="/opt/data/llama.env"
+#   ENV_FILE="/opt/data/llama.cfg"
 #   PRE_LAUNCH="port_pre_launch"
 #   port_pre_launch() {
 #       # belt-and-braces: re-export the vars the binary reads from its

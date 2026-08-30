@@ -7,7 +7,7 @@
 # droste's control flow: a bare word on a line of its own is `command not found`, a
 # reference to an unset variable is an unbound-variable abort, and either one takes the
 # WHOLE BOX DOWN before the server is ever launched. Measured, not theorised — the s52
-# `HF_TOKEN=$HF_TOKEN` line in llama.env did exactly that.
+# `HF_TOKEN=$HF_TOKEN` line in llama.cfg did exactly that.
 #
 # ⭐ AND THE FIX IS NOT "STOP SOURCING". Jei corrected that twice:
 #   "we should not be trying to make it easy to source or import"
@@ -130,7 +130,7 @@ droste::load_env_file() {
     #                     vLLM's get_default_cache_root() behind the ~/.cache/vllm bind;
     #                     huggingface_hub's HF_HOME default behind the ~/.cache/huggingface
     #                     CRITICAL bind on ALL FIVE boxes; torch's _get_torch_home() behind
-    #                     the ~/.cache/torch bind on comfyui and finetuning. vllm.env names
+    #                     the ~/.cache/torch bind on comfyui and finetuning. vllm.cfg names
     #                     it on four lines of its own.
     #   XDG_CONFIG_DIRS (loud_conf) — finetuning, with DROSTE_JUPYTER_PLATFORM_DIRS on:
     #                     SYSTEM_CONFIG_PATH becomes platformdirs.site_config_dir, i.e.
@@ -152,7 +152,7 @@ droste::load_env_file() {
     #                     jupyter_data_dir() (kernelspecs, Lab extensions, runtime files)
     #                     and droste binds NOTHING under ~/.local/share on any box, so
     #                     nothing droste persists moves. ⭐ It is the one genuinely
-    #                     safe-to-offer XDG name — consistent with finetuning.env already
+    #                     safe-to-offer XDG name — consistent with finetuning.cfg already
     #                     offering it, which is a fact that reads as evidence FOR
     #                     including it and is evidence for the opposite.
     #   XDG_STATE_HOME  — no reader in these five images and droste keeps nothing under
@@ -165,7 +165,7 @@ droste::load_env_file() {
     #                     case: the parallel site_data_dir path holds kernelspecs and
     #                     extensions, none of which droste bakes.
     #
-    # ⚠️ SCOPE, STATED SO IT IS NOT ASSUMED WIDER. This function sees the box's .env file
+    # ⚠️ SCOPE, STATED SO IT IS NOT ASSUMED WIDER. This function sees the box's .cfg file
     # and NOTHING ELSE. A create-time `--env` in additional_flags (the mechanism the
     # installer itself uses) and an `export XDG_CACHE_HOME=…` typed inside `distrobox
     # enter` before running a download both reach the server without passing here, and
@@ -182,7 +182,7 @@ droste::load_env_file() {
     # is seeded `if_missing` (apply_templates.py, the `if os.path.exists(dest)`
     # skip), so a box created before a rename KEEPS its old file forever — a new
     # image never rewrites it. `5e57310` renamed every droste-owned setting from
-    # <BOX>_DROSTE_* to DROSTE_<BOX>_*, so an older ds4.env says
+    # <BOX>_DROSTE_* to DROSTE_<BOX>_*, so an older ds4.cfg says
     # `DS4_DROSTE_MODEL=/opt/models/mine.gguf` and the wiring reads
     # DROSTE_DS4_MODEL, finds nothing, and falls back to the default path in
     # targets/ds4/build-spec. Nothing is there, ds4-server exits, and
@@ -192,7 +192,7 @@ droste::load_env_file() {
     # ⭐ AND THE FIX IS A WARNING, NOT A TRANSLATION. No backward compatibility is
     # owed here (Jei is the only user), so nothing renames, aliases or rewrites the
     # user's line. The deliverable is that a stale file ANNOUNCES ITSELF instead of
-    # being dropped in silence — the same stance as ds4's "ds4.env no longer offers
+    # being dropped in silence — the same stance as ds4's "ds4.cfg no longer offers
     # either, but it is seeded if_missing" guard, and the same principle as the
     # SERVE -> STARTUP_ENABLED rename (droste-serve.sh's read_config): A RENAME MUST
     # NEVER BE SILENT. That one satisfies the principle by still working; this one
@@ -214,7 +214,7 @@ droste::load_env_file() {
     # (DROSTE_DS4_MODLE). Catching it needs a per-box registry of valid names, and
     # the obvious candidate — the shipped template — does not agree with the wiring
     # today: DROSTE_DS4_PORT is in ds4's value-flag table and appears nowhere in
-    # ds4.env, so a template-driven check would warn about a setting that works.
+    # ds4.cfg, so a template-driven check would warn about a setting that works.
     # A rule with a false positive is worse than no rule, so this arm is left out
     # until the two agree. Say it, do not silently half-implement it.
     local file=${1-}
@@ -285,7 +285,7 @@ droste::load_env_file() {
     # Where the CURRENT list of this box's settings lives, so the warning below can
     # point at it rather than describing it. The image bakes each port's templates
     # under one directory and the seeded copy keeps the template's own basename
-    # (targets/*/templates/templates.yaml map <box>.env to /opt/data/<box>.env), so
+    # (targets/*/templates/templates.yaml map <box>.cfg to /opt/data/<box>.cfg), so
     # the current example for this file is that name in the templates directory.
     # ⚠️ Mentioned ONLY if it is really there: a sentence pointing at a path that
     # does not exist is worse than the shorter sentence. The `!=` guard keeps a

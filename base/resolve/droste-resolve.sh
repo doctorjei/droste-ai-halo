@@ -45,7 +45,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
 # neither the installer nor a wipe has to guess from a path's contents:
 #   /opt/data          PER-BOX PERSISTENT DATA. Irreplaceable-if-lost: configs
-#                      (server.env, *.env, vllm_config.yaml), comfyui user/ +
+#                      (server.env, *.cfg, vllm_config.yaml), comfyui user/ +
 #                      custom_nodes upper + model-tree, ds4 sessions/ + cockpit/,
 #                      finetuning workspace, the .droste-*.log files. Backed up.
 #   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
@@ -757,7 +757,7 @@ resolve::ensure_pcache() {
 # Runs AFTER mounts so seeds land on the mounted destinations. No-op if no manifest.
 # OWNERSHIP (distrobox) — the FILE counterpart of the _mkuserdir/_own_dirs deviation,
 # and the one the seeding step was missing: this runs as root, so every seeded config
-# (vllm_config.yaml, ds4.env, llama.env, comfyui's extra_model_paths.yaml) landed
+# (vllm_config.yaml, ds4.cfg, llama.cfg, comfyui's extra_model_paths.yaml) landed
 # owned by the container's root — a subuid on the host under keep-id, i.e. uneditable
 # by the very user the docs tell to edit it ("after first start they are yours").
 # Same gate as every other deviation (distrobox lane + a derived box user; the server

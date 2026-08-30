@@ -22,8 +22,8 @@
 #       it is toggleable with an editor + `podman restart` and survives image
 #       updates and container recreation.
 #
-# server.env (default /opt/data/server.env — same format and place as llama.env /
-# ds4.env) is shell-sourceable KEY=VALUE:
+# server.env (default /opt/data/server.env — same format and place as llama.cfg /
+# ds4.cfg) is shell-sourceable KEY=VALUE:
 #       STARTUP_ENABLED=1  # 1/true/yes/on = start this box's server when the BOX starts
 #       PORT=8188          # the HOST port the service binds DIRECTLY (host networking:
 #                          # e.g. ds4 binds 8001 itself instead of its own default 8000)
@@ -465,7 +465,7 @@ serve::probe() {
 # apply_port — put the configured port into the SERVICE argv, in place. Replace
 # the value after every existing $SERVE_PORT_FLAG (comfyui/jupyter carry one in
 # the spec; ds4's PRE_LAUNCH emits one only if a user re-adds DROSTE_DS4_PORT,
-# which templates/ds4.env now deliberately omits), else append the flag
+# which templates/ds4.cfg now deliberately omits), else append the flag
 # (llama/vllm/ds4 otherwise take their port from an env file / config file /
 # their own built-in default — a trailing CLI flag wins over all of those in
 # llama.cpp, vLLM and ds4-server, which is what "installer-owned ports"

@@ -654,9 +654,29 @@ vllm_env() {
         VLLM_CUDART_SO_PATH
     )
 
-    # ⭐ AND THE TWELVE THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
-    # list" is a decision rather than an omission. TWO INDEPENDENT REASONS AGREE ON
-    # every one of them, which is the strongest evidence either reason is right:
+    # ── class 2 proper: a name that is not vLLM's at all (s58) ────────────────
+    # 🚨 THE MEASURED DIFFERENCE IS NOT IN A vLLM READER — IT IS IN A LOADER THAT
+    # COPIES THE VALUE ONWARD. model_loader/runai_streamer_loader.py:53-57 is
+    #     aws_endpoint_url = os.getenv("AWS_ENDPOINT_URL")
+    #     if runai_streamer_s3_endpoint is None and aws_endpoint_url is not None:
+    #         os.environ["RUNAI_STREAMER_S3_ENDPOINT"] = aws_endpoint_url
+    # an `is not None` gate, so a cleared line hands the Run:ai streamer an EMPTY
+    # endpoint where an absent one leaves the streamer to resolve its own. Measured in
+    # two interpreters: absent leaves RUNAI_STREAMER_S3_ENDPOINT unset, "" sets it to
+    # "". Exactly the shape the array above is full of, one package further out.
+    # ⚠️ THE TWO CREDENTIAL NAMES ARE NOT HERE, and that is a measurement too — see the
+    # not-guarded list below. A longer list is not a better one.
+    # ⚠️ AND IT IS ITS OWN ARRAY BECAUSE IT IS NOT A KEY IN vllm/envs.py. The suite
+    # cross-checks every guarded name against upstream's env dict, which is what would
+    # catch a name renamed out from under the pin — and that check only means something
+    # if the names it walks really are vLLM's. This one is botocore's and tensorizer's.
+    local -a _class2_on_clear=(
+        AWS_ENDPOINT_URL                                # runai_streamer_loader.py:53-57
+    )
+
+    # ⭐ AND THE ELEVEN THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
+    # list" is a decision rather than an omission. For the nine vLLM natives TWO
+    # INDEPENDENT REASONS AGREE, which is the strongest evidence either is right:
     #   · a blank ALREADY BEHAVES AS AN ABSENCE. envs.py hands back "" where it would
     #     hand back None, but every consumer gates on TRUTHINESS, so the difference
     #     never reaches a decision — `if not model_redirect_path: return model`
@@ -671,8 +691,30 @@ vllm_env() {
     #   VLLM_API_KEY   VLLM_LOGGING_CONFIG_PATH   VLLM_MODEL_REDIRECT_PATH
     #   VLLM_LORA_RESOLVER_CACHE_DIR   VLLM_LORA_RESOLVER_HF_REPO_LIST
     #   VLLM_NCCL_SO_PATH   VLLM_NCCL_INCLUDE_PATH   CUDA_HOME
-    #   VLLM_DISABLED_KERNELS   S3_ACCESS_KEY_ID   S3_SECRET_ACCESS_KEY
-    #   S3_ENDPOINT_URL
+    #   VLLM_DISABLED_KERNELS
+    # ⚠️ THE OTHER TWO SIT HERE ON ONE REASON, NOT TWO, AND THE SECOND DOES NOT APPLY.
+    # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are class 2 — botocore owns the
+    # contract — and a blank credential is not the user saying "none", it is the user
+    # saying nothing: EnvProvider.load() gates on `if access_key:` (botocore
+    # credentials.py), so "" makes the environment provider decline and the chain moves
+    # on to ~/.aws and the instance metadata exactly as an absence does. MEASURED at
+    # botocore 1.43.83 with HOME pointed at an empty directory: absent and "" both give
+    # `Session().get_credentials() -> None`, and a real pair still resolves. Nothing to
+    # fix, so nothing to list.
+    #   AWS_ACCESS_KEY_ID   AWS_SECRET_ACCESS_KEY
+    # 🚨 S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_ENDPOINT_URL ARE OFF THIS LIST
+    # BECAUSE THEY ARE OFF THE SURFACE, NOT BECAUSE THE VERDICT CHANGED — AND THE REASON
+    # RECORDED FOR THEM WAS WRONG. They were filed under "a blank already behaves as an
+    # absence… every consumer gates on truthiness", and there is no consumer at all:
+    # envs.py:621-623 reads all three, tensorizer.py:372-378 resolves them into
+    # self.s3_*, then :380-384 builds stream_kwargs from tensorizer_config.* instead,
+    # and no module reads a self.s3_* field ever again (grepped across the pinned tree,
+    # identical on upstream main). Note that the citations above name a gate site for
+    # each of the nine and named none for these three — because none existed.
+    # ⭐ A DEAD NAME CANNOT BEHAVE CORRECTLY; IT CAN ONLY LOOK AS THOUGH IT DOES.
+    # vllm.env exposes botocore's names in their place, which every S3 path in this
+    # image really reads. ⚠️ AND A NAME THIS LIST KEEPS AFTER vllm.env DROPS IT IS
+    # UNAUDITABLE — the suite's phantom check is what holds the two in step.
     # ⚠️ VLLM_CUDART_SO_PATH IS THE NEAR MISS AND IS IN THE ARRAY ABOVE, NOT HERE. It
     # looks like a sibling of VLLM_NCCL_SO_PATH — same shape, same kind of value — but
     # its consumer is `assert so_file is not None` and then `ctypes.CDLL(so_file)`, and
@@ -681,7 +723,8 @@ vllm_env() {
     # ⭐ THE 19 NAMES WHOSE ACCESSOR ITSELF RETURNS THE SAME THING EITHER WAY are not
     # listed at all, here or above — VLLM_HOST_IP, VLLM_LOOPBACK_IP, the default-False
     # AITER flags, and so on. There is nothing to decide about them.
-    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}"
+    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
+                           "${_class2_on_clear[@]}"
 
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do

@@ -40,7 +40,7 @@ HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE (optional) ──────────────────────────────────────────────────────
-# Seeded from templates/vllm.env (templates.yaml if_missing). vLLM's SERVE FLAGS
+# Seeded from templates/vllm.cfg (templates.yaml if_missing). vLLM's SERVE FLAGS
 # live in the YAML consumed via --config; this file carries the ~209 runtime
 # VLLM_* ENVIRONMENT VARIABLES, which are not expressible as YAML keys — several
 # are read before any config is parsed. Two mechanisms, so two files.
@@ -57,7 +57,7 @@ HEALTH_ACCEPT="ok"
 # wins over the default set at the top of this file. Do not move the
 # `: "${DROSTE_VLLM_CONFIG:=...}"` line into PRE_LAUNCH, and do not hardcode the path
 # in the rebuild.
-# ▶ OPEN QUESTION, NOT RESOLVED HERE: vllm.env's Reserved section lists
+# ▶ OPEN QUESTION, NOT RESOLVED HERE: vllm.cfg's Reserved section lists
 #   DROSTE_VLLM_CONFIG among the settings a user must NOT set, while this block says
 #   a user's value wins. Both cannot be true. TODAY'S BEHAVIOUR IS "the user's value
 #   wins" and this wiring keeps it unchanged; the disagreement is queued for a
@@ -67,7 +67,7 @@ HEALTH_ACCEPT="ok"
 # Every `VLLM_FOO=bar` a user uncomments is exported by the resolver itself. Only
 # the DROSTE_VLLM_* names below need translating — they are the settings where
 # passing the user's word through unprocessed would be wrong or fatal.
-ENV_FILE="/opt/data/vllm.env"
+ENV_FILE="/opt/data/vllm.cfg"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Overlay the persisted upper over the WHOLE baked venv (captures bin/ console
@@ -114,10 +114,10 @@ OPTIONAL=(
     "models:/opt/models:/opt/models/mount_shared_models_here"
 )
 
-# ── The vllm.env → environment table ─────────────────────────────────────────
-# vllm.env offers yes/no (or a short menu); vLLM reads its own variables from the
+# ── The vllm.cfg → environment table ─────────────────────────────────────────
+# vllm.cfg offers yes/no (or a short menu); vLLM reads its own variables from the
 # environment. This table is the translation, and it is the ONLY mapping — adding a
-# setting means editing vllm.env AND this file.
+# setting means editing vllm.cfg AND this file.
 #
 # 🚨 THERE IS NO SINGLE WIRE VALUE THAT WORKS FOR ALL OF THEM, which is the whole
 # reason these are droste-owned rather than passed through. vLLM's own env table
@@ -294,9 +294,9 @@ vllm_menu() {
 # ⚠️ A BLANK IS NOT "THE DEFAULT" HERE, IT IS THE SAME CRASH. envs.py reads
 # `os.getenv(NAME, "http")`, so "" is a VALUE: it reaches load("") and the assert fires.
 # The blank has to become an absence. VLLM_MEDIA_CONNECTOR is ALSO in the named blank
-# list inside vllm_env — it is one of the natives vllm.env exposes — and the two agree;
+# list inside vllm_env — it is one of the natives vllm.cfg exposes — and the two agree;
 # unsetting twice is unsetting once. VLLM_VIDEO_LOADER_BACKEND is NOT on that list,
-# because vllm.env spells it with a DROSTE_ name, which is precisely why its guard
+# because vllm.cfg spells it with a DROSTE_ name, which is precisely why its guard
 # belongs here beside the setting rather than in a list of surface names.
 #
 # vllm_open_registry <native var> <label to quote back> <plural noun> <built-in> …
@@ -324,7 +324,7 @@ vllm_open_registry() {
 # comment above VLLM_VIDEO_LOADER_BACKEND (envs.py:757-759) lists "opencv" and
 # "identity"; `identity` IS NOT REGISTERED ANYWHERE at this pin and `opencv_dynamic` and
 # `molmo2` are, so the comment names one backend that does not exist and misses two that
-# do. An earlier pass copied that comment into vllm.env as `{opencv*}`. The truth is the
+# do. An earlier pass copied that comment into vllm.cfg as `{opencv*}`. The truth is the
 # three `@VIDEO_LOADER_REGISTRY.register(...)` decorators at multimodal/video.py:238,
 # 340, 434 and the one `@MEDIA_CONNECTOR_REGISTRY.register("http")` at
 # multimodal/media/connector.py:36.
@@ -346,7 +346,7 @@ vllm_env() {
     local entry suffix rest var on off val
 
     # ── a blank NATIVE line has to mean what the file says: nothing ────────────
-    # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (vllm.env:220) AND UNCOMMENTING IT AS
+    # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (vllm.cfg:220) AND UNCOMMENTING IT AS
     # PRINTED TAKES EVERY GPU AWAY. Both resolvers source the file under `set -a`, so
     # the line arrives as CUDA_VISIBLE_DEVICES="" and reaches the server:
     # droste-envfile.sh:155 exports it, and the name is not in the `loud` list at :70,
@@ -363,7 +363,7 @@ vllm_env() {
     # default: nothing in any image or profile.d sets CUDA_VISIBLE_DEVICES.
     #
     # 🚨 AND CUDA_VISIBLE_DEVICES WAS NEVER THE ONLY ONE — IT WAS JUST THE ONE WE HAD
-    # LOOKED AT (s57). vllm.env exposes 149 NATIVE (non-DROSTE_) names, and measured at
+    # LOOKED AT (s57). vllm.cfg exposes 149 NATIVE (non-DROSTE_) names, and measured at
     # the pin, 88 MORE of them are fatal on a clear. Same shape as llama's list and the
     # same ruling behind it: ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY
     # STRING, WE UNSET IF EMPTY. Both resolvers source the file under `set -a`, so a
@@ -446,7 +446,7 @@ vllm_env() {
     # setting still wins over a cleared native line exactly as it should.
     #
     # An array rather than 89 backslash continuations, so each section can carry a
-    # comment. Order is vllm.env's own line order, section by section.
+    # comment. Order is vllm.cfg's own line order, section by section.
     local -a _fatal_on_clear=(
         # Caches & Config
         VLLM_XGRAMMAR_CACHE_MB                          # int
@@ -556,7 +556,7 @@ vllm_env() {
 
     # ── category 1 + 2 among the blanks that do NOT raise (s58) ───────────────
     # 🚨 EVERY NAME BELOW WAS MEASURED, NOT REASONED ABOUT. vllm/envs.py loads
-    # standalone, so each of the 149 native names vllm.env exposes was read TWICE in
+    # standalone, so each of the 149 native names vllm.cfg exposes was read TWICE in
     # isolated interpreters at the pin (v0.16.0) — once with the name absent, once with
     # it "" — and the results diffed. 130 differ. 89 of those are the raising ones
     # above. 41 differ WITHOUT raising: 29 are category 1 or 2 and are listed here; the
@@ -629,7 +629,7 @@ vllm_env() {
         # as the classic blank-is-not-absent defect — but here the divergence IS the
         # feature: "load no plugins" is a thing a user may legitimately want to say, and
         # an empty list is the only way to say it. It is the unbounded-string exception,
-        # and `vllm.env` documents the behaviour at the line. ⭐ The near-identical
+        # and `vllm.cfg` documents the behaviour at the line. ⭐ The near-identical
         # mechanism next door (MEDIA_CONNECTOR) IS guarded, because "no media connector"
         # is not a coherent request — the difference is intent, not machinery.
         # `if partition_list_str is not None` (distributed/utils.py:110-116) ⇒ ""
@@ -712,8 +712,8 @@ vllm_env() {
     # identical on upstream main). Note that the citations above name a gate site for
     # each of the nine and named none for these three — because none existed.
     # ⭐ A DEAD NAME CANNOT BEHAVE CORRECTLY; IT CAN ONLY LOOK AS THOUGH IT DOES.
-    # vllm.env exposes botocore's names in their place, which every S3 path in this
-    # image really reads. ⚠️ AND A NAME THIS LIST KEEPS AFTER vllm.env DROPS IT IS
+    # vllm.cfg exposes botocore's names in their place, which every S3 path in this
+    # image really reads. ⚠️ AND A NAME THIS LIST KEEPS AFTER vllm.cfg DROPS IT IS
     # UNAUDITABLE — the suite's phantom check is what holds the two in step.
     # ⚠️ VLLM_CUDART_SO_PATH IS THE NEAR MISS AND IS IN THE ARRAY ABOVE, NOT HERE. It
     # looks like a sibling of VLLM_NCCL_SO_PATH — same shape, same kind of value — but
@@ -726,9 +726,9 @@ vllm_env() {
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
                            "${_class2_on_clear[@]}"
 
-    # ── the two XDG bases vllm.env QUOTES but does not EXPOSE (s58) ───────────
+    # ── the two XDG bases vllm.cfg QUOTES but does not EXPOSE (s58) ───────────
     # 🚨 FOUR OF THE FILE'S LINES DOCUMENT THEIR DEFAULT AS `${XDG_CACHE_HOME:-~/.cache}/
-    # vllm…` — vllm.env:75-77 (VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT, VLLM_CONFIG_ROOT) and
+    # vllm…` — vllm.cfg:75-77 (VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT, VLLM_CONFIG_ROOT) and
     # :418 (VLLM_XLA_CACHE_PATH); THREE cache lines and ONE config line, not four of the
     # former. Those four sentences are TRUE for an absent base and FALSE for a blank one.
     # envs.py:236-247 resolves both bases with `os.getenv(NAME, <default>)`, an
@@ -754,10 +754,10 @@ vllm_env() {
     # in this scenario not one of them is set, so that list has no blank to see. vLLM
     # computes the bad path itself, from a blank INPUT one layer further out.
     # ⚠️ NOT IN A NAMED LIST, AND IT MUST NOT BE ADDED TO ONE. Those arrays are the
-    # natives vllm.env EXPOSES; XDG_CACHE_HOME and XDG_CONFIG_HOME are settings on
+    # natives vllm.cfg EXPOSES; XDG_CACHE_HOME and XDG_CONFIG_HOME are settings on
     # nobody's surface — they appear only inside the `${…}` of the four lines above — so
     # listing them would make the suite's phantom check ("every guarded name is exposed
-    # by vllm.env") and its envs.py key cross-check (neither name is a key) false, and a
+    # by vllm.cfg") and its envs.py key cross-check (neither name is a key) false, and a
     # check with an exemption in it stops holding the list honest. The guard belongs
     # beside the consumers, exactly as for VLLM_KV_CACHE_LAYOUT above.
     # ⭐ EACH NAME EARNS ITS OWN PLACE. XDG_CONFIG_HOME has exactly one consumer in this
@@ -815,7 +815,7 @@ vllm_env() {
     # `auto` = "do not set it": env_with_choices raises for anything outside
     # NHD/HND, and that includes both `auto` and the empty string.
     #
-    # 🚨 THE NATIVE NAME HAS TO GO ON WORKING, AND ITS BLANK IS FATAL. vllm.env spells
+    # 🚨 THE NATIVE NAME HAS TO GO ON WORKING, AND ITS BLANK IS FATAL. vllm.cfg spells
     # this setting DROSTE_VLLM_KV_CACHE_LAYOUT, but every config file is seeded
     # `if_missing` and never rewritten, so a box may carry a hand-written native
     # `VLLM_KV_CACHE_LAYOUT=` line forever — and a user may add one at any time, because
@@ -825,14 +825,14 @@ vllm_env() {
     # VALUE, misses ["NHD","HND"] and raises ValueError before the server binds. The box
     # then restart-loops with nothing in the log a user can act on.
     # ⚠️ IT IS NOT IN THE NAMED BLANK LIST ABOVE and must not be added there — that list
-    # is the natives vllm.env EXPOSES, and a phantom entry would make it unauditable.
+    # is the natives vllm.cfg EXPOSES, and a phantom entry would make it unauditable.
     # The guard belongs beside the setting, exactly as for the two open registries.
     if [ -n "${VLLM_KV_CACHE_LAYOUT+set}" ] && [ -z "$VLLM_KV_CACHE_LAYOUT" ]; then
         unset VLLM_KV_CACHE_LAYOUT
     fi
     #
     # ⭐ PRECEDENCE, STATED ONCE SO IT IS NOT RE-DERIVED: the droste setting wins ONLY
-    # when it names a layout. `auto` — the value vllm.env SHIPS — leaves the native
+    # when it names a layout. `auto` — the value vllm.cfg SHIPS — leaves the native
     # variable exactly as it found it, and so do absent, blank and a rejected value.
     # That is not laziness: `auto` is the printed default, so uncommenting the line as
     # shown must be a no-op, and deleting a native line the user wrote elsewhere in the
@@ -911,13 +911,13 @@ vllm_env() {
     # ⭐ A GENUINE MENU OF ONE, AND IT IS STILL WORTH OBSERVING. `http` is the only
     # connector vLLM registers at this pin, so ANY other value is either a plugin or a
     # typo — the same two possibilities as the video loader, with the same rule. It is
-    # NATIVE-named on the surface (vllm.env:212) because we observe it without owning
+    # NATIVE-named on the surface (vllm.cfg:212) because we observe it without owning
     # it; do not give it a DROSTE_ name to "fix" the fatality, because the open registry
     # is the reason a whitelist cannot be the answer here.
     vllm_open_registry VLLM_MEDIA_CONNECTOR VLLM_MEDIA_CONNECTOR \
         "media connectors" "${VLLM_MEDIA_CONNECTOR_BUILTINS[@]}"
 
-    # A PATH, not a switch — vllm.env:320 shows it BLANK and offers no menu, so the
+    # A PATH, not a switch — vllm.cfg:320 shows it BLANK and offers no menu, so the
     # value goes through verbatim and blank is the off-state.
     # 🚨 AND THE OFF-STATE HAS TO BE AN ABSENCE, NOT AN EMPTY STRING. envs.py:573
     # reads `os.environ.get("VLLM_DEBUG_DUMP_PATH", None)` and the default is
@@ -938,7 +938,7 @@ vllm_env() {
         esac
     fi
 
-    # ⭐ AN "ADD TO", NOT A "REPLACE" (vllm.env:221). The native LD_LIBRARY_PATH used to
+    # ⭐ AN "ADD TO", NOT A "REPLACE" (vllm.cfg:221). The native LD_LIBRARY_PATH used to
     # be on the config surface, shown blank — a default the box does not deliver, since
     # base/Container.runtime:125 bakes /opt/rocm/lib:/opt/rocm/lib64 — and its semantics
     # are REPLACE, so uncommenting it as printed threw the ROCm library paths away. The
@@ -953,9 +953,9 @@ vllm_env() {
     # (_inductor/pattern_matcher.py:1979). envs.py:573-574 reads
     # `os.environ.get("VLLM_PATTERN_MATCH_DEBUG", None)` against a `str | None = None`
     # default (envs.py:217), so an EMPTY value is NOT None: it switches the mechanism
-    # on and then matches no node. **The blank vllm.env:321 shows must reach the wire
+    # on and then matches no node. **The blank vllm.cfg:321 shows must reach the wire
     # as an ABSENCE**, which is exactly what the `-n` guard does.
-    # ⭐ A PLAIN VALUE SETTING, NOT A BOOLEAN (vllm.env, s56 — Jei moved this line and
+    # ⭐ A PLAIN VALUE SETTING, NOT A BOOLEAN (vllm.cfg, s56 — Jei moved this line and
     # DEBUG_DUMP_PATH OUT of the `{on, off*}` block above them). It therefore has no
     # menu, takes no on/off, and MUST NOT warn about one: `on` is simply a node name
     # that nothing will match, and second-guessing the user's node name is not ours to

@@ -12,11 +12,11 @@ if_empty:
 # The box's CONFIG SURFACE, in two halves — the user's own edits, so DATA class
 # (/opt/data, never in the installer's wipe) and never overwritten once seeded.
 #
-# finetuning.env carries the environment variables; it is this box's ENV_FILE.
+# finetuning.cfg carries the environment variables; it is this box's ENV_FILE.
 # jupyter_server_config.py carries the ~220 traits, and is only ON JUPYTER'S
-# SEARCH PATH because finetuning.env sets JUPYTER_CONFIG_DIR to the directory
+# SEARCH PATH because finetuning.cfg sets JUPYTER_CONFIG_DIR to the directory
 # below. The two are a pair: seeding the trait file without the env file would
 # put it somewhere Jupyter never looks.
 if_missing:
-  finetuning.env: /opt/data/finetuning.env
+  finetuning.cfg: /opt/data/finetuning.cfg
   jupyter_server_config.py: /opt/data/jupyter_server_config.py

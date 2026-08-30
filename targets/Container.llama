@@ -34,7 +34,7 @@ RUN chmod +x /usr/local/bin/gguf-vram-estimator.py && \
 COPY build-spec  /opt/resources/build-spec
 COPY templates/  /opt/resources/templates/
 
-# llama.env is a HAND-AUTHORED template (templates/llama.env), copied above with
+# llama.cfg is a HAND-AUTHORED template (templates/llama.cfg), copied above with
 # the rest. It used to be generated here from the pinned binary's own --help;
 # that is now a DEV-TIME step (scripts/llama-options.sh, run at a pin bump on a
 # machine with a GPU) whose output is DIFFED against the template by a human.
@@ -60,7 +60,7 @@ COPY templates/  /opt/resources/templates/
 # upstream's to change, and this gate exists precisely to survive that.
 RUN for v in LLAMA_ARG_HOST LLAMA_ARG_PORT LLAMA_ARG_MODEL; do \
         grep -qar "$v" /usr/local/bin /usr/local/lib64 \
-        || { echo "gen-drift: $v is NOT in the pinned llama-server — upstream rename? Fix targets/llama/templates/llama.env and the launch flags before shipping."; exit 1; }; \
+        || { echo "gen-drift: $v is NOT in the pinned llama-server — upstream rename? Fix targets/llama/templates/llama.cfg and the launch flags before shipping."; exit 1; }; \
     done \
     && echo "llama drift gate: LLAMA_ARG_HOST/PORT/MODEL present in the pinned binary"
 

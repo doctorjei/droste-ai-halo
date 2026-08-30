@@ -4,12 +4,12 @@
 # Reworked from upstream kyuz0/ds4 @00e64ea download_model.sh:
 #   * Downloads INTO the shared HF cache (`hf download` WITHOUT --local-dir) —
 #     single-copy store shared across ports/boxes — then prints the absolute
-#     snapshot path to use as DROSTE_DS4_MODEL in /opt/data/ds4.env.
+#     snapshot path to use as DROSTE_DS4_MODEL in /opt/data/ds4.cfg.
 #   * DS4_GGUF_DIR stays as an explicit flat-dir override (--local-dir into your
 #     own writable bind) for users who want plain files instead of the cache.
 #   * The curl fallback and the ./ds4flash.gguf symlink are gone: the hf CLI is
 #     baked into this image (resumes natively), and the model path is config-
-#     driven (ds4.env), not CWD-relative.
+#     driven (ds4.cfg), not CWD-relative.
 set -e
 
 REPO="antirez/deepseek-v4-gguf"
@@ -71,7 +71,7 @@ Targets:
 
   mtp  Optional speculative decoding component, about 3.5 GB on disk.
        It is useful with q2-imatrix, q2-q4-imatrix, and q4-imatrix, but must be
-       enabled explicitly (DROSTE_DS4_MTP in /opt/data/ds4.env, or --mtp).
+       enabled explicitly (DROSTE_DS4_MTP in /opt/data/ds4.cfg, or --mtp).
 
 Options:
   --token TOKEN  Hugging Face token. Otherwise HF_TOKEN or the local HF token
@@ -85,7 +85,7 @@ Environment:
                  across containers, resumable.
 
 After a download the script prints the absolute path of each file — set it in
-/opt/data/ds4.env:
+/opt/data/ds4.cfg:
   DROSTE_DS4_MODEL=<path>        (main model)
   DROSTE_DS4_MTP=<path>          (mtp component, optional)
 If a download stops, run the same command again to resume it.
@@ -196,7 +196,7 @@ done
 echo
 if [ "$MODEL" = "mtp" ]; then
     echo "MTP is an optional component for q2-imatrix, q2-q4-imatrix, and q4-imatrix."
-    echo "Enable it in /opt/data/ds4.env:"
+    echo "Enable it in /opt/data/ds4.cfg:"
     for p in $PATHS; do
         echo "  DROSTE_DS4_MTP=$p"
     done
@@ -209,7 +209,7 @@ elif [ "$MODEL" = "pro-q4-layers00-30" ] || [ "$MODEL" = "pro-q4-layers31-output
         echo "  $p"
     done
 else
-    echo "Point ds4-server at the model in /opt/data/ds4.env:"
+    echo "Point ds4-server at the model in /opt/data/ds4.cfg:"
     for p in $PATHS; do
         echo "  DROSTE_DS4_MODEL=$p"
     done

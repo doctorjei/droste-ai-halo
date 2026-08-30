@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# llama-options.sh — DEV-TIME drift report for llama.env.
+# llama-options.sh — DEV-TIME drift report for llama.cfg.
 #
 # Enumerates what the PINNED llama-server actually accepts and compares it
-# against our hand-authored targets/llama/templates/llama.env. Run it when the
+# against our hand-authored targets/llama/templates/llama.cfg. Run it when the
 # llama pin moves; the output is a work list for editing that file by hand.
 #
 # ⭐ WHY THIS IS NOT A BUILD STEP (it used to be, as gen_llama_env.sh):
@@ -32,7 +32,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SERVER=${LLAMA_SERVER_BIN:-llama-server}
-ENVFILE="$HERE/../targets/llama/templates/llama.env"
+ENVFILE="$HERE/../targets/llama/templates/llama.cfg"
 HELPFILE=""
 LIST=0
 
@@ -214,14 +214,14 @@ report() {
     printf '%s\n' "$body" | sed 's/^/   /'
     printf '   -> %s\n\n' "$hint"
 }
-report "options in the binary, absent from llama.env" "$missing_flags" \
+report "options in the binary, absent from llama.cfg" "$missing_flags" \
        "add them under a group, or record why they are not worth naming"
-report "env vars in the binary, absent from llama.env" "$missing_envs" \
+report "env vars in the binary, absent from llama.cfg" "$missing_envs" \
        "each is a setting a user cannot discover from our file"
 report "NAMES OUR FILE OFFERS THAT THE BINARY DOES NOT READ" "$stale" \
        "🚨 remove or rename these — setting one does nothing, silently"
 report "defaults that moved" "$changed" \
-       "columns: variable, what llama.env says, what the binary says"
+       "columns: variable, what llama.cfg says, what the binary says"
 
 n_bad=0
 for v in "$missing_flags" "$missing_envs" "$stale" "$changed"; do

@@ -4,7 +4,7 @@
 # Bind a host directory of models to make them available, e.g.
 #   podman run … -v /host/models:/opt/models:ro …
 #   (distrobox.ini:  volume=/host/models:/opt/models:ro)
-# then point llama-server at a file via /opt/data/llama.env:
+# then point llama-server at a file via /opt/data/llama.cfg:
 #   LLAMA_ARG_MODEL=/opt/models/<file>.gguf
 #
 # Models downloaded with -hf (DROSTE_LLAMA_EXTRA_ARGS) land in the shared HF cache

@@ -101,13 +101,13 @@ def render_stanza(repo, spec):
     env = spec.get("env") or {}
     if env:
         # These cannot be YAML keys, and telling the user to `export` them is advice
-        # that does not survive a container restart. /opt/data/vllm.env is where an
+        # that does not survive a container restart. /opt/data/vllm.cfg is where an
         # env var for the SERVED process goes.
-        out.append("#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):")
+        out.append("#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):")
         for k, v in env.items():
             out.append(f"#     {k}={v}")
     else:
-        out.append("#   env (lines for /opt/data/vllm.env): <none>")
+        out.append("#   env (lines for /opt/data/vllm.cfg): <none>")
 
     ctx = spec.get("ctx")
     if ctx:

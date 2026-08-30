@@ -4,7 +4,7 @@
 # Bind a host directory of models to make them available, e.g.
 #   podman run … -v /host/models:/opt/models:ro …
 #   (distrobox.ini:  volume=/host/models:/opt/models:ro)
-# then point ds4-server at a file via /opt/data/ds4.env:
+# then point ds4-server at a file via /opt/data/ds4.cfg:
 #   DROSTE_DS4_MODEL=/opt/models/<file>.gguf
 #
 # The easy way to obtain a model: run download_model.sh — it fetches a curated

@@ -1,6 +1,6 @@
 # jupyter_server_config.py -- JupyterLab traits (one half of config surface).
 #
-# This box serves JupyterLab. This file is read because finetuning.env sets
+# This box serves JupyterLab. This file is read because finetuning.cfg sets
 # JUPYTER_CONFIG_DIR to this directory. If the variable is changed, move this
 # file to the new location.
 #
@@ -8,7 +8,7 @@
 # shown in the commented example line and are derived from this image's pinned
 # JupyterLab version. Settings reach the server three ways:
 #
-#   ENVIRONMENT VARIABLES  (/opt/data/finetuning.env)
+#   ENVIRONMENT VARIABLES  (/opt/data/finetuning.cfg)
 #   This is the only way to assing settings before Jupyter reads any config.
 #
 #   TRAITS  (/opt/data/jupyter_server_config.py, this file)

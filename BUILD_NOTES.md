@@ -367,7 +367,7 @@ prefix rules.
   v0.2.0 cache policy. `/opt/fp8` is trimmed to the runtime import surface
   (top-level `*.py` + LICENSE/NOTICE + `licenses/` kept for compliance; bench/
   docs/serve scripts dropped).
-- **llama** — `llama.env` is HAND-AUTHORED (`targets/llama/templates/`). It was
+- **llama** — `llama.cfg` is HAND-AUTHORED (`targets/llama/templates/`). It was
   BUILD-generated until s52; `llama-server --help` cannot run on a GPU-less
   runner, so that shipped a degraded file. Drift is now caught at a pin bump by
   `scripts/llama-options.sh` (run on the hardware), and the build still FAILS
@@ -1414,7 +1414,7 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   ⚠️ **The accepted STRINGS are `turbo2` / `turbo3` / `turbo4`** (`ggml.c` `type_name`),
   NOT the enum spellings — an unknown value throws `Unsupported cache type` and the server
   does not start. Both flags carry env annotations (`LLAMA_ARG_CACHE_TYPE_K` / `_V`), so
-  they arrive as commented lines in the generated `llama.env`:
+  they arrive as commented lines in the generated `llama.cfg`:
 
       LLAMA_ARG_CACHE_TYPE_K=turbo4
       LLAMA_ARG_CACHE_TYPE_V=turbo4
@@ -1617,7 +1617,7 @@ kernels already live in the base).
   host `~/.local`, which `PYTHONNOUSERSITE` also guards against). Mirrors droste's
   kento `pipx install --global`.
 - Server by default: `ENTRYPOINT` = the shared `droste-entrypoint.sh` (build-spec:
-  whole-`~/.ds4` surface, HF-cache CRITICAL, `ds4.env` seeding, the
+  whole-`~/.ds4` surface, HF-cache CRITICAL, `ds4.cfg` seeding, the
   `DROSTE_DS4_*` → argv translation in PRE_LAUNCH, then execs `ds4-server`);
   distrobox/toolbx override the entrypoint for the interactive lane. The
   upstream `download_model.sh` is REMOVED from `/usr/local/bin` (superseded by
@@ -1702,9 +1702,9 @@ kernels the base carries — NO ROCm re-adds. The base already writes a real
   `/usr/local/lib{,64}` are already on the base's ld path via `rocm.conf` — add
   `local.conf` + `ldconfig` to be sure.
 - Server by default: `ENTRYPOINT` = the shared `droste-entrypoint.sh` (build-spec:
-  HF-cache CRITICAL, `llama.env` seeding + `set -a` source, SERVICE rebuilt in
+  HF-cache CRITICAL, `llama.cfg` seeding + `set -a` source, SERVICE rebuilt in
   PRE_LAUNCH with `$DROSTE_LLAMA_EXTRA_ARGS`, then execs `llama-server`); distrobox/
-  toolbx override the entrypoint for the interactive lane. `llama.env` is
+  toolbx override the entrypoint for the interactive lane. `llama.cfg` is
   hand-authored and seeded from `targets/llama/templates/`; a build-time scan
   still fails if the active `LLAMA_ARG_*` names vanish upstream. See
   "Runtime contract" above.

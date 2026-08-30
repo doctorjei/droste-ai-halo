@@ -184,7 +184,7 @@ printf 'Image : ghcr.io/doctorjei/droste-llama-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
 printf '  - %-18s → %s\n' "llama-server" "starts with the box (port $SERVE_PORT)"
-printf '  - %-18s → %s\n' "config" "/opt/data/llama.env (LLAMA_ARG_* lines + DROSTE_LLAMA_EXTRA_ARGS)"
+printf '  - %-18s → %s\n' "config" "/opt/data/llama.cfg (LLAMA_ARG_* lines + DROSTE_LLAMA_EXTRA_ARGS)"
 printf '  - %-18s → %s\n' "models" "-hf downloads land in the shared HF cache (~/.cache/huggingface)"
 printf '  - %-18s → %s\n' "local GGUFs" "bind read-only at /opt/models"
 printf '  - %-18s → %s\n' "VRAM helper" "gguf-vram-estimator.py <model>.gguf"

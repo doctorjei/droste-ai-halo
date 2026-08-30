@@ -2,12 +2,12 @@
 # check-env-fallbacks.sh — a `$` on a config template's right-hand side is
 # allowed in ONE shape, and that shape is a whitelist.
 #
-# ⭐ WHY THIS EXISTS. Every box's config surface (targets/*/templates/*.env) is a
+# ⭐ WHY THIS EXISTS. Every box's config surface (targets/*/templates/*.cfg) is a
 # shell file that droste SOURCES as a unit, in a child shell running
 # `set -euo pipefail` (base/resolve/droste-envfile.sh). Under `set -u` an
 # assignment whose right-hand side dereferences an unset variable does not fail
 # that LINE — it aborts the whole source, so EVERY SETTING AFTER IT IS LOST. The
-# measured original was `HF_TOKEN=$HF_TOKEN` in llama.env (s52), which took the
+# measured original was `HF_TOKEN=$HF_TOKEN` in llama.cfg (s52), which took the
 # box down before the server ever launched.
 #
 # ⭐ AND THE RULE IS NOT "NO `$`" (Jei, s57). The danger was never the
@@ -55,7 +55,7 @@
 # yourself adding a case to REJECT something, the gate has been broken.
 #
 # ⚠️ BOTH `${VAR-…}` AND `${VAR:-…}` ARE ACCEPTED, DELIBERATELY. There is a
-# separate open finding about vllm.env's four XDG lines — THREE `${XDG_CACHE_HOME
+# separate open finding about vllm.cfg's four XDG lines — THREE `${XDG_CACHE_HOME
 # :-…}` plus ONE `${XDG_CONFIG_HOME:-…}`, not four of the former; anything written
 # against "the four XDG_CACHE_HOME lines" is written against a file that has three.
 # The finding is that they should use `-` rather than `:-`, because vLLM's own
@@ -178,7 +178,7 @@ allowed as long as every level obeys the same rule.
 Note: the two `=` forms also SET the name they expand, and because the file is
 sourced under `set -a` that name reaches the server's environment as well.
 
-  FILE...   files to check (default: targets/*/templates/*.env)
+  FILE...   files to check (default: targets/*/templates/*.cfg)
   -q        print findings only; no per-file OK line
   -h        this help
 
@@ -203,7 +203,7 @@ else
     # ⚠️ A glob that matches nothing must be an ERROR, not a green run over zero
     # files — the same reason a missing .checks file fails loudly in droste-core.
     shopt -s nullglob
-    FILES=("$REPO"/targets/*/templates/*.env)
+    FILES=("$REPO"/targets/*/templates/*.cfg)
     shopt -u nullglob
     if [ ${#FILES[@]} -eq 0 ]; then
         printf 'check-env-fallbacks: no templates found under %s/targets/*/templates/\n' "$REPO" >&2

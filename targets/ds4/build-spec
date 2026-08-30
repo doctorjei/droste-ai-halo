@@ -20,9 +20,9 @@ HEALTH_PATH="/v1/models"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from templates/ds4.env (templates.yaml if_missing); carries active
+# Seeded from templates/ds4.cfg (templates.yaml if_missing); carries active
 # DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
-ENV_FILE="/opt/data/ds4.env"
+ENV_FILE="/opt/data/ds4.cfg"
 
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). ds4-server is a compiled HIP binary;
@@ -77,7 +77,7 @@ OPTIONAL=(
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 # DROSTE_DS4_<SUFFIX> → flag maps. Source-verified against pinned kyuz0/ds4
 # @00e64ea.
-# ⭐ THESE TABLES ARE THE ONLY MAPPING. ds4.env used to document a flag→variable
+# ⭐ THESE TABLES ARE THE ONLY MAPPING. ds4.cfg used to document a flag→variable
 # derivation rule and no longer does (Jei, s51): once ENABLE_EXACT_DSML_TOOL_REPLAY
 # inverted its sense, the rule had an exception, and a rule with an exception is
 # worse than none — a reader who derives a name gets a variable nothing reads.
@@ -127,8 +127,8 @@ DS4_BOOL_FLAGS=(
 # ⭐ THE NAME IS NOT DERIVED FROM THE FLAG, and that is the point (Jei):
 # `DROSTE_DS4_DISABLE_EXACT_DSML_TOOL_REPLAY=off` is a double negative, and nobody
 # should have to work out that "false" means the feature is running. This row is
-# why ds4.env no longer documents a derivation rule at all.
-# ⚠️ The name here and the name in ds4.env must therefore be changed TOGETHER. A
+# why ds4.cfg no longer documents a derivation rule at all.
+# ⚠️ The name here and the name in ds4.cfg must therefore be changed TOGETHER. A
 # mismatch is a silently inert setting, which is exactly how this row was found.
 DS4_BOOL_FLAGS_INVERTED=(
     "ENABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
@@ -150,7 +150,7 @@ DS4_BLANK_IS_DEFAULT=(
 )
 
 # ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognised.
-# ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.env's documented vocabulary is
+# ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.cfg's documented vocabulary is
 # `on`/`off`, so `Off`, `OFF` and a stray trailing space are what a user will
 # actually type. Every boolean in this file goes through here — both tables and the
 # SSD guard — so there is exactly one answer to "what counts as off".
@@ -176,7 +176,7 @@ ds4_pre_launch() {
     done
 
     # ── the three natives where a BLANK is not "unset" ──────────────────────────
-    # 🚨 ds4.env SHOWS these blank, and its comments say "if 1, recovery is
+    # 🚨 ds4.cfg SHOWS these blank, and its comments say "if 1, recovery is
     # disabled" / "if 1, spec. path is disabled". THE BINARY DOES NOT ASK FOR 1 —
     # it asks whether the variable EXISTS: `getenv(...) == NULL`
     # (ds4_server.c:10372 and :10407, ds4.c:11230). So uncommenting either line
@@ -192,7 +192,7 @@ ds4_pre_launch() {
 
     # ── refuse the two settings that make ds4-server EXIT AT STARTUP ─────────
     # Both are values a user can reach by following upstream's help, and both kill
-    # the box AFTER the model has been opened — the worst moment to fail. ds4.env no
+    # the box AFTER the model has been opened — the worst moment to fail. ds4.cfg no
     # longer offers either, but it is seeded `if_missing`, so a box created before
     # this change still has the old lines. Warn loudly and drop the flag: a box that
     # starts and says why beats a box that restart-loops. Same stance as comfyui's
@@ -248,7 +248,7 @@ ds4_pre_launch() {
     # default.
     #
     # 🚨 THE OTHER 27 SETTINGS ON THIS BOX NEED NO ENTRY HERE, and that is measured
-    # rather than assumed (g1lab/ds4wire.sh drives every name in ds4.env blank and
+    # rather than assumed (g1lab/ds4wire.sh drives every name in ds4.cfg blank and
     # compares the whole argv): only the four droste defaults below behave differently
     # blank than unset, because every other name reaches the argv through a
     # `[ -n "$val" ]` test that already treats "" exactly as absent. So this table is
@@ -286,9 +286,9 @@ ds4_pre_launch() {
 
     # ── droste defaults, delivered by the WIRING rather than by an active line ──
     # ⭐ Jei's ruling: a value we want every box to have belongs here, not as an
-    # uncommented line in ds4.env — the file seeds `if_missing`, so an active line
+    # uncommented line in ds4.cfg — the file seeds `if_missing`, so an active line
     # only ever reaches boxes created after it was written, while this reaches every
-    # box on its next start. The line in ds4.env becomes an OVERRIDE.
+    # box on its next start. The line in ds4.cfg becomes an OVERRIDE.
     #
     # 🚨 `=` NOT `:=`, and the difference is the whole design. `${VAR=default}`
     # substitutes only when the variable is UNSET, so:
@@ -335,7 +335,7 @@ ds4_pre_launch() {
     # rule rather than the old crash-based test to catch it.
     : "${DROSTE_DS4_CTX=65536}"
     # 🚨 THE BIND ADDRESS, AND IT WAS THE ONE DEFAULT NOTHING DELIVERED.
-    # ds4.env's "Reserved by Droste" block shows DROSTE_DS4_HOST=0.0.0.0, and every
+    # ds4.cfg's "Reserved by Droste" block shows DROSTE_DS4_HOST=0.0.0.0, and every
     # sibling box hard-codes the same thing in its argv (comfyui `--listen 0.0.0.0`,
     # finetuning `--ip 0.0.0.0`). ds4-server's own default is the OPPOSITE —
     # `.host = "127.0.0.1"` (ds4_server.c:11508) — so with no line in the file and
@@ -389,7 +389,7 @@ ds4_pre_launch() {
     # ⚠️ THIS USED TO BE A BLACKLIST — anything outside ""|0|false|no|off emitted the
     # flag — so `Off`, `FALSE` and `disabled` all turned a setting ON, which is the
     # dangerous direction: a user trying to disable something enabled it. Measured,
-    # not theorised. Now a whitelist, case-folded, matching ds4.env's own on/off
+    # not theorised. Now a whitelist, case-folded, matching ds4.cfg's own on/off
     # vocabulary; an unrecognised value warns and leaves the flag off.
     for entry in "${DS4_BOOL_FLAGS[@]}"; do
         var="DROSTE_DS4_${entry%%:*}"

@@ -4,7 +4,7 @@
 # prefix (`--awesomesauce` => `awesomesauce`). There are two settings files:
 #
 #   /opt/data/vllm_config.yaml (this)   FLAGS. Each flag is a key.
-#   /opt/data/vllm.env                  ENVIRONMENT VARIABLES. Processed first.
+#   /opt/data/vllm.cfg                  ENVIRONMENT VARIABLES. Processed first.
 #
 # Reserved by Droste — do not set
 # -------------------------------
@@ -461,7 +461,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # meta-llama/Meta-Llama-3.1-8B-Instruct
 #   valid tensor-parallel sizes on Strix Halo: [1, 2]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: meta-llama/Meta-Llama-3.1-8B-Instruct
 # tensor-parallel-size: 1
@@ -473,7 +473,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic
 #   valid tensor-parallel sizes on Strix Halo: [1]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_STRIX_FP8_TRITON=1
 #     VLLM_ROCM_USE_AITER=0
 # ---------------------------------------------------------------------------
@@ -488,7 +488,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # google/gemma-4-26B-A4B-it
 #   valid tensor-parallel sizes on Strix Halo: [1, 2]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: google/gemma-4-26B-A4B-it
 # tensor-parallel-size: 1
@@ -501,7 +501,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # google/gemma-4-31B-it
 #   valid tensor-parallel sizes on Strix Halo: [1, 2]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: google/gemma-4-31B-it
 # tensor-parallel-size: 1
@@ -514,7 +514,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # openai/gpt-oss-20b
 #   valid tensor-parallel sizes on Strix Halo: [1, 2]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: openai/gpt-oss-20b
 # tensor-parallel-size: 1
@@ -528,7 +528,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # openai/gpt-oss-120b
 #   valid tensor-parallel sizes on Strix Halo: [1]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: openai/gpt-oss-120b
 # tensor-parallel-size: 1
@@ -542,7 +542,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # Qwen/Qwen3.6-35B-A3B
 #   valid tensor-parallel sizes on Strix Halo: [1]
-#   env (lines for /opt/data/vllm.env): <none>
+#   env (lines for /opt/data/vllm.cfg): <none>
 # ---------------------------------------------------------------------------
 # model: Qwen/Qwen3.6-35B-A3B
 # tensor-parallel-size: 1
@@ -556,7 +556,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
 #   valid tensor-parallel sizes on Strix Halo: [1]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_USE_TRITON_AWQ=1
 # ---------------------------------------------------------------------------
 # model: cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
@@ -572,7 +572,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit
 #   valid tensor-parallel sizes on Strix Halo: [1, 2]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_USE_TRITON_AWQ=1
 # ---------------------------------------------------------------------------
 # model: cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit
@@ -588,7 +588,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # cyankiwi/Qwen3.5-122B-A10B-AWQ-8bit
 #   valid tensor-parallel sizes on Strix Halo: [2]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_USE_TRITON_AWQ=1
 # ---------------------------------------------------------------------------
 # model: cyankiwi/Qwen3.5-122B-A10B-AWQ-8bit
@@ -604,7 +604,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # cyankiwi/MiniMax-M2.7-AWQ-4bit
 #   valid tensor-parallel sizes on Strix Halo: [2]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_USE_TRITON_AWQ=1
 # ---------------------------------------------------------------------------
 # model: cyankiwi/MiniMax-M2.7-AWQ-4bit
@@ -620,7 +620,7 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 # ===========================================================================
 # ayysasha/MiniMax-M2.7-AWQ-G32-STRIX-2H
 #   valid tensor-parallel sizes on Strix Halo: [2]
-#   env (NOT yaml keys — put these lines in /opt/data/vllm.env):
+#   env (NOT yaml keys — put these lines in /opt/data/vllm.cfg):
 #     VLLM_USE_TRITON_AWQ=1
 #   ctx (upstream field): 131072  (raise max-model-len below to use full context)
 # ---------------------------------------------------------------------------

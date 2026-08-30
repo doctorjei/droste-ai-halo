@@ -147,11 +147,11 @@ either way.
 
 | Image | Service | Port | Config file (seeded if missing, on `/opt/data`) |
 |---|---|---|---|
-| comfyui | ComfyUI web UI | 8188 | `comfyui.env` |
+| comfyui | ComfyUI web UI | 8188 | `comfyui.cfg` |
 | finetuning | JupyterLab | 8888 | — (token auth; token is in `/opt/data/.droste-serve.log`) |
 | vllm | `vllm serve --config` | 8000 | `vllm_config.yaml` — set `model:`\* |
-| llama | `llama-server` | 8080 | `llama.env` — set `LLAMA_ARG_MODEL` |
-| ds4 | `ds4-server` | 8001 | `ds4.env` — set `DROSTE_DS4_MODEL` |
+| llama | `llama-server` | 8080 | `llama.cfg` — set `LLAMA_ARG_MODEL` |
+| ds4 | `ds4-server` | 8001 | `ds4.cfg` — set `DROSTE_DS4_MODEL` |
 
 \* vllm is the one box that starts without being told which model to serve:
 leave `model:` commented and vLLM falls back to its own default,
@@ -406,12 +406,12 @@ box user.
   inside the box: `/opt/resources/templates/`. Two known cases. An old
   `vllm_config.yaml` carries a `port:` key: delete the line — the container
   owns the listen port (`server.env`), and the same goes for `LLAMA_ARG_PORT`
-  in `llama.env` or `DROSTE_DS4_PORT` in `ds4.env` if you re-add them. And a
-  `ds4.env` seeded before the storage split still points
+  in `llama.cfg` or `DROSTE_DS4_PORT` in `ds4.cfg` if you re-add them. And a
+  `ds4.cfg` seeded before the storage split still points
   `DS4_DROSTE_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
   persistent volume: repoint it to `/opt/program-cache/kv-disk`.
-- **A config file you cannot edit at all** — `vllm_config.yaml`, `ds4.env`,
-  `llama.env` under `~/droste/data/<box>/` owned by `100000`, unwritable from
+- **A config file you cannot edit at all** — `vllm_config.yaml`, `ds4.cfg`,
+  `llama.cfg` under `~/droste/data/<box>/` owned by `100000`, unwritable from
   the host *and* from inside the box → they were seeded by the container's
   root before this was fixed, and `100000` is what that root maps to on the
   host. Files seeded from now on are handed to you as they are created;

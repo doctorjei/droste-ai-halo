@@ -14,7 +14,7 @@
 # CWD (PRE_LAUNCH still cd's there for any relative writes).
 #
 # SPLIT IN TWO because the argv now has a USER-CONFIGURABLE MIDDLE: comfyui_argv
-# rebuilds SERVICE as HEAD + the flags translated from comfyui.env + TAIL. What
+# rebuilds SERVICE as HEAD + the flags translated from comfyui.cfg + TAIL. What
 # stays in these two arrays is what is NOT user-facing and survives every
 # setting — the bind address, the port (owned by server.env; the launcher rewrites
 # the token after --port), and the model-paths config. The two perf flags that
@@ -25,7 +25,7 @@
 # default `eager` still emits --disable-mmap, but MODEL_RESIDENCY's default is
 # `cache`, whose right-hand side is EMPTY — so --disable-smart-memory is no longer
 # on the shipped line. `9f95652 Expose the last two overrides, and change two
-# comfyui defaults` is where that happened; comfyui.env's `{evict, cache*}` is the
+# comfyui defaults` is where that happened; comfyui.cfg's `{evict, cache*}` is the
 # authority on which default is current, and this comment follows it.
 # ⚠️ --extra-model-paths-config is nargs='+', so it STAYS LAST: any later token
 # that does not begin with `-` would be swallowed as a second config path.
@@ -46,12 +46,12 @@ HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from templates/comfyui.env (templates.yaml if_missing) and never
+# Seeded from templates/comfyui.cfg (templates.yaml if_missing) and never
 # overwritten — the user's edits win. ComfyUI reads NO env var for any of these
 # knobs, so comfyui_argv translates the DROSTE_COMFYUI_* values into flags.
 # No export loop (unlike ds4/llama): nothing downstream reads them from the
 # environment, they only ever become argv.
-ENV_FILE="/opt/data/comfyui.env"
+ENV_FILE="/opt/data/comfyui.cfg"
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # Baked lowers are load-bearing (venv, the 3 baked custom nodes); user writes
@@ -138,7 +138,7 @@ OPTIONAL=(
 # DROSTE_COMFYUI_<SUFFIX> → flag maps. Every flag, its spelling and its argparse
 # group are read from comfy/cli_args.py at the pinned COMFYUI_REF (4da9e2db =
 # v0.33.3); the value vocabulary and the defaults are the ones documented in
-# templates/comfyui.env, which is the surface the user edits — the two must be
+# templates/comfyui.cfg, which is the surface the user edits — the two must be
 # changed together.
 #
 # A THIRD SHAPE, because ComfyUI's knobs are neither ds4's value flags nor its
@@ -157,7 +157,7 @@ OPTIONAL=(
 #      state, which is what ComfyUI's "normal" vram mode IS (there is no
 #      --normalvram) and what every "auto" means.
 #   3. The FIRST pair is the DEFAULT. It is used when the variable is unset —
-#      the shipped state, since every line in comfyui.env is commented out — and
+#      the shipped state, since every line in comfyui.cfg is commented out — and
 #      when it holds something we do not recognise.
 # A right-hand side is word-split, so one value can emit a flag WITH its value
 # (--preview-method taesd) or TWO flags: MANAGER=legacy must say --enable-manager
@@ -334,7 +334,7 @@ comfyui_argv() {
     # dyn on purpose: COMFYUI_ARGV_TAIL's --extra-model-paths-config is nargs='+'
     # and must remain the last thing on the line. Quoting inside the value IS
     # honoured since s52 and it is not glob-expanded (see
-    # comfyui.env), matching DROSTE_LLAMA_EXTRA_ARGS and DROSTE_DS4_EXTRA_ARGS.
+    # comfyui.cfg), matching DROSTE_LLAMA_EXTRA_ARGS and DROSTE_DS4_EXTRA_ARGS.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_COMFYUI_EXTRA_ARGS:-}")
     dyn+=( ${_extra[@]+"${_extra[@]}"} )
@@ -367,7 +367,7 @@ comfyui_pre_launch() {
     # on the boxes that have one — reclaiming works for those, privdropping would not.
     serve::_own /opt/data/model-registry.yaml
     serve::_own_dirs /opt/data/model-tree
-    # LAST, and after ENV_FILE has been sourced: turn the user's comfyui.env into
+    # LAST, and after ENV_FILE has been sourced: turn the user's comfyui.cfg into
     # the argv the server will actually run.
     comfyui_argv
     cd /opt/ComfyUI

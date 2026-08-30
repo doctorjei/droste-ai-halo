@@ -130,10 +130,10 @@ declare -A BOX_HAS_MODELS=(
 
 # Config file seeded (if missing) onto /opt/data at first start.
 declare -A BOX_CONFIG=(
-  [comfyui]="comfyui.env"
-  [llama]="llama.env"
+  [comfyui]="comfyui.cfg"
+  [llama]="llama.cfg"
   [vllm]="vllm_config.yaml"
-  [ds4]="ds4.env"
+  [ds4]="ds4.cfg"
   [finetuning]=""
 )
 
@@ -151,9 +151,9 @@ declare -A BIND_DESC=(
 # The ONE pre-first-use action (dashboard Notes column; @DATA@ substituted).
 declare -A BOX_NOTE=(
   [comfyui]=""
-  [llama]="Model: @DATA@/llama.env"
+  [llama]="Model: @DATA@/llama.cfg"
   [vllm]="Model: @DATA@/vllm_config.yaml"
-  [ds4]="Model: @DATA@/ds4.env"
+  [ds4]="Model: @DATA@/ds4.cfg"
   [finetuning]="Token: @DATA@/.droste-serve.log (grep token=)"
 )
 
@@ -5436,7 +5436,7 @@ write_notes() {
             "${PATHS["$box:output"]:-${EXD_PATH["$box:output"]:-?}}"
           ;;
         llama)
-          printf -- '- BEFORE first use: edit `%s/llama.env` and set\n' "$data"
+          printf -- '- BEFORE first use: edit `%s/llama.cfg` and set\n' "$data"
           printf '  `LLAMA_ARG_MODEL` (a GGUF path, or use `-hf org/repo` via\n'
           printf '  `DROSTE_LLAMA_EXTRA_ARGS`). The file is seeded at first start.\n'
           printf -- '- API: http://localhost:%s (llama-server).\n' "$port"
@@ -5449,7 +5449,7 @@ write_notes() {
           printf -- '- OpenAI-compatible API: http://localhost:%s/v1.\n' "$port"
           ;;
         ds4)
-          printf -- '- BEFORE first use: edit `%s/ds4.env` and set\n' "$data"
+          printf -- '- BEFORE first use: edit `%s/ds4.cfg` and set\n' "$data"
           printf '  `DROSTE_DS4_MODEL` (GGUF path). Seeded at first start.\n'
           printf -- '- API: http://localhost:%s (ds4-server).\n' "$port"
           ;;
@@ -5458,7 +5458,7 @@ write_notes() {
             "$port"
           # NOT `podman logs`: droste-serve.sh redirects the server's stdout AND
           # stderr into $DROSTE_SERVE_LOG, so the container log never carries the
-          # token line. finetuning.env documents this exact command; keep them
+          # token line. finetuning.cfg documents this exact command; keep them
           # the same, and if one moves, move both.
           printf "    podman exec %s grep -o 'token=[0-9a-f]*' /opt/data/.droste-serve.log | tail -1\n" \
             "$(box_ctr finetuning)"

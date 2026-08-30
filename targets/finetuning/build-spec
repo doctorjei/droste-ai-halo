@@ -57,7 +57,7 @@ HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from templates/finetuning.env (templates.yaml if_missing). Both resolvers
+# Seeded from templates/finetuning.cfg (templates.yaml if_missing). Both resolvers
 # source it under `set -a`, so every assignment reaches the JupyterLab process —
 # and that is the ONLY mechanism that can act before Jupyter reads any config,
 # which is what makes JUPYTER_CONFIG_DIR (and therefore the seeded trait file)
@@ -71,7 +71,7 @@ HEALTH_ACCEPT="ok"
 #
 # ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
 # in neither — a knob present but inert, which is worse than an absent one.
-ENV_FILE="/opt/data/finetuning.env"
+ENV_FILE="/opt/data/finetuning.cfg"
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # venv overlay (universal): user pip installs land on /opt/program-cache (CACHE
@@ -116,7 +116,7 @@ OPTIONAL=()
 
 # ── DROSTE_JUPYTER_* → the native variables ──────────────────────────────────
 # This box's droste-owned settings are named for the APP, not the box (Jei's call
-# when he reviewed finetuning.env: the box is `finetuning`, the server is
+# when he reviewed finetuning.cfg: the box is `finetuning`, the server is
 # Jupyter), so the prefix is DROSTE_JUPYTER_ and not DROSTE_FINETUNING_.
 #
 # 🚨 FIVE READERS, FIVE DIALECTS, IN ONE BOX. Read at the pinned versions
@@ -168,7 +168,7 @@ jupyter_env() {
     # ── the natives where a BLANK is not "unset" ────────────────────────────────
     # 🚨 THE SELECTION CRITERION IS WHAT THE READER DOES WITH "", NOT WHAT THE LINE
     # DISPLAYS. This list used to hold three names, and the reason recorded here was
-    # "the lines finetuning.env prints BLANK with an annotation that says unset". That
+    # "the lines finetuning.cfg prints BLANK with an annotation that says unset". That
     # criterion is display-based, so by construction it cannot see a line that SHOWS a
     # value and still dies once the user clears it — NBFORMAT_VALIDATOR ships as
     # `NBFORMAT_VALIDATOR=fastjsonschema`, a real constant, and was missed by exactly
@@ -177,7 +177,7 @@ jupyter_env() {
     # ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY STRING, WE UNSET IF EMPTY.
     #
     # ENV_FILE is sourced under `set -a`, so uncommenting ANY line hands the server an
-    # EMPTY STRING rather than an absence. All 18 natives finetuning.env exposes were
+    # EMPTY STRING rather than an absence. All 18 natives finetuning.cfg exposes were
     # MEASURED at the pins — each reader executed twice in isolated subprocesses, once
     # with the name absent and once with it "", and the outputs compared. Four differ:
     #
@@ -298,7 +298,7 @@ jupyter_env() {
     # OPTIONAL is empty — so what Jupyter itself writes into a config dir
     # (jupyter_server_config.json from `jupyter server password`,
     # jupyter_server_config.d/, the frontend config dir) lands among config,
-    # not among the user's data. An active line in finetuning.env
+    # not among the user's data. An active line in finetuning.cfg
     # cannot supply this: the file is seeded if_missing, so it would reach NEW
     # boxes only and every existing box would start with ~130 traits sitting at
     # their defaults, no warning, server healthy.
@@ -307,7 +307,7 @@ jupyter_env() {
     : "${JUPYTER_CONFIG_DIR=/opt/data}"
     export JUPYTER_CONFIG_DIR
     # ⚠️ SECOND DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
-    # finetuning.env:62-63 documents `{yes, no}` and SHOWS
+    # finetuning.cfg:62-63 documents `{yes, no}` and SHOWS
     # DROSTE_JUPYTER_ALLOW_UNAUTH_ACCESS=yes, so droste's default is YES and the
     # wiring's job is to deliver exactly that (the config file is the
     # specification). jupyter_server's own default agrees today —
@@ -375,7 +375,7 @@ jupyter_env() {
     # opt-out. Jei's rule for an empty value is that A BLANK MUST BEHAVE EXACTLY AS IF THE
     # SETTING WERE ABSENT, with ONE exception: an unbounded string whose blank cancels a
     # file or directory that would otherwise load ("no config file", "no KV disk cache").
-    # This setting is a BOOLEAN — finetuning.env:69-70 documents it as `{yes, no*}` — so
+    # This setting is a BOOLEAN — finetuning.cfg:69-70 documents it as `{yes, no*}` — so
     # the exception cannot apply, and its blank was producing a THIRD behaviour that is in
     # neither the file's vocabulary nor the wiring's default: Jupyter's ownership test on
     # /opt/venv (paths.py:83-107, :117). A user clearing a `no` line got neither `no` nor
@@ -588,7 +588,7 @@ finetuning_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-env-for-triton.sh
 
-    # After ENV_FILE has been sourced: turn the user's finetuning.env into the
+    # After ENV_FILE has been sourced: turn the user's finetuning.cfg into the
     # environment the server will actually see.
     jupyter_env
 

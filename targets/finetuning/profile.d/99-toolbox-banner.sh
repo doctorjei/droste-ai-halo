@@ -184,9 +184,9 @@ printf 'Repo     : https://github.com/doctorjei/droste-ai-halo\n'
 printf 'Based on : github.com/kyuz0/amd-strix-halo-llm-finetuning\n\n'
 printf 'JupyterLab starts with the box on http://localhost:%s\n' "$SERVE_PORT"
 printf '  (token: run `jupyter server list`; it rerolls on every restart)\n'
-printf '  (fix it, and 220 more settings: /opt/data/finetuning.env)\n'
+printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
-printf '  set -a; . /opt/data/finetuning.env; set +a   # your settings, this shell\n'
+printf '  set -a; . /opt/data/finetuning.cfg; set +a   # your settings, this shell\n'
 printf '  jupyter lab --ip 0.0.0.0 --port %s --notebook-dir=/opt/workspace\n\n' "$SERVE_PORT"
 printf 'Workspace  : /opt/workspace — your bind; starter notebooks seed if empty\n'
 printf '             (pristine copies live in /opt/resources/templates/workspace)\n'

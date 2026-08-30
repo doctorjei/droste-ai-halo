@@ -1,6 +1,6 @@
 # templates.yaml — llama port seeding manifest (restricted subset, see
-# base/resolve/apply_templates.py). llama.env is a HAND-AUTHORED file beside this
+# base/resolve/apply_templates.py). llama.cfg is a HAND-AUTHORED file beside this
 # one; it was generated at image build until s52. Re-check it against the pinned
 # binary with scripts/llama-options.sh when the llama pin moves.
 if_missing:
-  llama.env: /opt/data/llama.env
+  llama.cfg: /opt/data/llama.cfg

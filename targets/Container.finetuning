@@ -53,7 +53,7 @@ RUN if [ -e "${ROCM_PATH}/lib/librccl.so.1.0" ]; then \
 # bare until s48, which meant every build shipped whatever was newest that day.
 # ⚠️ s55 extends that SAME argument one dependency deeper. `jupyter lab` runs on
 # jupyter_server, which arrived TRANSITIVELY and therefore floated between builds — and it
-# owns 30 of the 64 environment variables finetuning.env documents (JUPYTER_TOKEN,
+# owns 30 of the 64 environment variables finetuning.cfg documents (JUPYTER_TOKEN,
 # JUPYTER_PORT, the whole JUPYTER_GATEWAY_* family, ...). A config file cannot describe a
 # surface whose version moves, so the server and its Lab-endpoint half are pinned too.
 # Both satisfy jupyterlab 4.6.3's own bounds (jupyter-server<3,>=2.19.0,
@@ -143,7 +143,7 @@ COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
 # SYSTEM_CONFIG_PATH is chosen at IMPORT by use_platform_dirs() (paths.py:342): with
 # JUPYTER_PLATFORM_DIRS truthy it becomes platformdirs.site_config_dir(...) — MEASURED as
 # ['/etc/xdg/jupyter'] — and /etc/jupyter is not on the search path at all. Since
-# DROSTE_JUPYTER_PLATFORM_DIRS is a setting finetuning.env offers, turning it on would
+# DROSTE_JUPYTER_PLATFORM_DIRS is a setting finetuning.cfg offers, turning it on would
 # silently drop every droste default below. A DIRECTORY SYMLINK covers both spellings with
 # one file, so the two can never drift apart.
 # ⚠️ It follows the DEFAULT XDG_CONFIG_DIRS (/etc/xdg). A user who re-points that variable

@@ -7,7 +7,7 @@ the three places we assert them:
 
   * `VLLM_VIDEO_LOADER_BUILTINS` / `VLLM_MEDIA_CONNECTOR_BUILTINS` in
     targets/vllm/build-spec   — what PRE_LAUNCH warns against
-  * the `# {a*, b, c}` menu comments in targets/vllm/templates/vllm.env
+  * the `# {a*, b, c}` menu comments in targets/vllm/templates/vllm.cfg
     — what the user is told
 
 Run it when VLLM_REF moves in scaffolding/Container.vllm-build. The output is a
@@ -23,11 +23,11 @@ walk and no import at all.
 above VLLM_VIDEO_LOADER_BACKEND (vllm/envs.py) documents "opencv" and "identity".
 At v0.16.0 `identity` is registered NOWHERE, while `opencv_dynamic` and `molmo2`
 are — so the prose names a backend that does not exist and misses two that do. An
-earlier pass copied that comment into vllm.env as `{opencv*}` and shipped it. A
+earlier pass copied that comment into vllm.cfg as `{opencv*}` and shipped it. A
 comment describing the default is not an enumeration of the choices.
 
 🚨 IT CANNOT WRITE ANY FILE, BY CONSTRUCTION — there is no output path and no write
-mode. vllm.env and the build-spec are authored, reviewed files; this reports what
+mode. vllm.cfg and the build-spec are authored, reviewed files; this reports what
 disagrees so a human can decide, and it is not a gate (it always exits 0).
 
 ⚠️ WHAT IT DOES NOT DO. It finds registrations in the two modules that hold them
@@ -54,7 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, os.pardir)
 BUILD_FILE = os.path.join(REPO, "scaffolding", "Container.vllm-build")
 SPEC = os.path.join(REPO, "targets", "vllm", "build-spec")
-ENVF = os.path.join(REPO, "targets", "vllm", "templates", "vllm.env")
+ENVF = os.path.join(REPO, "targets", "vllm", "templates", "vllm.cfg")
 RAW = "https://raw.githubusercontent.com/vllm-project/vllm/{ref}/{path}"
 
 # registry variable -> (module holding the registrations, our spec array, the
@@ -152,7 +152,7 @@ def spec_array(name):
 
 
 def env_menu(var):
-    """The `# {a*, b, c}` menu comment that sits above a setting in vllm.env.
+    """The `# {a*, b, c}` menu comment that sits above a setting in vllm.cfg.
 
     Returns the members with any `*` default marker stripped, or None if the
     setting has no menu comment. The surface may spell the setting with either the
@@ -234,12 +234,12 @@ def main(argv):
 
         shown = env_menu(var)
         if shown is None:
-            note(f"{var}: no `# {{...}}` menu comment in vllm.env — nothing tells the user the choices")
+            note(f"{var}: no `# {{...}}` menu comment in vllm.cfg — nothing tells the user the choices")
             problems += 1
         elif sorted(shown) != sorted(upstream):
             note(
-                f"{var}: the menu shown in vllm.env disagrees with {path}:\n"
-                f"    vllm.env:  {', '.join(shown)}\n"
+                f"{var}: the menu shown in vllm.cfg disagrees with {path}:\n"
+                f"    vllm.cfg:  {', '.join(shown)}\n"
                 f"    upstream:  {', '.join(upstream)}\n"
                 f"    -> the config file is the user's surface and is authored by hand; "
                 f"take this to whoever owns it, do not edit it from a script"

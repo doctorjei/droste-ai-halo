@@ -12,12 +12,12 @@ if_empty:
   input: /opt/ComfyUI/input
   user: /opt/ComfyUI/user
 
-# comfyui.env is the box's CONFIG SURFACE — the user's own edits, so DATA class
+# comfyui.cfg is the box's CONFIG SURFACE — the user's own edits, so DATA class
 # (/opt/data, never in the installer's wipe) and never overwritten once seeded.
 #
 # extra_model_paths.yaml is CACHE class (a re-seeded pointer file at the paths
 # baked into /opt/resources/model_configs), so it seeds onto /opt/program-cache —
 # if the installer ever empties that root, this file simply comes back.
 if_missing:
-  comfyui.env: /opt/data/comfyui.env
+  comfyui.cfg: /opt/data/comfyui.cfg
   extra_model_paths.yaml: /opt/program-cache/extra_model_paths.yaml

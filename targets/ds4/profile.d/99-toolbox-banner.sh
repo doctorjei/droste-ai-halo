@@ -184,7 +184,7 @@ printf 'Image : ghcr.io/doctorjei/droste-ds4-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
 printf '  - %-18s → %s\n' "ds4-server" "starts with the box (port $SERVE_PORT)"
-printf '  - %-18s → %s\n' "config" "/opt/data/ds4.env (DROSTE_DS4_* + native DS4_* vars)"
+printf '  - %-18s → %s\n' "config" "/opt/data/ds4.cfg (DROSTE_DS4_* + native DS4_* vars)"
 printf '  - %-18s → %s\n' "get a model" "download_model.sh q2-imatrix  (easy way; prints the path for DROSTE_DS4_MODEL)"
 printf '  - %-18s → %s\n' "ds4-cockpit" "TUI: model manager + server runner"
 printf '  - %-18s → %s\n' "ds4 / ds4-bench" "interactive CLI / benchmark"

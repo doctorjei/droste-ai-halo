@@ -6,7 +6,7 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; llama_pre_launch REBUILDS it after ENV_FILE is sourced so
-# DROSTE_LLAMA_EXTRA_ARGS (from /opt/data/llama.env) can join the command line —
+# DROSTE_LLAMA_EXTRA_ARGS (from /opt/data/llama.cfg) can join the command line —
 # SERVICE would otherwise be expanded at spec-source time, before the env file.
 SERVICE=( llama-server )
 
@@ -28,7 +28,7 @@ HEALTH_ACCEPT="ok"
 # SHELL STATE it builds (a cd, a function, a trap) dies with the child and only the
 # variables it leaves behind reach us. Not a sandbox: a filesystem write in there still
 # happens, because the child is a real shell.
-ENV_FILE="/opt/data/llama.env"
+ENV_FILE="/opt/data/llama.cfg"
 
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). llama-server itself is a compiled
@@ -65,20 +65,20 @@ OPTIONAL=(
     "models:/opt/models:/opt/models/mount_shared_models_here"
 )
 
-# ── The llama.env → argv tables ──────────────────────────────────────────────
-# ⭐ THESE TABLES ARE THE ONLY MAPPING. llama.env names a setting; this file says
+# ── The llama.cfg → argv tables ──────────────────────────────────────────────
+# ⭐ THESE TABLES ARE THE ONLY MAPPING. llama.cfg names a setting; this file says
 # which flag it emits. There is NO derivation rule and there must never be one —
 # 63 of the 70 names below happen to match `--$(lower suffix)` and seven do not
 # (AUTO_MODEL, HF_TOKEN_FILE, BUILTIN_SPEC_DEFAULT, DRY_SEQ_BREAKERS and the three
 # ENDPOINT_*), so a derivation would need seven exceptions. Jei's ruling on ds4
 # stands here: A RULE WITH AN EXCEPTION IS WORSE THAN NO RULE, because a reader who
 # derives a name gets a variable nothing reads. Adding a setting means editing
-# llama.env AND this file; there is nothing to fall back on.
+# llama.cfg AND this file; there is nothing to fall back on.
 # ⚠️ 70 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
 # down, in the ENVIRONMENT tables — they have no flag to emit and never touch SERVICE.
 #
 # Every row was generated from the PINNED binary's own option table (paren-balanced
-# parse of arg.cpp at 337f08e8) and not from llama.env's inline comments — three of
+# parse of arg.cpp at 337f08e8) and not from llama.cfg's inline comments — three of
 # those comments name the wrong flag today.
 #
 # 🚨 THE FOUR BOOLEAN KINDS ARE NOT INTERCHANGEABLE, and this is the whole reason
@@ -157,7 +157,7 @@ LLAMA_SWITCH_FLAGS=(
 # ONOFF — the flag carries its own `on`/`off` argument. "<SUFFIX>:<flag>".
 #
 # 🚨 ONE ROW, AND IT IS HERE BECAUSE IT IS A BOOLEAN, NOT BECAUSE IT MISBEHAVES.
-# `--fit` is the ONLY two-valued on/off option llama.env surfaces — checked at the
+# `--fit` is the ONLY two-valued on/off option llama.cfg surfaces — checked at the
 # pin rather than remembered: of the 84 native LLAMA_ARG_* names the file names,
 # arg.cpp gives exactly one an `is_truthy`/`is_falsey` pair with no third answer
 # (arg.cpp:2442-2454), three more are on/off/AUTO menus and so are not booleans
@@ -243,9 +243,9 @@ llama_argv() {
     local g first seen
 
     # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
-    # ⭐ ONE, and it is here rather than as an active line in llama.env because that
+    # ⭐ ONE, and it is here rather than as an active line in llama.cfg because that
     # file seeds `if_missing`: an uncommented line would reach NEW boxes only.
-    # llama.env's Speculative Decoding block stars `on` in its `{on*, off}` menu AND
+    # llama.cfg's Speculative Decoding block stars `on` in its `{on*, off}` menu AND
     # shows `DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT=on`, so the file states this default
     # twice. It is a SWITCH (handler_void), so an unset variable emitted nothing at
     # all and the box came up with ngram speculative decoding OFF — the file
@@ -258,7 +258,7 @@ llama_argv() {
     # BACK. It was `=` so that a blank meant "don't", on the N1a reading that a blank is
     # always the user's opt-out. Jei's three-category rule narrows that: a blank is the
     # opt-out only for an UNBOUNDED string whose blank is a meaningful answer. This
-    # setting is a two-member menu — llama.env:147-148 prints `{on*, off}` above it —
+    # setting is a two-member menu — llama.cfg:147-148 prints `{on*, off}` above it —
     # so it is CATEGORY 2, a finite set, and a finite set has default behaviour that a
     # blank must fall back to. What the user would reasonably expect from an emptied
     # line is our default, not a third state the file never offers.
@@ -357,7 +357,7 @@ llama_argv() {
               ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
 }
 
-# ── The llama.env → ENVIRONMENT tables ───────────────────────────────────────
+# ── The llama.cfg → ENVIRONMENT tables ───────────────────────────────────────
 # ⭐ A SECOND DELIVERY MECHANISM, AND IT IS NOT THE ARGV ONE. Every table above turns
 # a setting into a llama-server FLAG. The three settings here have no flag at all, at
 # this pin or any other: they are read by getenv() deep inside ggml and
@@ -421,7 +421,7 @@ llama_argv() {
 # (turbo-quant.cuh:265-268). With our own LLAMA_ARG_CACHE_TYPE_K/V=turbo3 default the
 # code runs on every K and V cache write. So this is a Feature Exposure decision under
 # the rule that hiding needs a STATED reason, not a report that the feature is absent.
-# ⚠️ THE SURFACE HALF OF THIS REASON IS IN llama.env's Misc BLOCK, which is where a
+# ⚠️ THE SURFACE HALF OF THIS REASON IS IN llama.cfg's Misc BLOCK, which is where a
 # user would look for the feature. Do not delete one half and leave the other.
 #
 # 🚨 THE REASON IS THAT WE CANNOT DOCUMENT IT HONESTLY — NOT THAT IT DOES NOTHING:
@@ -532,7 +532,7 @@ llama_env() {
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
     # ── a NATIVE line whose PRINTED value does not do what it is annotated to ──
-    # 🚨 llama.env:262 prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
+    # 🚨 llama.cfg:262 prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
     # machine's math cores)` and :3 promises the values shown ARE the defaults — but
     # uncommenting that line ROUGHLY DOUBLES the thread count on an SMT machine, the
     # classic llama.cpp oversubscription regression.
@@ -583,8 +583,8 @@ llama_pre_launch() {
     # Same shape, and the same `unset`-not-blank reasoning, as the THREADS block above.
     #
     # 🚨 THE SELECTION CRITERION IS THE HANDLER, NOT THE DISPLAYED VALUE. This list
-    # used to hold 13 names and the reason recorded here was "the lines llama.env shows
-    # BLANK". That criterion selects the wrong set: measured against the pin, llama.env
+    # used to hold 13 names and the reason recorded here was "the lines llama.cfg shows
+    # BLANK". That criterion selects the wrong set: measured against the pin, llama.cfg
     # carries 83 settable native lines, of which 13 were protected, 60 are fatal on a
     # clear and only 23 are genuinely harmless. It caught 12 blanks and missed EVERY
     # line that shows a value — even though `0`, `-1`, `256`, `4096` and `turbo3` all
@@ -642,7 +642,7 @@ llama_pre_launch() {
     #
     # An array rather than 60 backslash continuations, because a `\`-continued command
     # cannot carry the per-section comments — and without them a 60-name list is a wall.
-    # Order is llama.env's own line order, section by section, which is the order the
+    # Order is llama.cfg's own line order, section by section, which is the order the
     # original 13 were already in.
     local -a _fatal_on_clear=(
         # Model & security
@@ -778,7 +778,7 @@ llama_pre_launch() {
     # about a PARSER dropping an empty field, which is exactly the kind of thing that
     # changes upstream. Attaching HF_TOKEN to it would have made a live re-check of
     # arg.cpp:2985-2991 look like a re-check of both.
-    # The five TURBO_* names llama.env's Misc block lists AS ASSIGNMENT LINES are
+    # The five TURBO_* names llama.cfg's Misc block lists AS ASSIGNMENT LINES are
     # Metal-only and cannot be compiled into a ROCm build — TURBO_FLASH and
     # TURBO_FORCE_NONVEC in ggml/src/ggml-metal/ggml-metal-ops.cpp (:2744, :2711), and
     # TURBO_FORCE_4MAG, TURBO_SPARSE_V and TURBO_PROFILE_MODE in
@@ -809,7 +809,7 @@ llama_pre_launch() {
         # IPv6 loopback ONLY, droste-healthcheck.sh:129 probes
         # http://127.0.0.1:$PORT/health, gets no response at all, and the box
         # restart-loops while looking, from inside, like a perfectly healthy server.
-        # ⚠️ IT IS NOT A SETTABLE LINE — llama.env names it only in the "Reserved by
+        # ⚠️ IT IS NOT A SETTABLE LINE — llama.cfg names it only in the "Reserved by
         # Droste (do not set these)" prose at :17. It is guarded anyway BECAUSE it is
         # named there: "do not set this" is exactly the instruction a careful user obeys
         # by writing `LLAMA_ARG_HOST=`, and that is the one spelling that breaks the box.
@@ -825,7 +825,7 @@ llama_pre_launch() {
 
     # ── the same rule, on a native that is NOT an LLAMA_ARG_ line (s59) ────────
     # 🚨 A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM. Both lists above are about
-    # llama.env's LLAMA_ARG_* settings and were audited as that set; this name is read
+    # llama.cfg's LLAMA_ARG_* settings and were audited as that set; this name is read
     # by llama_kv_cache, not by the argument parser, so it belongs to neither audit and
     # must not silently inflate either count.
     # TURBO_LAYER_ADAPTIVE is the ONE of the three ENVIRONMENT-table natives whose
@@ -849,7 +849,7 @@ llama_pre_launch() {
                            "${_turbo_blank_is_unset[@]}"
 
     # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
-    # llama.env:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
+    # llama.cfg:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
     # f16 and :3 promises the shown value IS the default — the file contradicting
     # itself, so no rule could settle it. Jei ruled: "our default should be turbo3."
     # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
@@ -883,7 +883,7 @@ llama_pre_launch() {
     # absence before anything else looks at it. Nothing here reads the cache types, so
     # its position relative to the two lines above is free; its position relative to
     # the unset is not.
-    # ⭐ It is also why these three are NOT droste defaults in the N1a sense: llama.env
+    # ⭐ It is also why these three are NOT droste defaults in the N1a sense: llama.cfg
     # shows on / auto / off for them, and those are upstream's own defaults, delivered
     # by not setting anything. "File states a default; wiring delivers it ⇒ nothing."
     llama_env

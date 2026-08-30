@@ -7,4 +7,4 @@
 # user's own edits, never in the installer's wipe, never overwritten once seeded.
 if_missing:
   vllm_config.yaml: /opt/data/vllm_config.yaml
-  vllm.env: /opt/data/vllm.env
+  vllm.cfg: /opt/data/vllm.cfg

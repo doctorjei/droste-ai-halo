@@ -73,9 +73,18 @@ droste::bool() {
 # from the PINNED sources:
 #   IPYTHONDIR      IPython/paths.py:36 `env.get("IPYTHONDIR", None)` + `is None`
 #                   ⇒ "" survives, normpath("") is ".", profiles land in the CWD
-#   QT_API          qtpy/__init__.py `os.environ.get(QT_API, "pyqt5")` + a
-#                   membership check ⇒ "" is not a binding name and the import
-#                   RAISES PythonQtValueError
+#   QT_API          matplotlib backends/qt_compat.py:60-63 ⇒ "" is not a binding
+#                   name and the import RAISES RuntimeError.
+#                   ⚠️ CORRECTED s57: this cited qtpy/__init__.py, and QTPY IS NOT
+#                   IN THIS IMAGE — nothing installs it and no Jupyter/matplotlib
+#                   package pulls it in. matplotlib is the actual reader, and its
+#                   UNSET behaviour differs too: :56-57 gives None, then :117-128
+#                   tries PyQt6, PySide6, PyQt5, PySide2 and takes the first that
+#                   imports — NOT a hardcoded "pyqt5" default. The guard below is
+#                   right either way; only the citation was wrong.
+#                   ⭐ An audit can name a real file, a real line and a real
+#                   behaviour and still be wrong, by never asking whether that
+#                   package is in THIS image.
 #   DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY   ds4_server.c:10372 `getenv(..)==NULL`
 #   DS4_MTP_SPEC_DISABLE                     ds4_server.c:10407 `getenv(..)==NULL`
 #   DS4_METAL_GRAPH_DUMP_PREFIX              ds4.c:11230        `getenv(..)==NULL`

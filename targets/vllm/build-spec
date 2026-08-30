@@ -726,6 +726,59 @@ vllm_env() {
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
                            "${_class2_on_clear[@]}"
 
+    # ── the two XDG bases vllm.env QUOTES but does not EXPOSE (s58) ───────────
+    # 🚨 FOUR OF THE FILE'S LINES DOCUMENT THEIR DEFAULT AS `${XDG_CACHE_HOME:-~/.cache}/
+    # vllm…` — vllm.env:75-77 (VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT, VLLM_CONFIG_ROOT) and
+    # :418 (VLLM_XLA_CACHE_PATH); THREE cache lines and ONE config line, not four of the
+    # former. Those four sentences are TRUE for an absent base and FALSE for a blank one.
+    # envs.py:236-247 resolves both bases with `os.getenv(NAME, <default>)`, an
+    # ABSENT-ONLY default, and every route into this box's environment delivers a
+    # cleared line as "" (both resolvers source the file under `set -a`). MEASURED at the
+    # pin by loading vllm/envs.py in isolated interpreters with HOME=/home/boxuser:
+    #                          absent                    ""
+    #   VLLM_CACHE_ROOT        ~/.cache/vllm             vllm
+    #   VLLM_CONFIG_ROOT       ~/.config/vllm            vllm
+    #   VLLM_ASSETS_CACHE      ~/.cache/vllm/assets      vllm/assets
+    #   VLLM_XLA_CACHE_PATH    ~/.cache/vllm/xla_cache   vllm/xla_cache
+    # ⇒ RELATIVE paths, resolved against the server's CWD instead of behind a bind. The
+    # box starts, serves and reports itself healthy while its caches land inside the
+    # container and vanish at the next recreate — the loud_dirs symptom
+    # (droste-envfile.sh:114), except that here the user asked for the DEFAULT.
+    # ⭐ SO THE FIX IS OURS AND IT IS HERE, NOT IN THE FILE. The four lines are accurate
+    # prose about the option; making a blank behave as the absence makes them accurate in
+    # every case, and touches nothing the user authored.
+    # ⚠️ AND `${XDG_CACHE_HOME-~/.cache}` IS NOT THE SAME FIX — a shell with an empty base
+    # yields `/vllm` where python yields `vllm`. That is a third wrong answer, not a
+    # cheaper right one.
+    # ⚠️ THE FOUR NATIVES ARE ALREADY IN _wrong_on_clear ABOVE AND IT DOES NOT HELP HERE:
+    # in this scenario not one of them is set, so that list has no blank to see. vLLM
+    # computes the bad path itself, from a blank INPUT one layer further out.
+    # ⚠️ NOT IN A NAMED LIST, AND IT MUST NOT BE ADDED TO ONE. Those arrays are the
+    # natives vllm.env EXPOSES; XDG_CACHE_HOME and XDG_CONFIG_HOME are settings on
+    # nobody's surface — they appear only inside the `${…}` of the four lines above — so
+    # listing them would make the suite's phantom check ("every guarded name is exposed
+    # by vllm.env") and its envs.py key cross-check (neither name is a key) false, and a
+    # check with an exemption in it stops holding the list honest. The guard belongs
+    # beside the consumers, exactly as for VLLM_KV_CACHE_LAYOUT above.
+    # ⭐ EACH NAME EARNS ITS OWN PLACE. XDG_CONFIG_HOME has exactly one consumer in this
+    # image (VLLM_CONFIG_ROOT) and it differs, measured — it is guarded on that evidence,
+    # not for family symmetry with the cache line. Nothing else in the XDG family is
+    # touched: droste sets none of them and the rest have no measured consequence here.
+    # ⭐ AND THIS COVERS ROUTES droste-envfile.sh CANNOT SEE — a create-time `--env`, or an
+    # `export XDG_CACHE_HOME=` typed inside `distrobox enter` — because it reads the
+    # environment the server is about to get rather than the file.
+    # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default,
+    # and delivering it is not ignoring the user. When the value did come from the box's
+    # file, load_env_file has already said the line was seen (XDG_CACHE_HOME is in its
+    # loud_dirs) — though its sentence describes a MOVED directory, so for a CLEARED one
+    # it warns about a hazard this guard has just removed. Worth fixing there, not here.
+    if [ -n "${XDG_CACHE_HOME+set}" ] && [ -z "$XDG_CACHE_HOME" ]; then
+        unset XDG_CACHE_HOME
+    fi
+    if [ -n "${XDG_CONFIG_HOME+set}" ] && [ -z "$XDG_CONFIG_HOME" ]; then
+        unset XDG_CONFIG_HOME
+    fi
+
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do
         suffix=${entry%%:*}; rest=${entry#*:}

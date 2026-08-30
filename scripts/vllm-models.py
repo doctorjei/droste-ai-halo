@@ -227,6 +227,7 @@ def main(argv):
     extra = [r for r in authored if r not in table]
 
     changed = []
+    changed_repos = []
     for repo in table:
         if repo not in authored:
             continue
@@ -234,6 +235,7 @@ def main(argv):
         have = authored[repo]
         if want == have:
             continue
+        changed_repos.append(repo)
         changed.append(f"{repo}:")
         diff = difflib.unified_diff(have, want, lineterm="", n=1,
                                     fromfile="vllm_config.yaml", tofile="models.py")
@@ -246,7 +248,12 @@ def main(argv):
     report("stanzas whose lines disagree with the vendored table", changed,
            "'-' is what the yaml says, '+' is what models.py implies")
 
-    n_bad = len(missing) + len(extra) + len(changed)
+    # ⚠️ COUNT STANZAS, NOT `changed`. `missing` and `extra` hold one entry per model,
+    # but `changed` holds RENDERED DIFF LINES — a header plus every -/+ line — so
+    # summing it reported "10 items" over a body listing 7 models. A decision is made
+    # per stanza (one hand-edit of the yaml), never per diff line, so the count that
+    # matches both the word and the body is the number of stanzas.
+    n_bad = len(missing) + len(extra) + len(changed_repos)
     print(f"vllm-models: {n_bad} item(s) need a decision", file=sys.stderr)
     # Exit 0 either way: this is a report a human acts on, not a gate.
     return 0

@@ -24,7 +24,11 @@
 # never checks — so an unedited box DOWNLOADS AND SERVES Qwen3-0.6B and reads
 # HEALTHY. What to do about that is a ruling, not a wiring decision (board N21);
 # recorded here so the next reader does not inherit the false version.
-: "${DROSTE_VLLM_CONFIG:=/opt/data/vllm_config.yaml}"
+# ⭐ THE DEFAULT IS A NAMED CONSTANT because it has TWO users: the `:=` here, and the
+# blank guard in PRE_LAUNCH that catches the same setting arriving from the user's file
+# AFTER this line has already run. Two spellings of one path is how they drift apart.
+VLLM_CONFIG_DEFAULT=/opt/data/vllm_config.yaml
+: "${DROSTE_VLLM_CONFIG:=$VLLM_CONFIG_DEFAULT}"
 export DROSTE_VLLM_CONFIG
 SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" )
 
@@ -314,8 +318,39 @@ vllm_env() {
     # `bool(int(os.getenv(.., "1")))` (envs.py:1132) and THROWS; the AITER flags are
     # `os.getenv(.., "True").lower() in ("true", "1")` (envs.py:896-898) and cannot
     # throw at all — a blank there silently flips a default-True flag OFF, and a
-    # default-False one is a genuine no-op. Only the throwing ones are below. The
-    # silent flippers are a DIFFERENT defect and are NOT folded in here.
+    # default-False one is a genuine no-op. Only the throwing ones are in the FIRST
+    # array below; the silent flippers are in the SECOND one, added s58.
+    #
+    # 🚨 "DOES IT RAISE" WAS NEVER THE STANDARD — IT WAS THE FIRST SWEEP'S INSTRUMENT
+    # (s58, Jei's ruling: *"we own the rewriting of these. it's our responsibility to
+    # make sure the wiring prevents bringing down the box."*). The sweep that produced
+    # the 88 binned the remaining names as "differs but does not raise" and never opened
+    # them, while the SAME session was guarding `IPYTHONDIR` on the finetuning box —
+    # which also does not raise; it just puts the profile directory in the CWD.
+    #
+    # ⭐ THE RULE, AND IT IS JEI'S, IN ONE LINE:
+    #        A BLANK MUST BEHAVE EXACTLY AS IF THE SETTING WERE ABSENT.
+    # That is the whole thing, and it makes the test per name a single comparison —
+    # run the reader with the name absent, run it with the name "", compare:
+    #     identical  ⇒ NOTHING TO DO. No guard, no list entry. This covers every
+    #                  `x or default` and every truthiness gate, and it is why the
+    #                  list must not be padded: an entry earns its place by a MEASURED
+    #                  difference, and a longer list is not a better one.
+    #     different  ⇒ UNSET, so that the blank becomes the absence.
+    #     …unless    ⇒ the blank is itself a MEANINGFUL intention — an unbounded string
+    #                  where emptying it CANCELS a file, path or list that would
+    #                  otherwise load ("no API key", "no logging config file", "no LoRA
+    #                  repo list"). That is the only case where unsetting is wrong.
+    # ⚠️ AN UNBOUNDED STRING WHOSE BLANK IS MERELY USELESS OR HARMFUL IS NOT THAT CASE.
+    # The path roots below are unbounded strings too, and a blank there is a relative
+    # path or a socket bound at the filesystem root — nobody's intention. Those unset.
+    # ⭐ AND WHERE THE DEFAULT COMES FROM IS IRRELEVANT (Jei, explicitly): a literal, a
+    # runtime computation, something derived from the machine or the model — all fine.
+    # Do not try to name or reproduce a default in order to restore it. `unset` hands
+    # the decision back to the program, which is the entire point.
+    #
+    # The split into two arrays is DOCUMENTATION, not two policies: one call, one
+    # mechanism, and `unset` restores exactly the default the file already prints.
     #
     # ⚠️ INCLUSION DOES NOT DEPEND ON WHETHER THE CODE PATH RUNS ON THIS BOX. The TPU,
     # CPU, NVIDIA-only and MI3*-only names are all on the list. envs.py reads are lazy,
@@ -446,7 +481,128 @@ vllm_env() {
         VLLM_ROCM_QUICK_REDUCE_QUANTIZATION             # menu {FP, INT8, …, NONE}
         VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB        # int
     )
-    droste::blank_is_unset "${_fatal_on_clear[@]}"
+
+    # ── category 1 + 2 among the blanks that do NOT raise (s58) ───────────────
+    # 🚨 EVERY NAME BELOW WAS MEASURED, NOT REASONED ABOUT. vllm/envs.py loads
+    # standalone, so each of the 149 native names vllm.env exposes was read TWICE in
+    # isolated interpreters at the pin (v0.16.0) — once with the name absent, once with
+    # it "" — and the results diffed. 130 differ. 89 of those are the raising ones
+    # above. 41 differ WITHOUT raising: 29 are category 1 or 2 and are listed here; the
+    # other 12 are category 3 and are named in the block after this array.
+    # ⚠️ The reader must be REGISTERED IN sys.modules before it is called: the
+    # VLLM_DP_RANK_LOCAL lambda (envs.py:1044) reaches through `sys.modules[__name__]`,
+    # and an unregistered module turns that into a KeyError that reads as a real
+    # difference. An earlier sweep had exactly that false positive.
+    #
+    # ⭐ FOUR SHAPES, and naming them is what keeps the next reader from re-deriving:
+    #   a default-True flag read as `.lower() in ("true","1")` ⇒ "" IS FALSE
+    #   a documented default STRING replaced by "" that no consumer can use
+    #   a path root joined with os.path.join/Path ⇒ RELATIVE, or Path("") == "."
+    #   an `is not None` / registry gate ⇒ "" is a VALUE, so the mechanism switches ON
+    local -a _wrong_on_clear=(
+        # ── ten default-True ROCm flags: a blank turns hardware features OFF ──
+        # envs.py:896-911, all `os.getenv(.., "True").lower() in ("true","1")`. Clearing
+        # a line is not "turn this off" — it is "I have no opinion" — and this is the
+        # direction that reads as a hardware fault rather than a config mistake.
+        # ⚠️ ALL TEN ARE INERT ON gfx1151 TODAY and that is NOT why they are here. The
+        # AITER entry points are wrapped in @if_aiter_supported, whose gate is
+        # `is_on_gfx9()` = {gfx90a, gfx942, gfx950} (_aiter_ops.py:36-71, 878-881);
+        # SKINNY_GEMM's three uses are `and on_gfx9()` / `on_gfx950()` / `on_mi3xx()`
+        # (layers/utils.py:171-190, scaled_mm/rocm.py:83-88); QUICK_REDUCE only runs
+        # inside the multi-GPU quick all-reduce. Inert-here is a reason the fix matters
+        # LESS, never a reason to leave a knob lying about behaving wrongly — and the
+        # existing list already guards TPU, CPU and NVIDIA-only names on that basis.
+        VLLM_ROCM_USE_AITER_LINEAR
+        VLLM_ROCM_USE_AITER_MOE
+        VLLM_ROCM_USE_AITER_RMSNORM
+        VLLM_ROCM_USE_AITER_MLA
+        VLLM_ROCM_USE_AITER_MHA
+        VLLM_ROCM_USE_AITER_FP8BMM
+        VLLM_ROCM_USE_AITER_FP4BMM
+        VLLM_ROCM_USE_AITER_TRITON_GEMM
+        VLLM_ROCM_USE_SKINNY_GEMM
+        VLLM_ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16
+        # ── path roots: "" is not "the default", it is a RELATIVE path ──
+        # 🚨 RPC_BASE_PATH IS THE BOX-BREAKER OF THIS GROUP. network_utils.py:141-143 is
+        # `f"ipc://{base_rpc_path}/{uuid4()}"`, so "" makes the frontend↔engine ZMQ
+        # socket `ipc:///<uuid>` — a unix socket at the FILESYSTEM ROOT, which the box
+        # user cannot create. It is on the DEFAULT serving path, not an exotic one:
+        # v1/engine/utils.py:892 takes it whenever `handshake_local_only`, which is
+        # true for a single-node single-engine serve (v1/utils.py:143-156).
+        VLLM_RPC_BASE_PATH                              # /tmp -> '' ⇒ ipc:///<uuid>
+        # CACHE_ROOT is also the SOURCE OF A BIND: the CACHES row above persists
+        # ~/.cache/vllm, so clearing it silently un-persists the compile cache as well
+        # as making every join relative (compilation/backends.py:897, caching.py:399,
+        # models/registry.py:693 `Path(envs.VLLM_CACHE_ROOT) / "modelinfos"`).
+        VLLM_CACHE_ROOT
+        VLLM_CONFIG_ROOT                                # usage_lib.py:30-32, join('',…)
+        # ⭐ THE IPYTHONDIR SHAPE, EXACTLY. assets/base.py:15 is `Path(envs.…)` and
+        # `Path("")` is `PosixPath('.')` (measured), so downloaded assets land in the
+        # server's CWD instead of the cache.
+        VLLM_ASSETS_CACHE
+        VLLM_XLA_CACHE_PATH                             # same shape; TPU-only consumer
+        # `is not None` at lora/ops/triton_ops/utils.py:157 and fused_moe.py:1059, so ""
+        # ENTERS: a `/<gpu>_<OP>.json` probe plus a warning per LoRA op, and a
+        # CWD-relative MoE config tried ahead of the shipped one.
+        VLLM_TUNED_CONFIG_FOLDER
+        # ── gates that read "" as a VALUE, so the mechanism switches on and misfires ──
+        # 'http' -> '' ⇒ ExtensionManager.load('') asserts (utils/registry.py:49-50).
+        # The server comes UP and every multimodal request fails — the NBFORMAT_VALIDATOR
+        # shape, and the reason "does it raise at startup" is the wrong question.
+        VLLM_MEDIA_CONNECTOR
+        # None -> [''] ⇒ `plugin.name in ['']` is false for every plugin, so a cleared
+        # line loads NO plugins where an absent one loads ALL (plugins/__init__.py:31,54).
+        VLLM_PLUGINS
+        # `if partition_list_str is not None` (distributed/utils.py:110-116) ⇒ ""
+        # enters and `int('')` raises "Invalid partition string: ".
+        VLLM_PP_LAYER_PARTITION
+        # SharedMemory(name="", create=True) ⇒ OSError [Errno 22] '/'  (measured here).
+        VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME
+        # 'strict' -> '' ⇒ not in ("strict","fill","span") ⇒ ValueError
+        # (v1/engine/utils.py:397-404).
+        VLLM_RAY_DP_PACK_STRATEGY
+        # ── a printed default replaced by a value nothing can use ──
+        VLLM_CPU_OMP_THREADS_BIND                       # 'auto' -> '' ⇒ autobind never runs
+        VLLM_DP_MASTER_IP                               # '127.0.0.1' -> ''
+        VLLM_NIXL_SIDE_CHANNEL_HOST                     # 'localhost' -> ''
+        VLLM_USAGE_STATS_SERVER                         # the URL -> ''
+        VLLM_USAGE_SOURCE                               # 'production' -> ''
+        VLLM_PROCESS_NAME_PREFIX                        # 'VLLM' -> '' ⇒ titles read "::x"
+        VLLM_TEST_FORCE_LOAD_FORMAT                     # 'dummy' -> ''
+        # `assert so_file is not None` PASSES on "" and ctypes.CDLL("") then SUCCEEDS
+        # (measured), so a clear turns a legible AssertionError with the fix in it
+        # (cuda_wrapper.py:115-119) into a handle carrying no cudart symbols.
+        VLLM_CUDART_SO_PATH
+    )
+
+    # ⭐ AND THE TWELVE THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
+    # list" is a decision rather than an omission. TWO INDEPENDENT REASONS AGREE ON
+    # every one of them, which is the strongest evidence either reason is right:
+    #   · a blank ALREADY BEHAVES AS AN ABSENCE. envs.py hands back "" where it would
+    #     hand back None, but every consumer gates on TRUTHINESS, so the difference
+    #     never reaches a decision — `if not model_redirect_path: return model`
+    #     (transformers_utils/utils.py:80-83), `if so_file:` (utils/nccl.py:22-26),
+    #     `if lora_cache_dir:` (lora_resolvers/filesystem_resolver.py:52-53),
+    #     `[key for key in (args.api_key or [envs.VLLM_API_KEY]) if key]`
+    #     (openai/api_server.py:240), `if not log_config_file:`
+    #     (openai/server_utils.py:112). Nothing to fix ⇒ nothing to list.
+    #   · and each is an UNBOUNDED string naming a credential, a file or a list to
+    #     load, so a blank is the user saying "none" — a real capability, not a
+    #     mistake. Guarding one would be the single way this rule can go wrong.
+    #   VLLM_API_KEY   VLLM_LOGGING_CONFIG_PATH   VLLM_MODEL_REDIRECT_PATH
+    #   VLLM_LORA_RESOLVER_CACHE_DIR   VLLM_LORA_RESOLVER_HF_REPO_LIST
+    #   VLLM_NCCL_SO_PATH   VLLM_NCCL_INCLUDE_PATH   CUDA_HOME
+    #   VLLM_DISABLED_KERNELS   S3_ACCESS_KEY_ID   S3_SECRET_ACCESS_KEY
+    #   S3_ENDPOINT_URL
+    # ⚠️ VLLM_CUDART_SO_PATH IS THE NEAR MISS AND IS IN THE ARRAY ABOVE, NOT HERE. It
+    # looks like a sibling of VLLM_NCCL_SO_PATH — same shape, same kind of value — but
+    # its consumer is `assert so_file is not None` and then `ctypes.CDLL(so_file)`, and
+    # CDLL("") SUCCEEDS (measured). So a blank does not behave as an absence there, and
+    # it does not mean "none" either: it means a library handle with no cudart symbols.
+    # ⭐ THE 19 NAMES WHOSE ACCESSOR ITSELF RETURNS THE SAME THING EITHER WAY are not
+    # listed at all, here or above — VLLM_HOST_IP, VLLM_LOOPBACK_IP, the default-False
+    # AITER flags, and so on. There is nothing to decide about them.
+    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}"
 
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do
@@ -695,6 +851,33 @@ else:
 # (compile cache is disabled), not an automated pre-launch step.
 PRE_LAUNCH="vllm_pre_launch"
 vllm_pre_launch() {
+    # ── a DROSTE_-owned name whose blank is NOT a coherent "off" (s58) ─────────
+    # 🚨 THE `:=` AT THE TOP OF THIS FILE DOES NOT COVER THE CASE THAT MATTERS. It runs
+    # when the SPEC is sourced; the user's file is applied AFTER that and BEFORE this
+    # hook (resolve::apply_spec steps 6 and 7, droste-resolve.sh:836-840), so a
+    # `DROSTE_VLLM_CONFIG=` line arrives too late for the `:=` to see and simply
+    # OVERWRITES the default with "". Measured: the argv then becomes
+    # `vllm serve --config ''`, and vllm/utils/argparse_utils.py:472-475 takes
+    # `"".split(".")[-1]` == "" and raises `ValueError: Config file must be of a
+    # yaml/yml type.  supplied` before it ever opens a file — so the box never binds,
+    # never logs anything a user can act on, and restart-loops.
+    # ⚠️ THE OLD HARNESS ROW FOR THIS PASSED, AND THAT IS THE LESSON. It exported the
+    # blank BEFORE sourcing the spec, which is the one order production never uses, so
+    # it was measuring the `:=` rather than the box. A harness that sources less than
+    # production proves less than it claims.
+    # ⭐ CATEGORY 1, NOT AN N1a OPT-OUT. The blank opt-out rule ("absent ⇒ ours, set ⇒
+    # theirs, blank ⇒ off") only applies where "off" is a state the setting HAS. There
+    # is no "serve with no config file" here — vLLM is being handed --config
+    # unconditionally — so a blank cannot mean anything but "give me the default".
+    # ⚠️ THIS DOES NOT TOUCH THE OPEN QUESTION ABOVE about whether a user may set this
+    # at all. A non-empty value still wins, exactly as before; only the empty case
+    # changes, and an empty case was never a value.
+    if [ -n "${DROSTE_VLLM_CONFIG+set}" ] && [ -z "$DROSTE_VLLM_CONFIG" ]; then
+        DROSTE_VLLM_CONFIG=${VLLM_CONFIG_DEFAULT:-/opt/data/vllm_config.yaml}
+        export DROSTE_VLLM_CONFIG
+        serve::err "DROSTE_VLLM_CONFIG is set but empty in $ENV_FILE, and vLLM cannot be started without a config file — using $DROSTE_VLLM_CONFIG instead. Give it a path or comment the line out, and restart the box."
+    fi
+
     vllm_env
 
     # Runs BEFORE SERVICE is built: the guard may repoint $DROSTE_VLLM_CONFIG at an

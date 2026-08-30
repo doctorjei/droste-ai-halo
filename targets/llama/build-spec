@@ -199,10 +199,18 @@ llama_argv() {
     # COMMON_SPECULATIVE_TYPE_NGRAM_MOD and sets ngram_mod n_match/n_min/n_max to
     # 24/48/64 (arg.cpp:4168-4181 at the pinned 337f08e8). That is what the file
     # asks for.
-    # ✅ `=` not `:=`: a user writing DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT= (blank) gets
-    # llama's own unspeculated default back, which is a real answer, and an explicit
-    # `off` emits nothing for the same reason.
-    : "${DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT=on}"
+    # 🚨 `:=` NOT `=`, AND THIS REVERSED IN s58 — READ THE REASON BEFORE CHANGING IT
+    # BACK. It was `=` so that a blank meant "don't", on the N1a reading that a blank is
+    # always the user's opt-out. Jei's three-category rule narrows that: a blank is the
+    # opt-out only for an UNBOUNDED string whose blank is a meaningful answer. This
+    # setting is a two-member menu — llama.env:147-148 prints `{on*, off}` above it —
+    # so it is CATEGORY 2, a finite set, and a finite set has default behaviour that a
+    # blank must fall back to. What the user would reasonably expect from an emptied
+    # line is our default, not a third state the file never offers.
+    # ⭐ NOTHING IS LOST BY THE CHANGE: `off` is still the way to say off, it is one of
+    # the two answers the file documents, and it still emits nothing. The blank simply
+    # stops being an undocumented third answer that happened to mean `off`.
+    : "${DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT:=on}"
 
     for entry in "${LLAMA_VALUE_FLAGS[@]}"; do
         var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
@@ -491,7 +499,65 @@ llama_pre_launch() {
         # RPC
         LLAMA_ARG_RPC                       # add_rpc_devices("") ⇒ [""] ⇒ throw / "" endpoint
     )
-    droste::blank_is_unset "${_fatal_on_clear[@]}"
+
+    # ── the blanks that do NOT throw and are still wrong (s58) ─────────────────
+    # 🚨 "DOES IT THROW" WAS THE INSTRUMENT, NOT THE STANDARD. The 60 above were chosen
+    # because they die in arg parsing, and the 23 left over were cleared as "only
+    # ASSIGN their value". Under Jei's rule that is the wrong question to have asked.
+    # ⭐ ASK WHAT THE USER WOULD REASONABLY EXPECT — and it is almost always A DEFAULT.
+    # So a blank yields the default (we unset it) unless the setting is one of the
+    # narrow exceptions. Three categories; 1 and 2 are unset, 3 is left alone:
+    #   1) a blank crashes the server or leaves it UNHEALTHY.
+    #   2) the value is NUMERIC or comes from a practically FINITE set (bool, enum,
+    #      menu). Such a setting has default behaviour and must fall back to it —
+    #      whether or not the blank crashes.
+    #   3) an UNBOUNDED string whose blank is itself a MEANINGFUL answer: "no chat
+    #      template", "no log file", "no TLS certificate", "no model". Erasing that
+    #      would delete a real capability, so it stays.
+    #
+    # ⭐ RE-READ AT THE PIN, ALL 23, AND 22 OF THEM STAY — the earlier verdict survives
+    # the wider standard, which is worth recording because it did NOT survive on the
+    # vllm box. They are the model paths and repo ids (MODEL, MODEL_URL, HF_REPO,
+    # HF_FILE, HF_REPO_V, HF_FILE_V, DOCKER_REPO, MMPROJ, MMPROJ_URL, MODELS_DIR,
+    # MODELS_PRESET, SPEC_DRAFT_MODEL, SPEC_DRAFT_HF_REPO), the files (CHAT_TEMPLATE,
+    # UI_CONFIG, STATIC_PATH, LOG_FILE, SSL_KEY_FILE, SSL_CERT_FILE), the two
+    # comma-lists (ALIAS, TAGS) and THINK_BUDGET_MESSAGE. Every one is a
+    # `std::string x = ""` in common.h (:279, :293-298, :606-646), so ""
+    # IS the default and a blank is byte-identical to an absence; ALIAS and TAGS split
+    # on `,` and skip empty items (arg.cpp:2584-2614); LOG_FILE's fopen("") returns NULL
+    # and set_file stores nullptr, which is what it already held (log.cpp:308-322);
+    # STATIC_PATH is `.empty()`-gated at server-http.cpp:314. HF_TOKEN and LLAMA_API_KEY
+    # are category 3 for the same reason — `parse_csv_row("")` yields {""} and the
+    # `if (!key.empty())` at arg.cpp:2986-2990 drops it, so a blank leaves auth OFF
+    # rather than enabling it with an empty key. The five TURBO_* names are Metal-only
+    # (ggml/src/ggml-metal/ggml-metal-ops.cpp) and cannot be compiled into a ROCm build.
+    local -a _wrong_on_clear=(
+        # ── category 1: a blank MOVES THE LISTENER and the healthcheck cannot find it ──
+        # 🚨 THIS IS THE ONE THE READ-ONLY SWEEP COULD NOT HAVE FOUND, because nothing
+        # throws anywhere. `params.hostname = "127.0.0.1"` (common/common.h:606) and the
+        # handler is a plain assignment (arg.cpp:2848-2850), so a blank makes it "".
+        # cpp-httplib then does `if (!host.empty()) { node = host.c_str(); }`
+        # (httplib.cpp:2170-2176) — an empty host leaves node NULL — and llama calls
+        # bind_to_port with NO socket flags, so AI_PASSIVE is not set. MEASURED HERE:
+        # getaddrinfo(NULL, port, AF_UNSPEC, flags=0) returns ::1 FIRST and 127.0.0.1
+        # second, and httplib binds the first that succeeds. So the server comes up on
+        # IPv6 loopback ONLY, droste-healthcheck.sh:129 probes
+        # http://127.0.0.1:$PORT/health, gets no response at all, and the box
+        # restart-loops while looking, from inside, like a perfectly healthy server.
+        # ⚠️ IT IS NOT A SETTABLE LINE — llama.env names it only in the "Reserved by
+        # Droste (do not set these)" prose at :17. It is guarded anyway BECAUSE it is
+        # named there: "do not set this" is exactly the instruction a careful user obeys
+        # by writing `LLAMA_ARG_HOST=`, and that is the one spelling that breaks the box.
+        LLAMA_ARG_HOST
+        # ── category 2: numeric, so it has a default and must fall back to it ──
+        # The mildest member of either list, and included for the rule rather than for
+        # the damage: the handler is `GGML_UNUSED(params); GGML_UNUSED(value);` plus a
+        # deprecation LOG_WRN (arg.cpp:2151-2157), so a blank changes no parameter at
+        # all — it just prints a DEPRECATED warning the user did not earn by setting
+        # anything. Numeric value, therefore category 2, therefore unset.
+        LLAMA_ARG_DEFRAG_THOLD
+    )
+    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}"
 
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive

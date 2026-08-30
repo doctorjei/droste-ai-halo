@@ -391,11 +391,11 @@ serve::read_health_spec() {
 #
 # WHY DETECT RATHER THAN DECLARE. TLS is turned on by the USER, in the per-box
 # config file, and each port spells it differently — llama LLAMA_ARG_SSL_CERT_FILE,
-# vllm --ssl-keyfile in YAML or VLLM_EXTRA_ARGS, comfyui --tls-keyfile in the
-# catch-all, and finetuning a `certfile` TRAIT IN A PYTHON FILE. The build-spec is
-# baked and cannot know; a config scan would need four parsers and would still miss
-# the Python one. Asking the socket works the same way on all five, which is the
-# "mechanism differences are ours to absorb" rule applied literally.
+# vllm --ssl-keyfile in YAML or DROSTE_VLLM_EXTRA_ARGS, comfyui --tls-keyfile in
+# the catch-all, and finetuning a `certfile` TRAIT IN A PYTHON FILE. The build-spec
+# is baked and cannot know; a config scan would need four parsers and would still
+# miss the Python one. Asking the socket works the same way on all five, which is
+# the "mechanism differences are ours to absorb" rule applied literally.
 #
 # MEASURED, not inferred — curl against a real TLS server and a real plain one:
 #   nothing listening       both schemes  rc 7            → DOWN, not a mismatch

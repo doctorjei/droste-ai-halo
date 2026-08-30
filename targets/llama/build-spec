@@ -6,7 +6,7 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; llama_pre_launch REBUILDS it after ENV_FILE is sourced so
-# LLAMA_EXTRA_ARGS (from /opt/data/llama.env) can join the command line —
+# DROSTE_LLAMA_EXTRA_ARGS (from /opt/data/llama.env) can join the command line —
 # SERVICE would otherwise be expanded at spec-source time, before the env file.
 SERVICE=( llama-server )
 
@@ -21,7 +21,7 @@ HEALTH_ACCEPT="ok"
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
 # LLAMA_ARG_* lines (llama-server reads them natively), the 72 DROSTE_LLAMA_* settings
 # the tables below translate — 69 into argv, 3 into the environment — and
-# LLAMA_EXTRA_ARGS.
+# DROSTE_LLAMA_EXTRA_ARGS.
 # ⚠️ It is NOT sourced into this shell: droste::load_env_file runs it in a CHILD shell
 # and applies the difference, so a typo in it is a warning rather than a dead box.
 # The practical consequence for anything written here is that the file is DATA — the
@@ -285,7 +285,7 @@ llama_argv() {
     # parses argv left to right and a later occurrence wins — so the user beats us on
     # every conflict, deliberately. --slot-save-path rides here too (no env var).
     # shellcheck disable=SC2206
-    mapfile -d '' -t _extra < <(droste::split_args "${LLAMA_EXTRA_ARGS:-}")
+    mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_LLAMA_EXTRA_ARGS:-}")
     SERVICE=( llama-server --slot-save-path /opt/program-cache/slots
               ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
 }
@@ -295,8 +295,8 @@ llama_argv() {
 # a setting into a llama-server FLAG. The three settings here have no flag at all, at
 # this pin or any other: they are read by getenv() deep inside ggml and
 # llama_kv_cache, so the only way to reach them is an exported environment variable.
-# That also means LLAMA_EXTRA_ARGS cannot reach them, which is why they need settings
-# rather than a line in the catch-all list.
+# That also means DROSTE_LLAMA_EXTRA_ARGS cannot reach them, which is why they need
+# settings rather than a line in the catch-all list.
 #
 # 🚨 WHY ALL THREE ARE DROSTE-NAMED, AND IT IS THE `off` PROBLEM AGAIN. Each native is
 # read by a hand-rolled getenv test that looks at ONE CHARACTER (pinned 337f08e8):
@@ -765,13 +765,13 @@ llama_pre_launch() {
     # class — regenerable session state — so the dir lives on
     # /opt/program-cache, outside compute/ because it is deliberately per-box
     # (see CACHES above). Harmless if the user re-points --slot-save-path via
-    # LLAMA_EXTRA_ARGS.
+    # DROSTE_LLAMA_EXTRA_ARGS.
     mkdir -p /opt/program-cache/slots
 
-    # Rebuild SERVICE now that LLAMA_EXTRA_ARGS is known. The pinned fork's
+    # Rebuild SERVICE now that DROSTE_LLAMA_EXTRA_ARGS is known. The pinned fork's
     # --slot-save-path carries no env annotation, so it rides the command line —
-    # OUR flag FIRST so a user's own --slot-save-path inside LLAMA_EXTRA_ARGS
-    # (parsed later) wins.
+    # OUR flag FIRST so a user's own --slot-save-path inside
+    # DROSTE_LLAMA_EXTRA_ARGS (parsed later) wins.
     # Quote-aware split (droste::split_args): a value MAY contain spaces, so
     # --grammar, -j/--json-schema, -r/--reverse-prompt, --override-kv and paths
     # with spaces are reachable through the catch-all. It also does not glob.

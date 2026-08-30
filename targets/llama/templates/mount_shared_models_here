@@ -7,7 +7,7 @@
 # then point llama-server at a file via /opt/data/llama.env:
 #   LLAMA_ARG_MODEL=/opt/models/<file>.gguf
 #
-# Models downloaded with -hf (LLAMA_EXTRA_ARGS) land in the shared HF cache
+# Models downloaded with -hf (DROSTE_LLAMA_EXTRA_ARGS) land in the shared HF cache
 # (~/.cache/huggingface) instead — no /opt/models bind needed for those.
 #
 # This file was created to note you have been informed; deleting it re-shows

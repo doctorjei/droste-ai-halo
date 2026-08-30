@@ -5438,7 +5438,7 @@ write_notes() {
         llama)
           printf -- '- BEFORE first use: edit `%s/llama.env` and set\n' "$data"
           printf '  `LLAMA_ARG_MODEL` (a GGUF path, or use `-hf org/repo` via\n'
-          printf '  `LLAMA_EXTRA_ARGS`). The file is seeded at first start.\n'
+          printf '  `DROSTE_LLAMA_EXTRA_ARGS`). The file is seeded at first start.\n'
           printf -- '- API: http://localhost:%s (llama-server).\n' "$port"
           ;;
         vllm)

@@ -47,7 +47,7 @@
 #
 # TIMING: this file is plain sourced bash, so the array's words expand at
 # SPEC-SOURCE time — BEFORE ENV_FILE is sourced. A SERVICE that must carry
-# env-file-derived pieces (e.g. $LLAMA_EXTRA_ARGS) cannot reference them here;
+# env-file-derived pieces (e.g. $DROSTE_LLAMA_EXTRA_ARGS) cannot reference them here;
 # use the SERVICE-REBUILD pattern instead: declare a placeholder argv, then have
 # PRE_LAUNCH (which runs AFTER ENV_FILE) rebuild it — see PRE_LAUNCH below.
 SERVICE=( python /opt/ComfyUI/main.py --listen 0.0.0.0 --port 8188 )
@@ -169,7 +169,7 @@ PRE_LAUNCH=""
 #       for v in $(compgen -v LLAMA_ || true); do export "${v?}"; done
 #       # rebuild the argv now that env-file values are known
 #       # shellcheck disable=SC2206
-#       SERVICE=( llama-server ${LLAMA_EXTRA_ARGS:-} )
+#       SERVICE=( llama-server ${DROSTE_LLAMA_EXTRA_ARGS:-} )
 #   }
 #
 # The entrypoint execs whatever SERVICE holds AFTER PRE_LAUNCH returns.

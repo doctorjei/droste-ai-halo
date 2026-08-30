@@ -187,7 +187,7 @@ droste::set_health_prefix() {
 
 # ── droste::split_args — split a catch-all setting into argv, honouring quotes ─
 #
-# Usage:  mapfile -d '' -t args < <(droste::split_args "${LLAMA_EXTRA_ARGS:-}")
+# Usage:  mapfile -d '' -t args < <(droste::split_args "${DROSTE_LLAMA_EXTRA_ARGS:-}")
 #         SERVICE=( the-binary "${args[@]}" )
 #
 # 🚨 WHY NOT ${VAR:-} IN AN ARRAY, which is what all five ports used until s52:

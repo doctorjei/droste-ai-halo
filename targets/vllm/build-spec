@@ -7,7 +7,7 @@
 # ── SERVICE (required) ───────────────────────────────────────────────────────
 # vLLM serves the model named in the config file. $DROSTE_VLLM_CONFIG is a deliberate
 # env knob (a config-file SELECTOR with a smart default — not a raw path the user must
-# know); $VLLM_EXTRA_ARGS (folded in by PRE_LAUNCH below) is the other. Default =
+# know); $DROSTE_VLLM_EXTRA_ARGS (folded in by PRE_LAUNCH below) is the other. Default =
 # the persisted /opt/data copy that templates.yaml seeds (if_missing) from the shipped
 # template. User may point it elsewhere.
 #
@@ -45,7 +45,7 @@ HEALTH_ACCEPT="ok"
 # VLLM_* ENVIRONMENT VARIABLES, which are not expressible as YAML keys — several
 # are read before any config is parsed. Two mechanisms, so two files.
 #
-# ⚠️ It is also the only place $VLLM_EXTRA_ARGS and $DROSTE_VLLM_CONFIG can be set.
+# ⚠️ It is also the only place $DROSTE_VLLM_EXTRA_ARGS and $DROSTE_VLLM_CONFIG can be set.
 # Both were advertised by this box (here and in the generated YAML header) while no
 # file existed to hold them, which made the catch-all itself unreachable in the
 # lane that serves. server.env cannot stand in: it is read in a subshell whose
@@ -1004,7 +1004,7 @@ else:
 }
 
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
-# SERVICE-rebuild (see build-spec.example): fold $VLLM_EXTRA_ARGS into the argv —
+# SERVICE-rebuild (see build-spec.example): fold $DROSTE_VLLM_EXTRA_ARGS into the argv —
 # CLI args placed after --config override the config file's values (vLLM's own
 # CLI-over-config merge), exactly as the generated config header documents.
 # The model rides the config; stale-graph handling is a documented one-liner
@@ -1046,6 +1046,6 @@ vllm_pre_launch() {
 
     # Quote-aware split (droste::split_args): a value may contain spaces.
     # shellcheck disable=SC2206
-    mapfile -d '' -t _extra < <(droste::split_args "${VLLM_EXTRA_ARGS:-}")
+    mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_VLLM_EXTRA_ARGS:-}")
     SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" ${_extra[@]+"${_extra[@]}"} )
 }

@@ -177,7 +177,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   specs stay self-sufficient under other callers.
 - **The SERVICE-rebuild pattern:** build-spec is sourced bash, so `SERVICE=( … )`
   expands BEFORE ENV_FILE is sourced. Ports whose argv depends on env-file values
-  (llama `$LLAMA_EXTRA_ARGS`, ds4's flag translation) declare a placeholder argv
+  (llama `$DROSTE_LLAMA_EXTRA_ARGS`, ds4's flag translation) declare a placeholder argv
   and rebuild `SERVICE` inside PRE_LAUNCH, which runs after ENV_FILE. Documented
   in `base/resolve/build-spec.example`.
 
@@ -384,7 +384,7 @@ prefix rules.
   Slot save/restore: the pinned fork ships `--slot-save-path` with NO env
   annotation (verified by the first CI run failing loudly, as designed), so
   the entrypoint launch line passes `--slot-save-path /opt/program-cache/slots`
-  (user override = own flag in LLAMA_EXTRA_ARGS; later flags win); the dir is
+  (user override = own flag in DROSTE_LLAMA_EXTRA_ARGS; later flags win); the dir is
   pre-created in PRE_LAUNCH. (The slots were on `/opt/data` until the
   2026-08-15 storage taxonomy moved them to the program-cache root.)
 - **ds4** — ds4 has no native per-flag env vars, so PRE_LAUNCH translates
@@ -1703,7 +1703,7 @@ kernels the base carries — NO ROCm re-adds. The base already writes a real
   `local.conf` + `ldconfig` to be sure.
 - Server by default: `ENTRYPOINT` = the shared `droste-entrypoint.sh` (build-spec:
   HF-cache CRITICAL, `llama.env` seeding + `set -a` source, SERVICE rebuilt in
-  PRE_LAUNCH with `$LLAMA_EXTRA_ARGS`, then execs `llama-server`); distrobox/
+  PRE_LAUNCH with `$DROSTE_LLAMA_EXTRA_ARGS`, then execs `llama-server`); distrobox/
   toolbx override the entrypoint for the interactive lane. `llama.env` is
   hand-authored and seeded from `targets/llama/templates/`; a build-time scan
   still fails if the active `LLAMA_ARG_*` names vanish upstream. See

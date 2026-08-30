@@ -187,9 +187,12 @@ missing_envs=$(printf '%s\n' "$table" | awk -F'\t' '$3 != "" { print $3 }' | sor
 # 3c. 🚨 THE DANGEROUS DIRECTION: names OUR FILE offers that the binary does NOT
 # read. A user setting one of those gets silence, and the file is the thing that
 # told them it would work. TURBO_* are exempt — they are documented as inert.
+# ⭐ AND DROSTE'S OWN NAMES ARE EXEMPT BY CONSTRUCTION, not by a list: the pattern
+# anchors on the NATIVE LLAMA_/HF_ prefixes, so DROSTE_LLAMA_* — names upstream has
+# never heard of — cannot match it. The catch-all needed a hand-written exception
+# here only while it wore a native-looking name without the DROSTE_ prefix.
 stale=$(grep -oE '^# (LLAMA_[A-Z_0-9]+|HF_[A-Z_0-9]+)=' "$ENVFILE" \
     | sed 's/^# //; s/=$//' | sort -u \
-    | grep -vE '^LLAMA_EXTRA_ARGS$' \
     | while read -r e; do
         grep -q "(env: $e)" <<<"$help_text" || printf '%s\n' "$e"
       done)

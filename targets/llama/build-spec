@@ -19,8 +19,9 @@ HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
-# LLAMA_ARG_* lines (llama-server reads them natively), the 69 DROSTE_LLAMA_* settings
-# the tables below translate, and LLAMA_EXTRA_ARGS.
+# LLAMA_ARG_* lines (llama-server reads them natively), the 72 DROSTE_LLAMA_* settings
+# the tables below translate — 69 into argv, 3 into the environment — and
+# LLAMA_EXTRA_ARGS.
 # ⚠️ It is NOT sourced into this shell: droste::load_env_file runs it in a CHILD shell
 # and applies the difference, so a typo in it is a warning rather than a dead box.
 # The practical consequence for anything written here is that the file is DATA — the
@@ -73,6 +74,8 @@ OPTIONAL=(
 # stands here: A RULE WITH AN EXCEPTION IS WORSE THAN NO RULE, because a reader who
 # derives a name gets a variable nothing reads. Adding a setting means editing
 # llama.env AND this file; there is nothing to fall back on.
+# ⚠️ 69 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
+# down, in the ENVIRONMENT tables — they have no flag to emit and never touch SERVICE.
 #
 # Every row was generated from the PINNED binary's own option table (paren-balanced
 # parse of arg.cpp at 337f08e8) and not from llama.env's inline comments — three of
@@ -285,6 +288,121 @@ llama_argv() {
     mapfile -d '' -t _extra < <(droste::split_args "${LLAMA_EXTRA_ARGS:-}")
     SERVICE=( llama-server --slot-save-path /opt/program-cache/slots
               ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
+}
+
+# ── The llama.env → ENVIRONMENT tables ───────────────────────────────────────
+# ⭐ A SECOND DELIVERY MECHANISM, AND IT IS NOT THE ARGV ONE. Every table above turns
+# a setting into a llama-server FLAG. The three settings here have no flag at all, at
+# this pin or any other: they are read by getenv() deep inside ggml and
+# llama_kv_cache, so the only way to reach them is an exported environment variable.
+# That also means LLAMA_EXTRA_ARGS cannot reach them, which is why they need settings
+# rather than a line in the catch-all list.
+#
+# 🚨 WHY ALL THREE ARE DROSTE-NAMED, AND IT IS THE `off` PROBLEM AGAIN. Each native is
+# read by a hand-rolled getenv test that looks at ONE CHARACTER (pinned 337f08e8):
+#   TURBO_AUTO_ASYMMETRIC  llama-kv-cache.cpp:153-154  disabled = env && env[0]=='0'
+#   TURBO_LAYER_ADAPTIVE   llama-kv-cache.cpp:321-327  atoi(env) — a mode NUMBER
+#   GGML_TQ_NATIVE         ggml-cuda.cu:722-723        native   = env && env[0]=='1'
+# So a user writing the native `TURBO_AUTO_ASYMMETRIC=off` gets env[0]=='o', which is
+# not '0', and the feature stays ON: a value that reads as off, is rejected by
+# nothing, and does nothing. That is the fall-through this project forbids outright,
+# and it is the same defect as llama's switch-type flags one level down.
+# ⚠️ NOTE THE TWO POLARITIES — one native disables on '0', the other ENABLES on '1'.
+# A user must not be asked to hold that in their head (One Surface, Five Servers); the
+# wire columns below absorb it and the surface says on/off for both.
+# ⚠️ ggml-cuda.cu IS COMPILED HERE. ggml/src/ggml-hip/CMakeLists.txt:63 globs
+# `../ggml-cuda/*.cu`, so the HIP build gets it. "cuda" in the path is not a filter.
+#
+# 🚨 PRECEDENCE, AND IT IS A CONTRACT, NOT AN IMPLEMENTATION DETAIL. Templates seed
+# `if_missing`, so a box created before these settings existed may already carry a
+# hand-written native line, and it must go on working:
+#   droste setting UNSET or BLANK  → we do not touch the native. Whatever the user
+#                                    put there stands. This is also what makes blank
+#                                    behave EXACTLY as absent, which is the rule.
+#   droste setting SET to a value  → OURS WINS. We export the wire (or, for `auto`,
+#                                    UNSET the native), so the answer the user gave on
+#                                    our surface is the answer the engine gets.
+#   droste setting SET to garbage  → warn, touch nothing. Same as unset, so a typo can
+#                                    never destroy a native line the user meant.
+# ⭐ The middle row is why `auto` UNSETS rather than skipping: `auto` is a real answer,
+# and an answer that quietly loses to a stale native line is a fall-through value.
+#
+# ⚠️ BLANK GUARDS: exactly ONE of the three natives needs one, and it is measured
+# rather than assumed (run the reader with the name absent, run it "", diff):
+#   TURBO_AUTO_ASYMMETRIC=""  env[0]=='\0' != '0' ⇒ enabled ⇒ SAME as absent. No guard.
+#   GGML_TQ_NATIVE=""         env[0]=='\0' != '1' ⇒ convert ⇒ SAME as absent. No guard.
+#   TURBO_LAYER_ADAPTIVE=""   atoi("") == 0 ⇒ mode 0 ⇒ DIFFERENT from absent, because
+#                             absent runs the auto-enable at :329-333. Guarded below.
+# A longer guard list is not a better one; the two without an entry earn their absence.
+#
+# ❌ GGML_TURBO_MMA_FUSED IS DELIBERATELY NOT HERE, AND THIS IS THE STATED REASON SO
+# NOBODY RE-ADDS IT. It is compiled into this build (fattn.cu:193) and it has exactly
+# one consumer, fattn.cu:803, whose condition includes `turing_mma_available(cc)` —
+# and that is `GGML_CUDA_CC_IS_NVIDIA(cc) && …` (common.cuh:348-350), i.e.
+# `cc < 0x0100000`. gfx1151 is `GGML_CUDA_CC_OFFSET_AMD + 0x1151` = 0x1001151, so the
+# test is false on every box this repo builds for. The setting would be a knob that
+# is present, authoritative-looking, and inert — the exact thing a fall-through is.
+# ⚠️ AND DO NOT HARVEST ITS DEFAULT FROM UPSTREAM'S OWN COMMENT: fattn.cu:181 says
+# "DEFAULT OFF" and :190 says "opt-in via GGML_TURBO_MMA_FUSED=1", while :194 is
+# `return !(s && s[0] == '0')` — default ON. The prose and the code disagree.
+#
+# "<SUFFIX>:<native>:<on-wire>:<off-wire>" — the variable is DROSTE_LLAMA_<SUFFIX>.
+LLAMA_ENV_BOOLS=(
+    "KV_AUTO_ASYMMETRIC:TURBO_AUTO_ASYMMETRIC:1:0"
+    "TQ_NATIVE_WEIGHTS:GGML_TQ_NATIVE:1:0"
+)
+# "<SUFFIX>|<native>|<value>=<wire>|…" — llama_argv's CHOICE shape, with the native's
+# name in the second field and one extra convention: a wire of `-` means DO NOT SET
+# THE VARIABLE AT ALL. That is the only spelling `auto` has, because the absence is
+# what runs llama-kv-cache.cpp:329-333 — the auto-enable of mode 7 when V is turbo2
+# and the model has 8+ layers. Exporting a number, ANY number, suppresses it.
+# ⚠️ THE MODE NUMBERS ARE NOT CONTIGUOUS AND THAT IS WHY THIS IS A WHITELIST. Upstream
+# branches on 1, 2, 5, 6 and 7 (:339-369); 3 and 4 parse fine through atoi and match
+# no branch, so raw numbers on the surface would hand the user two silent no-ops.
+LLAMA_ENV_CHOICES=(
+    "KV_LAYER_ADAPTIVE|TURBO_LAYER_ADAPTIVE|auto=-|off=0|q8-ends=1|q8-last8=2|v-turbo4-ends=5|v-turbo4-last8=6|v-q8-ends=7"
+)
+
+# llama_env — DROSTE_LLAMA_* → the exported environment. Its own function for the same
+# reason llama_argv is: it can be driven alone, and it is the half of PRE_LAUNCH that
+# produces no argv at all, so a test written against SERVICE is blind to it.
+# ⚠️ `export`, NEVER a bare assignment: `set +a` runs before PRE_LAUNCH (the s52
+# lesson), so an unexported value would never cross the exec.
+llama_env() {
+    local entry suffix native var val rest onw offw wire ok list pair
+    local -a pairs=()
+
+    for entry in "${LLAMA_ENV_BOOLS[@]}"; do
+        suffix=${entry%%:*}; rest=${entry#*:}
+        native=${rest%%:*}; rest=${rest#*:}
+        onw=${rest%%:*}; offw=${rest#*:}
+        var="DROSTE_LLAMA_$suffix"; val=${!var:-}
+        # Unset/blank leaves the native alone — see PRECEDENCE above.
+        [ -n "$val" ] || continue
+        case "$(droste::bool "$val")" in
+            on)  export "$native=$onw" ;;
+            off) export "$native=$offw" ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $native alone. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    for entry in "${LLAMA_ENV_CHOICES[@]}"; do
+        suffix=${entry%%|*}; rest=${entry#*|}
+        native=${rest%%|*}; rest=${rest#*|}
+        IFS='|' read -r -a pairs <<<"$rest"
+        var="DROSTE_LLAMA_$suffix"; val=${!var:-}
+        [ -n "$val" ] || continue
+        wire=""; ok=0
+        for pair in "${pairs[@]}"; do
+            if [ "${pair%%=*}" = "$val" ]; then wire=${pair#*=}; ok=1; break; fi
+        done
+        if [ "$ok" -eq 0 ]; then
+            list=""; for pair in "${pairs[@]}"; do list="$list ${pair%%=*}"; done
+            serve::err "$var='$val' is not a valid value — leaving $native alone. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+            continue
+        fi
+        if [ "$wire" = "-" ]; then unset "$native"; else export "$native=$wire"; fi
+    done
 }
 
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
@@ -513,10 +631,29 @@ llama_pre_launch() {
     # on `,` and skip empty items (arg.cpp:2584-2614); LOG_FILE's fopen("") returns NULL
     # and set_file stores nullptr, which is what it already held (log.cpp:308-322);
     # STATIC_PATH is `.empty()`-gated at server-http.cpp:314. HF_TOKEN and LLAMA_API_KEY
-    # are category 3 for the same reason — `parse_csv_row("")` yields {""} and the
-    # `if (!key.empty())` at arg.cpp:2986-2990 drops it, so a blank leaves auth OFF
-    # rather than enabling it with an empty key. The five TURBO_* names are Metal-only
-    # (ggml/src/ggml-metal/ggml-metal-ops.cpp) and cannot be compiled into a ROCm build.
+    # are both category 3, but ⚠️ NOT FOR THE SAME REASON — this entry said they were
+    # until s59 and the shared citation was LLAMA_API_KEY's alone:
+    #   LLAMA_API_KEY  `parse_csv_row("")` yields {""} and the `if (!key.empty())` at
+    #                  arg.cpp:2985-2991 drops it, so a blank leaves auth OFF rather
+    #                  than enabling it with an empty key.
+    #   HF_TOKEN       has no parsing at all — arg.cpp:2664-2670 is `params.hf_token =
+    #                  value`, common.h:484 already initialises it to "", and every
+    #                  consumer is emptiness-gated: `if (!opts.bearer_token.empty())`
+    #                  before the Authorization header (download.cpp:313-314) and
+    #                  `is_valid_hf_token(token)` … `else if (!token.empty())` for the
+    #                  API path (hf-cache.cpp:207-211). So "" IS the default here.
+    # ⭐ Right conclusion, wrong mechanism, and it mattered: the API-key reasoning is
+    # about a PARSER dropping an empty field, which is exactly the kind of thing that
+    # changes upstream. Attaching HF_TOKEN to it would have made a live re-check of
+    # arg.cpp:2985-2991 look like a re-check of both.
+    # The five TURBO_* names llama.env's Misc block lists are Metal-only and cannot be
+    # compiled into a ROCm build — TURBO_FLASH and TURBO_FORCE_NONVEC in
+    # ggml/src/ggml-metal/ggml-metal-ops.cpp (:2744, :2711), and TURBO_FORCE_4MAG,
+    # TURBO_SPARSE_V and TURBO_PROFILE_MODE in ggml/src/ggml-metal/ggml-metal-device.m
+    # (:232, :245, :258). ⚠️ This entry named ggml-metal-ops.cpp for all five until s59.
+    # ⚠️ AND "TURBO_* IS METAL-ONLY" IS NOT A RULE — TURBO_AUTO_ASYMMETRIC and
+    # TURBO_LAYER_ADAPTIVE live in src/llama-kv-cache.cpp, are backend-independent, and
+    # are settings on this box (see the ENVIRONMENT tables above).
     local -a _wrong_on_clear=(
         # ── category 1: a blank MOVES THE LISTENER and the healthcheck cannot find it ──
         # 🚨 THIS IS THE ONE THE READ-ONLY SWEEP COULD NOT HAVE FOUND, because nothing
@@ -543,7 +680,31 @@ llama_pre_launch() {
         # anything. Numeric value, therefore category 2, therefore unset.
         LLAMA_ARG_DEFRAG_THOLD
     )
-    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}"
+
+    # ── the same rule, on a native that is NOT an LLAMA_ARG_ line (s59) ────────
+    # 🚨 A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM. Both lists above are about
+    # llama.env's LLAMA_ARG_* settings and were audited as that set; this name is read
+    # by llama_kv_cache, not by the argument parser, so it belongs to neither audit and
+    # must not silently inflate either count.
+    # TURBO_LAYER_ADAPTIVE is the ONE of the three ENVIRONMENT-table natives whose
+    # blank differs from its absence, measured at the pin rather than assumed:
+    # llama-kv-cache.cpp:321-327 does `if (env) { return atoi(env); }`, and atoi("")
+    # is 0 — mode 0, uniform. An ABSENT variable instead falls through to :329-333,
+    # which auto-enables mode 7 when V is turbo2 and the model has 8+ layers. So a
+    # blank does not mean "leave it alone", it means "suppress the auto behaviour" —
+    # category 2 (a finite set of modes), so the blank must give the default back.
+    # ⚠️ The other two natives are deliberately absent: TURBO_AUTO_ASYMMETRIC tests
+    # env[0]=='0' and GGML_TQ_NATIVE tests env[0]=='1', so "" is already identical to
+    # unset for both and a guard would be dead weight that reads as coverage.
+    # ⚠️ IT IS NAMED HERE RATHER THAN ON THE SURFACE, exactly like LLAMA_ARG_HOST: the
+    # user's setting is DROSTE_LLAMA_KV_LAYER_ADAPTIVE, but the native is named in the
+    # comments beside it, and "here is the variable it drives" is the one hint a
+    # careful user needs to go and write `TURBO_LAYER_ADAPTIVE=` themselves.
+    local -a _turbo_blank_is_unset=(
+        TURBO_LAYER_ADAPTIVE                # atoi("") == 0 ⇒ suppresses the auto mode
+    )
+    droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
+                           "${_turbo_blank_is_unset[@]}"
 
     # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
     # llama.env:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
@@ -573,6 +734,17 @@ llama_pre_launch() {
     # that reading for anything from a finite set, and a KV cache type is one.
     : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
     : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
+
+    # ── the settings that reach the engine as ENVIRONMENT, not as argv ─────────
+    # 🚨 IT MUST RUN AFTER droste::blank_is_unset ABOVE, for the same reason the two
+    # cache-type defaults do: a user's blank native TURBO_LAYER_ADAPTIVE has to be an
+    # absence before anything else looks at it. Nothing here reads the cache types, so
+    # its position relative to the two lines above is free; its position relative to
+    # the unset is not.
+    # ⭐ It is also why these three are NOT droste defaults in the N1a sense: llama.env
+    # shows on / auto / off for them, and those are upstream's own defaults, delivered
+    # by not setting anything. "File states a default; wiring delivers it ⇒ nothing."
+    llama_env
 
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive

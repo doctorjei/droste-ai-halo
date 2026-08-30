@@ -99,57 +99,84 @@ droste::load_env_file() {
     # standard: a power user may reasonably want to set one, and may reasonably want to
     # read one, so the answer is not to forbid it — it is to make the consequence audible.
     #
-    # 🚨 TWO CLASSES, TWO MESSAGES, AND THE SPLIT IS THE WHOLE POINT. One list with one
-    # sentence was wrong for the second class, and wrong in the direction that matters: it
-    # promised a server that stops starting. These names do not do that. The box comes up
-    # healthy, the service answers, and the data goes somewhere the host never sees —
-    # invisible until the next recreate. ⭐ A warning that names the WRONG SYMPTOM is worse
-    # than no warning: it sends the reader looking for something that will never happen,
-    # and when it never happens they conclude the channel is noise.
+    # 🚨 A CLASS IS A SYMPTOM, NOT A MECHANISM, AND THAT IS THE WHOLE POINT. One list with
+    # one sentence was wrong for the second class in the direction that matters: it
+    # promised a server that stops starting, and these names do not do that. ⭐ A warning
+    # that names the WRONG SYMPTOM is worse than no warning — it sends the reader looking
+    # for a failure that will never arrive, and when it never arrives they conclude the
+    # channel is noise. So the lists are cut by WHAT THE USER WILL SEE, and there are
+    # three things to see:
     #
-    #   loud_code — where this box finds its CODE. Wrong value ⇒ the server does not
-    #               start, loudly and immediately.
-    #   loud_dirs — where programs WRITE. Wrong value ⇒ data lost at recreate time, and
-    #               nothing whatsoever before it.
+    #   loud_code — where this box finds its CODE. ⇒ the server DOES NOT START, loudly
+    #               and immediately.
+    #   loud_conf — where programs find their SYSTEM CONFIGURATION. ⇒ everything starts
+    #               and runs; the image's own baked settings are silently not found.
+    #   loud_dirs — where programs WRITE. ⇒ everything starts and runs correctly; data
+    #               lands outside a bind and is gone at the next recreate.
     #
     # ⭐ MOVING A NAME BETWEEN THEM IS A ONE-LINE EDIT, deliberately: which hazard a
-    # variable carries is a finding, not a constant.
+    # variable carries is a FINDING, not a constant — and s58's survey moved three of
+    # them within a day of the split being written. Two of these lists hold one name.
+    # That is correct: a list is padded by adding a name that strands nothing, not by
+    # having few.
     #
-    # ⚠️ WHY THESE THREE XDG NAMES AND NOT THE FAMILY. The class is a single user-owned
-    # base directory that programs WRITE persistent files under, and each of the three has
-    # a measured reader in these images or a line on a shipped surface:
-    #   XDG_CACHE_HOME  — llama's own HF cache chain (common/hf-cache.cpp, rung 5 of 6,
-    #                     and this image sets none of the four rungs above it); vLLM's
-    #                     get_default_cache_root() behind the ~/.cache/vllm bind;
+    # ⚠️ WHY THESE XDG NAMES AND NOT THE FAMILY. Each earns its place by a MEASURED
+    # consequence in THESE images; the rest are left out with a reason, because a list
+    # padded for family symmetry trains the reader to skip the channel — the same
+    # cry-wolf argument the stale-name rule below turns on.
+    #   XDG_CACHE_HOME  (loud_dirs) — the only XDG name that strands anything droste
+    #                     keeps. llama's own HF cache chain (common/hf-cache.cpp, rung 5
+    #                     of 6, and this image sets none of the four rungs above it);
+    #                     vLLM's get_default_cache_root() behind the ~/.cache/vllm bind;
     #                     huggingface_hub's HF_HOME default behind the ~/.cache/huggingface
     #                     CRITICAL bind on ALL FIVE boxes; torch's _get_torch_home() behind
     #                     the ~/.cache/torch bind on comfyui and finetuning. vllm.env names
     #                     it on four lines of its own.
-    #   XDG_CONFIG_HOME — vLLM's get_default_config_root(), i.e. VLLM_CONFIG_ROOT, which
-    #                     vllm.env shows. ⚠️ NOT MIOpen: the ~/.config/miopen bind LOOKS
-    #                     like a second hit and is not one — MIOpen's userdb path is a
-    #                     build-time constant and MIOpen reads no XDG variable at all.
-    #   XDG_DATA_HOME   — finetuning.env OFFERS it as a settable line, so a user setting it
-    #                     is doing what our own surface invited; jupyter_core/paths.py
-    #                     reads it for the user data dir (kernelspecs, installed
-    #                     extensions).
-    # LEFT OUT, each for a stated reason and not for tidiness — a list padded for symmetry
-    # trains the reader to ignore the channel, which is the same cry-wolf argument the
-    # stale-name rule above turns on:
-    #   XDG_STATE_HOME  — nothing in these five images reads it and droste keeps nothing
-    #                     under ~/.local/state, so the warning would have no consequence
-    #                     behind it. FIRST CANDIDATE TO ADD if a reader turns up: one word.
+    #   XDG_CONFIG_DIRS (loud_conf) — finetuning, with DROSTE_JUPYTER_PLATFORM_DIRS on:
+    #                     SYSTEM_CONFIG_PATH becomes platformdirs.site_config_dir, i.e.
+    #                     $XDG_CONFIG_DIRS/jupyter (jupyter_core/paths.py). The image
+    #                     covers the DEFAULT with the /etc/xdg/jupyter symlink in
+    #                     targets/Container.finetuning, whose own comment already says a
+    #                     user who re-points the variable is past what an image can
+    #                     anticipate. Cost of setting it: all 39 baked trait defaults
+    #                     silently dropped. It is also the only XDG name with no narrower
+    #                     native override to reach for instead.
+    # LEFT OUT, each for a stated reason:
+    #   XDG_CONFIG_HOME — ⚠️ WAS IN loud_dirs AND CAME BACK OUT (s58 survey). No
+    #                     bind-backed consequence on any box: its only consumer is
+    #                     VLLM_CONFIG_ROOT, and ~/.config/vllm is not a bind. ⚠️ The
+    #                     ~/.config/miopen bind LOOKS like a second hit and is not one —
+    #                     MIOpen resolves ~ from $HOME with no XDG rung at all
+    #                     (src/expanduser.cpp), and Triton is the same (knobs.py).
+    #   XDG_DATA_HOME   — ⚠️ ALSO CAME BACK OUT. Its only consumer is jupyter_core's
+    #                     jupyter_data_dir() (kernelspecs, Lab extensions, runtime files)
+    #                     and droste binds NOTHING under ~/.local/share on any box, so
+    #                     nothing droste persists moves. ⭐ It is the one genuinely
+    #                     safe-to-offer XDG name — consistent with finetuning.env already
+    #                     offering it, which is a fact that reads as evidence FOR
+    #                     including it and is evidence for the opposite.
+    #   XDG_STATE_HOME  — no reader in these five images and droste keeps nothing under
+    #                     ~/.local/state.
     #   XDG_RUNTIME_DIR — per-session and non-persistent BY SPECIFICATION, so there is
     #                     nothing here to lose at recreate. It is also the one XDG name
     #                     droste itself READS (droste-setup.sh, with a fallback), and
     #                     warning about our own idiom is not a service to anyone.
-    #   XDG_DATA_DIRS / XDG_CONFIG_DIRS — search LISTS, never written to, so they cannot
-    #                     relocate anything. If either ever earns a warning it is for
-    #                     SHADOWING a system file, which is loud_code's hazard and
-    #                     loud_code's sentence — the move being one word from here to
-    #                     there is exactly why the two lists are separate.
+    #   XDG_DATA_DIRS   — a search LIST like XDG_CONFIG_DIRS, but no measured shadowing
+    #                     case: the parallel site_data_dir path holds kernelspecs and
+    #                     extensions, none of which droste bakes.
+    #
+    # ⚠️ SCOPE, STATED SO IT IS NOT ASSUMED WIDER. This function sees the box's .env file
+    # and NOTHING ELSE. A create-time `--env` in additional_flags (the mechanism the
+    # installer itself uses) and an `export XDG_CACHE_HOME=…` typed inside `distrobox
+    # enter` before running a download both reach the server without passing here, and
+    # neither warns. ⚠️ And even on the route it does cover it is POST-HOC:
+    # resolve::apply_spec mounts at steps 2-3 and calls this at step 6, so it reports, it
+    # does not prevent. ❓ UNKNOWN, and deliberately not asserted either way: whether
+    # distrobox 2.x forwards a host XDG_CACHE_HOME into the box. If it does, that is a
+    # fourth route and it fires with no user opt-in at all. Nobody has read it.
     local loud_code="PATH LD_PRELOAD LD_LIBRARY_PATH BASH_ENV"
-    local loud_dirs="XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME"
+    local loud_conf="XDG_CONFIG_DIRS"
+    local loud_dirs="XDG_CACHE_HOME"
     # ── STALE DROSTE NAMES — the one thing this file CAN honestly call wrong ────
     # 🚨 THE FAILURE, MEASURED FROM THE TREE, NOT THEORISED. Every box's config file
     # is seeded `if_missing` (apply_templates.py, the `if os.path.exists(dest)`
@@ -300,6 +327,19 @@ droste::load_env_file() {
         case " $loud_code " in
             *" $name "*)
                 serve::warn "$file changes $name, which decides where this box finds its programs and libraries. Applying it as asked — if the server stops starting, this line is the first thing to remove."
+                ;;
+        esac
+        # ⚠️ THIS ARM EXISTS BECAUSE loud_code's SENTENCE IS FALSE FOR XDG_CONFIG_DIRS ON
+        # BOTH HALVES, checked rather than assumed (s58). It does not decide where code
+        # comes from — it decides where system CONFIGURATION comes from; and "if the
+        # server stops starting" never fires, because all 39 baked Jupyter traits are
+        # behavioural and the server starts happily without a single one of them. Filing
+        # it under loud_code would have reproduced the exact defect the split was written
+        # to fix, one class along. Same mechanism as loud_code, different symptom, and
+        # the symptom is what the message has to be true about.
+        case " $loud_conf " in
+            *" $name "*)
+                serve::warn "$file changes $name, which decides where this box looks for the system-wide configuration its programs read at startup. Applying it as asked, and the box will start normally — but the settings this image bakes in sit at the standard location this points away from, so a program that can no longer find them falls back to its own upstream defaults instead. Nothing announces that. If this box has quietly stopped behaving the way the image set it up to, this line is the first thing to remove."
                 ;;
         esac
         case " $loud_dirs " in

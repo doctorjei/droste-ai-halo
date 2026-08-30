@@ -141,43 +141,100 @@ JUPYTER_BOOL_VARS=(
 jupyter_env() {
     local entry suffix rest var on off val
 
-    # ── the three natives where a BLANK is not "unset" ──────────────────────────
-    # 🚨 finetuning.env prints all three blank with an annotation that SAYS unset —
-    # `IPYTHONDIR=  # IPython profiles; unset: ~/.ipython`, `QT_API=  # unset:
-    # first importable` and `JUPYTER_DEFAULT_PROVISIONER_NAME=  # alternate kernel
-    # provisioner`. ENV_FILE is sourced under `set -a`, so uncommenting any of them
-    # hands the server an EMPTY STRING, and none of the readers tests emptiness:
-    #   IPython/paths.py:36  `env.get("IPYTHONDIR", None)` then `if ipdir is None`
-    #     ⇒ "" survives, os.path.normpath("") is ".", and profiles are written into
-    #       whatever directory the server happens to be in.
-    #   qtpy/__init__.py     `os.environ.get(QT_API, "pyqt5")` then a membership
-    #     check against API_NAMES ⇒ "" is no binding and the import RAISES.
-    #   jupyter_client/provisioning/factory.py:45 (8.10.0)
-    #     `getenv("JUPYTER_DEFAULT_PROVISIONER_NAME", "local-provisioner")` — the
-    #     fallback fires ONLY when the name is absent, so "" becomes the provisioner
-    #     NAME. ipykernel's kernelspec carries no kernel_provisioner stanza
-    #     (kernelspec.py:69, metadata = {"debugger": True}), so factory.py:143-149
-    #     falls through to that trait for EVERY kernel, and factory.py:88-90 raises
-    #     `ModuleNotFoundError: Kernel provisioner '' has not been registered.`
-    #     ⇒ the server starts healthy and every notebook fails to get a kernel: the
-    #     worst shape of this defect, since the health probe still says green.
-    #     ⚠️ jupyter_client is the one reader here that is NOT pinned in
-    #     Container.finetuning (it arrives transitively via jupyter_server/ipykernel);
-    #     re-read that line on a bump.
-    # Every OTHER blank on this box is safe and was checked one at a time: the
-    # jupyter_core/jupyterlab path variables all test truthiness (paths.py:156,
-    # :175, :207, :298, :397; commands.py:143, :150, :158), XDG_DATA_HOME is
-    # `env.get(...)` then `if not xdg` (paths.py:191-193), JUPYTER_TOKEN and
-    # JUPYTER_TOKEN_FILE are `os.getenv` truthiness (auth/identity.py:211-214), and
-    # MPLBACKEND is `if os.environ.get('MPLBACKEND')` (matplotlib/__init__.py:1288
-    # at 3.11.1 — matplotlib is unpinned, so that line number moves).
-    # ⚠️ JUPYTER_USE_PROGRAMDATA reads blank as TRUE (envset(), paths.py:214) but is
-    # `os.name == "nt"`-gated at every use (paths.py:217, :222, :343), so it is inert
-    # here rather than guarded — the template already files it under Wrong Platform.
-    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment is the rule.
-    # Every DROSTE_JUPYTER_* keeps its blank: there a blank is the documented N1a
-    # opt-out, and the loops below already treat it as "leave the native alone".
-    droste::blank_is_unset IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME
+    # ── the natives where a BLANK is not "unset" ────────────────────────────────
+    # 🚨 THE SELECTION CRITERION IS WHAT THE READER DOES WITH "", NOT WHAT THE LINE
+    # DISPLAYS. This list used to hold three names, and the reason recorded here was
+    # "the lines finetuning.env prints BLANK with an annotation that says unset". That
+    # criterion is display-based, so by construction it cannot see a line that SHOWS a
+    # value and still dies once the user clears it — NBFORMAT_VALIDATOR ships as
+    # `NBFORMAT_VALIDATOR=fastjsonschema`, a real constant, and was missed by exactly
+    # that blindness. The same flaw understated llama (13 names → 60) and vllm (1 →
+    # 89). Jei's ruling (s57) replaces it:
+    # ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY STRING, WE UNSET IF EMPTY.
+    #
+    # ENV_FILE is sourced under `set -a`, so uncommenting ANY line hands the server an
+    # EMPTY STRING rather than an absence. All 18 natives finetuning.env exposes were
+    # MEASURED at the pins — each reader executed twice in isolated subprocesses, once
+    # with the name absent and once with it "", and the outputs compared. Four differ:
+    #
+    #   IPYTHONDIR                        IPython/paths.py:36 `env.get("IPYTHONDIR",
+    #     None)` then `if ipdir is None` ⇒ "" survives; measured, get_ipython_dir()
+    #     returns "." instead of ~/.ipython, so profiles are written into whatever
+    #     directory the server happens to be in. ⚠️ THE ONE ENTRY THAT RAISES NOTHING
+    #     — it is silently wrong, and only comparing OUTPUTS finds it. Watching for an
+    #     exception would have called this row harmless.
+    #   QT_API                            qtpy/__init__.py:172
+    #     `os.environ.get(QT_API, "pyqt5").lower()`, then a membership check against
+    #     API_NAMES at :174 ⇒ "" is no binding and :175 raises PythonQtValueError,
+    #     killing the import for any cell that reaches a Qt UI.
+    #   JUPYTER_DEFAULT_PROVISIONER_NAME  jupyter_client/provisioning/factory.py:45
+    #     `getenv(..., "local-provisioner")` — the fallback fires ONLY when the name is
+    #     ABSENT, so "" becomes the provisioner NAME. ipykernel's kernelspec carries no
+    #     kernel_provisioner stanza, so factory.py:150 falls through to that trait for
+    #     EVERY kernel and factory.py:89 raises `ModuleNotFoundError: Kernel
+    #     provisioner '' has not been registered.` (driven end to end, not read).
+    #   NBFORMAT_VALIDATOR                nbformat/json_compat.py:122
+    #     `os.environ.get("NBFORMAT_VALIDATOR", "fastjsonschema")` — an ABSENCE
+    #     fallback again — then _validator_for_name (:105-108) raises `ValueError:
+    #     Invalid validator '' value!`. validator.py:68 sits on the path of every
+    #     notebook read AND every save: measured against jupyter_server's own
+    #     FileContentsManager, opening a notebook answers `HTTP 400: Unreadable
+    #     Notebook` and saving one raises. NEW IN THIS LIST, and the reason the sweep
+    #     was redone.
+    #
+    # 🚨 ALL FOUR START THE SERVER. Nothing here fails the launch or the health probe;
+    # the box comes up green and a feature is broken — kernels, notebook I/O, Qt
+    # imports, IPython profile location. That is the WORST shape of this defect, not a
+    # milder one, which is why the ruling is read as "could take down what the box is
+    # FOR" and not merely "could stop the process".
+    #
+    # The other fourteen measured BYTE-IDENTICAL between absent and "" and are left
+    # alone: the jupyter_core path variables are truthiness tests (paths.py:156, :175,
+    # :207, :298, :397) and XDG_DATA_HOME is `env.get(...)` then `if not xdg`
+    # (paths.py:191-192); JUPYTERLAB_DIR is a truthiness test (jupyterlab/commands.py
+    # :158) while JUPYTERLAB_SETTINGS_DIR and JUPYTERLAB_WORKSPACES_DIR use
+    # `x or <default>` (commands.py:143, :150); JUPYTER_TOKEN and JUPYTER_TOKEN_FILE
+    # are `os.getenv` truthiness (jupyter_server/auth/identity.py:211, :214), so a
+    # blank still gets a fresh random token; MPLBACKEND is `if os.environ.get(...)`
+    # (matplotlib/__init__.py:1288) and ipykernel's own `if not os.environ.get(...)`
+    # (kernelapp.py:583) still installs the inline backend.
+    # ⚠️ JUPYTERHUB_SINGLEUSER_APP reads a blank as absent (jupyterlab/labhubapp.py:14,
+    # `if not os.environ.get`) AND that module cannot import here at all — no
+    # jupyterhub is installed — so it is inert twice over.
+    # ⚠️ JUPYTER_USE_PROGRAMDATA DOES read a blank as TRUE (envset(), paths.py:214,
+    # whose false list {no,n,false,off,0,0.0} does not contain the empty string), but
+    # every consumer is `os.name == "nt"`-gated (paths.py:216, :221, :237, :343).
+    # MEASURED on Linux: SYSTEM_JUPYTER_PATH and SYSTEM_CONFIG_PATH come out identical
+    # with the variable absent and blank, so it is inert here rather than guarded —
+    # the template already files it under Wrong Platform.
+    #
+    # ⚠️ ONLY jupyter_core 5.8.1, jupyter_server 2.21.0, jupyterlab 4.6.3,
+    # jupyterlab_server 2.28.0 and traitlets 5.14.3 are PINNED in Container.finetuning.
+    # The readers for IPYTHONDIR, QT_API, JUPYTER_DEFAULT_PROVISIONER_NAME,
+    # NBFORMAT_VALIDATOR and MPLBACKEND live in UNPINNED transitive deps and were
+    # measured at IPython 9.17.0, QtPy 2.4.3, jupyter_client 8.10.0, nbformat 5.11.1
+    # and matplotlib 3.11.1 — their line numbers move on a bump, so re-read them rather
+    # than trusting these citations.
+    #
+    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment
+    # (base/resolve/droste-common.sh:85-90) is the rule, and it forbids a blanket
+    # policy. Every DROSTE_JUPYTER_* keeps its blank: there a blank is the documented
+    # N1a opt-out, and the loops below already treat it as "leave the native alone".
+    # No DROSTE_-owned name appears here; that is a standing invariant, not an accident
+    # of the current contents.
+    # ⭐ PLACEMENT IS ORDERING, NOT LOCATION, and here the two sets are DISJOINT.
+    # Everything this function assigns or unsets below names a different native —
+    # JUPYTER_CONFIG_DIR, JUPYTER_SERVER_ALLOW_UNAUTHENTICATED_ACCESS,
+    # JUPYTER_ALLOW_INSECURE_WRITES, JUPYTER_PLATFORM_DIRS, TRAITLETS_ALL_DEPRECATIONS,
+    # TRAITLETS_APPLICATION_RAISE_CONFIG_FILE_ERROR, JUPYTER_PREFER_ENV_PATH and
+    # JUPYTER_NO_CONFIG — and each of those handles its own blank deliberately, so this
+    # call neither undoes nor is undone by any of them.
+    # 🚨 What it MUST NOT do is run BEFORE a `${VAR=…}` droste default for a name it
+    # also unsets: that would turn a user's deliberate blank opt-out back into our
+    # value. No such overlap exists today, and adding a name to BOTH lists means moving
+    # this call below the defaults, exactly as llama's build-spec had to.
+    droste::blank_is_unset \
+        IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR
 
     # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
     # Two of them HERE. A third — JUPYTER_PREFER_ENV_PATH — supplies its default

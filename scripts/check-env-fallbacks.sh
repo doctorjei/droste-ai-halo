@@ -55,10 +55,13 @@
 # yourself adding a case to REJECT something, the gate has been broken.
 #
 # ⚠️ BOTH `${VAR-…}` AND `${VAR:-…}` ARE ACCEPTED, DELIBERATELY. There is a
-# separate open finding that vllm.env's four `${XDG_CACHE_HOME:-…}` lines should
-# use `-` rather than `:-`, because vLLM's own reader is `os.getenv(X, default)`
-# and therefore has `-` semantics. That is a question about MEANING (what a
-# user's empty XDG_CACHE_HOME should do), not about SAFETY (whether the source
+# separate open finding about vllm.env's four XDG lines — THREE `${XDG_CACHE_HOME
+# :-…}` plus ONE `${XDG_CONFIG_HOME:-…}`, not four of the former; anything written
+# against "the four XDG_CACHE_HOME lines" is written against a file that has three.
+# The finding is that they should use `-` rather than `:-`, because vLLM's own
+# reader is `os.getenv(X, default)` and therefore has `-` semantics. That is a
+# question about MEANING (what a user's empty value should do), not about SAFETY
+# (whether the source
 # survives). Both forms survive `set -u`; both are correct here. DO NOT "fix"
 # this checker into rejecting one of them — it would be enforcing a semantic
 # opinion under the banner of a safety rule, on files that are the user's.

@@ -25,8 +25,15 @@
 #
 #     A `$` on a right-hand side is allowed only in the form `${NAME<op>…}`,
 #     where NAME is a plain variable name ([A-Za-z_][A-Za-z0-9_]*) and <op> is
-#     one of  -  :-  +  :+ .  Nesting is permitted provided every level obeys
-#     the rule.  Nothing else is allowed.
+#     one of  -  :-  +  :+  =  := .  Nesting is permitted provided every level
+#     obeys the rule.  Nothing else is allowed.
+#
+# ⭐ THE ONE PROPERTY THIS FILE ENFORCES IS UNSET-SAFETY UNDER `set -u`, AND
+# NOTHING ELSE. Those six operators are exactly the ones that cannot abort the
+# source when the name is unset. Anything a form additionally DOES — assign,
+# export, surprise somebody — is a question about meaning, and this checker has
+# no standing to answer it. Keep that boundary; it is the only thing that keeps
+# the tool trustworthy on files that belong to the user.
 #
 # 🚨 IT IS A WHITELIST BECAUSE THE PROPERTY VERSION HAD A HOLE AND HID A FORM.
 # This checker's first rule was stated as a property — "every `$` carries a `-`
@@ -56,14 +63,31 @@
 # this checker into rejecting one of them — it would be enforcing a semantic
 # opinion under the banner of a safety rule, on files that are the user's.
 #
-# 🚨 AND `${VAR=…}` / `${VAR:=…}` ARE REJECTED THOUGH THEY ARE SAFE TO SOURCE —
-# THE ONE PLACE THIS CHECKER IS DELIBERATELY STRICTER THAN BASH. They do not
-# just substitute, they ASSIGN. Measured: `A=${OTHER=x}` in a template leaves the
-# child shell holding `OTHER=x`, `set -a` exports it, and droste::load_env_file
-# diffs `env -0` around the source — so `OTHER` comes back as a brand-new setting
-# and is applied exactly as though the user had written an `OTHER=` line. A
-# config file may not silently create a setting nobody wrote. `${VAR-…}` says the
-# same thing about VAR and leaves nothing behind.
+# ⚠️ AND `${VAR=…}` / `${VAR:=…}` ARE ACCEPTED, WHICH IS A REVERSAL — READ THIS
+# BEFORE BANNING THEM AGAIN. They were briefly rejected on the argument that they
+# ASSIGN, so a user "acquires a setting they never wrote". Jei overruled it and
+# the argument is WITHDRAWN, not merely outvoted:
+#   · `:=` MEANS assign. Someone who types it is asking for exactly that, and a
+#     tool that refuses a form for doing what the form is for is not enforcing a
+#     rule, it is disagreeing with the user.
+#   · it is not even silent — droste::load_env_file counts the extra name in the
+#     "applied N setting(s)" line it prints.
+#   · and both forms are unset-safe, measured. That is the whole question here.
+# ⭐ THE LESSON, RECORDED BECAUSE IT IS THE ACTUAL ONE: THE BAN WAS AN ASSISTANT'S
+# PROPOSAL THAT THE OWNER ACCEPTED ON THE STRENGTH OF A JUSTIFICATION THAT HAS
+# SINCE BEEN WITHDRAWN. It was a semantic opinion smuggled in under a safety
+# banner — the very thing the paragraph directly above forbids for the vllm
+# `:-`-versus-`-` question. The two are the same mistake; one of them got as far
+# as being implemented. Do not reintroduce it.
+#
+# ── THE SIDE EFFECT, DOCUMENTED RATHER THAN FORBIDDEN ────────────────────────
+# A `${OTHER:=x}` on a right-hand side does not only substitute into THIS
+# setting — it also SETS `OTHER`. Measured end to end: the child shell comes back
+# holding `OTHER=x`, `set -a` has already exported it, and droste::load_env_file
+# applies its `env -0` diff, so `OTHER` reaches the SERVER'S ENVIRONMENT too. If
+# that is what you meant, it is a neat way to set two things at once; if it is
+# not, `${OTHER-x}` substitutes and leaves nothing behind. A user is entitled to
+# know this and entitled to choose it.
 #
 # ── WHAT IT CHECKS, AND WHAT IT DOES NOT ────────────────────────────────────
 # SCOPE:  assignment lines only — `NAME=…`, `export NAME=…`, and the SAME shapes
@@ -91,6 +115,9 @@
 #     ${VAR-…}  ${VAR:-…}   default
 #     ${VAR+…}  ${VAR:+…}   alternate — safe by construction: it can only expand
 #                           when VAR is set, so `set -u` has nothing to trip on
+#     ${VAR=…}  ${VAR:=…}   assign-default. ⚠️ ALSO SETS VAR, and under `set -a`
+#                           that means VAR is exported and the loader's diff
+#                           carries it to the server. Safe, documented, allowed.
 #   REJECTED — measured to ABORT the source when the name is unset:
 #     $VAR   "$VAR"   ${VAR}   x$VAR      the original box-killer, braces or not
 #     ${#VAR}                             length
@@ -113,10 +140,6 @@
 #                                         failing pipeline and a missing command
 #                                         all abort under errexit
 #   REJECTED — safe to source, but never what the writer meant:
-#     ${VAR=…}  ${VAR:=…}                 assign-default. Measured: it also SETS
-#                                         VAR in the child, `set -a` exports it,
-#                                         and the loader's diff then applies VAR
-#                                         as a setting nobody wrote. See above.
 #     ${ARR[0]-}                          survives, but `env -0` carries scalars
 #                                         only — an array cannot round-trip out
 #                                         of the child, so the value is a promise
@@ -144,10 +167,13 @@ usage() {
 Usage: check-env-fallbacks.sh [-q] [FILE...]
 
 Verify that every `$` on the right-hand side of an assignment in a box config
-template is written `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}` —
-the only shapes that cannot abort the source under `set -u` and lose every
-setting after the offending line, and that leave nothing behind in the child.
-Nesting is allowed as long as every level obeys the same rule.
+template is written `${NAME-…}`, `${NAME:-…}`, `${NAME+…}`, `${NAME:+…}`,
+`${NAME=…}` or `${NAME:=…}` — the only shapes that cannot abort the source
+under `set -u` and lose every setting after the offending line. Nesting is
+allowed as long as every level obeys the same rule.
+
+Note: the two `=` forms also SET the name they expand, and because the file is
+sourced under `set -a` that name reaches the server's environment as well.
 
   FILE...   files to check (default: targets/*/templates/*.env)
   -q        print findings only; no per-file OK line
@@ -295,18 +321,20 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
         esac
 
         # ── THE WHITELIST GATE — THE ONLY PLACE ANYTHING IS ACCEPTED ─────────
-        # One shape: `${` + a plain NAME + one of `-` `:-` `+` `:+`. Note what
-        # is NOT here: no list of hazards, and no arm that has to recognise
-        # `${!IND-}` or `$((…))` in order to refuse them. `!IND` is not a plain
-        # NAME and `$((` does not begin `${NAME`, so both miss the shape and
-        # fall through to be rejected like anything else unrecognised.
+        # One shape: `${` + a plain NAME + one of `-` `:-` `+` `:+` `=` `:=` —
+        # the six operators that cannot abort the source under `set -u`, and the
+        # ONLY question this checker asks. Note what is NOT here: no list of
+        # hazards, and no arm that has to recognise `${!IND-}` or `$((…))` in
+        # order to refuse them. `!IND` is not a plain NAME and `$((` does not
+        # begin `${NAME`, so both miss the shape and fall through to be rejected
+        # like anything else unrecognised.
         # ⚠️ EVERYTHING BELOW THIS BLOCK RUNS ONLY ON A LINE ALREADY REFUSED. It
         # picks the WORDING; it cannot change the verdict.
         if [ "$nx" = '{' ]; then
             close=$(close_brace "$s" "$i")
             if [ "$close" -ge 0 ]; then
                 body=${s:i+2:close-i-2}
-                if [[ $body =~ ^([A-Za-z_][A-Za-z0-9_]*)(:?[-+]) ]]; then
+                if [[ $body =~ ^([A-Za-z_][A-Za-z0-9_]*)(:?[-+=]) ]]; then
                     # ✅ ACCEPTED. Resume scanning from just after the operator,
                     # INSIDE the fallback text, so every nested level is held to
                     # the same rule — measured, `${A:-${B}}` aborts on an unset
@@ -345,14 +373,6 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
                     '')
                         report "$file" "$lineno" "\${$name}" 'unguarded expansion' \
                                "braces alone do NOT help; write \${$name-}" "$src" ;;
-                    :=*|=*)
-                        # 🚨 SAFE TO SOURCE AND REJECTED ANYWAY — the one rule
-                        # deliberately stricter than bash. `=` ASSIGNS: the child
-                        # keeps the name, `set -a` exports it, and the loader's
-                        # `env -0` diff applies it as a setting the user never
-                        # wrote.
-                        report "$file" "$lineno" "\${$body}" 'assign-default expansion' \
-                               "this also SETS $name in the child shell and \`set -a\` exports it, so the loader's env diff would apply $name as a setting nobody wrote; write \${$name-} to substitute without assigning" "$src" ;;
                     :\?*|\?*)
                         report "$file" "$lineno" "\${$body}" 'deliberately fatal expansion' \
                                "a config file may not stop the box; write \${$name-}" "$src" ;;
@@ -361,11 +381,11 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
                                "a config file carries plain scalar names — \`env -0\` cannot bring an array back out of the child; write \${$name-}" "$src" ;;
                     *)
                         report "$file" "$lineno" "\${$body}" 'unguarded expansion' \
-                               "only \${$name-} \${$name:-…} \${$name+…} \${$name:+…} are allowed here" "$src" ;;
+                               "only \${$name-} \${$name:-…} \${$name+…} \${$name:+…} \${$name=…} \${$name:=…} are allowed here" "$src" ;;
                     esac
                 else
                     report "$file" "$lineno" "\${$body}" 'unrecognised expansion' \
-                           'the only allowed form is `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}`' "$src"
+                           'the allowed forms are `${NAME-…}` `${NAME:-…}` `${NAME+…}` `${NAME:+…}` `${NAME=…}` `${NAME:=…}`' "$src"
                 fi ;;
             esac
             i=$((close + 1)); continue ;;
@@ -440,9 +460,9 @@ done
 
 if [ "$findings" -gt 0 ]; then
     printf '\n%d disallowed expansion(s). A `$` on a right-hand side may only be written\n' "$findings"
-    printf '`${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}` (nesting allowed, every\n'
-    printf 'level the same). The file is sourced as a unit, so one name outside that shape\n'
-    printf 'either loses EVERY setting after it or leaves a setting nobody wrote.\n'
+    printf '`${NAME-…}` `${NAME:-…}` `${NAME+…}` `${NAME:+…}` `${NAME=…}` `${NAME:=…}`\n'
+    printf '(nesting allowed, every level the same). The file is sourced as a unit under\n'
+    printf '`set -u`, so one name outside those shapes loses EVERY setting after it.\n'
     exit 1
 fi
 exit "$status"

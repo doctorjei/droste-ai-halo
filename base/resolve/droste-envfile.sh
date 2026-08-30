@@ -42,7 +42,8 @@
 #     cases where the user wants to grab a value from another variable"). It is a
 #     WHITELIST OF ONE SHAPE: a `$` on a right-hand side may only be written
 #     `${NAME<op>…}`, where NAME is a plain variable name and <op> is one of `-`, `:-`,
-#     `+`, `:+`; nesting is allowed provided every level obeys the rule; nothing else is.
+#     `+`, `:+`, `=`, `:=` — the six that cannot abort a source under `set -u`; nesting
+#     is allowed provided every level obeys the rule; nothing else is.
 #     So `${OTHER-}`, `${OTHER:-x}` and `${OTHER+x}` are fine, while `$OTHER` and
 #     `${OTHER}` are BOTH box-killers, because braces alone do not help.
 #     🚨 IT IS A WHITELIST AND NOT THE PROPERTY IT USED TO BE ("every `$` carries a
@@ -52,10 +53,16 @@
 #     carries no `$`, so nothing anchored on `$` could ever have looked at it. Under the
 #     whitelist neither needs to be thought of: `!IND` is not a plain NAME and `$((` is
 #     not `${`, so both simply are not the shape.
-#     🚨 AND `${OTHER=x}` IS REFUSED THOUGH IT SOURCES FINE — the one place the rule is
-#     deliberately stricter than bash. `=` ASSIGNS, so the child comes back holding
-#     OTHER, `set -a` has exported it, and the diff below applies OTHER as a setting the
-#     user never wrote. A config file may not conjure a setting out of a fallback.
+#     ⚠️ AND `${OTHER=x}` IS ACCEPTED, WITH A SIDE EFFECT WORTH KNOWING RATHER THAN
+#     BANNING. `=` also ASSIGNS, so the child comes back holding OTHER, `set -a` has
+#     exported it, and the diff below carries OTHER to the server's environment too —
+#     one line setting two things. That is what `:=` is FOR, and the loader counts the
+#     extra name in its "applied N setting(s)" line, so it is not even quiet. `${OTHER-x}`
+#     is the form that substitutes and leaves nothing behind.
+#     ⭐ IT WAS BRIEFLY REFUSED HERE, ON THE ARGUMENT THAT A USER "ACQUIRES A SETTING THEY
+#     NEVER WROTE"; Jei overruled it and that argument is WITHDRAWN. The only property
+#     this rule enforces is unset-safety; anything else is a semantic opinion wearing a
+#     safety badge. Do not reintroduce it.
 #     scripts/check-env-fallbacks.sh enforces exactly that over the shipped templates (it
 #     carries the whole measured form table), and the last section of g1lab/envfile.sh is
 #     its suite.
@@ -85,12 +92,64 @@ droste::load_env_file() {
     #
     # Shell bookkeeping the child sets for itself. Not the user's input; never applied.
     local ignore="_ SHLVL PWD OLDPWD BASH_EXECUTION_STRING __DROSTE_ENVFILE_OK__"
-    # Names a config file CAN set but almost certainly should not: they steer how every
-    # later process in this box finds its code. We WARN and then apply anyway — the file
-    # has always been able to set them and silently dropping a user's input is its own
-    # defect ([[never-silently-ignore-user-input]]) — but an unexplained broken box is
-    # worse than a noisy one.
-    local loud="PATH LD_PRELOAD LD_LIBRARY_PATH BASH_ENV"
+    # Names a config file CAN set but almost certainly should not. We WARN and then apply
+    # anyway — the file has always been able to set them and silently dropping a user's
+    # input is its own defect ([[never-silently-ignore-user-input]]) — but an unexplained
+    # broken box is worse than a noisy one. Jei ruled the XDG names in on exactly that
+    # standard: a power user may reasonably want to set one, and may reasonably want to
+    # read one, so the answer is not to forbid it — it is to make the consequence audible.
+    #
+    # 🚨 TWO CLASSES, TWO MESSAGES, AND THE SPLIT IS THE WHOLE POINT. One list with one
+    # sentence was wrong for the second class, and wrong in the direction that matters: it
+    # promised a server that stops starting. These names do not do that. The box comes up
+    # healthy, the service answers, and the data goes somewhere the host never sees —
+    # invisible until the next recreate. ⭐ A warning that names the WRONG SYMPTOM is worse
+    # than no warning: it sends the reader looking for something that will never happen,
+    # and when it never happens they conclude the channel is noise.
+    #
+    #   loud_code — where this box finds its CODE. Wrong value ⇒ the server does not
+    #               start, loudly and immediately.
+    #   loud_dirs — where programs WRITE. Wrong value ⇒ data lost at recreate time, and
+    #               nothing whatsoever before it.
+    #
+    # ⭐ MOVING A NAME BETWEEN THEM IS A ONE-LINE EDIT, deliberately: which hazard a
+    # variable carries is a finding, not a constant.
+    #
+    # ⚠️ WHY THESE THREE XDG NAMES AND NOT THE FAMILY. The class is a single user-owned
+    # base directory that programs WRITE persistent files under, and each of the three has
+    # a measured reader in these images or a line on a shipped surface:
+    #   XDG_CACHE_HOME  — llama's own HF cache chain (common/hf-cache.cpp, rung 5 of 6,
+    #                     and this image sets none of the four rungs above it); vLLM's
+    #                     get_default_cache_root() behind the ~/.cache/vllm bind;
+    #                     huggingface_hub's HF_HOME default behind the ~/.cache/huggingface
+    #                     CRITICAL bind on ALL FIVE boxes; torch's _get_torch_home() behind
+    #                     the ~/.cache/torch bind on comfyui and finetuning. vllm.env names
+    #                     it on four lines of its own.
+    #   XDG_CONFIG_HOME — vLLM's get_default_config_root(), i.e. VLLM_CONFIG_ROOT, which
+    #                     vllm.env shows. ⚠️ NOT MIOpen: the ~/.config/miopen bind LOOKS
+    #                     like a second hit and is not one — MIOpen's userdb path is a
+    #                     build-time constant and MIOpen reads no XDG variable at all.
+    #   XDG_DATA_HOME   — finetuning.env OFFERS it as a settable line, so a user setting it
+    #                     is doing what our own surface invited; jupyter_core/paths.py
+    #                     reads it for the user data dir (kernelspecs, installed
+    #                     extensions).
+    # LEFT OUT, each for a stated reason and not for tidiness — a list padded for symmetry
+    # trains the reader to ignore the channel, which is the same cry-wolf argument the
+    # stale-name rule above turns on:
+    #   XDG_STATE_HOME  — nothing in these five images reads it and droste keeps nothing
+    #                     under ~/.local/state, so the warning would have no consequence
+    #                     behind it. FIRST CANDIDATE TO ADD if a reader turns up: one word.
+    #   XDG_RUNTIME_DIR — per-session and non-persistent BY SPECIFICATION, so there is
+    #                     nothing here to lose at recreate. It is also the one XDG name
+    #                     droste itself READS (droste-setup.sh, with a fallback), and
+    #                     warning about our own idiom is not a service to anyone.
+    #   XDG_DATA_DIRS / XDG_CONFIG_DIRS — search LISTS, never written to, so they cannot
+    #                     relocate anything. If either ever earns a warning it is for
+    #                     SHADOWING a system file, which is loud_code's hazard and
+    #                     loud_code's sentence — the move being one word from here to
+    #                     there is exactly why the two lists are separate.
+    local loud_code="PATH LD_PRELOAD LD_LIBRARY_PATH BASH_ENV"
+    local loud_dirs="XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME"
     # ── STALE DROSTE NAMES — the one thing this file CAN honestly call wrong ────
     # 🚨 THE FAILURE, MEASURED FROM THE TREE, NOT THEORISED. Every box's config file
     # is seeded `if_missing` (apply_templates.py, the `if os.path.exists(dest)`
@@ -238,9 +297,14 @@ droste::load_env_file() {
                 serve::warn "$file sets $name, and nothing in this box reads it. Droste's own settings all START with DROSTE_ (they were spelled <BOX>_DROSTE_* in older files, e.g. DS4_DROSTE_MODEL is now DROSTE_DS4_MODEL). The value is being exported exactly as the file asks, but no droste setting is receiving it, so whatever this line was meant to change is running on its default.$ref"
                 ;;
         esac
-        case " $loud " in
+        case " $loud_code " in
             *" $name "*)
                 serve::warn "$file changes $name, which decides where this box finds its programs and libraries. Applying it as asked — if the server stops starting, this line is the first thing to remove."
+                ;;
+        esac
+        case " $loud_dirs " in
+            *" $name "*)
+                serve::warn "$file changes $name, which decides where programs in this box write their caches and data. Applying it as asked, and the box will start normally — but droste binds your host's storage at the standard locations, and this points programs somewhere else. Whatever follows it out of a bind — the model cache above all — is written inside the container instead: it looks fine for as long as this box runs, and it is gone the next time the box is recreated. To move that data on your host, change the box's data mapping in the installer rather than redirecting it from here."
                 ;;
         esac
         export "$name=${now[$name]}"

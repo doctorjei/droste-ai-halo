@@ -26,11 +26,35 @@ JUPYTER_ARGV_BASE=(
 SERVICE=( "${JUPYTER_ARGV_BASE[@]}" )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
-# JupyterLab has no unauthenticated health route: / redirects to /login (302) and
-# the API paths answer 403 without the token. ANY HTTP response therefore proves
-# the server is up, which is exactly what HEALTH_ACCEPT="any" means.
+# `ok` means healthy on 2xx/3xx and unhealthy on anything else
+# (droste-healthcheck.sh:145). It is a STATUS-ONLY verdict — the probe asks curl
+# for `%{http_code}` with the body thrown away (serve::probe,
+# droste-serve.sh:441-462), so there is no body expectation here and none is
+# available; llama's HEALTH_ACCEPT="ok" carries none either.
+#
+# ⭐ WHAT `ok` PROVES HERE. GET <base_url> is Jupyter's own root redirect
+# (base_url + default_url, then /login), and it answers 302 whether or not a token
+# is required: MEASURED at the pins across allow_unauthenticated_access true/false
+# × JUPYTER_TOKEN set/unset — all four 302. So a 2xx/3xx says the tornado
+# application is BUILT AND ROUTING, which is exactly what a 404 would deny.
+# ⚠️ WHAT IT DELIBERATELY DOES NOT PROVE: that a kernel can start, that
+# /opt/workspace is writable, or that any extension loaded. This is a LIVENESS
+# probe, not a readiness one — an unauthenticated route that could say more does
+# not exist, and inventing one by shipping a token to the probe would put a
+# credential where the healthcheck can leak it.
+#
+# ⚠️ THIS ROW SAID "any" UNTIL s58, AND THE REASON WAS HONEST BUT COSTLY. A
+# non-default c.ServerApp.base_url moves EVERY route, so GET / becomes a 404
+# (measured: base_url "/deep/lab" ⇒ 404 at /, 302 at /deep/lab/) and `any` — which
+# exits 0 on any status that is not empty/000 — kept such a box healthy. The price
+# was that it could not tell a serving Jupyter from one 404-ing its entire site.
+# ⭐ THE FIX IS TO STOP ADDRESSING THE SERVER AT A PATH THE USER MOVED, not to
+# widen what counts as healthy: jupyter_health_prefix (below) reads the effective
+# base_url and hands it to droste::set_health_prefix, exactly as llama's
+# PRE_LAUNCH does with --api-prefix. Only once the probe knocks in the right place
+# is `ok` affordable.
 HEALTH_PATH="/"
-HEALTH_ACCEPT="any"
+HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/finetuning.env (templates.yaml if_missing). Both resolvers
@@ -163,10 +187,16 @@ jupyter_env() {
     #     directory the server happens to be in. ⚠️ THE ONE ENTRY THAT RAISES NOTHING
     #     — it is silently wrong, and only comparing OUTPUTS finds it. Watching for an
     #     exception would have called this row harmless.
-    #   QT_API                            qtpy/__init__.py:172
-    #     `os.environ.get(QT_API, "pyqt5").lower()`, then a membership check against
-    #     API_NAMES at :174 ⇒ "" is no binding and :175 raises PythonQtValueError,
-    #     killing the import for any cell that reaches a Qt UI.
+    #   QT_API                            matplotlib backends/qt_compat.py:60-63
+    #     ⇒ "" is not a binding name and the import raises RuntimeError, killing any
+    #     cell that reaches a Qt UI.
+    #     ⚠️ CORRECTED s58: this cited qtpy/__init__.py:172, and QTPY IS NOT IN THIS
+    #     IMAGE — nothing installs it and no Jupyter or matplotlib package pulls it in.
+    #     The UNSET behaviour differs too: :56-57 gives None, then :117-128 tries
+    #     PyQt6, PySide6, PyQt5, PySide2 and takes the first that imports — NOT a
+    #     hardcoded "pyqt5". The guard is right either way; only the citation was wrong.
+    #     ⭐ Second site of one misattribution: droste-common.sh carried it too and was
+    #     fixed in s57. A wrong citation propagates by being copied, so fix every copy.
     #   JUPYTER_DEFAULT_PROVISIONER_NAME  jupyter_client/provisioning/factory.py:45
     #     `getenv(..., "local-provisioner")` — the fallback fires ONLY when the name is
     #     ABSENT, so "" becomes the provisioner NAME. ipykernel's kernelspec carries no
@@ -398,6 +428,156 @@ jupyter_env() {
     fi
 }
 
+# ── jupyter_health_prefix — where base_url moved the routes ──────────────────
+#
+# 🚨 WHY WE ASK JUPYTER INSTEAD OF READING A FILE. base_url can be set in three
+# places that outrank each other in a fixed order — the baked
+# /etc/jupyter/jupyter_server_config.py (droste's copy, which ships
+# `c.ServerApp.base_url = "/"`), the user's own jupyter_server_config.py in
+# JUPYTER_CONFIG_DIR (/opt/data), and a --ServerApp.base_url on the command line,
+# which beats both. Only Jupyter knows which one won, and `--show-config-json`
+# dumps the MERGED config, so we run the app and read its answer. That is the same
+# "declare, do not detect" bargain droste::set_health_prefix documents: a prefix is
+# an arbitrary string with nothing to probe for, so the side that has seen the
+# config has to say.
+#
+# ⭐ THE ARGV IS REPLAYED, NOT REBUILT. "${SERVICE[@]}" is the command line the
+# server is about to be launched with, DROSTE_JUPYTER_EXTRA_ARGS included, so a
+# --ServerApp.base_url a user put in the catch-all is seen here exactly as the
+# server will see it. Called last in PRE_LAUNCH for that reason: SERVICE is rebuilt
+# above, and jupyter_env has already exported JUPYTER_CONFIG_DIR — a resolver run
+# before either would read a different configuration than the server does.
+#
+# ⚠️ `jupyter lab`, NOT `jupyter server`, AND THE 2s IS NOT WHY. ServerApp.base_url
+# is the same trait and both report the same value — MEASURED at the pins across
+# the user file (with and without a trailing slash, and with no leading slash),
+# the baked file alone, and --ServerApp.base_url in both = and space spellings:
+# identical every time, and identically ABSENT when no file sets it. They are also
+# the same speed here (3.0-3.2s vs 2.8-3.3s over three runs each), so the cheap-run
+# argument does not survive measurement either. What decides it is that `jupyter
+# server` REJECTS lab's own aliases: --app-dir=… exits 2 with a usage message,
+# while `jupyter lab` takes it. Replaying the argv means replaying it to the
+# program that accepts it — anything else turns a legitimate catch-all argument
+# into a resolution failure, and the fallback for that is the no-prefix path below.
+#
+# 🚨 THE RESOLVER RUNS AS ROOT AND THE SERVER MAY NOT — SO IT WRITES INTO A
+# SANDBOX. PRE_LAUNCH runs as root from both doors (droste-serve.sh:202) while
+# serve::launch setprivs the service to the box user, and `--show-config-json`
+# still initializes far enough to create ServerApp.cookie_secret_file, MODE 0600.
+# A root-owned 0600 cookie secret sitting where the box user's server expects to
+# read one is a server that does not start — this probe would have caused the exact
+# failure class it exists to prevent. Both halves below are needed and neither
+# subsumes the other: JUPYTER_RUNTIME_DIR moves the default location, and the
+# explicit --ServerApp.cookie_secret_file (last on the line, so it beats a config
+# file AND the catch-all) catches an absolute path a user set by hand, which the
+# env var cannot reach. MEASURED: with them, the real runtime dir stays empty.
+# ⚠️ ONE ARTEFACT IS LEFT BEHIND ON PURPOSE, because removing it is not worth a
+# second mechanism: jupyter_core writes a `migrated` marker into the config dir,
+# mode 0644. It is existence-checked only, and JupyterApp.migrate_config opens it
+# "r+" and RETURNS on PermissionError, so a root-owned one is read, not tripped
+# over. (This box has no IPython 3 tree to migrate in the first place.)
+#
+# ⚠️ FAILING TO RESOLVE MUST NEVER FAIL THE LAUNCH. Every arm returns 0 and every
+# arm ends at droste::set_health_prefix — with "" on failure, which DELETES a stale
+# .PREFIX rather than leaving one behind. That matters on the relaunch path, where
+# the healthcheck re-runs PRE_LAUNCH inside a container whose state dir already has
+# one.
+# ⭐ AND THE FALLBACK IS SAFE WHERE IT MATTERS: no prefix means the probe knocks at
+# "/", which is exactly right for the default base_url — the overwhelmingly common
+# case — so a resolver that cannot run costs a box with a base_url its correct
+# probe, and costs every other box nothing. Note also that almost everything that
+# can make this command fail (a bad flag in the catch-all, a config file that does
+# not parse) fails the REAL launch too, so the box is unhealthy for a better reason.
+# ⚠️ The internal escape hatch is DROSTE_JUPYTER_CONFIG_TIMEOUT, in the same spirit
+# as DROSTE_HEALTH_TIMEOUT and DROSTE_SERVE_RELAUNCH_COOLDOWN: not a config-surface
+# setting, just a number that can be moved without a rebuild. 45s is ~15x the
+# measured cost and stays well inside finetuning's 2m --health-timeout, which is
+# what bounds PRE_LAUNCH when serve::relaunch calls it from inside a probe.
+: "${DROSTE_JUPYTER_CONFIG_TIMEOUT:=45}"
+jupyter_health_prefix() {
+    local sandbox="" json="" base="" prefix="" rc=0
+    local runner=()
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        serve::err "python3 is not on PATH, so Jupyter's effective base_url cannot be read — the health probe will knock at '/'. That is correct unless you set c.ServerApp.base_url; with one set, '/' answers 404 and this box will be restarted."
+        droste::set_health_prefix ""
+        return 0
+    fi
+    sandbox=$(mktemp -d "${TMPDIR:-/tmp}/droste-jupyter-config.XXXXXX" 2>/dev/null) || sandbox=""
+    if [ -z "$sandbox" ]; then
+        serve::err "cannot create a temporary directory, so Jupyter's effective base_url cannot be read safely — the health probe will knock at '/'. That is correct unless you set c.ServerApp.base_url; with one set, '/' answers 404 and this box will be restarted."
+        droste::set_health_prefix ""
+        return 0
+    fi
+    # ⚠️ AN `if`, NOT `cmd && runner=(…)`, AND THE REASON IS POSITION-INDEPENDENCE
+    # RATHER THAN A BUG I FOUND. MEASURED: errexit does NOT fire for the left side of
+    # an `&&` list, so the terse form is safe exactly where it stands — but it becomes
+    # a box-killer the moment it ends up LAST in a function, because then the list's
+    # non-zero status is the function's, and PRE_LAUNCH runs unguarded under
+    # `set -euo pipefail` in the resolver lane. The `if` costs two lines and cannot be
+    # broken by moving it. (ftguard's M9 mutation restores the `&&` form and correctly
+    # stays GREEN — recorded so nobody re-adds it thinking the suite is blind.)
+    if command -v timeout >/dev/null 2>&1; then
+        runner=(timeout "$DROSTE_JUPYTER_CONFIG_TIMEOUT")
+    fi
+
+    json=$(JUPYTER_RUNTIME_DIR="$sandbox" \
+        ${runner[@]+"${runner[@]}"} "${SERVICE[@]}" \
+        --ServerApp.cookie_secret_file="$sandbox/cookie_secret" \
+        --show-config-json 2>/dev/null) || rc=$?
+    rm -rf "$sandbox" 2>/dev/null || true
+
+    if [ "$rc" -ne 0 ] || [ -z "$json" ]; then
+        serve::err "could not read Jupyter's configuration (\`--show-config-json\` exited $rc) — the health probe will knock at '/'. That is correct unless you set c.ServerApp.base_url in this box's jupyter_server_config.py or in DROSTE_JUPYTER_EXTRA_ARGS; with one set, '/' answers 404 and this box will be restarted every few minutes. Whatever broke the command above will very likely stop the server starting too — see the container log."
+        droste::set_health_prefix ""
+        return 0
+    fi
+
+    # `--show-config-json` reports the value AS CONFIGURED, not as ServerApp's
+    # validator will normalise it (measured: "/deep/lab/", "deep/lab" and "/" all
+    # come back verbatim), and the key is ABSENT when nothing set it. Both of those
+    # are handled below, so no reader here may assume a shape.
+    base=$(printf '%s' "$json" | python3 -c '
+import json, sys
+try:
+    cfg = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+value = cfg.get("ServerApp", {}).get("base_url", "/")
+if not isinstance(value, str):
+    raise SystemExit(1)
+sys.stdout.write(value)
+' 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        serve::err "Jupyter's configuration came back in a shape this box could not read — the health probe will knock at '/'. That is correct unless you set c.ServerApp.base_url; with one set, '/' answers 404 and this box will be restarted."
+        droste::set_health_prefix ""
+        return 0
+    fi
+
+    # ── normalise EXACTLY as ServerApp does, then strip back to a prefix ────────
+    # ServerApp's @validate("base_url") adds a leading slash if missing and a
+    # trailing one if missing (so "deep/lab" is served at "/deep/lab/"), and
+    # HEALTH_PATH above is "/" — read_health_spec prepends the prefix VERBATIM, so
+    # what the probe requests is <prefix> + "/". Adding the leading slash and
+    # stripping every trailing one therefore rebuilds precisely the URL Jupyter
+    # answers: MEASURED against a live server, "/deep/lab", "/deep/lab/" and
+    # "deep/lab" all give 404 at / and 302 at /deep/lab/.
+    # 🚨 THE DEFAULT MUST PRODUCE NO PREFIX AT ALL, and that is what the stripping
+    # buys. base_url "/" reduces to the empty string, droste::set_health_prefix
+    # REMOVES .PREFIX for an empty value, and the probe path stays exactly "/" —
+    # byte-for-byte what this box did before this function existed. A prefix of "/"
+    # would have made it "//". The same reduction covers the degenerate spellings:
+    # "" (which ServerApp turns into "/") and "//" (measured: still 302 at "/").
+    case "$base" in
+        /*) ;;
+        *)  base="/$base" ;;
+    esac
+    prefix=$base
+    while [ "$prefix" != "${prefix%/}" ]; do prefix=${prefix%/}; done
+    droste::set_health_prefix "$prefix"
+    return 0
+}
+
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 # The server lane never sources /etc/profile.d (no login shell), but the Triton
 # HIP toolchain env (TRITON_HIP_LLD_PATH/_CLANG_PATH + SDK LD_LIBRARY_PATH) it
@@ -420,4 +600,9 @@ finetuning_pre_launch() {
     # a value MAY contain spaces, and it is not glob-expanded.
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_JUPYTER_EXTRA_ARGS:-}")
     SERVICE=( "${JUPYTER_ARGV_BASE[@]}" ${_extra[@]+"${_extra[@]}"} )
+
+    # LAST, and both halves of that matter: it replays "${SERVICE[@]}" (so the
+    # catch-all is in the argv it reads) in the environment jupyter_env has already
+    # exported (so JUPYTER_CONFIG_DIR points where the server's will).
+    jupyter_health_prefix
 }

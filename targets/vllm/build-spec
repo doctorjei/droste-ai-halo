@@ -550,9 +550,16 @@ vllm_env() {
         # The server comes UP and every multimodal request fails — the NBFORMAT_VALIDATOR
         # shape, and the reason "does it raise at startup" is the wrong question.
         VLLM_MEDIA_CONNECTOR
-        # None -> [''] ⇒ `plugin.name in ['']` is false for every plugin, so a cleared
-        # line loads NO plugins where an absent one loads ALL (plugins/__init__.py:31,54).
-        VLLM_PLUGINS
+        # ⛔ VLLM_PLUGINS IS DELIBERATELY *NOT* ON THIS LIST — Jei ruled it s57, and the
+        # mechanics are the reason it looked like it belonged. `None -> ['']` means
+        # `plugin.name in ['']` is false for every plugin, so a cleared line loads NO
+        # plugins where an absent one loads ALL (plugins/__init__.py:31,54). That reads
+        # as the classic blank-is-not-absent defect — but here the divergence IS the
+        # feature: "load no plugins" is a thing a user may legitimately want to say, and
+        # an empty list is the only way to say it. It is the unbounded-string exception,
+        # and `vllm.env` documents the behaviour at the line. ⭐ The near-identical
+        # mechanism next door (MEDIA_CONNECTOR) IS guarded, because "no media connector"
+        # is not a coherent request — the difference is intent, not machinery.
         # `if partition_list_str is not None` (distributed/utils.py:110-116) ⇒ ""
         # enters and `int('')` raises "Invalid partition string: ".
         VLLM_PP_LAYER_PARTITION

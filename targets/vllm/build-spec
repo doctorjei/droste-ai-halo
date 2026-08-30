@@ -259,9 +259,10 @@ vllm_menu() {
 }
 
 # vllm_env — the environment the served process gets: DROSTE_VLLM_* translated to
-# the native variables, plus the one NATIVE line whose blank the file promises is a
-# no-op. Its own function so it can be driven alone (source the spec, call it, print
-# the environment) without building the argv.
+# the native variables, plus the 89 NATIVE lines whose blank the file promises is a
+# no-op and whose reader would otherwise take the box down. Its own function so it
+# can be driven alone (source the spec, call it, print the environment) without
+# building the argv.
 # ⚠️ EXPORT IS REQUIRED. resolve::apply_spec runs `set +a` before PRE_LAUNCH, so a
 # bare assignment here would never reach the vLLM process — it would be a silent
 # no-op, which is the same defect in a different costume.
@@ -284,7 +285,168 @@ vllm_env() {
     # fallback is gated on `raw_count < 0` and 0 is not negative.
     # ⇒ the blank must reach the wire as an ABSENCE — and absence IS this box's real
     # default: nothing in any image or profile.d sets CUDA_VISIBLE_DEVICES.
-    droste::blank_is_unset CUDA_VISIBLE_DEVICES
+    #
+    # 🚨 AND CUDA_VISIBLE_DEVICES WAS NEVER THE ONLY ONE — IT WAS JUST THE ONE WE HAD
+    # LOOKED AT (s57). vllm.env exposes 149 NATIVE (non-DROSTE_) names, and measured at
+    # the pin, 88 MORE of them are fatal on a clear. Same shape as llama's list and the
+    # same ruling behind it: ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY
+    # STRING, WE UNSET IF EMPTY. Both resolvers source the file under `set -a`, so a
+    # user who uncomments a line and then empties it hands vLLM `NAME=""`, and vLLM's
+    # readers ask "is it SET", not "is it non-empty".
+    #
+    # 🚨 THE SELECTION CRITERION IS THE READER'S BEHAVIOR ON "", NOT WHAT THE FILE
+    # DISPLAYS. The old list held one name because one blank line had been noticed;
+    # `256`, `16384`, `blake3` and `fork` all behave identically once the user clears
+    # them. vllm/envs.py is a dict of 218 LAMBDAS and they are NOT uniform, so each was
+    # measured by CALLING it at the pin (v0.16.0, 89a77b1) with the name unset and then
+    # with it set to "". Four failure shapes, and they account for all 88:
+    #     73  int("")     ⇒ ValueError: invalid literal for int() with base 10: ''
+    #      3  float("")   ⇒ ValueError: could not convert string to float: ''
+    #     10  env_with_choices  ⇒ its None-check is at envs.py:304-306, so "" is a
+    #                            VALUE and falls to `raise ValueError` at :318-322
+    #      1  json.loads("")    ⇒ JSONDecodeError (ALLREDUCE_FUSION_THRESHOLDS_MB)
+    #      1  VLLM_PORT   ⇒ get_vllm_port (envs.py:402-418) gates on
+    #                       `"VLLM_PORT" not in os.environ`, a PRESENCE test, so a
+    #                       blank skips the `return None` and reaches int("")
+    #
+    # ⚠️ ONE "BOOLEAN" FAMILY SPLITS ACROSS ALL THREE OUTCOMES — which is why nothing
+    # here was inferred from a name. `VLLM_USE_DEEP_GEMM` is
+    # `bool(int(os.getenv(.., "1")))` (envs.py:1132) and THROWS; the AITER flags are
+    # `os.getenv(.., "True").lower() in ("true", "1")` (envs.py:896-898) and cannot
+    # throw at all — a blank there silently flips a default-True flag OFF, and a
+    # default-False one is a genuine no-op. Only the throwing ones are below. The
+    # silent flippers are a DIFFERENT defect and are NOT folded in here.
+    #
+    # ⚠️ INCLUSION DOES NOT DEPEND ON WHETHER THE CODE PATH RUNS ON THIS BOX. The TPU,
+    # CPU, NVIDIA-only and MI3*-only names are all on the list. envs.py reads are lazy,
+    # so we cannot say which ones a given run touches — and `unset` restores exactly
+    # the default the file already documents, so guarding a name that is never read
+    # costs nothing while guessing wrong costs a box that will not start.
+    #
+    # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment
+    # (base/resolve/droste-common.sh:85-90) is the rule and it forbids a blanket
+    # policy. Every DROSTE_VLLM_* keeps its blank, because there a blank is the
+    # documented N1a opt-out, and unsetting those would turn "I don't want one" into
+    # "here, have one". No DROSTE_-owned name appears below; that is a standing
+    # invariant, not an accident of the current contents.
+    #
+    # ⭐ PLACEMENT IS ORDERING, NOT LOCATION. What this call must never do is run
+    # BEFORE a `${NATIVE_NAME=default}` droste default, because that would delete a
+    # user's blank opt-out and let the `=` put our value back. Measured for vllm: no
+    # name below is written anywhere in this spec, so running first (here) or last is
+    # identical today. It runs FIRST on purpose anyway — every DROSTE_VLLM_* mapping
+    # below uses a plain `export`, which overwrites unconditionally, so a droste
+    # setting still wins over a cleared native line exactly as it should.
+    #
+    # An array rather than 89 backslash continuations, so each section can carry a
+    # comment. Order is vllm.env's own line order, section by section.
+    local -a _fatal_on_clear=(
+        # Caches & Config
+        VLLM_XGRAMMAR_CACHE_MB                          # int
+        # Server liveness & timeouts
+        VLLM_ENGINE_READY_TIMEOUT_S                     # int
+        VLLM_HTTP_TIMEOUT_KEEP_ALIVE                    # int
+        # Engine internals & throughput
+        VLLM_ENABLE_V1_MULTIPROCESSING                  # bool(int("")) ⇒ throws
+        VLLM_RINGBUFFER_WARNING_INTERVAL                # int
+        VLLM_ROCM_SLEEP_MEM_CHUNK_SIZE                  # int
+        VLLM_V1_OUTPUT_PROC_CHUNK_SIZE                  # int
+        VLLM_MSGPACK_ZERO_COPY_THRESHOLD                # int
+        VLLM_MQ_MAX_CHUNK_BYTES_MB                      # int
+        VLLM_WORKER_MULTIPROC_METHOD                    # menu {spawn, fork}
+        VLLM_FLOAT32_MATMUL_PRECISION                   # menu {highest, high, medium}
+        # Idle Behaviour & Timeouts
+        VLLM_RPC_TIMEOUT                                # int
+        VLLM_ENGINE_ITERATION_TIMEOUT_S                 # int
+        # MoE Models
+        VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD      # int
+        VLLM_FUSED_MOE_CHUNK_SIZE                       # int
+        VLLM_MOE_DP_CHUNK_SIZE                          # int
+        # KV Cache & Attention
+        Q_SCALE_CONSTANT                                # int
+        K_SCALE_CONSTANT                                # int
+        V_SCALE_CONSTANT                                # int
+        # Multimodal Input
+        VLLM_IMAGE_FETCH_TIMEOUT                        # int
+        VLLM_VIDEO_FETCH_TIMEOUT                        # int
+        VLLM_AUDIO_FETCH_TIMEOUT                        # int
+        VLLM_MEDIA_LOADING_THREAD_COUNT                 # int
+        VLLM_MAX_AUDIO_CLIP_FILESIZE_MB                 # int
+        VLLM_MM_HASHER_ALGORITHM                        # menu {blake3, sha256, sha512}
+        # Multi-Node Serving
+        CUDA_VISIBLE_DEVICES                            # torch — see the block above
+        LOCAL_RANK                                      # int
+        VLLM_PORT                                       # presence test, then int("")
+        VLLM_DP_MASTER_PORT                             # int
+        VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS              # int
+        VLLM_DP_RANK_LOCAL                              # int (defaults to VLLM_DP_RANK)
+        VLLM_DP_RANK                                    # int
+        VLLM_DP_SIZE                                    # int
+        VLLM_RAY_PER_WORKER_GPUS                        # float
+        VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE          # menu {auto, nccl, shm}
+        # Disaggregated prefill / KV transfer (also multi-node)
+        VLLM_NIXL_SIDE_CHANNEL_PORT                     # int
+        VLLM_NIXL_ABORT_REQUEST_TIMEOUT                 # int
+        VLLM_MOONCAKE_BOOTSTRAP_PORT                    # int
+        VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT             # int
+        VLLM_MORIIO_QP_PER_TRANSFER                     # int
+        VLLM_MORIIO_POST_BATCH_SIZE                     # int
+        VLLM_MORIIO_NUM_WORKERS                         # int
+        VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES             # int
+        # Compilation & startup cost
+        VLLM_COMPILE_CACHE_SAVE_FORMAT                  # menu {binary, unpacked}
+        # Logging
+        VLLM_LOG_STATS_INTERVAL                         # float
+        VLLM_LOG_BATCHSIZE_INTERVAL                     # float
+        # CUDA / NVIDIA-only Kernels — read lazily, so guard them anyway (see above)
+        VLLM_USE_FLASHINFER_SAMPLER                     # int
+        VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER             # int
+        VLLM_USE_FLASHINFER_MOE_FP16                    # int
+        VLLM_USE_FLASHINFER_MOE_FP8                     # int
+        VLLM_USE_FLASHINFER_MOE_FP4                     # int
+        VLLM_USE_FLASHINFER_MOE_INT4                    # int
+        VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8             # int
+        VLLM_USE_FLASHINFER_MOE_MXFP4_BF16              # int
+        VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8_CUTLASS     # int
+        VLLM_MARLIN_INPUT_DTYPE                         # menu {int8, fp8}
+        VLLM_MXFP4_USE_MARLIN                           # int
+        VLLM_FLASHINFER_MOE_BACKEND                     # menu {throughput, latency, …}
+        VLLM_FLASHINFER_ALLREDUCE_FUSION_THRESHOLDS_MB  # json.loads("") ⇒ throws
+        VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE           # int
+        VLLM_HAS_FLASHINFER_CUBIN                       # int
+        VLLM_ALLREDUCE_USE_SYMM_MEM                     # int
+        VLLM_NVFP4_GEMM_BACKEND                         # menu {…, cutlass, marlin}
+        VLLM_USE_DEEP_GEMM                              # bool(int("")) ⇒ throws
+        VLLM_MOE_USE_DEEP_GEMM                          # bool(int("")) ⇒ throws
+        VLLM_USE_DEEP_GEMM_E8M0                         # int
+        VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES           # int
+        VLLM_USE_FBGEMM                                 # int
+        VLLM_DEEP_GEMM_WARMUP                           # menu {skip, full, relax}
+        VLLM_DEEPEPLL_NVFP4_DISPATCH                    # int
+        VLLM_DEEPEP_BUFFER_SIZE_MB                      # int
+        VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL               # int
+        VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE    # int
+        VLLM_ENABLE_CUDAGRAPH_GC                        # int
+        VLLM_USE_NVFP4_CT_EMULATIONS                    # int
+        VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE              # int
+        VLLM_NVTX_SCOPES_FOR_PROFILING                  # int
+        VLLM_DBO_COMM_SMS                               # int
+        VLLM_LORA_DISABLE_PDL                           # int
+        VLLM_USE_NCCL_SYMM_MEM                          # int
+        # TPU / XLA (requires torch_xla & TPU)
+        VLLM_XLA_CHECK_RECOMPILATION                    # int
+        VLLM_XLA_USE_SPMD                               # int
+        VLLM_TPU_BUCKET_PADDING_GAP                     # int
+        VLLM_TPU_MOST_MODEL_LEN                         # int
+        # CPU backend (this build is GPU-specific)
+        VLLM_CPU_KVCACHE_SPACE                          # int
+        VLLM_CPU_NUM_OF_RESERVED_CPU                    # int
+        VLLM_CPU_SGL_KERNEL                             # int
+        # Other AMD cards — upstream says MI3*
+        VLLM_ROCM_QUICK_REDUCE_QUANTIZATION             # menu {FP, INT8, …, NONE}
+        VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB        # int
+    )
+    droste::blank_is_unset "${_fatal_on_clear[@]}"
 
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do

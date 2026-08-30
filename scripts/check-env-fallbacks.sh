@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# check-env-fallbacks.sh — every `$` on a config template's right-hand side must
-# carry a fallback.
+# check-env-fallbacks.sh — a `$` on a config template's right-hand side is
+# allowed in ONE shape, and that shape is a whitelist.
 #
 # ⭐ WHY THIS EXISTS. Every box's config surface (targets/*/templates/*.env) is a
 # shell file that droste SOURCES as a unit, in a child shell running
@@ -11,15 +11,41 @@
 # box down before the server ever launched.
 #
 # ⭐ AND THE RULE IS NOT "NO `$`" (Jei, s57). The danger was never the
-# cross-reference, it was the MISSING FALLBACK:
+# cross-reference:
 #
 #     "there may be isolated cases where the user wants to grab a value from
 #      another variable"
 #
 # `${OTHER-}` is mechanically safe and legitimately useful — it is exactly how a
 # class-2 line says "default is whatever is already there, replace the right-hand
-# side to set your own". So this checker bans the thing that actually killed a
-# box, and nothing else.
+# side to set your own". So a template may reach for another variable; it may
+# only do it in one shape.
+#
+# ── THE RULE, AND IT IS A WHITELIST OF SHAPES ────────────────────────────────
+#
+#     A `$` on a right-hand side is allowed only in the form `${NAME<op>…}`,
+#     where NAME is a plain variable name ([A-Za-z_][A-Za-z0-9_]*) and <op> is
+#     one of  -  :-  +  :+ .  Nesting is permitted provided every level obeys
+#     the rule.  Nothing else is allowed.
+#
+# 🚨 IT IS A WHITELIST BECAUSE THE PROPERTY VERSION HAD A HOLE AND HID A FORM.
+# This checker's first rule was stated as a property — "every `$` carries a `-`
+# or `:-`" — and a property is only ever as good as the enumeration of hazards
+# behind it:
+#   · `${!IND-}` CARRIES THE FALLBACK AND ABORTS ANYWAY (measured: "invalid
+#     indirect expansion"). The property says yes; bash says no.
+#   · `$((OTHER+1))` aborts, and the name inside it carries NO `$` at all — so
+#     nothing anchored on `$` could ever see it. The property could not even
+#     look at the form, let alone judge it.
+# A whitelist has neither failure mode: a shape that is not the one shape is
+# refused whether or not anyone thought of it. Same reasoning that made
+# `droste::bool` a whitelist after a boolean BLACKLIST turned `Off` and `FALSE`
+# into ON — a blacklist fails in the dangerous direction, silently, on the input
+# nobody enumerated.
+# ⚠️ SO DO NOT ADD A CASE TO MAKE A NEW FORM FAIL. It already fails. The `case`
+# arms below the whitelist gate choose the WORDING of a refusal that has already
+# been decided; adding one changes a message, never a verdict. If you find
+# yourself adding a case to REJECT something, the gate has been broken.
 #
 # ⚠️ BOTH `${VAR-…}` AND `${VAR:-…}` ARE ACCEPTED, DELIBERATELY. There is a
 # separate open finding that vllm.env's four `${XDG_CACHE_HOME:-…}` lines should
@@ -29,6 +55,15 @@
 # survives). Both forms survive `set -u`; both are correct here. DO NOT "fix"
 # this checker into rejecting one of them — it would be enforcing a semantic
 # opinion under the banner of a safety rule, on files that are the user's.
+#
+# 🚨 AND `${VAR=…}` / `${VAR:=…}` ARE REJECTED THOUGH THEY ARE SAFE TO SOURCE —
+# THE ONE PLACE THIS CHECKER IS DELIBERATELY STRICTER THAN BASH. They do not
+# just substitute, they ASSIGN. Measured: `A=${OTHER=x}` in a template leaves the
+# child shell holding `OTHER=x`, `set -a` exports it, and droste::load_env_file
+# diffs `env -0` around the source — so `OTHER` comes back as a brand-new setting
+# and is applied exactly as though the user had written an `OTHER=` line. A
+# config file may not silently create a setting nobody wrote. `${VAR-…}` says the
+# same thing about VAR and leaves nothing behind.
 #
 # ── WHAT IT CHECKS, AND WHAT IT DOES NOT ────────────────────────────────────
 # SCOPE:  assignment lines only — `NAME=…`, `export NAME=…`, and the SAME shapes
@@ -46,33 +81,46 @@
 # NOTATION: one finding per line of output, `FILE:LINE: <what> — <fix>`, plus the
 #         offending source line. Exit 0 = clean, 1 = findings, 2 = usage.
 #
-# ── THE FORM TABLE, EVERY ROW MEASURED under `set -euo pipefail` (s57) ───────
+# ── THE FORM TABLE, EVERY ROW MEASURED under `set -euo pipefail` (s57, s58) ──
 # The measurement is `set -a; source <file>` with the referenced name UNSET.
+# ⚠️ THIS TABLE IS A RECORD OF MEASUREMENTS, NOT THE RULE. The rule is the
+# whitelist above; every "REJECTED" row below is refused by simply not being the
+# accepted shape, and none of them is enumerated anywhere in the code.
 #
-#   ACCEPTED — the expansion supplies a value and the source survives:
+#   ACCEPTED — the one shape, and the source survives:
 #     ${VAR-…}  ${VAR:-…}   default
 #     ${VAR+…}  ${VAR:+…}   alternate — safe by construction: it can only expand
 #                           when VAR is set, so `set -u` has nothing to trip on
-#     ${VAR=…}  ${VAR:=…}   assign-default; measured safe, and it is a fallback
-#                           by any reading of the rule
 #   REJECTED — measured to ABORT the source when the name is unset:
 #     $VAR   "$VAR"   ${VAR}   x$VAR      the original box-killer, braces or not
 #     ${#VAR}                             length
 #     ${VAR/…} ${VAR#…} ${VAR%…}
 #     ${VAR^…} ${VAR,…} ${VAR@Q} ${VAR:0:2}
 #     ${!VAR}  ${!VAR-}                   🚨 INDIRECT ABORTS EVEN WITH A `-`
-#                                         ("invalid indirect expansion"), so a
-#                                         checker that only looked for a dash
-#                                         would wave this through
+#                                         ("invalid indirect expansion"), which
+#                                         is half of why the rule is a whitelist:
+#                                         `!IND` is not a plain NAME, so the
+#                                         shape never matches and no arm has to
+#                                         know that bash treats it specially
+#     ${ARR[0]}                           an unbound element still aborts
 #     ${VAR?msg} ${VAR:?msg}              deliberately fatal is still fatal: a
 #                                         config file may not stop the box
-#     $((VAR+1))                          arithmetic; and note the name inside
-#                                         carries NO `$`, so no `$`-anchored rule
-#                                         could ever see it — the form goes
+#     $((VAR+1))                          arithmetic; the name inside carries NO
+#                                         `$`, so no `$`-anchored PROPERTY could
+#                                         ever see it — but it does not begin
+#                                         `${NAME<op>`, so the whitelist does
 #     $(cmd)  `cmd`                       command substitution: `$(false)`, a
 #                                         failing pipeline and a missing command
 #                                         all abort under errexit
 #   REJECTED — safe to source, but never what the writer meant:
+#     ${VAR=…}  ${VAR:=…}                 assign-default. Measured: it also SETS
+#                                         VAR in the child, `set -a` exports it,
+#                                         and the loader's diff then applies VAR
+#                                         as a setting nobody wrote. See above.
+#     ${ARR[0]-}                          survives, but `env -0` carries scalars
+#                                         only — an array cannot round-trip out
+#                                         of the child, so the value is a promise
+#                                         the loader cannot keep
 #     $1 $@ $* $0 $$ $? $- $!             these name the RESOLVER's shell, not
 #                                         the user's config. Measured: `$1` in a
 #                                         sourced template yields the path the
@@ -95,9 +143,11 @@ usage() {
     cat <<'EOF'
 Usage: check-env-fallbacks.sh [-q] [FILE...]
 
-Verify that every `$` expansion on the right-hand side of an assignment in a
-box config template carries a fallback, so that sourcing the file under
-`set -u` cannot abort and lose every setting after the offending line.
+Verify that every `$` on the right-hand side of an assignment in a box config
+template is written `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}` —
+the only shapes that cannot abort the source under `set -u` and lose every
+setting after the offending line, and that leave nothing behind in the child.
+Nesting is allowed as long as every level obeys the same rule.
 
   FILE...   files to check (default: targets/*/templates/*.env)
   -q        print findings only; no per-file OK line
@@ -229,21 +279,59 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
         [ "$c" = '$' ] || { i=$((i + 1)); continue; }
 
         nx=${s:i+1:1}
+
+        # ── IS THIS A `$` THAT EXPANDS AT ALL? ───────────────────────────────
+        # A `$` before a space, a quote, `/`, `.` or end of line is a literal
+        # dollar character. Measured: `A=100$` and `A="cost 5$"` both source
+        # fine. This is a LEXICAL question about where an expansion begins, not
+        # an exemption from the rule — there is no expansion here to judge.
+        # ⚠️ EVERY INTRODUCER IS ITS OWN QUOTED ALTERNATIVE, NOT A BRACKET CLASS.
+        # A `case` PATTERN is expanded before it is matched, so `[…$!…]` makes
+        # bash read `$!` as the last background pid — unset, `set -u`, and the
+        # checker dies on its own pattern. Measured while writing this.
+        case $nx in
+            '{'|'('|'$'|'?'|'!'|'#'|'-'|'@'|'*'|[A-Za-z_0-9]) ;;
+            *) i=$((i + 1)); continue ;;
+        esac
+
+        # ── THE WHITELIST GATE — THE ONLY PLACE ANYTHING IS ACCEPTED ─────────
+        # One shape: `${` + a plain NAME + one of `-` `:-` `+` `:+`. Note what
+        # is NOT here: no list of hazards, and no arm that has to recognise
+        # `${!IND-}` or `$((…))` in order to refuse them. `!IND` is not a plain
+        # NAME and `$((` does not begin `${NAME`, so both miss the shape and
+        # fall through to be rejected like anything else unrecognised.
+        # ⚠️ EVERYTHING BELOW THIS BLOCK RUNS ONLY ON A LINE ALREADY REFUSED. It
+        # picks the WORDING; it cannot change the verdict.
+        if [ "$nx" = '{' ]; then
+            close=$(close_brace "$s" "$i")
+            if [ "$close" -ge 0 ]; then
+                body=${s:i+2:close-i-2}
+                if [[ $body =~ ^([A-Za-z_][A-Za-z0-9_]*)(:?[-+]) ]]; then
+                    # ✅ ACCEPTED. Resume scanning from just after the operator,
+                    # INSIDE the fallback text, so every nested level is held to
+                    # the same rule — measured, `${A:-${B}}` aborts on an unset
+                    # B while `${A:-${B-}}` survives.
+                    i=$(( i + 2 + ${#BASH_REMATCH[1]} + ${#BASH_REMATCH[2]} ))
+                    continue
+                fi
+            fi
+        fi
+
+        # ── REJECTED. From here down, only the message is being chosen. ──────
         case $nx in
         '{')
-            close=$(close_brace "$s" "$i")
             if [ "$close" -lt 0 ]; then
                 report "$file" "$lineno" "${s:i}" 'unterminated expansion' \
                        'the `${` never closes; the file will not parse' "$src"
                 return
             fi
-            body=${s:i+2:close-i-2}
             case $body in
             '!'*)
-                # 🚨 THE ONE FORM A `-` DOES NOT SAVE. Measured: `${!IND-}`
+                # 🚨 THE FORM THAT KILLED THE PROPERTY RULE. Measured: `${!IND-}`
                 # aborts with "invalid indirect expansion", exactly as `${!IND}`
-                # does. Anyone writing a shorter rule ("has a dash ⇒ fine")
-                # ships this hole.
+                # does — it carries the fallback and dies anyway. A rule phrased
+                # as "has a dash ⇒ fine" ships this hole; the whitelist never
+                # sees a plain NAME here and so never had the chance to.
                 report "$file" "$lineno" "\${$body}" 'indirect expansion' \
                        'this aborts under `set -u` even WITH a fallback; name the variable directly' "$src" ;;
             '#'*)
@@ -251,36 +339,42 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
                        'aborts when the name is unset; write the value out, or `${VAR-}`' "$src" ;;
             *)
                 # name, then whatever operator follows it
-                if [[ $body =~ ^([A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?)(.*)$ ]]; then
-                    name=${BASH_REMATCH[1]}; rest=${BASH_REMATCH[3]}
+                if [[ $body =~ ^([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]; then
+                    name=${BASH_REMATCH[1]}; rest=${BASH_REMATCH[2]}
                     case $rest in
                     '')
                         report "$file" "$lineno" "\${$name}" 'unguarded expansion' \
                                "braces alone do NOT help; write \${$name-}" "$src" ;;
-                    :[-+=]*|[-+=]*)
-                        # ✅ ACCEPTED. Keep scanning from just after the operator
-                        # so a nested expansion in the FALLBACK is checked too —
-                        # measured, `${A:-$B}` aborts on an unset B.
-                        case $rest in :?*) i=$((i + 2 + ${#name} + 2)) ;;
-                                       *)  i=$((i + 2 + ${#name} + 1)) ;; esac
-                        continue ;;
+                    :=*|=*)
+                        # 🚨 SAFE TO SOURCE AND REJECTED ANYWAY — the one rule
+                        # deliberately stricter than bash. `=` ASSIGNS: the child
+                        # keeps the name, `set -a` exports it, and the loader's
+                        # `env -0` diff applies it as a setting the user never
+                        # wrote.
+                        report "$file" "$lineno" "\${$body}" 'assign-default expansion' \
+                               "this also SETS $name in the child shell and \`set -a\` exports it, so the loader's env diff would apply $name as a setting nobody wrote; write \${$name-} to substitute without assigning" "$src" ;;
                     :\?*|\?*)
                         report "$file" "$lineno" "\${$body}" 'deliberately fatal expansion' \
                                "a config file may not stop the box; write \${$name-}" "$src" ;;
+                    \[*)
+                        report "$file" "$lineno" "\${$body}" 'an array element' \
+                               "a config file carries plain scalar names — \`env -0\` cannot bring an array back out of the child; write \${$name-}" "$src" ;;
                     *)
                         report "$file" "$lineno" "\${$body}" 'unguarded expansion' \
-                               "this form aborts when $name is unset; write \${$name-}" "$src" ;;
+                               "only \${$name-} \${$name:-…} \${$name+…} \${$name:+…} are allowed here" "$src" ;;
                     esac
                 else
                     report "$file" "$lineno" "\${$body}" 'unrecognised expansion' \
-                           'if it is safe under `set -u`, add it to the form table in this checker' "$src"
+                           'the only allowed form is `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}`' "$src"
                 fi ;;
             esac
             i=$((close + 1)); continue ;;
         '(')
             if [ "${s:i+2:1}" = '(' ]; then
-                # 🚨 A NAME INSIDE `$((…))` CARRIES NO `$`, so no `$`-anchored
-                # rule can see it — and `$((OTHER+1))` aborts. The form goes.
+                # 🚨 THE OTHER FORM THAT KILLED THE PROPERTY RULE. A NAME INSIDE
+                # `$((…))` CARRIES NO `$`, so no `$`-anchored property could ever
+                # inspect it — and `$((OTHER+1))` aborts. Under the whitelist it
+                # needs no insight at all: it does not begin `${NAME<op>`.
                 report "$file" "$lineno" "\$((…))" 'arithmetic expansion' \
                        'a bare name inside it still aborts under `set -u`; write the number' "$src"
             else
@@ -305,9 +399,15 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
                    'this describes the throwaway child shell, not the box; write the value' "$src"
             i=$((i + 2)); continue ;;
         *)
-            # A `$` before a space, a quote, `/`, or end of line is a literal
-            # dollar. Measured: `A=100$` and `A="cost 5$"` both source fine.
-            i=$((i + 1)); continue ;;
+            # ⚠️ THE BACKSTOP, AND IT MUST STAY A REJECTION. Every character that
+            # can introduce an expansion has an arm above; a literal `$` already
+            # returned at the lexical gate. So nothing should reach here — and if
+            # a future bash grows an introducer nobody listed, the whitelist has
+            # already refused it and this is the message it gets. A `*)` that
+            # skipped instead would quietly re-open the hole the whitelist closed.
+            report "$file" "$lineno" "\$$nx" 'an expansion this checker does not recognise' \
+                   'the only allowed form is `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}`' "$src"
+            i=$((i + 2)); continue ;;
         esac
     done
 }
@@ -339,9 +439,10 @@ for f in "${FILES[@]}"; do
 done
 
 if [ "$findings" -gt 0 ]; then
-    printf '\n%d unguarded expansion(s). Every `$` on a right-hand side must carry a\n' "$findings"
-    printf 'fallback — `${VAR-}` or `${VAR:-default}` — because the file is sourced as a\n'
-    printf 'unit and one unguarded name loses EVERY setting after it.\n'
+    printf '\n%d disallowed expansion(s). A `$` on a right-hand side may only be written\n' "$findings"
+    printf '`${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}` (nesting allowed, every\n'
+    printf 'level the same). The file is sourced as a unit, so one name outside that shape\n'
+    printf 'either loses EVERY setting after it or leaves a setting nobody wrote.\n'
     exit 1
 fi
 exit "$status"

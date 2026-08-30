@@ -334,7 +334,7 @@ comfyui_argv() {
     # dyn on purpose: COMFYUI_ARGV_TAIL's --extra-model-paths-config is nargs='+'
     # and must remain the last thing on the line. Quoting inside the value IS
     # honoured since s52 and it is not glob-expanded (see
-    # comfyui.env), matching LLAMA_EXTRA_ARGS and DS4_DROSTE_EXTRA_ARGS.
+    # comfyui.env), matching LLAMA_EXTRA_ARGS and DROSTE_DS4_EXTRA_ARGS.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_COMFYUI_EXTRA_ARGS:-}")
     dyn+=( ${_extra[@]+"${_extra[@]}"} )

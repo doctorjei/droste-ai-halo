@@ -290,20 +290,6 @@ llama_argv() {
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
-    # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
-    # llama.env:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
-    # f16 and :3 promises the shown value IS the default — the file contradicting
-    # itself, so no rule could settle it. Jei ruled: "our default should be turbo3."
-    # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
-    # values, not a value the parser would reject.
-    # ⚠️ REAL BEHAVIOUR CHANGE, and unmeasured on hardware: KV quantisation buys
-    # cache footprint at some quality cost. Both K and V, because the file shows both.
-    # ✅ `=` not `:=`, and set BEFORE the compgen loop below so it is exported with
-    # every other LLAMA_*: llama-server reads these from its ENVIRONMENT, not argv,
-    # so the default has to cross the exec like a user's own value would.
-    : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
-    : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
-
     # ── a NATIVE line whose PRINTED value does not do what it is annotated to ──
     # 🚨 llama.env:262 prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
     # machine's math cores)` and :3 promises the values shown ARE the defaults — but
@@ -558,6 +544,35 @@ llama_pre_launch() {
         LLAMA_ARG_DEFRAG_THOLD
     )
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}"
+
+    # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
+    # llama.env:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
+    # f16 and :3 promises the shown value IS the default — the file contradicting
+    # itself, so no rule could settle it. Jei ruled: "our default should be turbo3."
+    # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
+    # values, not a value the parser would reject.
+    # ⚠️ REAL BEHAVIOUR CHANGE, and unmeasured on hardware: KV quantisation buys
+    # cache footprint at some quality cost. Both K and V, because the file shows both.
+    # ✅ `=` not `:=`, and set before the compgen loop below so it is exported with
+    # every other LLAMA_*: llama-server reads these from its ENVIRONMENT, not argv,
+    # so the default has to cross the exec like a user's own value would.
+    #
+    # 🚨 IT MUST RUN *AFTER* blank_is_unset, AND THAT ORDER IS THE WHOLE POINT (s57,
+    # Jei: "blank should give *our* default, not the *engine* default. It sounds like
+    # the unset is not happening before it gets to the server?" — exactly right).
+    # `=` does not substitute for a variable that is SET BUT BLANK, so with these two
+    # lines ABOVE the unset, a user who cleared the line got: default line declines to
+    # fire (the name is set) → blank_is_unset deletes it → nothing re-applies ours →
+    # llama's own f16. Blank and absent gave DIFFERENT answers, which is the one thing
+    # the rule forbids. Normalising blanks to absences FIRST and applying our defaults
+    # SECOND makes them identical by construction.
+    # ⭐ GENERALISES: any future droste default on a native name works automatically
+    # if it sits below this line, and is silently wrong if it sits above it.
+    # ⚠️ This REVERSES the s56 ordering note that put the defaults first. That note
+    # was written to protect a blank as the user's opt-out; Jei's s57 rule replaced
+    # that reading for anything from a finite set, and a KV cache type is one.
+    : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
+    : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
 
     # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
     # the file introduced (see droste-envfile.sh), so its assignments already survive

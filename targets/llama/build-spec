@@ -19,8 +19,8 @@ HEALTH_ACCEPT="ok"
 
 # ── ENV_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
-# LLAMA_ARG_* lines (llama-server reads them natively), the 72 DROSTE_LLAMA_* settings
-# the tables below translate — 69 into argv, 3 into the environment — and
+# LLAMA_ARG_* lines (llama-server reads them natively), the 73 DROSTE_LLAMA_* settings
+# the tables below translate — 70 into argv, 3 into the environment — and
 # DROSTE_LLAMA_EXTRA_ARGS.
 # ⚠️ It is NOT sourced into this shell: droste::load_env_file runs it in a CHILD shell
 # and applies the difference, so a typo in it is a warning rather than a dead box.
@@ -68,20 +68,20 @@ OPTIONAL=(
 # ── The llama.env → argv tables ──────────────────────────────────────────────
 # ⭐ THESE TABLES ARE THE ONLY MAPPING. llama.env names a setting; this file says
 # which flag it emits. There is NO derivation rule and there must never be one —
-# 62 of the 69 names below happen to match `--$(lower suffix)` and seven do not
+# 63 of the 70 names below happen to match `--$(lower suffix)` and seven do not
 # (AUTO_MODEL, HF_TOKEN_FILE, BUILTIN_SPEC_DEFAULT, DRY_SEQ_BREAKERS and the three
 # ENDPOINT_*), so a derivation would need seven exceptions. Jei's ruling on ds4
 # stands here: A RULE WITH AN EXCEPTION IS WORSE THAN NO RULE, because a reader who
 # derives a name gets a variable nothing reads. Adding a setting means editing
 # llama.env AND this file; there is nothing to fall back on.
-# ⚠️ 69 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
+# ⚠️ 70 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
 # down, in the ENVIRONMENT tables — they have no flag to emit and never touch SERVICE.
 #
 # Every row was generated from the PINNED binary's own option table (paren-balanced
 # parse of arg.cpp at 337f08e8) and not from llama.env's inline comments — three of
 # those comments name the wrong flag today.
 #
-# 🚨 THE THREE BOOLEAN KINDS ARE NOT INTERCHANGEABLE, and this is the whole reason
+# 🚨 THE FOUR BOOLEAN KINDS ARE NOT INTERCHANGEABLE, and this is the whole reason
 # every one of them is droste-named:
 #   BOOL   has a real `--no-x` twin. on ⇒ `--x`, off ⇒ `--no-x`.
 #   SWITCH is upstream `handler_void`: it has NO negation and is applied only
@@ -89,6 +89,9 @@ OPTIONAL=(
 #          llama itself. off ⇒ WE EMIT NOTHING, which is the only way "off" can mean
 #          off. A user cannot tell these two kinds apart by looking, which is why we
 #          never expose the native names for either.
+#   ONOFF  takes its answer as an ARGUMENT — `--fit on` — so both answers are
+#          expressible and neither is a separate flag. Exactly one exists (see
+#          LLAMA_ONOFF_FLAGS below for why it still cannot be a native line).
 #   CHOICE is a menu where one value means "emit nothing" (comfyui's shape).
 # ⚠️ UNSET IS A THIRD STATE, DISTINCT FROM off. An unset bool emits NEITHER flag, so
 # upstream's own default stands. That matters for --kv-unified, whose help says the
@@ -150,6 +153,55 @@ LLAMA_SWITCH_FLAGS=(
     "OFFLINE:--offline"                   "MLOCK:--mlock"
     "CPU_MOE:--cpu-moe"                   "NO_HOST:--no-host"
     "BACKEND_SAMPLING:--backend-sampling" "IGNORE_EOS:--ignore-eos"
+)
+# ONOFF — the flag carries its own `on`/`off` argument. "<SUFFIX>:<flag>".
+#
+# 🚨 ONE ROW, AND IT IS HERE BECAUSE IT IS A BOOLEAN, NOT BECAUSE IT MISBEHAVES.
+# `--fit` is the ONLY two-valued on/off option llama.env surfaces — checked at the
+# pin rather than remembered: of the 84 native LLAMA_ARG_* names the file names,
+# arg.cpp gives exactly one an `is_truthy`/`is_falsey` pair with no third answer
+# (arg.cpp:2442-2454), three more are on/off/AUTO menus and so are not booleans
+# (FLASH_ATTN, LOG_COLORS, REASONING), and none is a `handler_bool`. The naming rule
+# (s53) has no degrees: EVERY boolean is droste-named, whatever its native does.
+# ⚠️ SO THE REASON IS NOT THE `off` FALL-THROUGH THAT DAMNS THE SWITCH KIND. Upstream
+# reads this one correctly — `off`, `disabled`, `false` and `0` all really do turn
+# fitting off. What it does NOT read is `Off`, `OFF`, `no` or a stray trailing space:
+# is_truthy/is_falsey are exact, case-sensitive std::string comparisons
+# (arg.cpp:988-994), and anything they both reject THROWS out of the env loop and the
+# server never starts. droste::bool case-folds, strips spaces, and accepts our whole
+# vocabulary, which is what makes this box answer `off` the same way the other four do.
+#
+# 🚨 THE FAILURE MODE CHANGES, AND THIS IS NOT MERELY A RENAME. Say it plainly:
+#   before   `LLAMA_ARG_FIT=Off` ⇒ upstream throws ⇒ the box does not start. LOUD.
+#   after    `DROSTE_LLAMA_FIT=Off` ⇒ droste::bool folds it ⇒ fitting really is off.
+#            `DROSTE_LLAMA_FIT=maybe` ⇒ we warn and emit nothing ⇒ the box starts on
+#            llama's default instead of dying.
+# ⭐ THE FIRST LINE IS THE WHOLE POINT — `Off`, `OFF`, `no` and `yes` are DEAD BOXES
+# today, and they are what people actually type. The second line is the price: a typo
+# stops being fatal and becomes a warning, so a user who does not read the log gets a
+# running server on a value they did not choose. That trade was already made for the
+# other 37 booleans on this surface — 21 BOOL, 14 SWITCH and the 2 ENVIRONMENT ones,
+# counted from the tables rather than from a sibling document — and consistency
+# governs; it is recorded here so nobody re-derives it as a defect.
+#
+# 🚨 PRECEDENCE OVER A NATIVE LINE, AND IT IS UPSTREAM'S OWN ORDERING, NOT OURS.
+# common_params_parse_ex handles environment variables FIRST (arg.cpp:509-530) and
+# then walks argv (:539+), each handler overwriting the same `params.fit_params`. So
+# a flag we emit always beats a `LLAMA_ARG_FIT` line — llama even says so on stderr,
+# `warn: … environment variable is set, but will be overwritten by command line
+# argument` (:563-564). The contract, same shape as the ENVIRONMENT tables below:
+#   DROSTE_LLAMA_FIT unset or blank  → we emit nothing. A native line an older box
+#                                      carries stands; with neither, llama's own
+#                                      default stands. Blank behaves exactly as absent.
+#   DROSTE_LLAMA_FIT set             → OURS WINS, because argv is parsed last.
+#   DROSTE_LLAMA_FIT set to garbage  → warn, emit nothing. Same as unset, so a typo
+#                                      can never destroy a native line the user meant.
+# ⚠️ AND OUR FLAG CANNOT RESCUE A BLANK NATIVE ONE, for exactly that ordering reason:
+# `LLAMA_ARG_FIT=` throws inside the env loop, before argv is ever read. That is why
+# the name keeps its entry in _fatal_on_clear below even though it has left the
+# surface — see the row there.
+LLAMA_ONOFF_FLAGS=(
+    "FIT:--fit"
 )
 # Upstream takes ONE item per occurrence and expects the flag REPEATED; the user
 # gives us a `;`-separated list and we do the repeating. "<SUFFIX>:<flag>"
@@ -239,6 +291,21 @@ llama_argv() {
             on)  dyn+=( "$flag" ) ;;
             off) ;;   # upstream has no negation; emitting nothing IS off
             *)   serve::err "$var='$val' is not on/off — leaving $flag off. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
+
+    for entry in "${LLAMA_ONOFF_FLAGS[@]}"; do
+        var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
+        # Unset/blank emits nothing — a native line, or llama's own default, stands.
+        [ -n "$val" ] || continue
+        # ⚠️ THE LITERAL IS OURS TO CHOOSE AND IT IS NOT THE USER'S WORD. `on` and `off`
+        # are what is_truthy/is_falsey accept (arg.cpp:988-994); passing `$val` through
+        # would hand `Off` or `yes` to a case-sensitive comparison that rejects both and
+        # then throws, which is the whole reason this row is droste-named.
+        case "$(droste::bool "$val")" in
+            on)  dyn+=( "$flag" on ) ;;
+            off) dyn+=( "$flag" off ) ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $flag at llama's default. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
         esac
     done
 
@@ -345,6 +412,62 @@ llama_argv() {
 # ⚠️ AND DO NOT HARVEST ITS DEFAULT FROM UPSTREAM'S OWN COMMENT: fattn.cu:181 says
 # "DEFAULT OFF" and :190 says "opt-in via GGML_TURBO_MMA_FUSED=1", while :194 is
 # `return !(s && s[0] == '0')` — default ON. The prose and the code disagree.
+#
+# ❌ TURBO_INNERQ AND TURBO_INNERQ_STRENGTH ARE ALSO DELIBERATELY NOT HERE, AND THE
+# REASON IS THE OPPOSITE OF MMA_FUSED'S. MMA_FUSED is dead on this hardware. These two
+# are LIVE: turbo-quant.cuh:164 and :172 read them, ggml/src/ggml-hip/CMakeLists.txt:63
+# globs `../ggml-cuda/*.cu` so the HIP build compiles the path, and there is no
+# architecture predicate anywhere in it — the only gate is `group_size < 128`
+# (turbo-quant.cuh:265-268). With our own LLAMA_ARG_CACHE_TYPE_K/V=turbo3 default the
+# code runs on every K and V cache write. So this is a Feature Exposure decision under
+# the rule that hiding needs a STATED reason, not a report that the feature is absent.
+# ⚠️ THE SURFACE HALF OF THIS REASON IS IN llama.env's Misc BLOCK, which is where a
+# user would look for the feature. Do not delete one half and leave the other.
+#
+# 🚨 THE REASON IS THAT WE CANNOT DOCUMENT IT HONESTLY — NOT THAT IT DOES NOTHING:
+#   · THE UNIT IS UNUSABLE, AND UPSTREAM'S OWN LOG LINE IS WRONG ABOUT IT.
+#     turbo-quant.cuh:184-185 prints "target=%d tokens" and :284 compares the target
+#     against a counter that set-rows.cu:292 increments ONCE PER 128-ELEMENT ROTATION
+#     GROUP WRITE (`if (j == 0) atomicAdd(&d_innerq_count, 1)`), i.e. roughly
+#     2 × n_layer × n_head_kv per token — about 576/token on a 36-layer, 8-KV-head
+#     model. Any value a user would plausibly type is reached inside the FIRST ubatch
+#     of the FIRST request. ⚠️ Do not repeat upstream's word "tokens": that is the
+#     LLAMA_API_KEY=none failure mode, a printed word that is prose about the value.
+#   · WHAT WAS WRITTEN BEFORE IT ACTIVATES STAYS MIS-SCALED FOR THE LIFE OF THE
+#     PROCESS. Nothing clears the cache at finalisation (turbo-quant.cuh:189-250). In a
+#     server that is the system prompt and the start of the first conversation.
+#   · THE ACTIVATION POINT IS NOT DETERMINISTIC. The host reads the counter with a
+#     BLOCKING cudaMemcpyFromSymbol on the legacy default stream (:283) while ggml's
+#     compute streams are created cudaStreamNonBlocking, so activation can land between
+#     two layers of one forward pass.
+#   · CALIBRATION IS ONCE PER PROCESS and never persisted — a plain static latch
+#     (`innerq_initialized`, :156/:161-162).
+#   · TURBO_INNERQ_STRENGTH IS INERT UNLESS TURBO_INNERQ IS SET. Its getenv at :172
+#     sits AFTER the early return at :165-168. A fall-through value in the s52 sense,
+#     and one we would be publishing ourselves.
+#   · ⚠️ IT IS NOT "CLAMPED TO (0,1]" — say rejected, not clamped. :174 is
+#     `if (strength <= 0.0f || strength > 1.0f) strength = 0.5f`, so `2.0` becomes
+#     0.5, NOT 1.0. (The genuine [0.5, 2.0] clamp is on the derived per-channel scale,
+#     a different quantity.)
+#   · AND THERE IS NOTHING TO SHOW FOR IT. It changes output quality only — no memory
+#     saved, negligible speed cost — and the fork publishes no measurement, not even a
+#     prose claim, unlike auto-asymmetric (PPL 2887 vs 7.4) or the MMA path (KLD).
+#
+# ⚠️ ONE OF THE REASONS IS OURS, NOT UPSTREAM'S, AND IT BELONGS IN OUR FILE. When
+# DROSTE_LLAMA_KV_AUTO_ASYMMETRIC fires — which our own turbo3/turbo3 default arms by
+# construction on any high-GQA model — K is upgraded to q8_0 and only V still goes
+# through the turbo set_rows path. InnerQ would then silently become V-ONLY
+# equalisation, which is not the thing it was written to do. That is our default
+# interacting with the feature, so it is our defect to name.
+#
+# ⭐ THE DOOR BACK, because a hidden feature with no way back is worse than one with a
+# stated condition: if InnerQ is ever benchmarked on gfx1151 with turbo3 caches, this
+# decision should be REOPENED. The blocker is a missing measurement, and a measurement
+# is a thing that can arrive.
+# ⚠️ BOTH ARE BLANK-SAFE AND NEITHER NEEDS A GUARD — measured the usual way, absent vs
+# "": `getenv("TURBO_INNERQ")` returns a non-NULL "" whose `atoi` is 0, which fails the
+# `atoi(env) <= 0` test at :165 exactly as a NULL does; STRENGTH's `atof("")` is 0.0f,
+# which :174 replaces with the same 0.5f default it would have kept. Do not add one.
 #
 # "<SUFFIX>:<native>:<on-wire>:<off-wire>" — the variable is DROSTE_LLAMA_<SUFFIX>.
 LLAMA_ENV_BOOLS=(
@@ -579,6 +702,15 @@ llama_pre_launch() {
         # Memory, Offload, & NUMA
         LLAMA_ARG_N_CPU_MOE                 # int
         # Fitting to available memory
+        # ⚠️ LLAMA_ARG_FIT HAS LEFT THE SURFACE — it is a droste-named setting now,
+        # see LLAMA_ONOFF_FLAGS above — AND THE GUARD STAYS ANYWAY, for the HOST
+        # reason plus one of its own. The name still works — llama reads it
+        # whatever we do — and templates
+        # seed `if_missing`, so a box made before the rename still carries the old
+        # line. More to the point, our `--fit` cannot save it: the env loop runs
+        # BEFORE argv (arg.cpp:509-530 then :539+), so a blank throws at :2450 long
+        # before any flag of ours is looked at. Dropping this row would make an
+        # emptied line fatal again with nothing left to catch it.
         LLAMA_ARG_FIT                       # on/off menu ⇒ else arm throws
         LLAMA_ARG_FIT_TARGET                # regex split ⇒ [""] ⇒ stoull("")
         LLAMA_ARG_FIT_CTX                   # int
@@ -646,14 +778,24 @@ llama_pre_launch() {
     # about a PARSER dropping an empty field, which is exactly the kind of thing that
     # changes upstream. Attaching HF_TOKEN to it would have made a live re-check of
     # arg.cpp:2985-2991 look like a re-check of both.
-    # The five TURBO_* names llama.env's Misc block lists are Metal-only and cannot be
-    # compiled into a ROCm build — TURBO_FLASH and TURBO_FORCE_NONVEC in
-    # ggml/src/ggml-metal/ggml-metal-ops.cpp (:2744, :2711), and TURBO_FORCE_4MAG,
-    # TURBO_SPARSE_V and TURBO_PROFILE_MODE in ggml/src/ggml-metal/ggml-metal-device.m
-    # (:232, :245, :258). ⚠️ This entry named ggml-metal-ops.cpp for all five until s59.
+    # The five TURBO_* names llama.env's Misc block lists AS ASSIGNMENT LINES are
+    # Metal-only and cannot be compiled into a ROCm build — TURBO_FLASH and
+    # TURBO_FORCE_NONVEC in ggml/src/ggml-metal/ggml-metal-ops.cpp (:2744, :2711), and
+    # TURBO_FORCE_4MAG, TURBO_SPARSE_V and TURBO_PROFILE_MODE in
+    # ggml/src/ggml-metal/ggml-metal-device.m (:232, :245, :258).
+    # ⚠️ This entry named ggml-metal-ops.cpp for all five until s59, and said "the five
+    # names the Misc block lists" until s60 — that block now also NAMES TURBO_INNERQ and
+    # TURBO_INNERQ_STRENGTH, in prose and without an assignment line, precisely because
+    # they are live and deliberately not offered. Five is the count of the ASSIGNMENTS.
     # ⚠️ AND "TURBO_* IS METAL-ONLY" IS NOT A RULE — TURBO_AUTO_ASYMMETRIC and
     # TURBO_LAYER_ADAPTIVE live in src/llama-kv-cache.cpp, are backend-independent, and
     # are settings on this box (see the ENVIRONMENT tables above).
+    # 📐 THE WHOLE FAMILY IS ELEVEN NAMES at this pin, so no partial list may imply it is
+    # the family: the five Metal ones above, GGML_TURBO_MMA_FUSED (compiled, dead on
+    # gfx1151), the three we expose (TURBO_AUTO_ASYMMETRIC, TURBO_LAYER_ADAPTIVE,
+    # GGML_TQ_NATIVE), and TURBO_INNERQ + TURBO_INNERQ_STRENGTH. Counted by grepping
+    # getenv() across every file this spec cites plus the InnerQ path — an earlier sweep
+    # said nine because it looked only at C/C++ extensions and missed the `.m` files.
     local -a _wrong_on_clear=(
         # ── category 1: a blank MOVES THE LISTENER and the healthcheck cannot find it ──
         # 🚨 THIS IS THE ONE THE READ-ONLY SWEEP COULD NOT HAVE FOUND, because nothing

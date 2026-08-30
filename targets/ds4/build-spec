@@ -134,6 +134,26 @@ DS4_BOOL_FLAGS_INVERTED=(
     "ENABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
 )
 
+# ── <SUFFIX>:<the negative NATIVE it controls> ───────────────────────────────
+# Same positive-name / negative-native shape as the row above, with one decisive
+# difference: the native is an ENVIRONMENT VARIABLE and ds4-server PRESENCE-tests
+# it — `getenv("DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY") == NULL`
+# (ds4_server.c:10371-10372) and `getenv("DS4_MTP_SPEC_DISABLE") == NULL` (:10407).
+# 🚨 SO `on` MUST *UNSET* THE NATIVE, NOT SET IT TO A FALSE-LOOKING VALUE. `0`,
+# `no` and `""` all DISABLE the feature, because the test is presence, not value.
+# That is the same trap droste::blank_is_unset above exists for, seen from the
+# other side: there a blank arrives by accident, here we would create one.
+# ⚠️ THE WORD ORDER OF THE TWO NATIVES DIFFERS — `_DISABLE_` as an infix in the
+# first, `_DISABLE` as a suffix in the second. Neither is derivable from the
+# other or from the droste name; both were read out of the pinned source, and a
+# name guessed from its sibling would be silently inert.
+# ⚠️ The name here and the name in ds4.cfg must be changed TOGETHER, for the same
+# reason the inverted-flag row says so: a mismatch is a silently inert setting.
+DS4_BOOL_ENV_INVERTED=(
+    "SERVER_THINK_TOOL_RECOVERY:DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY"
+    "MTP_SPEC:DS4_MTP_SPEC_DISABLE"
+)
+
 # ── <SUFFIX>:<why a blank is wrong here> ─────────────────────────────────────
 # The names where an EMPTY value must be read as "give me the default" rather than as
 # an opt-out. See the three-category rule in ds4_pre_launch, which is what decides
@@ -189,6 +209,28 @@ ds4_pre_launch() {
     droste::blank_is_unset DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY \
                            DS4_MTP_SPEC_DISABLE \
                            DS4_METAL_GRAPH_DUMP_PREFIX
+
+    # ── the positive wrappers over those presence-tested negative natives ────
+    # 🚨 IT MUST RUN *AFTER* droste::blank_is_unset ABOVE, and the order is the
+    # whole point: that call deletes an EMPTY native, this one states the user's
+    # intent. Reversed, the guard would delete what we had just applied — the
+    # same ordering trap recorded for llama's turbo block.
+    # ⭐ AN ABSENT OR BLANK DROSTE_ SETTING LEAVES THE NATIVE EXACTLY AS IT IS, so
+    # a user who exports the native by hand keeps it; an explicit on/off wins,
+    # because it is the documented surface and they typed it here.
+    # An unrecognised value changes nothing and says so: turning a typo into a
+    # silent feature change is the failure the inverted-flag row came from.
+    local entry native val
+    for entry in "${DS4_BOOL_ENV_INVERTED[@]}"; do
+        var="DROSTE_DS4_${entry%%:*}"
+        native=${entry#*:}
+        val=${!var:-}
+        case "$(ds4_bool "$val")" in
+            on)  unset "$native" ;;
+            off) export "$native=1" ;;
+            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving ds4's default in place. Fix it in $ENV_FILE and restart the box." ;;
+        esac
+    done
 
     # ── refuse the two settings that make ds4-server EXIT AT STARTUP ─────────
     # Both are values a user can reach by following upstream's help, and both kill

@@ -180,8 +180,11 @@ jupyter_env() {
     droste::blank_is_unset IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME
 
     # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
-    # Three of them. Every other setting on this box agrees with its package's own
-    # default, so the wiring says nothing at all unless the user does.
+    # Two of them HERE. A third — JUPYTER_PREFER_ENV_PATH — supplies its default
+    # from the droste-named block further down instead, because it needs an
+    # off-state that a bare `${VAR=…}` cannot express (a blank reads TRUE upstream).
+    # Every other setting on this box agrees with its package's own default, so the
+    # wiring says nothing at all unless the user does.
     # 🚨 WITHOUT THE FIRST OF THESE THE WHOLE TRAIT FILE IS INERT, SILENTLY.
     # templates.yaml seeds jupyter_server_config.py to /opt/data/, beside this box's
     # ENV_FILE, and that directory is on Jupyter's config search path ONLY because
@@ -200,14 +203,7 @@ jupyter_env() {
     # truthiness, so JUPYTER_CONFIG_DIR= falls through to Jupyter's own location.
     : "${JUPYTER_CONFIG_DIR=/opt/data}"
     export JUPYTER_CONFIG_DIR
-    # Prefer the USER config/data dirs over the venv's when the two disagree —
-    # /opt/venv is a baked lower under an overlay, the user's answer is the one
-    # that should win. ⚠️ envset() again: a BLANK here reads as TRUE (= prefer the
-    # env), so blank is not an off-state on this row. That is upstream's rule
-    # applied to a value the user typed, not something the wiring can improve.
-    : "${JUPYTER_PREFER_ENV_PATH=0}"
-    export JUPYTER_PREFER_ENV_PATH
-    # ⚠️ THIRD DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
+    # ⚠️ SECOND DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
     # finetuning.env:62-63 documents `{yes, no}` and SHOWS
     # DROSTE_JUPYTER_ALLOW_UNAUTH_ACCESS=yes, so droste's default is YES and the
     # wiring's job is to deliver exactly that (the config file is the
@@ -240,7 +236,61 @@ jupyter_env() {
         esac
     done
 
-    # ── SKIP_CONFIG, the row that cannot be tabulated ───────────────────────────
+    # ── PREFER_ENV_PATH: a row that carries a default AND cannot be tabulated ───
+    # 🚨 WHAT IT DECIDES, PRECISELY — this is NOT covered by JUPYTER_CONFIG_DIR.
+    # jupyter_core assembles its search paths as [env…, user…] or [user…, env…]
+    # depending on this one flag: paths.py:322 for the DATA path, paths.py:421 for
+    # the CONFIG path. "env" is the VENV — /opt/venv/etc/jupyter and
+    # /opt/venv/share/jupyter (paths.py:340, :249, both str(Path(sys.prefix, …))).
+    # "user" is jupyter_config_dir() / jupyter_data_dir(), i.e. /opt/data here,
+    # plus the per-user site dirs. Traitlets loads that list REVERSED
+    # (application.py:904), so the FIRST entry is the one that wins.
+    #   JUPYTER_CONFIG_DIR names WHICH directory the user level IS.
+    #   This names WHERE that level SITS relative to the venv's.
+    # And it has no CONFIG_DIR analogue on the other half at all: jupyter_path()
+    # — the DATA SEARCH path, i.e. kernelspecs and labextensions — is ordered by
+    # this flag alone. So the setting is REAL, not cosmetic — with it on, a
+    # stray /opt/venv/etc/jupyter file would outrank the user's own /opt/data.
+    # ⭐ DROSTE'S DEFAULT IS `no` (wire `0`) — prefer the USER's dirs. /opt/venv is a
+    # baked overlay LOWER; the user's answer is the one that should win. It is
+    # PINNED rather than inherited, and this is the whole reason the row exists:
+    # ⚠️ ABSENT IS NOT THE SAME ANSWER AS `0`. With the variable gone, paths.py:117
+    # returns True whenever sys.prefix is a virtualenv the process owns — and this
+    # box IS one — so the order would be decided by an OWNERSHIP TEST on
+    # /opt/venv (paths.py:83-107, and that directory is an overlay merge) rather
+    # than by a decision. Unsetting it is a different behaviour, not a tidier
+    # spelling of the same one.
+    # 🚨 A BLANK CANNOT BE PASSED THROUGH — this is the defect this row fixes.
+    # envset() (paths.py:49-60) is TRUE for every value except
+    # {no,n,false,off,0,0.0}, so `JUPYTER_PREFER_ENV_PATH=` reads TRUE: a user who
+    # uncommented the old native line and cleared it turned the setting ON. Since
+    # paths.py:113 tests PRESENCE before value, the only way to say "let Jupyter
+    # decide" is for the variable not to exist — so blank UNSETS it here, the same
+    # shape as SKIP_CONFIG below and for the same upstream reason.
+    # ⚠️ Every arm returns 0: PRE_LAUNCH runs unguarded under `set -euo pipefail`.
+    val=${DROSTE_JUPYTER_SEARCH_VENV_FIRST-}
+    if [ -z "${DROSTE_JUPYTER_SEARCH_VENV_FIRST+set}" ]; then
+        # Absent ⇒ droste's default. `${VAR=0}` rather than a bare assignment so a
+        # user's own NATIVE JUPYTER_PREFER_ENV_PATH line still wins — `set -a` has
+        # already exported it by the time PRE_LAUNCH runs.
+        : "${JUPYTER_PREFER_ENV_PATH=0}"
+        export JUPYTER_PREFER_ENV_PATH
+    elif [ -z "$val" ]; then
+        # The documented N1a opt-out: hand Jupyter's own detection back the row.
+        unset JUPYTER_PREFER_ENV_PATH
+    else
+        case "$(droste::bool "$val")" in
+            on)  export JUPYTER_PREFER_ENV_PATH=1 ;;
+            off) export JUPYTER_PREFER_ENV_PATH=0 ;;
+            # Never leave the user's string on the wire: envset() would read
+            # almost any typo as TRUE, which is the dangerous direction.
+            *)   serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST='$val' is not a yes/no value — using droste's default (no: your own config and data dirs are searched before /opt/venv's). Use yes or no. Fix it in $ENV_FILE and restart the box."
+                 : "${JUPYTER_PREFER_ENV_PATH=0}"
+                 export JUPYTER_PREFER_ENV_PATH ;;
+        esac
+    fi
+
+    # ── SKIP_CONFIG, the other row that cannot be tabulated ─────────────────────
     # JUPYTER_NO_CONFIG is read as BARE TRUTHINESS (jupyter_core/paths.py:153 and
     # :390 — `if env.get(...)`), so THERE IS NO FALSE-WIRE: `0`, `no` and `false`
     # all turn it ON. The only way to say no is for the variable not to exist, so

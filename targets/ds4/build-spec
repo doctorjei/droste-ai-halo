@@ -134,6 +134,21 @@ DS4_BOOL_FLAGS_INVERTED=(
     "ENABLE_EXACT_DSML_TOOL_REPLAY:--disable-exact-dsml-tool-replay"
 )
 
+# ── <SUFFIX>:<why a blank is wrong here> ─────────────────────────────────────
+# The names where an EMPTY value must be read as "give me the default" rather than as
+# an opt-out. See the three-category rule in ds4_pre_launch, which is what decides
+# membership; the right-hand side is the sentence the user gets, so it must say what
+# an empty value would have DONE, not merely that it was empty.
+# ⚠️ EVERY ENTRY HERE MUST ALSO HAVE A `${VAR=default}` LINE in ds4_pre_launch: the loop
+# only unsets, and the default is what fills the hole afterwards. An entry without one
+# would delete the user's blank and put nothing in its place — the flag would simply
+# vanish, which is the failure this table exists to stop.
+DS4_BLANK_IS_DEFAULT=(
+    "MODEL:there is no 'serve no model'. With no --model, ds4-server falls back to the RELATIVE path 'ds4flash.gguf' (ds4_server.c:11503), which resolves to /ds4flash.gguf on the read-only container root, so the server exits at startup and this box restart-loops."
+    "CTX:a context size is a number, and an empty one is not a smaller context — it is ds4's own 32768 in place of the 65536 this box documents."
+    "HOST:a bind address has no 'none'. With no --host, ds4-server binds 127.0.0.1 (ds4_server.c:11508), so the box is silently unreachable from the LAN while the health probe, which asks 127.0.0.1, still reports it healthy."
+)
+
 # ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognised.
 # ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.env's documented vocabulary is
 # `on`/`off`, so `Off`, `OFF` and a stray trailing space are what a user will
@@ -212,6 +227,63 @@ ds4_pre_launch() {
         unset DROSTE_DS4_DIR_STEERING_FFN DROSTE_DS4_DIR_STEERING_ATTN
     fi
 
+    # ── settings where a BLANK MEANS "GIVE ME THE DEFAULT", not "off" ───────────
+    # 🚨 THE GOVERNING QUESTION IS WHAT THE USER WOULD REASONABLY EXPECT, and usually
+    # that is a default value. Jei's three-category rule, which decides every row of the
+    # audit below and replaces the older "does it have a coherent off state" test:
+    #
+    #   1. A blank CRASHES the server or makes it unhealthy.        ⇒ treat as unset
+    #   2. The value is NUMERIC, or comes from a practically FINITE
+    #      set (a boolean, an enum, a menu). Such a setting has —
+    #      and must have — default behaviour, and it does not matter
+    #      whether the blank crashes; merely behaving differently
+    #      from the default is enough.                              ⇒ treat as unset
+    #   3. The value is NOT from a practically finite set (an unbounded
+    #      string), AND a blank is NOT the default, AND a blank could
+    #      itself MEAN something useful — "no KV disk cache", "no trace
+    #      file", "no steering vector".                             ⇒ KEEP the blank
+    #
+    # ⚠️ ALL THREE CONDITIONS ARE REQUIRED FOR 3. An unbounded string whose blank is
+    # merely useless or harmful is not category 3; it falls to 1 or 2 and gets the
+    # default.
+    #
+    # 🚨 THE OTHER 27 SETTINGS ON THIS BOX NEED NO ENTRY HERE, and that is measured
+    # rather than assumed (g1lab/ds4wire.sh drives every name in ds4.env blank and
+    # compares the whole argv): only the four droste defaults below behave differently
+    # blank than unset, because every other name reaches the argv through a
+    # `[ -n "$val" ]` test that already treats "" exactly as absent. So this table is
+    # three rows, not thirty, and adding a droste default means asking the three
+    # questions again — a default is precisely what creates the divergence.
+    #
+    # ⚠️ droste::blank_is_unset IS THE WRONG TOOL and must not be widened to reach these:
+    # its contract (base/resolve/droste-common.sh:85-90) forbids covering DROSTE_-owned
+    # names, because for a CATEGORY 3 name a blank really is the user's opt-out and
+    # erasing it would turn "I don't want one" into "here, have one". This is the
+    # targeted list the contract asks for, and DROSTE_DS4_KV_DISK_DIR is deliberately
+    # NOT in it.
+    #
+    # ⭐ WHY IT SUPPLIES THE DEFAULT RATHER THAN DECLINING TO LAUNCH. Declining means
+    # clearing the serve intent flag (state/.IS_ACTIVE) — the only thing the healthcheck
+    # reads before it decides a box is healthy — and serve::set_active lives in
+    # droste-serve.sh, which droste-common.sh does NOT provide a fallback for. A
+    # PRE_LAUNCH that calls it in a lane which sourced only the resolver gets `command
+    # not found` (127) under `set -euo pipefail` and THE BOX DOES NOT START: exactly the
+    # s52 failure that droste-common.sh was written to end. A guard that can take the box
+    # down is a worse answer to "do not take the box down" than the default it replaces.
+    # So this follows the shape of the SSD and steering guards above — name the value,
+    # say what happens instead, carry on. Every arm returns 0.
+    # ⚠️ IT RUNS BEFORE THE DEFAULTS, DELIBERATELY: unsetting the name is what lets the
+    # `${VAR=default}` lines below fire, so a blank lands on exactly the argv an absent
+    # line lands on rather than on a second, hand-copied spelling of the same value.
+    local entry
+    for entry in "${DS4_BLANK_IS_DEFAULT[@]}"; do
+        var="DROSTE_DS4_${entry%%:*}"
+        if [ -n "${!var+set}" ] && [ -z "${!var}" ]; then
+            serve::err "$var is set but empty — ${entry#*:} Using droste's default instead; put a value in $ENV_FILE, or remove the line to say the same thing quietly."
+            unset "$var"
+        fi
+    done
+
     # ── droste defaults, delivered by the WIRING rather than by an active line ──
     # ⭐ Jei's ruling: a value we want every box to have belongs here, not as an
     # uncommented line in ds4.env — the file seeds `if_missing`, so an active line
@@ -223,16 +295,29 @@ ds4_pre_launch() {
     #     line absent/commented  -> unset -> our default
     #     VAR=/some/path         -> their path
     #     VAR=          (blank)  -> stays blank -> NO flag emitted
-    # That last state is a deliberate opt-out, and `:=` would silently overwrite it
+    # That last state is the CATEGORY 3 opt-out, and `:=` would silently overwrite it
     # with our default — turning "I don't want a disk cache" into "here, have one".
+    # ⚠️ For the three CATEGORY 1/2 names the loop above has already unset the blank, so
+    # `=` fires for them too. The two mechanisms are complementary: `=` protects a
+    # category 3 blank, the table protects everything else FROM one.
+    #
+    # ✅ KV_DISK_DIR IS THE CATEGORY 3 ROW, and it satisfies all three conditions: a
+    # filesystem path is an unbounded string, blank is not the default (the default is
+    # the path below), and blank MEANS something — ds4-server opens the disk cache only
+    # `if (cfg.kv_disk_dir)` (ds4_server.c:11730), so an empty value is "no disk cache
+    # at all", which is a real thing a user may want and the only way to say it.
     : "${DROSTE_DS4_KV_DISK_DIR=/opt/program-cache/kv-disk}"
     # The model path is a droste default for the same reason, and here the engine's
     # own fallback is not merely different — it is unusable. ds4-server defaults to
-    # the RELATIVE "ds4flash.gguf" (ds4_server.c parse_options), no Containerfile
+    # the RELATIVE "ds4flash.gguf" (ds4_server.c:11503, parse_options), no Containerfile
     # sets WORKDIR and nothing in the entrypoint chain cd's, so the service runs with
     # cwd `/` and that resolves to /ds4flash.gguf: a path on the read-only container
     # root that can never exist. /opt/models is the bind point this image advertises
     # for a local GGUF collection, and the filename is upstream's own.
+    # ⚠️ CATEGORY 1 — a blank here is the one that KILLS THE PROCESS, so it is in the
+    # table above. The path itself is an unbounded string, but the other two category 3
+    # conditions both fail: there is no "serve no model", so a blank cannot mean anything
+    # useful, and what it actually produces is a crash.
     : "${DROSTE_DS4_MODEL=/opt/models/ds4flash.gguf}"
     # Context: 64K, against ds4's own 32768. Unlike the two above, the engine's
     # default here works fine — this is droste deliberately overriding a usable
@@ -243,6 +328,11 @@ ds4_pre_launch() {
     # ⚠️ NOT a step toward Think Max. That gate is a cliff at 393216
     # (DS4_THINK_MAX_MIN_CONTEXT): below it, ds4_think_mode_for_context silently
     # returns HIGH for every request asking for max. 64K and 32K are identical there.
+    # ⚠️ CATEGORY 2 — a context size is a NUMBER, so it is in the table above and a blank
+    # gets 65536. It used to fall through to ds4's own 32768, which is the shape the rule
+    # exists to remove: "" is not a smaller context and nobody typing it means "halve my
+    # context". This one never crashed anything, and that is precisely why it needed the
+    # rule rather than the old crash-based test to catch it.
     : "${DROSTE_DS4_CTX=65536}"
     # 🚨 THE BIND ADDRESS, AND IT WAS THE ONE DEFAULT NOTHING DELIVERED.
     # ds4.env's "Reserved by Droste" block shows DROSTE_DS4_HOST=0.0.0.0, and every
@@ -254,8 +344,17 @@ ds4_pre_launch() {
     # ⚠️ INVISIBLE TO THE HEALTHCHECK BY CONSTRUCTION: serve::probe asks
     # 127.0.0.1, which a loopback-only listener answers perfectly. Nothing in the
     # box could have reported this; only reading the file against the source does.
-    # ✅ `=` not `:=` here as everywhere: a user who writes DROSTE_DS4_HOST= (blank)
-    # emits no --host and gets ds4's loopback default back, which is a real answer.
+    # ⚠️ CATEGORY 2, AND THIS ROW WAS RE-DECIDED. It used to read "a user who writes
+    # DROSTE_DS4_HOST= (blank) emits no --host and gets ds4's loopback default back,
+    # which is a real answer." Under the three-category rule it is not: a BIND ADDRESS
+    # comes from a practically finite set — the two wildcards and the machine's own
+    # interface addresses — and, decisively, the third category 3 condition fails, since
+    # a blank cannot mean "bind to nothing". The server binds either way; an empty value
+    # just silently picks a DIFFERENT address. And it picks the worst one to pick
+    # silently: the box becomes unreachable from the LAN while the healthcheck, which
+    # probes 127.0.0.1, goes on reporting HEALTHY. So a blank now gets 0.0.0.0 and says
+    # so, and a user who genuinely wants loopback writes DROSTE_DS4_HOST=127.0.0.1 —
+    # which is the honest way to ask for it and was always available.
     : "${DROSTE_DS4_HOST=0.0.0.0}"
 
     # Pre-create the KV disk dir. ⚠️ NOT tidiness: ds4-server opens the disk cache
@@ -320,6 +419,51 @@ ds4_pre_launch() {
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_DS4_EXTRA_ARGS:-}")
     argv+=( ${_extra[@]+"${_extra[@]}"} )
+
+    # ── IS THE MODEL ACTUALLY THERE? ────────────────────────────────────────────
+    # 🚨 THE COMMON CASE, AND THE SILENT ONE. /opt/models is an OPTIONAL bind, so a box
+    # created without one starts with NOTHING at droste's default model path. ds4-server
+    # opens the file at startup and exits when it cannot (`open()` fails ⇒ ds4_die_errno
+    # "cannot open model", ds4.c:1928-1929, reached from ds4.c:24545), serve::launch
+    # stamps the record `failed`, the health probe fails gate 1, and
+    # --health-on-failure=restart bounces the container — repeatedly, and INVISIBLY for
+    # the first ninety minutes, because this box's --health-start-period is 90m
+    # (droste-setup.sh:219-221). Nothing in that sequence ever says "the file is missing".
+    # ⭐ ONE LINE IN `podman logs` IS THE WHOLE POINT. Someone reading the container log
+    # must be able to act without knowing any of the above.
+    #
+    # ⚠️ DIAGNOSTIC ONLY — it does not refuse the launch, substitute a path or go looking
+    # for a model. The wiring's job here is to make the failure legible, not to guess. If
+    # the file appears later (a bind added, a download finished) the next start simply
+    # works, and nothing has to be undone.
+    #
+    # ⭐ IT CHECKS THE RESOLVED PATH — what is about to be handed to the server, read back
+    # out of the finished argv — not DROSTE_DS4_MODEL. That distinction is load-bearing:
+    # DROSTE_DS4_EXTRA_ARGS is appended AFTER our flags and ds4's parser takes the LAST
+    # occurrence (ds4_server.c:11542-11543 assigns on every match), so a user who supplies
+    # their own --model there would otherwise be told a file they are not using is
+    # missing — a false alarm, which is worse than the silence this replaces.
+    # ⚠️ THE TWO SPELLINGS ARE `-m` AND `--model`, SPACE-SEPARATED, AND THAT IS EXHAUSTIVE.
+    # The parser is `strcmp`, so `--model=/path` is not an accepted form at all: it falls
+    # through to "unknown option" and exit(2) (ds4_server.c:11655-11657). Matching the `=`
+    # form here would mean reading a value the server never will.
+    local mpath='' mtake=0 a
+    for a in "${argv[@]}"; do
+        if [ "$mtake" = 1 ]; then mpath=$a; mtake=0; continue; fi
+        case $a in -m|--model) mtake=1 ;; esac
+    done
+    # `-e`, not `-f`: a symlink to a GGUF on another volume is a normal way to hold one,
+    # and the check is deliberately narrow — it fires only for "there is nothing there at
+    # all". A directory or an unreadable file also kills the server, but those are the
+    # cases where a confident message could be wrong, and a FALSE alarm costs more than a
+    # missed one for a diagnostic nobody can switch off.
+    # ⚠️ Every arm returns 0. An `if` with a false condition is 0, serve::err is 0, and
+    # this is not the function's last statement in any case — PRE_LAUNCH runs unguarded
+    # under `set -euo pipefail` in the resolver lane, so a diagnostic that could fail
+    # would take the box down harder than the silence it replaces (the s52 shape).
+    if [ -n "$mpath" ] && [ ! -e "$mpath" ]; then
+        serve::err "the model file $mpath does not exist. ds4-server opens it at startup and exits when it cannot, so nothing will serve and the container will restart, over and over — for the first 90 minutes without ever reporting unhealthy, because that is this box's health start period. Bind a directory holding your GGUF to /opt/models, or point DROSTE_DS4_MODEL in $ENV_FILE at a file that is inside the box."
+    fi
 
     SERVICE=( "${argv[@]}" )
 }

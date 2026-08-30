@@ -190,6 +190,37 @@ COMFYUI_NUMBER_FLAGS=(
 comfyui_is_num() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 comfyui_is_int() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
 
+# ── A BLANK MEANS "GIVE ME THE DEFAULT" HERE, BY CONSTRUCTION (s58) ──────────
+# 🚨 THIS BOX NEEDS NO BLANK-GUARD TABLE, and that is a property of the three shapes
+# above rather than luck — which makes it a property that can be LOST, so it is stated
+# here and enforced by g1lab/cfguard.sh rather than left to be rediscovered.
+#
+# Jei's three-category rule for an empty value, which every box is audited against:
+#   1. a blank CRASHES the server or makes it unhealthy             ⇒ give the default
+#   2. the value is NUMERIC or from a practically FINITE set (a
+#      boolean, an enum, a menu) — and it does NOT matter whether
+#      the blank crashes; behaving differently is enough            ⇒ give the default
+#   3. an unbounded string whose blank is NOT the default and could
+#      itself MEAN something useful ("no config file", "no cache
+#      directory") — all three conditions required                  ⇒ keep the blank
+#
+# ⭐ comfyui is 100% DROSTE-OWNED — it exposes no native name at all, so every one of its
+# 17 settings passes through this function and there is nowhere else for a bad blank to
+# be absorbed. Sixteen are category 2 (fourteen enumerated groups, one GiB number, one
+# parameterised cache mode) and EXTRA_ARGS is an unbounded string whose blank is the
+# shipped state. All 17 already deliver the default when blank, three different ways:
+#   * a choice group seeds `flags` from pairs[0] — the documented default — and only
+#     REPLACES it inside `if [ -n "$val" ]`, so "" never reaches the match;
+#   * a number flag is skipped by `[ -n "$val" ] || continue`, which is how ComfyUI's
+#     own per-OS default (400 MiB reserved on Linux) stays in force;
+#   * CACHE reads `${DROSTE_COMFYUI_CACHE:-ram}` — `:-`, not `=`, which is correct HERE
+#     precisely because there is no category 3 setting on this box to protect. `none` is
+#     a VALUE in that group, not a blank.
+# ⚠️ SO A NEW SETTING IS THE HAZARD, not the existing ones. Anything that feeds a PATH, a
+# REQUIRED argument, or a value with no sensible zero would be the first row on this box
+# where an empty string is not the default — and it would need ds4's DS4_BLANK_IS_DEFAULT
+# treatment, not one of the three shapes above.
+
 # comfyui_argv — DROSTE_COMFYUI_* → SERVICE. Its own function so it can be
 # driven alone (source the spec, call it, print SERVICE) without the mounts, the
 # profile.d source or the model scan.

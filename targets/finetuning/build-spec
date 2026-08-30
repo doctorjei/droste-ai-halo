@@ -229,12 +229,28 @@ jupyter_env() {
     # TRAITLETS_APPLICATION_RAISE_CONFIG_FILE_ERROR, JUPYTER_PREFER_ENV_PATH and
     # JUPYTER_NO_CONFIG — and each of those handles its own blank deliberately, so this
     # call neither undoes nor is undone by any of them.
-    # 🚨 What it MUST NOT do is run BEFORE a `${VAR=…}` droste default for a name it
-    # also unsets: that would turn a user's deliberate blank opt-out back into our
-    # value. No such overlap exists today, and adding a name to BOTH lists means moving
-    # this call below the defaults, exactly as llama's build-spec had to.
+    # 🚨 THE ORDERING RULE CHANGED SIDES IN s58, AND THE OVERLAP IS NOW DELIBERATE.
+    # This block used to warn that the call must never run BEFORE a `${VAR=…}` droste
+    # default for a name it also unsets, "because that would turn a user's deliberate
+    # blank opt-out back into our value". Under Jei's rule — A BLANK MUST BEHAVE EXACTLY
+    # AS IF THE SETTING WERE ABSENT, except for an unbounded string whose blank cancels a
+    # file or directory that would otherwise load — turning a blank back into our value
+    # is the CORRECT outcome for every name that is not that exception. So the call runs
+    # FIRST on purpose, and the one overlapping name is JUPYTER_PREFER_ENV_PATH, whose
+    # `${JUPYTER_PREFER_ENV_PATH=0}` further down then supplies droste's `no`.
+    # ⚠️ THAT NAME IS THE FIFTH, AND IT IS HERE RATHER THAN IN THE PREFER_ENV_PATH BLOCK
+    # BECAUSE IT IS A NATIVE. envset() (jupyter_core/paths.py:49-60) is TRUE for every
+    # value except {no,n,false,off,0,0.0}, so a bare `JUPYTER_PREFER_ENV_PATH=` reads
+    # TRUE — absent and "" are opposite answers, which is exactly this helper's criterion.
+    # It is no longer on the template's surface (s57 replaced it with the droste name), so
+    # this closes the last way to type the s57 defect by hand.
+    # ⚠️ NO DROSTE_-OWNED NAME APPEARS HERE, and that is still a standing invariant: for a
+    # DROSTE_ name the equivalent guard is targeted and lives beside its own default
+    # (ds4's DS4_BLANK_IS_DEFAULT, and the SEARCH_VENV_FIRST block below), because
+    # droste-common.sh:85-90 reserves this helper for natives.
     droste::blank_is_unset \
-        IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR
+        IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR \
+        JUPYTER_PREFER_ENV_PATH
 
     # ── the droste-supplied defaults (N1a: a default belongs in the WIRING) ─────
     # Two of them HERE. A third — JUPYTER_PREFER_ENV_PATH — supplies its default
@@ -322,9 +338,28 @@ jupyter_env() {
     # {no,n,false,off,0,0.0}, so `JUPYTER_PREFER_ENV_PATH=` reads TRUE: a user who
     # uncommented the old native line and cleared it turned the setting ON. Since
     # paths.py:113 tests PRESENCE before value, the only way to say "let Jupyter
-    # decide" is for the variable not to exist — so blank UNSETS it here, the same
-    # shape as SKIP_CONFIG below and for the same upstream reason.
+    # decide" is for the variable not to exist.
+    #
+    # 🚨 A BLANK ON THE DROSTE NAME NOW MEANS "AS IF ABSENT", AND THIS ROW WAS RE-DECIDED
+    # (s58). It used to UNSET JUPYTER_PREFER_ENV_PATH and call that the documented N1a
+    # opt-out. Jei's rule for an empty value is that A BLANK MUST BEHAVE EXACTLY AS IF THE
+    # SETTING WERE ABSENT, with ONE exception: an unbounded string whose blank cancels a
+    # file or directory that would otherwise load ("no config file", "no KV disk cache").
+    # This setting is a BOOLEAN — finetuning.env:69-70 documents it as `{yes, no*}` — so
+    # the exception cannot apply, and its blank was producing a THIRD behaviour that is in
+    # neither the file's vocabulary nor the wiring's default: Jupyter's ownership test on
+    # /opt/venv (paths.py:83-107, :117). A user clearing a `no` line got neither `no` nor
+    # nothing; they got a coin toss decided by the permissions of an overlay merge.
+    # ⚠️ THE s57 PROTECTION IS NOT LOST WITH IT. What s57 established is that a blank must
+    # never be left ON THE WIRE, because envset() reads "" as TRUE. Both answers satisfy
+    # that; this one also satisfies the newer rule. The native spelling's own blank is
+    # covered by the droste::blank_is_unset call above, which is where a NATIVE name
+    # belongs.
     # ⚠️ Every arm returns 0: PRE_LAUNCH runs unguarded under `set -euo pipefail`.
+    if [ -n "${DROSTE_JUPYTER_SEARCH_VENV_FIRST+set}" ] && [ -z "$DROSTE_JUPYTER_SEARCH_VENV_FIRST" ]; then
+        serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST is set but empty — it is a yes/no setting, so an empty value cannot mean anything, and leaving it empty would hand the search order to a permission test on /opt/venv instead of to a decision. Using droste's default (no: your own config and data dirs are searched before /opt/venv's); put yes or no in $ENV_FILE, or remove the line to say the same thing quietly."
+        unset DROSTE_JUPYTER_SEARCH_VENV_FIRST
+    fi
     val=${DROSTE_JUPYTER_SEARCH_VENV_FIRST-}
     if [ -z "${DROSTE_JUPYTER_SEARCH_VENV_FIRST+set}" ]; then
         # Absent ⇒ droste's default. `${VAR=0}` rather than a bare assignment so a
@@ -332,9 +367,6 @@ jupyter_env() {
         # already exported it by the time PRE_LAUNCH runs.
         : "${JUPYTER_PREFER_ENV_PATH=0}"
         export JUPYTER_PREFER_ENV_PATH
-    elif [ -z "$val" ]; then
-        # The documented N1a opt-out: hand Jupyter's own detection back the row.
-        unset JUPYTER_PREFER_ENV_PATH
     else
         case "$(droste::bool "$val")" in
             on)  export JUPYTER_PREFER_ENV_PATH=1 ;;

@@ -262,6 +262,78 @@ vllm_menu() {
     export "$var=$wire"
 }
 
+# ── vllm_open_registry — OBSERVE an open-registry name without OWNING it ─────
+#
+# 🚨 THE SAME DEFECT AS vllm_menu WITH THE OPPOSITE FIX, AND THE TWO MUST NOT BE
+# UNIFIED. A menu backed by a literal list in vllm/envs.py is CLOSED — nothing can add
+# to it, so an unknown value is a typo and whitelisting is right. The two names below
+# are backed by ExtensionManager REGISTRIES (vllm/utils/registry.py), and vLLM
+# documents registering your own: `@VIDEO_LOADER_REGISTRY.register("my_loader")` plus a
+# runtime import, tied to VLLM_PLUGINS. The registry only fills INSIDE the server
+# process, after plugins load, so at PRE_LAUNCH a typo and a legitimate plugin name are
+# INDISTINGUISHABLE. Rejecting would break a working deployment to protect a typist;
+# substituting a fallback would do the same thing silently.
+# ⇒ WARN, THEN PASS THROUGH UNCHANGED. Nothing is folded, trimmed or defaulted — a
+# registry key is matched exactly (`self.name2class.get(cls_name)`), so any
+# normalisation we did would be a value the user did not write.
+#
+# ⭐ AND THAT IS WHY THESE OBSERVE RATHER THAN TRANSLATE. We do not own the value, and
+# observation is pass-through under the naming rule — the `--api-prefix` precedent.
+#
+# 🚨 THE FAILURE IS AT REQUEST TIME, NOT AT STARTUP, AND THE WARNING MUST SAY SO
+# (measured at the pin, v0.16.0). Both loads happen while a REQUEST is being parsed —
+# `VIDEO_LOADER_REGISTRY.load(...)` in VideoMediaIO.__init__ (multimodal/media/video.py:44)
+# and `MEDIA_CONNECTOR_REGISTRY.load(envs.VLLM_MEDIA_CONNECTOR, ...)` in both content
+# parsers (entrypoints/chat_utils.py:774, 885) — so a bad name gives a box that starts,
+# binds, and reports HEALTHY, and then fails every multimodal request with
+# `AssertionError: Extension class <name> not found` (registry.py:49-50). Upstream's own
+# comment says only "an AssertionError will be thrown" and an earlier version of this
+# warning turned that into "startup fails", which is worse than saying nothing: a user
+# who watches the box come up healthy concludes the warning was noise.
+#
+# ⚠️ A BLANK IS NOT "THE DEFAULT" HERE, IT IS THE SAME CRASH. envs.py reads
+# `os.getenv(NAME, "http")`, so "" is a VALUE: it reaches load("") and the assert fires.
+# The blank has to become an absence. VLLM_MEDIA_CONNECTOR is ALSO in the named blank
+# list inside vllm_env — it is one of the natives vllm.env exposes — and the two agree;
+# unsetting twice is unsetting once. VLLM_VIDEO_LOADER_BACKEND is NOT on that list,
+# because vllm.env spells it with a DROSTE_ name, which is precisely why its guard
+# belongs here beside the setting rather than in a list of surface names.
+#
+# vllm_open_registry <native var> <label to quote back> <plural noun> <built-in> …
+vllm_open_registry() {
+    local var=$1 label=$2 noun=$3; shift 3
+    local val name list=''
+    # `${!var+set}` asks "does it EXIST" — the same question envs.py's getenv asks,
+    # and the one `-z` alone cannot tell from "exists but empty".
+    if [ -n "${!var+set}" ] && [ -z "${!var}" ]; then
+        unset "$var"
+        return 0
+    fi
+    val=${!var:-}
+    [ -n "$val" ] || return 0
+    for name in "$@"; do
+        list="${list:+$list, }$name"
+        [ "$val" = "$name" ] && return 0
+    done
+    serve::warn "$label='$val' is not one of the $noun vLLM ships ($list). Passing it through unchanged in case a plugin registers it. If nothing does, this box will still start and report healthy, and then fail every multimodal request with 'AssertionError: Extension class $val not found'. Fix it in $ENV_FILE and restart the box."
+    return 0
+}
+
+# ── the built-in members of each open registry, at the pin ───────────────────
+# ⭐ READ FROM THE REGISTRATION SITES, NEVER FROM THE PROSE BESIDE THEM. Upstream's own
+# comment above VLLM_VIDEO_LOADER_BACKEND (envs.py:757-759) lists "opencv" and
+# "identity"; `identity` IS NOT REGISTERED ANYWHERE at this pin and `opencv_dynamic` and
+# `molmo2` are, so the comment names one backend that does not exist and misses two that
+# do. An earlier pass copied that comment into vllm.env as `{opencv*}`. The truth is the
+# three `@VIDEO_LOADER_REGISTRY.register(...)` decorators at multimodal/video.py:238,
+# 340, 434 and the one `@MEDIA_CONNECTOR_REGISTRY.register("http")` at
+# multimodal/media/connector.py:36.
+# ⚠️ ENUMERATED AT DEV TIME, NOT AT BUILD TIME — reading the registry itself would mean
+# importing vLLM. `scripts/vllm-registries.py` re-derives both lists from the pinned
+# source and reports drift against THESE arrays when the pin moves.
+VLLM_VIDEO_LOADER_BUILTINS=( opencv opencv_dynamic molmo2 )
+VLLM_MEDIA_CONNECTOR_BUILTINS=( http )
+
 # vllm_env — the environment the served process gets: DROSTE_VLLM_* translated to
 # the native variables, plus the 89 NATIVE lines whose blank the file promises is a
 # no-op and whose reader would otherwise take the box down. Its own function so it
@@ -646,6 +718,30 @@ vllm_env() {
     #
     # `auto` = "do not set it": env_with_choices raises for anything outside
     # NHD/HND, and that includes both `auto` and the empty string.
+    #
+    # 🚨 THE NATIVE NAME HAS TO GO ON WORKING, AND ITS BLANK IS FATAL. vllm.env spells
+    # this setting DROSTE_VLLM_KV_CACHE_LAYOUT, but every config file is seeded
+    # `if_missing` and never rewritten, so a box may carry a hand-written native
+    # `VLLM_KV_CACHE_LAYOUT=` line forever — and a user may add one at any time, because
+    # every native VLLM_* name is reachable through this file by design. Both resolvers
+    # source it under `set -a`, so an emptied line arrives as `VLLM_KV_CACHE_LAYOUT=""`,
+    # and env_with_choices (envs.py:303-325) returns its default ONLY for `None`: "" is a
+    # VALUE, misses ["NHD","HND"] and raises ValueError before the server binds. The box
+    # then restart-loops with nothing in the log a user can act on.
+    # ⚠️ IT IS NOT IN THE NAMED BLANK LIST ABOVE and must not be added there — that list
+    # is the natives vllm.env EXPOSES, and a phantom entry would make it unauditable.
+    # The guard belongs beside the setting, exactly as for the two open registries.
+    if [ -n "${VLLM_KV_CACHE_LAYOUT+set}" ] && [ -z "$VLLM_KV_CACHE_LAYOUT" ]; then
+        unset VLLM_KV_CACHE_LAYOUT
+    fi
+    #
+    # ⭐ PRECEDENCE, STATED ONCE SO IT IS NOT RE-DERIVED: the droste setting wins ONLY
+    # when it names a layout. `auto` — the value vllm.env SHIPS — leaves the native
+    # variable exactly as it found it, and so do absent, blank and a rejected value.
+    # That is not laziness: `auto` is the printed default, so uncommenting the line as
+    # shown must be a no-op, and deleting a native line the user wrote elsewhere in the
+    # same file is the opposite of a no-op. A user who wants the backend to choose
+    # removes their own native line; a user who writes NHD in either spelling gets NHD.
     vllm_menu KV_CACHE_LAYOUT VLLM_KV_CACHE_LAYOUT auto=- nhd=NHD hnd=HND
 
     # `auto` here is upstream's own COMPUTED default (torch version + whether the
@@ -698,18 +794,32 @@ vllm_env() {
         esac
     fi
 
-    # OPEN REGISTRY (see the note above): warn, then pass through VERBATIM — no
-    # case folding, because a registry key is matched exactly. The three names below
-    # are what vLLM itself ships at the pin; a plugin may add more, and a name that
-    # nothing registers fails with an AssertionError during startup.
+    # ── the two OPEN REGISTRIES (see vllm_open_registry above) ────────────────
+    #
+    # ⚠️ THE WARNING IS ON THE VALUE THAT REACHES vLLM, NOT ON THE NAME THE USER TYPED.
+    # The translation runs FIRST and the observation SECOND, so whichever spelling the
+    # value arrived under, exactly one line is printed and it describes what the server
+    # will actually be handed. Checking the DROSTE_ name alone left a native
+    # `VLLM_VIDEO_LOADER_BACKEND=` line — legal in this file, and the only spelling for
+    # anyone following upstream's documentation — passing unobserved and unwarned.
+    # ⭐ The label follows the same principle: quote back the name the user wrote.
+    local label=VLLM_VIDEO_LOADER_BACKEND
     val=${DROSTE_VLLM_VIDEO_LOAD_BACKEND:-}
     if [ -n "$val" ]; then
-        case "$val" in
-            opencv|opencv_dynamic|molmo2) ;;
-            *) serve::warn "DROSTE_VLLM_VIDEO_LOAD_BACKEND='$val' is not one of the loaders vLLM ships (opencv, opencv_dynamic, molmo2). Passing it through in case a plugin registers it — if nothing does, startup fails with an AssertionError." ;;
-        esac
         export VLLM_VIDEO_LOADER_BACKEND="$val"
+        label=DROSTE_VLLM_VIDEO_LOAD_BACKEND
     fi
+    vllm_open_registry VLLM_VIDEO_LOADER_BACKEND "$label" \
+        "video loaders" "${VLLM_VIDEO_LOADER_BUILTINS[@]}"
+
+    # ⭐ A GENUINE MENU OF ONE, AND IT IS STILL WORTH OBSERVING. `http` is the only
+    # connector vLLM registers at this pin, so ANY other value is either a plugin or a
+    # typo — the same two possibilities as the video loader, with the same rule. It is
+    # NATIVE-named on the surface (vllm.env:212) because we observe it without owning
+    # it; do not give it a DROSTE_ name to "fix" the fatality, because the open registry
+    # is the reason a whitelist cannot be the answer here.
+    vllm_open_registry VLLM_MEDIA_CONNECTOR VLLM_MEDIA_CONNECTOR \
+        "media connectors" "${VLLM_MEDIA_CONNECTOR_BUILTINS[@]}"
 
     # A PATH, not a switch — vllm.env:320 shows it BLANK and offers no menu, so the
     # value goes through verbatim and blank is the off-state.

@@ -45,7 +45,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
 # neither the installer nor a wipe has to guess from a path's contents:
 #   /opt/data          PER-BOX PERSISTENT DATA. Irreplaceable-if-lost: configs
-#                      (<app>.cfg, vllm_config.yaml), comfyui user/ +
+#                      (<box>.cfg, vllm_config.yaml), comfyui user/ +
 #                      custom_nodes upper + model-tree, ds4 sessions/ + cockpit/,
 #                      finetuning workspace, the .droste-*.log files. Backed up.
 #   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
@@ -71,7 +71,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # 🚨 NO DROSTE_SERVE_ENV DEFAULT HERE, AND THAT ABSENCE IS LOAD-BEARING (s60). This
 # library used to seed it to a single literal ($DROSTE_DATA_DIR/server.env) so both
 # libraries named one file. server.env is gone: the serve settings now live in the box's
-# own <app>.cfg, whose path is PER BOX and is declared by the build-spec's ENV_FILE row,
+# own <box>.cfg, whose path is PER BOX and is declared by the build-spec's ENV_FILE row,
 # so droste-serve.sh is the one place that resolves it.
 # ⚠️ AND A LEFTOVER LITERAL HERE WOULD NOT BE MERELY STALE, IT WOULD SPLIT THE TWO DOORS.
 # The init hook sources THIS library first, so its value would stand where nothing else
@@ -840,7 +840,7 @@ resolve::apply_spec() {
     # reads LLAMA_ARG_* from its environment) while a typo in the user's config warns
     # instead of aborting this resolver under `set -euo pipefail`. Rationale, costs and
     # the sentinel trick: droste-envfile.sh.
-    # ⭐ TWO READERS, ONE FILE, AND THIS IS ONLY THE FIRST. The same <app>.cfg also
+    # ⭐ TWO READERS, ONE FILE, AND THIS IS ONLY THE FIRST. The same <box>.cfg also
     # carries the box's SERVE settings (DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT /
     # _TLS_*), and those are never read this way: droste-serve.sh SCANS them with
     # droste::cfg_get, because the healthcheck asks the same questions every 30s in a

@@ -15,7 +15,7 @@
 # start period the container restarts itself forever and never finishes loading.
 #
 # What it does: read the SAME serve settings the init hook reads — the box's
-# DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT, which live in its own <app>.cfg
+# DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT, which live in its own <box>.cfg
 # beside every other setting the user edits — then require BOTH halves of "this box
 # is serving":
 #
@@ -37,7 +37,7 @@
 # Exit 0 = healthy, non-zero = unhealthy.
 #
 # 🚨 THOSE SETTINGS ARE PARSED, NEVER SOURCED (droste::cfg_get, droste-cfg.sh), and
-# for this file that is a safety property rather than a style choice. <app>.cfg is
+# for this file that is a safety property rather than a style choice. <box>.cfg is
 # several hundred lines of the USER's own settings; this probe fires every 30s; and
 # --health-on-failure=restart turns any abort in it into a container restart loop
 # that ejects every interactive shell in the box. A typo in their own config file
@@ -65,7 +65,7 @@
 # A box that is NOT configured to serve is HEALTHY BY DEFINITION (exit 0): the
 # healthcheck flags may be baked into a container the user later turns serving off
 # on, and an interactive-only box must not restart-loop because nothing is
-# listening. Same for a missing or unreadable <app>.cfg, and for serve settings it
+# listening. Same for a missing or unreadable <box>.cfg, and for serve settings it
 # cannot make sense of — the init hook already warned about that in the container
 # log, and warning again every 30s would only train the log to be ignored.
 set -uo pipefail

@@ -217,6 +217,64 @@ serve_addr() {
   printf '%s\n' "$a"
 }
 
+# serve_host — the address to BIND, for the foreground launcher below. Prints a
+# usable IPv4 literal and returns 0; prints NOTHING and returns 1 when the
+# configured one cannot be honoured.
+#
+# 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
+# maps the wildcard to loopback because "where do I browse" and "what do I bind"
+# have different right answers, so feeding it to --listen would bind loopback ONLY.
+# This reads the SETTING instead: same file, same parser (droste::cfg_get), same
+# IPv4 rule the server lane applies (serve::_is_ipv4). That rule is CALLED, never
+# copied — a second dotted-quad test here is the duplicated-validation defect this
+# project keeps paying for, and it would drift the first time a leading-zero octet
+# is argued about again.
+#
+# 🚨 A FAILURE IS NEVER RESOLVED TOWARD A WIDER BIND (Jei, s60: "fail"). Until s60
+# this lane hardcoded `--listen 0.0.0.0`, so a user who narrowed their box's bind
+# got EVERY interface back the moment they ran it in the foreground — the same shape
+# as a certificate with no key: they believe the port is protected and it is not.
+# Absent or blank is our documented default and yields 0.0.0.0; anything we cannot
+# honour returns 1, and the caller declines to launch rather than widening.
+#
+# The three arms, each chosen rather than fallen into:
+#   no config file      → 0.0.0.0. Nothing to honour, and it is what the server
+#                         lane reads from the same absence.
+#   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
+#                         see it; the server lane refuses to serve on this file at
+#                         all, so a foreground that guessed would be the one thing
+#                         on the box ignoring the user's own file.
+#   library unreachable → REFUSE, same reason. Unable to read is not permission to
+#                         widen.
+# Same subshell discipline as serve_port and serve_addr: errexit/nounset off, stdin
+# closed, stderr discarded from the first line INSIDE (a trailing redirect on the
+# assignment runs after the substitution and silences nothing), and the library's
+# serve:: namespace left in there rather than in a user's interactive shell.
+serve_host() {
+  local h file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}"
+  [ -f "$file" ] || { printf '0.0.0.0\n'; return 0; }
+  [ -r "$file" ] || return 1
+  h=$(
+    set +e +u +o pipefail
+    exec 2>/dev/null
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
+    v=$(droste::cfg_get DROSTE_COMFYUI_HOST "$file")
+    # A blank behaves exactly as absent (s57): our default, never the empty string
+    # — which as a --listen argument is a bind failure, not a default.
+    [ -n "$v" ] || { printf '0.0.0.0\n'; exit 0; }
+    serve::_is_ipv4 "$v" || exit 1
+    printf '%s\n' "$v"
+  ) || return 1
+  # Nothing is re-validated out here on purpose: the one rule already ran inside,
+  # and a weaker copy of it in this shell is the second implementation the note
+  # above refuses. The emptiness test is not that copy — it is the guard against
+  # handing an empty argument to a flag.
+  [ -n "$h" ] || return 1
+  printf '%s\n' "$h"
+}
+
 # serve_running — is THIS box's service up right now? Prints "<pid> <port>" and
 # returns 0, else returns 1 and prints nothing.
 #
@@ -303,9 +361,10 @@ printf 'SSH tip: ssh -L %s:%s:%s user@host\n\n' "$SERVE_PORT" "$SERVE_ADDR" "$SE
 # file exists.
 # serve_port is re-read here rather than reusing $SERVE_PORT from banner time, so
 # a comfyui.cfg edited during the session takes effect on the next launch.
-# ⚠️ `--listen 0.0.0.0` stays a literal: this is a BIND address, and the banner's
-# $SERVE_ADDR is a display one (0.0.0.0 shows as localhost). It also means this
-# foreground lane does not follow DROSTE_COMFYUI_HOST — flagged, not fixed here.
+# ⚠️ `--listen` takes serve_host, NOT $SERVE_ADDR: this is a BIND address and that
+# one is a display address (0.0.0.0 shows as localhost, which as a --listen would
+# bind loopback only). serve_host is re-read here for the same reason serve_port is
+# — an edit made during the session takes effect on the next launch.
 # start_comfy_ui — KEPT AS AN ALIAS, because users may know this name (it predates the
 # verbs). It names the new verb once and then does what it always did: run ComfyUI in
 # the FOREGROUND of this shell, which is still the right tool for watching a run.
@@ -329,13 +388,28 @@ start_comfy_ui() {
     printf 'DROSTE_COMFYUI_STARTUP_ENABLED=no in /opt/data/comfyui.cfg.\n'
     return 1
   fi
+  # REFUSE rather than bind wider than asked (Jei, s60). A DROSTE_COMFYUI_HOST we
+  # cannot honour used to be ignored here in favour of 0.0.0.0 — every interface,
+  # on a box with no authentication — which is the one outcome a user narrowing the
+  # bind was trying to avoid. The message names the setting and the file; the
+  # per-value diagnosis (IPv6 vs not-an-address) belongs to serve::read_config and
+  # is printed by the server lane, so it is not restated here in a second wording.
+  local host
+  if ! host=$(serve_host); then
+    printf 'NOT STARTING: DROSTE_COMFYUI_HOST in /opt/data/comfyui.cfg cannot be used\n'
+    printf 'as a bind address, and this shell will not pick a wider one for you.\n'
+    printf '  - put an IPv4 literal there (e.g. 127.0.0.1), or\n'
+    printf '  - delete the line to bind 0.0.0.0, the default.\n'
+    printf 'server_status says the same about the supervised server.\n'
+    return 1
+  fi
   printf 'Tip: server_start runs ComfyUI in the background, supervised, and\n'
   printf 'survives you closing this shell. start_comfy_ui runs it here, in the\n'
   printf 'foreground, which is what you want when you are watching it.\n\n'
   local extra=()
   [[ -f /opt/program-cache/extra_model_paths.yaml ]] \
     && extra=( --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml )
-  cd /opt/ComfyUI && python main.py --listen 0.0.0.0 --port "$(serve_port)" \
+  cd /opt/ComfyUI && python main.py --listen "$host" --port "$(serve_port)" \
     --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae \
     "${extra[@]}"
 }

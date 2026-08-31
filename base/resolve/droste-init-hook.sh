@@ -22,7 +22,7 @@
 #
 # THE SERVER DOOR (merged-container shape): after the spec is applied, the hook
 # asks droste-serve.sh whether this start should also bring the box's SERVICE up
-# — the answer lives in the box's own <app>.cfg on the per-box data volume
+# — the answer lives in the box's own <box>.cfg on the per-box data volume
 # (DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT), not in this file and not in the
 # container's baked env, so it is editable and survives recreates. That is the SAME
 # file the resolver hands the app at step 6, but it is not the same READ: the app
@@ -130,10 +130,10 @@ fi
 # it and a `server_stop` becomes permanent and silent, which is the exact class of bug
 # the two-setting split was built to remove.
 # ⚙️ It MOVED ABOVE apply_spec in s47 (it used to sit beside maybe_launch): it reads the
-# serve settings out of the box's <app>.cfg and writes the state dir, both on volumes
+# serve settings out of the box's <box>.cfg and writes the state dir, both on volumes
 # podman binds at container start, so it never needed the mounts — and the stamp below
 # needs to know the intent.
-# ⚠️ DO NOT MOVE IT BACK DOWN NOW THAT THE SETTINGS LIVE IN <app>.cfg, even though that
+# ⚠️ DO NOT MOVE IT BACK DOWN NOW THAT THE SETTINGS LIVE IN <box>.cfg, even though that
 # file is SEEDED by apply_spec's template step and so does not exist on a brand-new box's
 # FIRST start. A missing file reads as every setting absent ⇒ intent 0 ⇒ a first start
 # that does not serve, which is correct rather than a regression (the user has not chosen
@@ -249,7 +249,7 @@ cat "$RESOLVE_LOG" >&2
 # problem must never fail the init hook — distrobox reports a failed hook as a
 # generic error and the box would become hard to enter, which is the opposite of
 # what we want when the service is the broken part. maybe_launch says nothing at
-# all unless the box's <app>.cfg turns serving on.
+# all unless the box's <box>.cfg turns serving on.
 # ⚙️ THE INTENT RESET AND THE `starting` STAMP RUN ABOVE, BEFORE apply_spec (s47) — see
 # the block there for why. maybe_launch re-reads the record this start already wrote:
 # its pid field is "-", which _pid_is_ours rejects, so it falls straight through to the

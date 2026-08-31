@@ -221,11 +221,72 @@ serve_addr() {
   printf '%s\n' "$a"
 }
 
+# serve_host — the address to BIND, for the ad-hoc `jupyter lab` recipe printed
+# below. Prints a usable IPv4 literal and returns 0; prints NOTHING and returns 1
+# when the configured one cannot be honoured.
+#
+# 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
+# maps the wildcard to loopback because "where do I browse" and "what do I bind"
+# have different right answers, so printing it as an --ip would tell the user to
+# bind loopback ONLY. This reads the SETTING instead: same file, same parser
+# (droste::cfg_get), same IPv4 rule the server lane applies (serve::_is_ipv4). That
+# rule is CALLED, never copied — a second dotted-quad test here is the duplicated-
+# validation defect this project keeps paying for.
+#
+# 🚨 A FAILURE IS NEVER RESOLVED TOWARD A WIDER BIND (Jei, s60: "fail"). Until s60
+# the recipe below printed `--ip 0.0.0.0` as a literal, so a user who narrowed their
+# box's bind was handed a command that undoes it — and handed it by us, which is
+# worse than them typing it. Absent or blank is our documented default and yields
+# 0.0.0.0; anything we cannot honour returns 1, and no command is printed at all.
+#
+# The three arms, each chosen rather than fallen into:
+#   no config file      → 0.0.0.0. Nothing to honour, and it is what the server
+#                         lane reads from the same absence.
+#   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
+#                         see it; the server lane refuses to serve on this file at
+#                         all, so a printed recipe that guessed would be the one
+#                         thing on the box ignoring the user's own file.
+#   library unreachable → REFUSE, same reason. Unable to read is not permission to
+#                         widen.
+# Same subshell discipline as serve_port and serve_addr: errexit/nounset off, stdin
+# closed, stderr discarded from the first line INSIDE (a trailing redirect on the
+# assignment runs after the substitution and silences nothing), and the library's
+# serve:: namespace left in there rather than in a user's interactive shell.
+serve_host() {
+  local h file="${DROSTE_SERVE_ENV:-/opt/data/finetuning.cfg}"
+  [ -f "$file" ] || { printf '0.0.0.0\n'; return 0; }
+  [ -r "$file" ] || return 1
+  h=$(
+    set +e +u +o pipefail
+    exec 2>/dev/null
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
+    v=$(droste::cfg_get DROSTE_JUPYTER_HOST "$file")
+    # A blank behaves exactly as absent (s57): our default, never the empty string
+    # — which as an --ip argument is a bind failure, not a default.
+    [ -n "$v" ] || { printf '0.0.0.0\n'; exit 0; }
+    serve::_is_ipv4 "$v" || exit 1
+    printf '%s\n' "$v"
+  ) || return 1
+  # Nothing is re-validated out here on purpose: the one rule already ran inside,
+  # and a weaker copy of it in this shell is the second implementation the note
+  # above refuses. The emptiness test is not that copy — it is the guard against
+  # printing a flag with no argument after it.
+  [ -n "$h" ] || return 1
+  printf '%s\n' "$h"
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
 SERVE_PORT="$(serve_port)"
 SERVE_ADDR="$(serve_addr)"
+# The BIND address for the ad-hoc recipe, and an empty string is its refusal: the
+# recipe is not printed at all rather than printed with a wider address than the
+# user asked for. `|| SERVE_BIND=""` because a failing command substitution would
+# otherwise leave a non-zero $? sitting in a login shell.
+SERVE_BIND="$(serve_host)" || SERVE_BIND=""
 
 echo
 printf '%s\n' \
@@ -250,9 +311,23 @@ printf 'Based on : github.com/kyuz0/amd-strix-halo-llm-finetuning\n\n'
 printf 'JupyterLab starts with the box on http://%s:%s\n' "$SERVE_ADDR" "$SERVE_PORT"
 printf '  (token: run `jupyter server list`; it rerolls on every restart)\n'
 printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
-printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
-printf '  set -a; . /opt/data/finetuning.cfg; set +a   # your settings, this shell\n'
-printf '  jupyter lab --ip 0.0.0.0 --port %s --notebook-dir=/opt/workspace\n\n' "$SERVE_PORT"
+# The --ip is DROSTE_JUPYTER_HOST, not the display address above: this line is a
+# command the user will run, so it must bind what the box was configured to bind.
+# When that setting cannot be honoured the recipe is WITHHELD (Jei, s60: "fail") —
+# printing `--ip 0.0.0.0` regardless is how a user who deliberately narrowed the
+# bind ends up on every interface, with a Jupyter whose token is the only thing in
+# front of it.
+if [[ -n "$SERVE_BIND" ]]; then
+  printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
+  printf '  set -a; . /opt/data/finetuning.cfg; set +a   # your settings, this shell\n'
+  printf '  jupyter lab --ip %s --port %s --notebook-dir=/opt/workspace\n\n' \
+    "$SERVE_BIND" "$SERVE_PORT"
+else
+  printf 'No ad-hoc jupyter command is shown here: DROSTE_JUPYTER_HOST in\n'
+  printf '/opt/data/finetuning.cfg cannot be used as a bind address, and a recipe that\n'
+  printf 'ignored it would listen on every interface instead of the one you asked for.\n'
+  printf 'Put an IPv4 literal there, or delete the line to bind 0.0.0.0, the default.\n\n'
+fi
 printf 'Workspace  : /opt/workspace — your bind; starter notebooks seed if empty\n'
 printf '             (pristine copies live in /opt/resources/templates/workspace)\n'
 printf 'Helpers    : train.py · start-finetuning-cluster.py · benchmark_configs.py ·\n'

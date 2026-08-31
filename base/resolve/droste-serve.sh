@@ -24,18 +24,30 @@
 #       updates and container recreation.
 #
 # ── THE FIVE SERVE SETTINGS ─────────────────────────────────────────────────
-# They live in /opt/data/<app>.cfg — the SAME file the user edits for every other
+# They live in /opt/data/<box>.cfg — the SAME file the user edits for every other
 # setting this box has, beside them and in the same namespace. There is no second
 # config file: `server.env` was deleted in s60 precisely because a user should not
 # have to learn that the port lives somewhere other than everything else.
+#
+# 🚨 `<box>.cfg` AND `DROSTE_<APP>_*` NAME TWO DIFFERENT THINGS, AND THIS IS THE ONE
+# PLACE THAT SAYS SO. The FILE is named for the BOX; the SETTINGS inside it are named
+# for the APPLICATION. On four of five boxes the two coincide and the distinction is
+# invisible — ds4.cfg/DROSTE_DS4_*, comfyui, llama, vllm — but on finetuning they do
+# not: the file is `finetuning.cfg` and every setting in it is `DROSTE_JUPYTER_*`.
+# There is no jupyter.cfg, and there is no DROSTE_FINETUNING_ anything. So a lowercase
+# <box> and an uppercase <APP> in this codebase are NOT the same placeholder, even
+# where they sit in the same sentence. Spelling the FILE with the application
+# placeholder promises a jupyter.cfg that does not exist, and that promise is only
+# visible to someone working on finetuning — which is why it survived a whole session.
+#
 # The PATH comes from the build-spec's ENV_FILE row and the PREFIX from its
-# SERVE_CFG_PREFIX row (see serve::_read_serve_spec); the names are the box's own
-# — DROSTE_LLAMA_*, DROSTE_COMFYUI_*, and DROSTE_JUPYTER_* on finetuning, because
-# the prefix names the APPLICATION, not the box:
+# SERVE_CFG_PREFIX row (see serve::_read_serve_spec) — two rows precisely because the
+# two names are independent:
 #
 #       DROSTE_<APP>_STARTUP_ENABLED=yes  # start this box's server when the BOX starts
 #       DROSTE_<APP>_HOST=0.0.0.0         # the address the service BINDS. IPv4 literal
-#                                         # only; blank or absent = 0.0.0.0
+#                                         # only; blank or absent = 0.0.0.0, and anything
+#                                         # else REFUSES to serve (§5)
 #       DROSTE_<APP>_PORT=8188            # the HOST port the service binds DIRECTLY
 #                                         # (host networking: nothing is remapped, so
 #                                         # e.g. ds4 binds 8001 itself instead of its
@@ -61,13 +73,13 @@
 #
 #   | | DROSTE_<APP>_STARTUP_ENABLED | state/.IS_ACTIVE                    |
 #   |-|------------------------------|-------------------------------------|
-#   | what     | a KEY in <app>.cfg  | a FILE in the program-cache state dir |
+#   | what     | a KEY in <box>.cfg  | a FILE in the program-cache state dir |
 #   | written  | by the USER         | by the MACHINE (the verbs, the hook)  |
 #   | lifetime | persistent, survives recreate | reset EVERY container start  |
 #   | means    | start it at box start | it SHOULD be running right now      |
 #
 # So a stop is ALWAYS TEMPORARY and the user has to remember nothing. Putting the
-# "now" flag in <app>.cfg would have re-created the original foot-gun.
+# "now" flag in <box>.cfg would have re-created the original foot-gun.
 # 🚨 A FILE IS A LOCATION; A LIFETIME IS A CONTRACT. Only the location moved in s60 —
 # .IS_ACTIVE, .SCHEME and .PREFIX stay machine-written in the state dir and must never
 # be folded into the config file.
@@ -118,7 +130,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # own prefixed versions: the names resolve when the function runs, not when it loads.
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
-# droste::cfg_get — the SCANNING reader for the box's own <app>.cfg. serve::read_config
+# droste::cfg_get — the SCANNING reader for the box's own <box>.cfg. serve::read_config
 # is its only caller here, and sourcing it unconditionally is what lets the healthcheck
 # keep sourcing THIS file alone. Definitions only, no side effects (see droste-cfg.sh).
 # shellcheck source=/dev/null
@@ -135,7 +147,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${DROSTE_PCACHE_DIR:=/opt/program-cache}"
 # ⚠️ NO LITERAL DEFAULT FOR THE CONFIG FILE ANY MORE, and that is the point: there is
 # no one path that is right for all five boxes now that the serve settings live in the
-# box's own <app>.cfg. serve::read_config fills these two in from the baked build-spec
+# box's own <box>.cfg. serve::read_config fills these two in from the baked build-spec
 # (serve::_read_serve_spec) on every call. Setting either one here — or in the
 # environment before sourcing — is a TEST override, honoured only when the build-spec
 # declares nothing; production always has a spec and the spec always wins.
@@ -148,7 +160,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 #   state/.IS_ACTIVE  0/1                — INTENT: should a server be running right now
 # Keeping those in two files is the point, not an accident: they answer different
 # questions and are written at different moments (a `stop` sets intent with no launch
-# involved). Folding intent into the record — or into the box's <app>.cfg — would
+# involved). Folding intent into the record — or into the box's <box>.cfg — would
 # re-create the very conflation this split exists to remove.
 # ⚠️ RENAMED FROM `.droste-serve.pid`: that name described one of its five fields. An
 # existing box has its record at the old path, so the first start on new code finds none;
@@ -164,7 +176,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # 🚨 EVERY BOX GETS A COMMAND-LINE FLAG, AND NO BOX GETS AN ENVIRONMENT VARIABLE OR A
 # CONFIG KEY (ruled s60). A CLI flag outranks an env var (llama's LLAMA_ARG_*), a YAML
 # key (vllm's vllm_config.yaml) and a built-in default (all five), which is what makes
-# the "reserved by droste" block in each <app>.cfg TRUE rather than merely advisory —
+# the "reserved by droste" block in each <box>.cfg TRUE rather than merely advisory —
 # a claim nothing enforces is advice. It also sidesteps the s57 box-killer outright:
 # LLAMA_ARG_HOST="" binds ::1 only and restart-loops the box, and a variable we never
 # set cannot be blank.
@@ -336,6 +348,9 @@ serve::_read_serve_spec || true
 # it too (it is the historical octal form), so `010.0.0.1` is not the address the user
 # thinks they typed. Better to say so than to hand it on and let each of five servers
 # disagree about what it means.
+# ⚠️ SINCE s60 A `NO` FROM THIS FUNCTION IS A REFUSAL TO SERVE, not a fall-back — read
+# the block at the HOST arm of read_config before loosening anything here. Every string
+# this returns 1 for is a box that will not come up.
 serve::_is_ipv4() {
     local a=${1-} o
     [[ $a =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
@@ -346,7 +361,7 @@ serve::_is_ipv4() {
     return 0
 }
 
-# read_config — read the five serve settings out of the box's own <app>.cfg into
+# read_config — read the five serve settings out of the box's own <box>.cfg into
 # SERVE_STARTUP_ENABLED (0/1), SERVE_PORT (digits or ""), SERVE_HOST (always an IPv4
 # literal), SERVE_TLS_CERT / SERVE_TLS_KEY (paths or ""), plus one _ERR twin per setting
 # and the TWO consumer channels — SERVE_CONFIG_ERR ("we refuse to serve, here is why")
@@ -380,6 +395,7 @@ serve::_is_ipv4() {
 # and restart-loops the box, so the order of these two steps is a box-killer either way.
 serve::read_config() {
     local file=${1-} pfx="" v="" spec=0
+    local -a warns=()
     SERVE_STARTUP_ENABLED=0
     SERVE_PORT=""
     SERVE_TLS_CERT=""
@@ -447,17 +463,43 @@ serve::read_config() {
         SERVE_PORT_ERR="$file has no usable ${pfx}PORT (got '${v}') — add e.g. ${pfx}PORT=8188."
     fi
 
-    # ── HOST ────────────────────────────────────────────────────────────────
+    # ── HOST — AN IPv4 LITERAL, OR WE DO NOT SERVE ──────────────────────────
+    # 🚨 NEVER RESOLVE A FAILURE TOWARD MORE EXPOSURE — FAIL (Jei, s60: "fail").
+    # This arm used to warn and bind $SERVE_HOST_DEFAULT. That is not a neutral
+    # fallback: a user who typed a hostname was plausibly trying to NARROW what the
+    # box listens on, and the fallback handed them EVERY interface instead — on boxes
+    # where three of five have no authentication at all. It is the same shape as a
+    # certificate without a key (below): the user believes the port is protected and
+    # it is not. So it gets the same answer, through the same channel — refuse to
+    # serve, and say why.
+    # ⚠️ THE ACCEPTED COST, ON THE RECORD: a typo here is now DOWNTIME rather than a
+    # degraded start. Jei weighed that against silent over-exposure and chose downtime;
+    # the refusal is loud and names the exact line.
+    # ⚠️ A BLANK IS NOT A BAD VALUE. Absent and blank both mean "no preference" and
+    # both land on $SERVE_HOST_DEFAULT, which was applied before the file was even
+    # opened. ONLY a value that is PRESENT and unparseable refuses — conflating the two
+    # would turn a commented-out setting into a box that will not serve.
     # 🚫 NO PER-BOX WORDING. One message, identical on all five boxes; the two arms
     # discriminate on the VALUE, never on the box — a `:` says the user reached for
     # IPv6, anything else says they typed something that is not an address at all
-    # (a hostname, a URL, a typo). Both fall back to our default and serve.
+    # (a hostname, a URL, a typo). Everything after that first clause is ONE shared
+    # string, so the two arms cannot drift into two different messages.
+    # ⚠️ SERVE_HOST IS DELIBERATELY LEFT AT THE DEFAULT rather than cleared. The TLS
+    # refusal clears its pair because a half-applied PATH must not reach the argv; the
+    # opposite is true here — an empty SERVE_HOST reaching serve::apply_host would emit
+    # `--host ""`, which is the s57 box-killer, and serve::probe_addr documents "set but
+    # empty" as a state read_config never produces. Nothing binds it either way: every
+    # path that could put it on a command line (serve::maybe_launch) returns at
+    # SERVE_CONFIG_ERR first.
     v=$(droste::cfg_get "${pfx}HOST" "$file")
     if [ -n "$v" ] && ! serve::_is_ipv4 "$v"; then
         case $v in
-            *:*) SERVE_HOST_ERR="${pfx}HOST='$v' is an IPv6 address — this box binds an IPv4 literal only, so it is being ignored and the server binds $SERVE_HOST_DEFAULT instead. Put an IPv4 address in $file and restart the container." ;;
-            *)   SERVE_HOST_ERR="${pfx}HOST='$v' is not an IPv4 address — this box binds an IPv4 literal only, so it is being ignored and the server binds $SERVE_HOST_DEFAULT instead. Put an IPv4 address in $file and restart the container." ;;
+            *:*) SERVE_HOST_ERR="${pfx}HOST='$v' is an IPv6 address" ;;
+            *)   SERVE_HOST_ERR="${pfx}HOST='$v' is not an IPv4 address" ;;
         esac
+        SERVE_HOST_ERR="$SERVE_HOST_ERR — this box binds an IPv4 literal only, and binding every interface when you asked for one address would be worse than not serving. THIS BOX IS NOT SERVING. Put an IPv4 address in ${pfx}HOST in $file — or remove that line to bind $SERVE_HOST_DEFAULT — then restart the container."
+        SERVE_STARTUP_ENABLED=0
+        SERVE_CONFIG_ERR="$SERVE_HOST_ERR"
     elif [ -n "$v" ]; then
         SERVE_HOST=$v
     fi
@@ -490,7 +532,11 @@ serve::read_config() {
         SERVE_TLS_CERT=""
         SERVE_TLS_KEY=""
         SERVE_STARTUP_ENABLED=0
-        SERVE_CONFIG_ERR="$SERVE_TLS_ERR"
+        # ⚠️ FIRST REFUSAL WINS — the same rule the port check below states, and it is
+        # load-bearing now that HOST can refuse too: a box with both a bad address and a
+        # half-set TLS pair would otherwise report only the second one, and the user
+        # would fix TLS and still not serve. Message first, refusal always.
+        [ -n "$SERVE_CONFIG_ERR" ] || SERVE_CONFIG_ERR="$SERVE_TLS_ERR"
     fi
 
     # A box asked to serve AT STARTUP without a usable port must not serve, and must say
@@ -518,7 +564,16 @@ serve::read_config() {
     # has no port" about an interactive-only box that was never meant to have one, and
     # a status line that nags every such box is a warning that teaches people to stop
     # reading warnings. The launch path still prints it at the moment it refuses.
-    for v in "$SERVE_STARTUP_ENABLED_ERR" "$SERVE_HOST_ERR"; do
+    # ⚠️ SERVE_HOST_ERR MOVED OUT OF THIS LIST IN s60 and must not come back: a bad
+    # address now REFUSES (above), so its message belongs to the ERR channel. Leaving it
+    # here as well would print the same sentence twice — once as "we are not serving"
+    # and once as "we are serving, but not as asked", the second of which is now false.
+    # The per-setting twin is still set, for the tests and for precision.
+    # ⚠️ AN ARRAY FOR ONE ENTRY IS DELIBERATE: the channel is a LIST that happens to have
+    # one member today, and the next warning is meant to be one more element rather than a
+    # restructure. (A bare `for v in "$ONE_THING"` is also SC2066.)
+    warns=("$SERVE_STARTUP_ENABLED_ERR")
+    for v in "${warns[@]}"; do
         [ -n "$v" ] || continue
         SERVE_CONFIG_WARN="${SERVE_CONFIG_WARN}${SERVE_CONFIG_WARN:+$'\n'}$v"
     done
@@ -691,6 +746,19 @@ serve::_remember_scheme() {
 # ⚠️ A wildcard listener answers on loopback too, so 127.0.0.1 stays the right question
 # for 0.0.0.0 — cheaper and immune to a machine with no route to its own external IP.
 #
+# ⚠️ THERE IS NO THIRD ROW FOR "THE ADDRESS WAS REFUSED", AND THAT IS CHECKED, NOT
+# ASSUMED (s60). A box whose HOST cannot be parsed does not serve at all, so nothing
+# should be asking this function where to probe it — and nothing does: serve::maybe_launch
+# and start_service both return at SERVE_CONFIG_ERR before any probe, and the healthcheck
+# exits at gate 0 because reset_active derived .IS_ACTIVE from STARTUP_ENABLED=0 at
+# container start. The one path that still reaches a probe is a user editing a bad address
+# into the cfg of a box that is ALREADY serving: the process running there was launched
+# from a value that parsed, and this function keeps answering exactly what it answered
+# before the edit (the default is untouched by the refusal), which is the only address
+# anyone here has. That box then reports unhealthy, cannot be relaunched (the config
+# refuses), and comes back interactive-but-not-serving after the container bounce — the
+# accepted cost, converging on "down and loud" rather than on a wider bind.
+#
 # 🚨 IT READS THE CONFIG ITSELF WHEN NOBODY ELSE HAS, AND THAT IS NOT DEFENSIVENESS.
 # Every arm of this function returns a PLAUSIBLE address, so a caller that forgot
 # serve::read_config gets 127.0.0.1 — silently right for a wildcard box and silently
@@ -785,8 +853,9 @@ serve::apply_port() {
 # and for exactly the same reason: ds4 and comfyui already put a host flag in their
 # argv, llama puts none at all, and both cases have to end up with OUR value.
 # ⚠️ The value is always an IPv4 literal by the time it gets here — read_config
-# normalises a blank to 0.0.0.0 and refuses anything that is not a dotted quad — so
-# nothing downstream has to think about bracketing an IPv6 address into a URL.
+# normalises a blank to 0.0.0.0, and a value that is neither refuses to serve outright
+# (SERVE_CONFIG_ERR), which returns maybe_launch before it reaches this line — so nothing
+# downstream has to think about bracketing an IPv6 address into a URL.
 serve::apply_host() {
     serve::_apply_flag "$SERVE_HOST_FLAG" "$1"
 }

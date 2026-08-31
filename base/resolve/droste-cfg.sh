@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# droste-cfg.sh — read ONE serve setting out of an `<app>.cfg` WITHOUT SOURCING IT.
+# droste-cfg.sh — read ONE serve setting out of an `<box>.cfg` WITHOUT SOURCING IT.
 #
 # ⭐ WHY THIS FILE EXISTS (case 2, s59). `server.env` is deleted and the five serve
-# settings move into the box's own `<app>.cfg`, which is ALSO the file both resolvers
+# settings move into the box's own `<box>.cfg`, which is ALSO the file both resolvers
 # source (under `set -a`) to hand the app its native settings. Two readers, one file:
 #   • the APP settings are read by SOURCING — that is what makes the file a config surface;
 #   • the SERVE settings are read by SCANNING — this file.

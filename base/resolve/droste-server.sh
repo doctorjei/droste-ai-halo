@@ -21,11 +21,11 @@
 #
 # WHAT A VERB ACTUALLY DOES: it sets the INTENT (state/.IS_ACTIVE) and lets the
 # existing machinery make reality match. It does NOT touch the STARTUP_ENABLED setting
-# in the box's <app>.cfg — Jei's ruling: a user who starts a server by hand asked to
+# in the box's <box>.cfg — Jei's ruling: a user who starts a server by hand asked to
 # start a server, not to change what the box does at boot. That asymmetry is exactly
 # what the two-setting split buys, and it is why `stop` is always temporary: the next
 # container start resets .IS_ACTIVE from STARTUP_ENABLED and the server comes back.
-# ⚠️ IT ALSO MEANS THESE VERBS NEVER WRITE THAT FILE AT ALL. <app>.cfg is the user's
+# ⚠️ IT ALSO MEANS THESE VERBS NEVER WRITE THAT FILE AT ALL. <box>.cfg is the user's
 # several-hundred-line config surface, not a droste scratch file; we PARSE the five
 # serve settings out of it (droste::cfg_get) and write our own state elsewhere. The one
 # writer of a user's cfg is the installer, deliberately and only when they ask.
@@ -46,7 +46,7 @@ SELF=$(basename -- "$0")
 
 usage() {
     # ⚠️ ASK FOR THE CONFIG PATH BEFORE NAMING IT. DROSTE_SERVE_ENV is EMPTY at source
-    # time now that the serve settings live in the box's own <app>.cfg: the path is per
+    # time now that the serve settings live in the box's own <box>.cfg: the path is per
     # box and comes from the build-spec's ENV_FILE row, which serve::read_config is what
     # reads. Every other verb calls it first anyway; usage did not, and would have
     # printed a blank where a path belongs. The call parses a file, never fails, and
@@ -163,8 +163,21 @@ status_service() {
     # alone would leave a user who bound their server to one interface with no way to
     # tell — from the tool whose whole job is to say what the box wants — why nothing
     # answers on the address they are trying. Same `<unset>` idiom as the port.
-    printf '  address               : %s\n' "${SERVE_HOST:-<unset>}"
-    printf '  port                  : %s\n' "${SERVE_PORT:-<unset>}"
+    # 🚨 A REFUSED BOX MUST NOT ADVERTISE AN ADDRESS IT IS NOT USING (s60). When
+    # read_config refuses — a bad HOST, a half-set TLS pair, no usable port — it leaves
+    # SERVE_HOST at the DEFAULT rather than clearing it, deliberately: clearing would let
+    # apply_host emit `--host ""`, which is the s57 box-killer. But that means the value
+    # sitting here is the address we DECLINED to serve on, printed two lines above
+    # "config: … THIS BOX IS NOT SERVING". Showing it as a fact would be the display
+    # contradicting the diagnosis. ⭐ The config line is the answer in that state; these
+    # two rows have no honest value to report, so they say so.
+    if [ -n "${SERVE_CONFIG_ERR:-}" ]; then
+        printf '  address               : —   (not serving; see config below)\n'
+        printf '  port                  : —\n'
+    else
+        printf '  address               : %s\n' "${SERVE_HOST:-<unset>}"
+        printf '  port                  : %s\n' "${SERVE_PORT:-<unset>}"
+    fi
     if serve::state_ok; then
         obs="running (pid ${SERVE_REC_PID})"
     else

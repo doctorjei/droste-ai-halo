@@ -35,11 +35,11 @@ set -euo pipefail
 # which killed the lane instead of printing a warning.
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
-# droste::load_env_file — the child-shell apply step for a box's config file. MUST come
+# droste::cfg_apply — the child-shell apply step for a box's config file. MUST come
 # after droste-common.sh (it calls serve::err/warn/info) and MUST be present in BOTH
 # lanes, for the same reason droste-common.sh is: the two doors share no other code.
 # shellcheck source=/dev/null
-source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/droste-cfgapply.sh"
 
 # ── THREE ROOTS (storage taxonomy) ──────────────────────────────────────────
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
@@ -71,7 +71,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # 🚨 NO DROSTE_SERVE_ENV DEFAULT HERE, AND THAT ABSENCE IS LOAD-BEARING (s60). This
 # library used to seed it to a single literal ($DROSTE_DATA_DIR/server.env) so both
 # libraries named one file. server.env is gone: the serve settings now live in the box's
-# own <box>.cfg, whose path is PER BOX and is declared by the build-spec's ENV_FILE row,
+# own <box>.cfg, whose path is PER BOX and is declared by the build-spec's CFG_FILE row,
 # so droste-serve.sh is the one place that resolves it.
 # ⚠️ AND A LEFTOVER LITERAL HERE WOULD NOT BE MERELY STALE, IT WOULD SPLIT THE TWO DOORS.
 # The init hook sources THIS library first, so its value would stand where nothing else
@@ -788,7 +788,7 @@ resolve::apply_templates() {
 
 # ── Orchestration ───────────────────────────────────────────────────────────
 # apply_spec — the EXACT design order, lane-aware, no exec. Consumes the row
-# arrays/vars sourced from build-spec (SERVICE/ENV_FILE/OVERLAYS/SURFACES/CRITICAL/
+# arrays/vars sourced from build-spec (SERVICE/CFG_FILE/OVERLAYS/SURFACES/CRITICAL/
 # OPTIONAL/CACHES/PRE_LAUNCH). Called by the server entrypoint and by distrobox
 # init_hooks alike; the entrypoint execs SERVICE afterwards, init_hooks do not.
 resolve::apply_spec() {
@@ -834,19 +834,19 @@ resolve::apply_spec() {
     # 5) templates.yaml seeding (AFTER mounts)
     resolve::apply_templates "$RESOLVE_TEMPLATES_DIR"
 
-    # 6) ENV_FILE apply (generate-if-absent handled by templates' if_missing above).
+    # 6) CFG_FILE apply (generate-if-absent handled by templates' if_missing above).
     # The file is run in a CHILD shell and the difference in its environment is exported
     # here, so plain VAR= lines still reach the service across the exec (llama-server
     # reads LLAMA_ARG_* from its environment) while a typo in the user's config warns
     # instead of aborting this resolver under `set -euo pipefail`. Rationale, costs and
-    # the sentinel trick: droste-envfile.sh.
+    # the sentinel trick: droste-cfgapply.sh.
     # ⭐ TWO READERS, ONE FILE, AND THIS IS ONLY THE FIRST. The same <box>.cfg also
     # carries the box's SERVE settings (DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT /
     # _TLS_*), and those are never read this way: droste-serve.sh SCANS them with
     # droste::cfg_get, because the healthcheck asks the same questions every 30s in a
     # place where sourcing anything at all is not allowed to fail. Do not fold the two
     # reads together — they run in different places under different consequences.
-    droste::load_env_file "${ENV_FILE:-}"
+    droste::cfg_apply "${CFG_FILE:-}"
 
     # 7) PRE_LAUNCH function (defined in build-spec)
     if [ -n "${PRE_LAUNCH:-}" ]; then

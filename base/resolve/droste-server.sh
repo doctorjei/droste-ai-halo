@@ -47,7 +47,7 @@ SELF=$(basename -- "$0")
 usage() {
     # ⚠️ ASK FOR THE CONFIG PATH BEFORE NAMING IT. DROSTE_SERVE_ENV is EMPTY at source
     # time now that the serve settings live in the box's own <box>.cfg: the path is per
-    # box and comes from the build-spec's ENV_FILE row, which serve::read_config is what
+    # box and comes from the build-spec's CFG_FILE row, which serve::read_config is what
     # reads. Every other verb calls it first anyway; usage did not, and would have
     # printed a blank where a path belongs. The call parses a file, never fails, and
     # prints nothing.

@@ -4,7 +4,7 @@
 #
 # ⭐ WHY THIS EXISTS. Every box's config surface (targets/*/templates/*.cfg) is a
 # shell file that droste SOURCES as a unit, in a child shell running
-# `set -euo pipefail` (base/resolve/droste-envfile.sh). Under `set -u` an
+# `set -euo pipefail` (base/resolve/droste-cfgapply.sh). Under `set -u` an
 # assignment whose right-hand side dereferences an unset variable does not fail
 # that LINE — it aborts the whole source, so EVERY SETTING AFTER IT IS LOST. The
 # measured original was `HF_TOKEN=$HF_TOKEN` in llama.cfg (s52), which took the
@@ -73,7 +73,7 @@
 #   · `:=` MEANS assign. Someone who types it is asking for exactly that, and a
 #     tool that refuses a form for doing what the form is for is not enforcing a
 #     rule, it is disagreeing with the user.
-#   · it is not even silent — droste::load_env_file counts the extra name in the
+#   · it is not even silent — droste::cfg_apply counts the extra name in the
 #     "applied N setting(s)" line it prints.
 #   · and both forms are unset-safe, measured. That is the whole question here.
 # ⭐ THE LESSON, RECORDED BECAUSE IT IS THE ACTUAL ONE: THE BAN WAS AN ASSISTANT'S
@@ -86,7 +86,7 @@
 # ── THE SIDE EFFECT, DOCUMENTED RATHER THAN FORBIDDEN ────────────────────────
 # A `${OTHER:=x}` on a right-hand side does not only substitute into THIS
 # setting — it also SETS `OTHER`. Measured end to end: the child shell comes back
-# holding `OTHER=x`, `set -a` has already exported it, and droste::load_env_file
+# holding `OTHER=x`, `set -a` has already exported it, and droste::cfg_apply
 # applies its `env -0` diff, so `OTHER` reaches the SERVER'S ENVIRONMENT too. If
 # that is what you meant, it is a neat way to set two things at once; if it is
 # not, `${OTHER-x}` substitutes and leaves nothing behind. A user is entitled to
@@ -100,7 +100,7 @@
 #         with a one-character fuse.
 # NOT IN SCOPE:
 #   · prose comments (`# see $HOME for details`) — not an assignment, never run;
-#   · non-assignment lines (a bare word, a command) — droste::load_env_file
+#   · non-assignment lines (a bare word, a command) — droste::cfg_apply
 #     already warns about those, and this checker would only duplicate it;
 #   · a quoted value continued across several lines. The scan is line-oriented.
 #     No shipped template has one; if one ever appears, this file must grow a

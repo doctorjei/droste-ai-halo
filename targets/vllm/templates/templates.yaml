@@ -3,7 +3,7 @@
 # run only; never overwrite the user's edited copy.
 #
 # TWO files, because vLLM has two kinds of setting: serve flags (YAML keys) and
-# runtime environment variables (this box's ENV_FILE). Both are DATA class — the
+# runtime environment variables (this box's CFG_FILE). Both are DATA class — the
 # user's own edits, never in the installer's wipe, never overwritten once seeded.
 if_missing:
   vllm_config.yaml: /opt/data/vllm_config.yaml

@@ -12,7 +12,7 @@
 # ensure_data + ensure_pcache → surfaces/overlays/caches →
 # CRITICAL binds (checked AFTER the mounts; declare them as volume= lines in
 # distrobox.ini — the HF cache is satisfied by the auto-bound real home) →
-# OPTIONAL marker → templates.yaml seeding → ENV_FILE source → PRE_LAUNCH.
+# OPTIONAL marker → templates.yaml seeding → CFG_FILE source → PRE_LAUNCH.
 # No exec — pid1 is distrobox-init, which `eval`s this hook once per container
 # start and then goes into its keepalive loop. In-box mounting needs
 # CAP_SYS_ADMIN + /dev/fuse: additional_flags="--cap-add sys_admin --device
@@ -87,7 +87,7 @@ fi
 
 # Row defaults BEFORE sourcing the spec (set -u safety; spec may omit any row).
 SERVICE=()
-ENV_FILE=""
+CFG_FILE=""
 OVERLAYS=()
 SURFACES=()
 CRITICAL=()
@@ -243,7 +243,7 @@ hook::stop_heartbeat
 cat "$RESOLVE_LOG" >&2
 
 # ── Server door ─────────────────────────────────────────────────────────────
-# MUST come after apply_spec: SERVICE is only final once ENV_FILE is sourced and
+# MUST come after apply_spec: SERVICE is only final once CFG_FILE is sourced and
 # PRE_LAUNCH has run (llama/ds4/vllm rebuild the argv there). Deliberately NOT
 # guarded by the resolver's log/trap plumbing and deliberately `|| true`: a serve
 # problem must never fail the init hook — distrobox reports a failed hook as a

@@ -138,7 +138,7 @@ declare -A BOX_HAS_MODELS=(
 # The box's SETTINGS FILE, seeded (if missing) onto /opt/data at the box's FIRST
 # CONTAINER START and owned by the user from then on. This is the file the five
 # serve settings live in, so this map is what the installer writes through — it
-# MIRRORS `ENV_FILE` in each target's baked build-spec (/opt/data/<box>.cfg) and
+# MIRRORS `CFG_FILE` in each target's baked build-spec (/opt/data/<box>.cfg) and
 # has to keep mirroring it. The name follows the BOX; the settings inside it
 # follow the APPLICATION (see BOX_APP).
 declare -A BOX_CFG=(

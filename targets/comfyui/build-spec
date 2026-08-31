@@ -54,22 +54,22 @@ SERVICE=( "${COMFYUI_ARGV_HEAD[@]}" "${COMFYUI_ARGV_TAIL[@]}" )
 HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE ─────────────────────────────────────────────────────────────────
+# ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/comfyui.cfg (templates.yaml if_missing) and never
 # overwritten — the user's edits win. ComfyUI reads NO env var for any of these
 # knobs, so comfyui_argv translates the DROSTE_COMFYUI_* values into flags.
 # No export loop (unlike ds4/llama): nothing downstream reads them from the
 # environment, they only ever become argv.
-ENV_FILE="/opt/data/comfyui.cfg"
+CFG_FILE="/opt/data/comfyui.cfg"
 
 # ── SERVE — the four rows droste-serve.sh reads out of this spec ─────────────
-# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# The five SERVE settings live in the same CFG_FILE as everything else, under the
 # prefix below: DROSTE_COMFYUI_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
 # serve::read_config PARSES them with droste::cfg_get and never sources the file — that
 # read also runs inside the healthcheck every 30s under --health-on-failure=restart,
 # where an abort is a restart loop that ejects every shell in the box.
 # 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
-# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# that names CFG_FILE and no prefix makes read_config refuse to serve and report the
 # IMAGE as broken, because otherwise all five settings would read as absent and the box
 # would silently stop serving.
 # ⭐ THE PREFIX IS THE APPLICATION'S NAME. It coincides with the box name here; it does
@@ -80,6 +80,13 @@ SERVE_CFG_PREFIX="DROSTE_COMFYUI_"
 # APPEND a --host that ComfyUI's argparse has never heard of — the server would reject
 # its own argv and the box would restart-loop. --port needs no row (all five agree).
 SERVE_HOST_FLAG=--listen
+# The port a user gets when they set none — ComfyUI's own, and the value comfyui.cfg
+# already shows on its commented DROSTE_COMFYUI_PORT line. 🚨 THE ROW IS WHAT MAKES THAT
+# LINE TRUE (§7a, ruled s60): the address has a library-wide default and the port had
+# none, so before this row an absent port did not mean "use 8188" — it meant the box
+# refused to serve. It must stay equal to the literal after --port in COMFYUI_ARGV_HEAD;
+# that copy is what a direct `podman run` gets, where no launcher runs at all.
+SERVE_PORT_DEFAULT=8188
 # ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
 # and a wrong flag is not a wrong value — the server rejects the argv and never starts.
 # Read at the pin (comfy/cli_args.py:65-66 at COMFYUI_REF 4da9e2db = v0.33.3), and the
@@ -168,7 +175,7 @@ OPTIONAL=(
 #    skipped-if-absent. A scanner failure only leaves the tree stale — log and
 #    continue, never block the server (the resolver runs under set -e; the ||
 #    branch absorbs the failure).
-# 3) Rebuild SERVICE from the DROSTE_COMFYUI_* values now that ENV_FILE has been
+# 3) Rebuild SERVICE from the DROSTE_COMFYUI_* values now that CFG_FILE has been
 #    sourced (step 6 of apply_spec; SERVICE would otherwise be final at
 #    spec-source time, before the user's file was read).
 
@@ -301,7 +308,7 @@ comfyui_argv() {
                 for pair in "${pairs[@]}"; do
                     list="$list ${pair%%=*}"
                 done
-                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $CFG_FILE and restart the box."
             fi
         fi
         # Word-split ON PURPOSE: the right-hand side is a literal from the table
@@ -318,7 +325,7 @@ comfyui_argv() {
         if comfyui_is_num "$val"; then
             dyn+=( "${entry#*:}" "$val" )
         else
-            serve::err "$var='$val' is not a number of GiB — leaving the flag off, so ComfyUI's own default applies. Fix it in $ENV_FILE and restart the box."
+            serve::err "$var='$val' is not a number of GiB — leaving the flag off, so ComfyUI's own default applies. Fix it in $CFG_FILE and restart the box."
         fi
     done
 
@@ -362,7 +369,7 @@ comfyui_argv() {
         *) bad=1 ;;
     esac
     if [ "$bad" -eq 1 ]; then
-        serve::err "DROSTE_COMFYUI_CACHE='$cache' is not a valid value — using the default 'ram'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $ENV_FILE and restart the box."
+        serve::err "DROSTE_COMFYUI_CACHE='$cache' is not a valid value — using the default 'ram'. Valid values: ram ram:GiB ram:GiB,GiB lru:N classic high-ram none. Fix it in $CFG_FILE and restart the box."
         dyn+=( --cache-ram )
     fi
 
@@ -404,7 +411,7 @@ comfyui_pre_launch() {
     # on the boxes that have one — reclaiming works for those, privdropping would not.
     serve::_own /opt/data/model-registry.yaml
     serve::_own_dirs /opt/data/model-tree
-    # LAST, and after ENV_FILE has been sourced: turn the user's comfyui.cfg into
+    # LAST, and after CFG_FILE has been sourced: turn the user's comfyui.cfg into
     # the argv the server will actually run.
     comfyui_argv
     cd /opt/ComfyUI

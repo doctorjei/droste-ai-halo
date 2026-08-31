@@ -122,7 +122,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
 - `droste-entrypoint.sh` — the server-lane ENTRYPOINT for every port. Sources the
   library + the port's `/opt/resources/build-spec`, runs `resolve::apply_spec` in
   the fixed design order (ensure `/opt/data` → SURFACES/OVERLAYS/CACHES → CRITICAL
-  → OPTIONAL → templates → ENV_FILE → PRE_LAUNCH), then execs SERVICE — unless the
+  → OPTIONAL → templates → CFG_FILE → PRE_LAUNCH), then execs SERVICE — unless the
   user passed a command, which wins (`podman run IMAGE bash` still works).
 - `droste-init-hook.sh` — the distrobox-lane counterpart, invoked from
   `targets/<port>/distrobox.ini` `init_hooks` (distrobox replaces pid1, so the
@@ -135,7 +135,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   `serve::exec_service` (server lane: the same foreground `exec "${SERVICE[@]}"`
   as always) and `serve::maybe_launch` (distrobox lane: the "server door" of the
   merged one-container shape). maybe_launch reads the box's OWN config surface,
-  `/opt/data/<box>.cfg` (the path is the build-spec's `ENV_FILE` row), for the five
+  `/opt/data/<box>.cfg` (the path is the build-spec's `CFG_FILE` row), for the five
   serve settings: `DROSTE_<APP>_{STARTUP_ENABLED,HOST,PORT,TLS_CERT,TLS_KEY}`, the
   prefix coming from the spec's `SERVE_CFG_PREFIX` row and naming the APPLICATION,
   not the box (`DROSTE_JUPYTER_*` on finetuning). `STARTUP_ENABLED` takes
@@ -196,7 +196,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   component-aware mount-point prefix of the target decides (rootfs `/` → unbound;
   anything deeper → bound). Needed because distrobox binds the whole `$HOME` —
   an exact match would false-error every critical living under it.
-- **`ENV_FILE` is sourced under `set -a`** so plain `VAR=` lines are exported and
+- **`CFG_FILE` is sourced under `set -a`** so plain `VAR=` lines are exported and
   survive the exec into the service (llama-server reads `LLAMA_ARG_*` from its
   environment). llama/ds4 keep belt-and-braces export loops in PRE_LAUNCH so their
   specs stay self-sufficient under other callers. That source is for the box's
@@ -208,15 +208,15 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   (ds4's flag table), `serve::apply_port`/`apply_host` overwrite it afterwards, so
   the parsed value is still the one that ships.
 - **The SERVICE-rebuild pattern:** build-spec is sourced bash, so `SERVICE=( … )`
-  expands BEFORE ENV_FILE is sourced. Ports whose argv depends on env-file values
+  expands BEFORE CFG_FILE is sourced. Ports whose argv depends on env-file values
   (llama `$DROSTE_LLAMA_EXTRA_ARGS`, ds4's flag translation) declare a placeholder argv
-  and rebuild `SERVICE` inside PRE_LAUNCH, which runs after ENV_FILE. Documented
+  and rebuild `SERVICE` inside PRE_LAUNCH, which runs after CFG_FILE. Documented
   in `base/resolve/build-spec.example`.
 
 ### build-spec (the per-port declaration)
 One sourced-bash file per port (`targets/<port>/build-spec`, baked at
 `/opt/resources/build-spec`; the name is a placeholder pending a rename). Rows:
-`SERVICE / ENV_FILE / OVERLAYS / SURFACES / CACHES / CRITICAL / OPTIONAL /
+`SERVICE / CFG_FILE / OVERLAYS / SURFACES / CACHES / CRITICAL / OPTIONAL /
 PRE_LAUNCH` — all paths explicit + absolute (`$HOME` allowed and preferred for
 home-relative paths: it is the only form correct in BOTH lanes). SURFACES and
 CACHES are structurally identical binds kept as separate rows by design (future

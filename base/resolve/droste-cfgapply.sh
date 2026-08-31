@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
-# droste-envfile.sh — apply a box's ENV_FILE WITHOUT sourcing it into this shell.
+# droste-cfgapply.sh — apply a box's CFG_FILE WITHOUT sourcing it into this shell.
+#
+# ⭐ ONE FILE, TWO READS, TWO VERBS. A box's `<box>.cfg` is read in exactly two ways, by
+# two functions that must never be mistaken for one another:
+#
+#   droste::cfg_get    (droste-cfg.sh)  — PARSES one SERVE setting out of the file and
+#                                         NEVER sources it.
+#   droste::cfg_apply  (this file)      — APPLIES all of the box's APPLICATION settings,
+#                                         via a CHILD shell.
+#
+# The serve settings decide whether and where this box serves at all, so they are read by
+# a parser that no shell semantics in the file can steer. The application settings are
+# handed to bash on purpose, because a user writing a config file expects bash's own
+# quoting. Same file, two contracts — and conflating the two reads is the defect class
+# this whole arrangement exists to prevent. That is also why the names say `cfg`: there is
+# no "env file" here, only one config file read two ways.
 #
 # ⭐ WHY THIS FILE EXISTS (Jei, s53a). Every box's config surface is a shell file that
 # both lanes used to `set -a; source; set +a` directly into the resolver's own process,
@@ -80,11 +95,11 @@
 # lanes, one behaviour — a build-spec must never have to ask which door it came in).
 # Keep it free of side effects: definitions only.
 
-# ── droste::load_env_file — the whole design, in one function ────────────────
-# Usage:  droste::load_env_file "$ENV_FILE"
+# ── droste::cfg_apply — the whole design, in one function ────────────────────
+# Usage:  droste::cfg_apply "$CFG_FILE"
 # Always returns 0. A config file must not be able to stop the box from starting; that
 # is the entire point. Every failure path warns and leaves the environment untouched.
-droste::load_env_file() {
+droste::cfg_apply() {
     # ⚠️ BOTH LISTS ARE `local` ON PURPOSE, not file-level constants. serve::build_service
     # can run this a second time in the same process (the healthcheck's relaunch path),
     # and a file-level constant would by then be whatever the FIRST run exported — so a
@@ -241,11 +256,11 @@ droste::load_env_file() {
     local -a before=() after=()
     mapfile -d '' -t before < <(
         bash -c 'set -euo pipefail; env -0; printf "%s\0" "__DROSTE_ENVFILE_OK__=1"' \
-             droste-envfile "$file" 2>/dev/null
+             droste-cfgapply "$file" 2>/dev/null
     )
     mapfile -d '' -t after < <(
         bash -c 'set -euo pipefail; set -a; . "$1"; set +a; env -0; printf "%s\0" "__DROSTE_ENVFILE_OK__=1"' \
-             droste-envfile "$file"
+             droste-cfgapply "$file"
     )
 
     # ⭐ THE SENTINEL IS THE STATUS. A process substitution gives no exit code, and a

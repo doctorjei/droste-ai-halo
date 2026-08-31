@@ -3,7 +3,7 @@
 #
 # ONE launch path, TWO doors. Both callers build the identical SERVICE argv the
 # same way (source droste-resolve.sh -> source /opt/resources/build-spec ->
-# resolve::apply_spec, which ends with ENV_FILE + PRE_LAUNCH), then hand it to
+# resolve::apply_spec, which ends with CFG_FILE + PRE_LAUNCH), then hand it to
 # this library:
 #
 #   droste-entrypoint.sh  (SERVER lane, pid1)  -> serve::exec_service
@@ -40,7 +40,7 @@
 # placeholder promises a jupyter.cfg that does not exist, and that promise is only
 # visible to someone working on finetuning — which is why it survived a whole session.
 #
-# The PATH comes from the build-spec's ENV_FILE row and the PREFIX from its
+# The PATH comes from the build-spec's CFG_FILE row and the PREFIX from its
 # SERVE_CFG_PREFIX row (see serve::_read_serve_spec) — two rows precisely because the
 # two names are independent:
 #
@@ -51,7 +51,9 @@
 #       DROSTE_<APP>_PORT=8188            # the HOST port the service binds DIRECTLY
 #                                         # (host networking: nothing is remapped, so
 #                                         # e.g. ds4 binds 8001 itself instead of its
-#                                         # own default 8000)
+#                                         # own default 8000). Blank or absent = this
+#                                         # box's SERVE_PORT_DEFAULT (§7a); only a
+#                                         # PRESENT bad value refuses to serve
 #       DROSTE_<APP>_TLS_CERT=/path.pem   # PEM cert and key. TLS is on IFF BOTH are
 #       DROSTE_<APP>_TLS_KEY=/path.pem    # set; one alone REFUSES to serve (§6)
 #
@@ -125,11 +127,11 @@ set -euo pipefail
 # which killed the lane instead of printing a warning.
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
-# droste::load_env_file — the child-shell apply step for a box's config file. It only
+# droste::cfg_apply — the child-shell apply step for a box's config file. It only
 # CALLS serve::err/warn/info, so it is safe to source before this library defines its
 # own prefixed versions: the names resolve when the function runs, not when it loads.
 # shellcheck source=/dev/null
-source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/droste-cfgapply.sh"
 # droste::cfg_get — the SCANNING reader for the box's own <box>.cfg. serve::read_config
 # is its only caller here, and sourcing it unconditionally is what lets the healthcheck
 # keep sourcing THIS file alone. Definitions only, no side effects (see droste-cfg.sh).
@@ -151,7 +153,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # (serve::_read_serve_spec) on every call. Setting either one here — or in the
 # environment before sourcing — is a TEST override, honoured only when the build-spec
 # declares nothing; production always has a spec and the spec always wins.
-: "${DROSTE_SERVE_ENV:=}"          # the box's config file, from the spec's ENV_FILE
+: "${DROSTE_SERVE_ENV:=}"          # the box's config file, from the spec's CFG_FILE
 : "${SERVE_CFG_PREFIX:=}"          # its setting prefix, from the spec's SERVE_CFG_PREFIX
 # ── The state folder (s45) ──────────────────────────────────────────────────
 # Per-start state lives in ONE folder on the PROGRAM CACHE, and the folder supplies the
@@ -204,6 +206,25 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # and nothing reported it, because the probe asked 127.0.0.1 and a loopback-only
 # listener answers that perfectly.
 : "${SERVE_HOST_DEFAULT:=0.0.0.0}"
+# Our default LISTEN PORT — the address's twin, and the row that was MISSING until s60
+# (Jei: "we should make our default adjust the port via wiring. i thought that was
+# clear"). It is N1a: a value we want every box to have belongs in the WIRING, because a
+# line seeded into a config file only ever reaches boxes created after it was written.
+# 🚨 THE ASYMMETRY IT REMOVES IS THE DEFECT. HOST had a default here and PORT had none,
+# so "remove the line and get our default" — which the HOST refusal offers in so many
+# words — was TRUE for the address and REFUSED TO SERVE for the port. Every box ships its
+# port as a COMMENTED line whose value IS the shown default, so before this row a user
+# who never uncommented it had a box that would not serve at all.
+# ⚠️ UNLIKE THE ADDRESS, IT IS PER BOX and empty here on purpose: there is no number five
+# servers could share. Host networking publishes nothing and remaps nothing, so two boxes
+# on one port collide — which is exactly why ds4 is 8001 rather than ds4-server's own
+# 8000, vllm's number. Each build-spec declares its own (comfyui 8188 · llama 8080 ·
+# vllm 8000 · finetuning 8888 · ds4 8001), and serve::_read_serve_spec carries the row to
+# the healthcheck, which sources this library ALONE and never reads a spec otherwise.
+# ⚠️ AN EMPTY VALUE IS A REAL STATE — a lab, or a spec with no row. read_config then keeps
+# the old refusal and names the IMAGE as the broken part, rather than binding a number
+# nobody chose.
+: "${SERVE_PORT_DEFAULT:=}"
 : "${DROSTE_SERVE_STOP_WAIT:=15}"   # seconds to wait for a stale instance to die
 
 # ── Messaging (independent of droste-resolve.sh: droste-healthcheck.sh sources
@@ -292,11 +313,13 @@ serve::_own_dirs() {
 }
 
 # ── Config reading ──────────────────────────────────────────────────────────
-# _read_serve_spec — WHERE the box's config file is, and what its settings are CALLED.
-# Both answers are baked, per box, in /opt/resources/build-spec:
+# _read_serve_spec — WHERE the box's config file is, what its settings are CALLED, and
+# which PORT it falls back to. All three answers are baked, per box, in
+# /opt/resources/build-spec:
 #
-#       ENV_FILE="/opt/data/llama.cfg"
+#       CFG_FILE="/opt/data/llama.cfg"
 #       SERVE_CFG_PREFIX="DROSTE_LLAMA_"
+#       SERVE_PORT_DEFAULT=8080
 #
 # 🚨 READ HERE, NEVER INHERITED. droste-healthcheck.sh sources THIS library ALONE and
 # never runs resolve::apply_spec, so nothing in this file may assume a build-spec has
@@ -320,12 +343,17 @@ serve::_read_serve_spec() {
         set +e +u +o pipefail
         # shellcheck disable=SC1090
         . "$spec" >/dev/null 2>&1
-        printf 'file=%s\nprefix=%s\n' "${ENV_FILE-}" "${SERVE_CFG_PREFIX-}"
+        printf 'file=%s\nprefix=%s\nportdefault=%s\n' \
+            "${CFG_FILE-}" "${SERVE_CFG_PREFIX-}" "${SERVE_PORT_DEFAULT-}"
     ) 2>/dev/null || raw=""
     while IFS='=' read -r k v; do
         case "$k" in
-            file)   [ -n "${v:-}" ] && DROSTE_SERVE_ENV=$v ;;
-            prefix) [ -n "${v:-}" ] && SERVE_CFG_PREFIX=$v ;;
+            file)        [ -n "${v:-}" ] && DROSTE_SERVE_ENV=$v ;;
+            prefix)      [ -n "${v:-}" ] && SERVE_CFG_PREFIX=$v ;;
+            # The port default travels the SAME path as the other two rows and for the
+            # same reason: the healthcheck sources this library alone, so a row it cannot
+            # read is a row that does not exist where it matters most.
+            portdefault) [ -n "${v:-}" ] && SERVE_PORT_DEFAULT=$v ;;
         esac
     done <<<"$raw"
     return 0
@@ -417,14 +445,14 @@ serve::read_config() {
         # lab, a harness — and silence is right. WITH one it is an image defect: the box
         # declares a server but nowhere to configure it, so every message that names the
         # config file would print an empty path and the box would quietly never serve.
-        [ "$spec" -eq 1 ] && SERVE_CONFIG_ERR="this box's build-spec declares no ENV_FILE, so there is nowhere to read its serve settings from — not serving, and nothing can be configured. This is a bug in the image, not in your config file."
+        [ "$spec" -eq 1 ] && SERVE_CONFIG_ERR="this box's build-spec declares no CFG_FILE, so there is nowhere to read its serve settings from — not serving, and nothing can be configured. This is a bug in the image, not in your config file."
         return 0
     fi
     if [ -z "$pfx" ]; then
         # A file with no prefix is the same class of defect one step further on: the
         # build-spec names the config file but not what its settings are CALLED, so all
         # five read as absent and the box silently stops serving.
-        SERVE_CONFIG_ERR="this box's build-spec declares ENV_FILE=$file but no SERVE_CFG_PREFIX, so its serve settings cannot be found — not serving. This is a bug in the image, not in your config file."
+        SERVE_CONFIG_ERR="this box's build-spec declares CFG_FILE=$file but no SERVE_CFG_PREFIX, so its serve settings cannot be found — not serving. This is a bug in the image, not in your config file."
         return 0
     fi
     # 🚨 ASK ABOUT READABILITY ONCE, HERE, AND NOT FIVE TIMES BELOW. droste::cfg_get warns
@@ -456,11 +484,34 @@ serve::read_config() {
     # load-bearing. The verbs can start a server on a box whose STARTUP_ENABLED is no
     # (Jei's ruling: starting by hand must not rewrite what the box does at boot), and
     # that launch needs the port exactly as much as a boot-time one.
+    # 🚨 ABSENT IS NOT WRONG (§7a, ruled s60) — the same rule the HOST arm below follows,
+    # and the reason this arm has three branches rather than two. Absent and blank both
+    # mean "no preference" and land on $SERVE_PORT_DEFAULT, which is what makes the
+    # commented `# DROSTE_<APP>_PORT=…` line every box ships a TRUE statement of its
+    # default instead of a line the box cannot start without. ONLY a value that is
+    # PRESENT and unparseable still refuses: someone typed a port and we cannot honour
+    # it, and quietly binding a different one is how a user ends up looking for their
+    # server on the wrong number.
+    # ⚠️ THE DEFAULT IS APPLIED HERE AND NOT BEFORE THE FILE IS OPENED, which is a
+    # deliberate difference from the host default above. The address has ONE value for
+    # all five boxes and can never be missing; the port is declared per box, so its
+    # absence is a possible IMAGE defect and gets said out loud rather than silently
+    # producing an empty flag.
     v=$(droste::cfg_get "${pfx}PORT" "$file")
-    if [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 65535 ]; then
+    if [ -z "$v" ]; then
+        if [ -n "$SERVE_PORT_DEFAULT" ]; then
+            SERVE_PORT=$SERVE_PORT_DEFAULT
+        else
+            SERVE_PORT_ERR="${pfx}PORT is not set in $file and this box's build-spec declares no default port, so there is nothing to bind — this is a bug in the image, not in your config file"
+        fi
+    elif [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 65535 ]; then
         SERVE_PORT=$v
     else
-        SERVE_PORT_ERR="$file has no usable ${pfx}PORT (got '${v}') — add e.g. ${pfx}PORT=8188."
+        # ⭐ THE EXAMPLE IS THE BOX'S OWN DEFAULT, NEVER A LITERAL. This sentence used to
+        # end "add e.g. ${pfx}PORT=8188" on all five boxes — comfyui's port, told to a
+        # ds4 user whose box wants 8001. A box that names another box's number in its own
+        # error message is teaching the collision that host networking makes real.
+        SERVE_PORT_ERR="${pfx}PORT='$v' is not a port number; use a whole number from 1 to 65535 in $file${SERVE_PORT_DEFAULT:+, or remove that line to use $SERVE_PORT_DEFAULT}"
     fi
 
     # ── HOST — AN IPv4 LITERAL, OR WE DO NOT SERVE ──────────────────────────
@@ -544,9 +595,13 @@ serve::read_config() {
     # unsupervised on a port nobody agreed on. (Unchanged behaviour, new placement.)
     # An earlier SERVE_CONFIG_ERR is never overwritten — the first refusal is the one
     # that explains the box's state, and a second message would only compete with it.
+    # ⭐ IT QUOTES SERVE_PORT_ERR RATHER THAN RESTATING IT, which is what keeps the
+    # box's own default in the sentence: since s60 an empty SERVE_PORT always comes with
+    # a message that names it, and a second hand-written copy here is how the two drift
+    # into naming different numbers.
     if [ "$SERVE_STARTUP_ENABLED" -eq 1 ] && [ -z "$SERVE_PORT" ] && [ -z "$SERVE_CONFIG_ERR" ]; then
         SERVE_STARTUP_ENABLED=0
-        SERVE_CONFIG_ERR="$file asks for the server to start with the box but has no usable ${pfx}PORT — not serving. Add e.g. ${pfx}PORT=8188 and restart the container."
+        SERVE_CONFIG_ERR="the server is set to start with the box, but $SERVE_PORT_ERR — so it is not serving."
     fi
 
     # ── THE TWO CHANNELS A CONSUMER HAS TO KNOW ABOUT ───────────────────────
@@ -841,7 +896,8 @@ serve::_apply_flag() {
 # apply_port — put the configured port into the SERVICE argv. The flag is already
 # there on some boxes (comfyui/jupyter carry one in the spec; ds4's PRE_LAUNCH emits
 # one from DROSTE_DS4_PORT, which is the SAME cfg value we read, so the two agree —
-# an agreement worth asserting rather than assuming) and absent on others
+# an agreement worth asserting rather than assuming; servewire drives all four cases)
+# and absent on others
 # (llama/vllm otherwise take their port from an env file / config file / their own
 # built-in default — a trailing CLI flag wins over all of those in llama.cpp, vLLM
 # and ds4-server, which is what "installer-owned ports" requires).
@@ -1706,7 +1762,7 @@ serve::warn_ttys() {
 }
 
 # build_service — turn the build-spec into a final SERVICE argv, WITHOUT re-running the
-# mounts. resolve::apply_spec's steps 6+7 (source ENV_FILE, run PRE_LAUNCH) are the
+# mounts. resolve::apply_spec's steps 6+7 (source CFG_FILE, run PRE_LAUNCH) are the
 # argv-finalising half; steps 1-5 are mounts, overlays and template seeding, which
 # belong to the init hook and must not be repeated.
 #
@@ -1722,7 +1778,7 @@ serve::build_service() {
     local spec=${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}
     [ -f "$spec" ] || { serve::err "no build-spec at $spec — cannot tell what this box's server is."; return 1; }
     SERVICE=()
-    ENV_FILE=""
+    CFG_FILE=""
     PRE_LAUNCH=""
     # shellcheck disable=SC2034  # consumed by resolve::apply_spec, defined for set -u
     OVERLAYS=() SURFACES=() CRITICAL=() OPTIONAL=() CACHES=()
@@ -1731,8 +1787,8 @@ serve::build_service() {
     # Child-shell apply, identical to the distrobox lane's step 6 — one behaviour, both
     # doors. This lane matters even more than the other: a config typo here would abort
     # serve::build_service, which the HEALTHCHECK also calls, so it would take out the
-    # relaunch path as well as the launch path. See droste-envfile.sh.
-    droste::load_env_file "${ENV_FILE:-}"
+    # relaunch path as well as the launch path. See droste-cfgapply.sh.
+    droste::cfg_apply "${CFG_FILE:-}"
     if [ -n "${PRE_LAUNCH:-}" ]; then
         "$PRE_LAUNCH" || serve::warn "PRE_LAUNCH reported a problem; continuing with the argv as built."
     fi

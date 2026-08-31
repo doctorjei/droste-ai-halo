@@ -13,7 +13,7 @@
 #     -> CRITICAL                       (hard-error if unbound + ALLOW_EPHEMERAL escape)
 #     -> OPTIONAL                       (INFO once + create marker file)
 #     -> templates.yaml seeding         (AFTER mounts)
-#     -> ENV_FILE source                (if declared and the file exists)
+#     -> CFG_FILE source                (if declared and the file exists)
 #     -> PRE_LAUNCH function            (if declared)
 #     -> exec SERVICE                   (or the user's `run IMAGE <cmd>`, which wins)
 #
@@ -46,10 +46,10 @@
 # The service argv. Bash array; exec'd verbatim unless the user passes a command.
 #
 # TIMING: this file is plain sourced bash, so the array's words expand at
-# SPEC-SOURCE time — BEFORE ENV_FILE is sourced. A SERVICE that must carry
+# SPEC-SOURCE time — BEFORE CFG_FILE is sourced. A SERVICE that must carry
 # env-file-derived pieces (e.g. $DROSTE_LLAMA_EXTRA_ARGS) cannot reference them here;
 # use the SERVICE-REBUILD pattern instead: declare a placeholder argv, then have
-# PRE_LAUNCH (which runs AFTER ENV_FILE) rebuild it — see PRE_LAUNCH below.
+# PRE_LAUNCH (which runs AFTER CFG_FILE) rebuild it — see PRE_LAUNCH below.
 SERVICE=( python /opt/ComfyUI/main.py --listen 0.0.0.0 --port 8188 )
 
 # ── HEALTH_PATH / HEALTH_ACCEPT (optional) ───────────────────────────────────
@@ -68,15 +68,15 @@ SERVICE=( python /opt/ComfyUI/main.py --listen 0.0.0.0 --port 8188 )
 HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE (optional) ──────────────────────────────────────────────────────
+# ── CFG_FILE (optional) ──────────────────────────────────────────────────────
 # Absolute path to a file sourced right before PRE_LAUNCH. Used by llama/ds4 whose
 # config is an env file (generated into /opt/data by templates.yaml if_missing).
 # The resolver sources it under `set -a`, so plain VAR= lines are EXPORTED and
 # survive the exec into the service (ports may still belt-and-braces re-export in
 # PRE_LAUNCH so the spec stays self-sufficient under other callers).
 # Leave "" if unused.
-ENV_FILE=""
-# ENV_FILE="/opt/data/llama.cfg"
+CFG_FILE=""
+# CFG_FILE="/opt/data/llama.cfg"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Kernel overlayfs mounted OVER the baked <lower> dir; user writes land in <upper>
@@ -145,7 +145,7 @@ OPTIONAL=(
 )
 
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
-# Name of a bash FUNCTION defined in THIS file; run after ENV_FILE, before exec.
+# Name of a bash FUNCTION defined in THIS file; run after CFG_FILE, before exec.
 # Examples: comfyui model_scanner sync; ds4 DROSTE_DS4_* -> argv translation.
 PRE_LAUNCH=""
 # PRE_LAUNCH="port_pre_launch"
@@ -154,16 +154,16 @@ PRE_LAUNCH=""
 # }
 #
 # THE SERVICE-REBUILD PATTERN (how llama/ds4 pass env-derived args):
-# SERVICE expands at spec-source time, BEFORE ENV_FILE — so a spec whose argv
+# SERVICE expands at spec-source time, BEFORE CFG_FILE — so a spec whose argv
 # depends on env-file values declares a bare placeholder up top and rebuilds the
 # array in PRE_LAUNCH, which runs AFTER the env file is sourced:
 #
 #   SERVICE=( llama-server )                       # placeholder argv
-#   ENV_FILE="/opt/data/llama.cfg"
+#   CFG_FILE="/opt/data/llama.cfg"
 #   PRE_LAUNCH="port_pre_launch"
 #   port_pre_launch() {
 #       # belt-and-braces: re-export the vars the binary reads from its
-#       # environment (the resolver's set -a source already exports ENV_FILE
+#       # environment (the resolver's set -a source already exports CFG_FILE
 #       # assignments; this also covers vars set outside the env file).
 #       local v
 #       for v in $(compgen -v LLAMA_ || true); do export "${v?}"; done

@@ -5,7 +5,7 @@
 # Contract + row semantics: base/resolve/build-spec.example.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
-# Placeholder argv; llama_pre_launch REBUILDS it after ENV_FILE is sourced so
+# Placeholder argv; llama_pre_launch REBUILDS it after CFG_FILE is sourced so
 # DROSTE_LLAMA_EXTRA_ARGS (from /opt/data/llama.cfg) can join the command line —
 # SERVICE would otherwise be expanded at spec-source time, before the env file.
 SERVICE=( llama-server )
@@ -17,27 +17,27 @@ SERVICE=( llama-server )
 HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE ─────────────────────────────────────────────────────────────────
+# ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
 # LLAMA_ARG_* lines (llama-server reads them natively), the 73 DROSTE_LLAMA_* settings
 # the tables below translate — 70 into argv, 3 into the environment — and
 # DROSTE_LLAMA_EXTRA_ARGS.
-# ⚠️ It is NOT sourced into this shell: droste::load_env_file runs it in a CHILD shell
+# ⚠️ It is NOT sourced into this shell: droste::cfg_apply runs it in a CHILD shell
 # and applies the difference, so a typo in it is a warning rather than a dead box.
 # The practical consequence for anything written here is that the file is DATA — the
 # SHELL STATE it builds (a cd, a function, a trap) dies with the child and only the
 # variables it leaves behind reach us. Not a sandbox: a filesystem write in there still
 # happens, because the child is a real shell.
-ENV_FILE="/opt/data/llama.cfg"
+CFG_FILE="/opt/data/llama.cfg"
 
 # ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
-# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# The five SERVE settings live in the same CFG_FILE as everything else, under the
 # prefix below: DROSTE_LLAMA_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
 # serve::read_config PARSES them with droste::cfg_get and never sources the file — that
 # read also runs inside the healthcheck every 30s under --health-on-failure=restart,
 # where an abort is a restart loop that ejects every shell in the box.
 # 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
-# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# that names CFG_FILE and no prefix makes read_config refuse to serve and report the
 # IMAGE as broken, because otherwise all five settings would read as absent and the box
 # would silently stop serving.
 SERVE_CFG_PREFIX="DROSTE_LLAMA_"
@@ -57,6 +57,16 @@ SERVE_CFG_PREFIX="DROSTE_LLAMA_"
 # _wrong_on_clear entry in PRE_LAUNCH for the other half of that story. A variable we
 # never set cannot be blank, and `LLAMA_ARG_HOST=""` binds ::1 only and restart-loops
 # the box (s57). The template's reserved block names both spellings for the same reason.
+#
+# The port a user gets when they set none — llama-server's own, and the value llama.cfg
+# already shows on its commented DROSTE_LLAMA_PORT line. 🚨 THE ROW IS WHAT MAKES THAT
+# LINE TRUE (§7a, ruled s60): the address has a library-wide default and the port had
+# none, so before this row an absent port did not mean "use 8080" — it meant the box
+# refused to serve. ⚠️ NO BAKED TOKEN TO KEEP IT IN STEP WITH, unlike the address: this
+# box's argv carries no --port at all, so a direct `podman run` gets llama.cpp's own
+# 8080 and the two agree by coincidence rather than by construction. Changing this
+# number without changing llama_argv would end that agreement silently.
+SERVE_PORT_DEFAULT=8080
 #
 # ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
 # and a wrong flag is not a wrong value — the server rejects the argv and never starts.
@@ -320,7 +330,7 @@ llama_argv() {
         case "$(droste::bool "$val")" in
             on)  dyn+=( "$onf" ) ;;
             off) dyn+=( "$offf" ) ;;
-            *)   serve::err "$var='$val' is not on/off — leaving $onf at llama's default. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $onf at llama's default. Use on or off. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -330,7 +340,7 @@ llama_argv() {
         case "$(droste::bool "$val")" in
             on)  dyn+=( "$flag" ) ;;
             off) ;;   # upstream has no negation; emitting nothing IS off
-            *)   serve::err "$var='$val' is not on/off — leaving $flag off. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $flag off. Use on or off. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -345,7 +355,7 @@ llama_argv() {
         case "$(droste::bool "$val")" in
             on)  dyn+=( "$flag" on ) ;;
             off) dyn+=( "$flag" off ) ;;
-            *)   serve::err "$var='$val' is not on/off — leaving $flag at llama's default. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $flag at llama's default. Use on or off. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -368,7 +378,7 @@ llama_argv() {
             done
             if [ "$ok" -eq 0 ]; then
                 list=""; for pair in "${pairs[@]}"; do list="$list ${pair%%=*}"; done
-                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+                serve::err "$var='$val' is not a valid value — using the default '$def'. Valid values:$list. Fix it in $CFG_FILE and restart the box."
             fi
         fi
         # Word-split ON PURPOSE: the right-hand side is a literal from the table
@@ -385,7 +395,7 @@ llama_argv() {
             [ -n "${!var:-}" ] || continue
             [ -n "$first" ] && seen="$seen $var" || first=$var
         done
-        [ -n "$seen" ] && serve::err "$first and$seen all set the same thing in llama, so the last one on the command line silently wins. Set ONE of them in $ENV_FILE."
+        [ -n "$seen" ] && serve::err "$first and$seen all set the same thing in llama, so the last one on the command line silently wins. Set ONE of them in $CFG_FILE."
     done
 
     # Ordering: droste's own flags FIRST, the user's catch-all LAST, because llama
@@ -566,7 +576,7 @@ llama_env() {
         case "$(droste::bool "$val")" in
             on)  export "$native=$onw" ;;
             off) export "$native=$offw" ;;
-            *)   serve::err "$var='$val' is not on/off — leaving $native alone. Use on or off. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "$var='$val' is not on/off — leaving $native alone. Use on or off. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -582,7 +592,7 @@ llama_env() {
         done
         if [ "$ok" -eq 0 ]; then
             list=""; for pair in "${pairs[@]}"; do list="$list ${pair%%=*}"; done
-            serve::err "$var='$val' is not a valid value — leaving $native alone. Valid values:$list. Fix it in $ENV_FILE and restart the box."
+            serve::err "$var='$val' is not a valid value — leaving $native alone. Valid values:$list. Fix it in $CFG_FILE and restart the box."
             continue
         fi
         if [ "$wire" = "-" ]; then unset "$native"; else export "$native=$wire"; fi
@@ -955,8 +965,8 @@ llama_pre_launch() {
     # by not setting anything. "File states a default; wiring delivers it ⇒ nothing."
     llama_env
 
-    # Both resolvers hand ENV_FILE to droste::load_env_file, which EXPORTS every name
-    # the file introduced (see droste-envfile.sh), so its assignments already survive
+    # Both resolvers hand CFG_FILE to droste::cfg_apply, which EXPORTS every name
+    # the file introduced (see droste-cfgapply.sh), so its assignments already survive
     # the exec. This loop is belt-and-braces for a LLAMA_* the user exported into the
     # container's create-time env instead, and for any future caller that applies the
     # file some other way. llama-server reads LLAMA_ARG_* from its ENVIRONMENT, so they
@@ -1009,7 +1019,7 @@ llama_pre_launch() {
     # --api-prefix moves EVERY route, /health included (server-http.cpp:529 registers
     # `api_prefix + path` for all of them), so HEALTH_PATH above would 404 and the box
     # would restart-loop. Tell the probe where the routes went.
-    # ⭐ OBSERVED, NOT OWNED: llama reads LLAMA_ARG_API_PREFIX itself and ENV_FILE was
+    # ⭐ OBSERVED, NOT OWNED: llama reads LLAMA_ARG_API_PREFIX itself and CFG_FILE was
     # sourced under `set -a` before this hook ran, so the value is simply here to be
     # read. We pass it through unprocessed and only watch it — which is why it keeps
     # llama's own name rather than becoming a DROSTE_LLAMA_* setting.

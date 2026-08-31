@@ -5,7 +5,7 @@
 # Contract + row semantics: base/resolve/build-spec.example.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
-# Placeholder argv; ds4_pre_launch REBUILDS it after ENV_FILE is sourced,
+# Placeholder argv; ds4_pre_launch REBUILDS it after CFG_FILE is sourced,
 # translating the DROSTE_DS4_* vars (ds4 has no native per-flag env) into flags.
 SERVICE=( ds4-server )
 
@@ -19,19 +19,19 @@ SERVICE=( ds4-server )
 HEALTH_PATH="/v1/models"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE ─────────────────────────────────────────────────────────────────
+# ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/ds4.cfg (templates.yaml if_missing); carries active
 # DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
-ENV_FILE="/opt/data/ds4.cfg"
+CFG_FILE="/opt/data/ds4.cfg"
 
 # ── SERVE — the row droste-serve.sh reads out of this spec ───────────────────
-# The SERVE settings live in the same ENV_FILE as everything else, under the prefix
+# The SERVE settings live in the same CFG_FILE as everything else, under the prefix
 # below: DROSTE_DS4_STARTUP_ENABLED / _HOST / _PORT. serve::read_config PARSES them with
 # droste::cfg_get and never sources the file — that read also runs inside the
 # healthcheck every 30s under --health-on-failure=restart, where an abort is a restart
 # loop that ejects every shell in the box.
 # 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
-# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# that names CFG_FILE and no prefix makes read_config refuse to serve and report the
 # IMAGE as broken, because otherwise every setting would read as absent and the box
 # would silently stop serving.
 SERVE_CFG_PREFIX="DROSTE_DS4_"
@@ -42,6 +42,24 @@ SERVE_CFG_PREFIX="DROSTE_DS4_"
 # not know is not a wrong value, it is an argv the binary rejects at startup.
 # ⚠️ No SERVE_HOST_FLAG row either: ds4-server spells it --host, which is
 # serve::apply_host's own default, and --port is the default for all five.
+#
+# 🚨 8001, AND IT IS NOT ds4-server's OWN DEFAULT — THAT IS THE POINT. The binary
+# defaults to 8000 (`.port = 8000`, ds4_server.c:11509), which is ALSO vLLM's, and
+# distrobox containers use HOST NETWORKING: nothing is published and nothing is remapped,
+# so a ds4 box and a vllm box on one machine would fight over the same socket. Until s60
+# the 8001 nudge lived ONLY in the installer's BOX_HOST_PORT map and in a commented line
+# in ds4.cfg — so a hand-created box got 8000, and so did a user who DELETED that line
+# believing they were reverting to "the default". This row is where a default we want
+# every box to have belongs (N1a), and it is the value ds4.cfg's commented
+# DROSTE_DS4_PORT line already shows.
+# ⚠️ IT MEETS PRE_LAUNCH'S OWN --port, and the two agree by construction rather than by
+# luck: PRE_LAUNCH emits `--port <value>` only when DROSTE_DS4_PORT is non-empty, and
+# that is the SAME cfg key serve::read_config reads, so serve::apply_port either rewrites
+# the token PRE_LAUNCH just wrote with the identical value or appends the flag that is
+# not there. ⚠️ Do NOT add a `: "${DROSTE_DS4_PORT=8001}"` beside the HOST line below:
+# the address needs one because ds4's own default is wrong for us in the DIRECT lane too,
+# while a second port default would be a second literal to keep in step with this one.
+SERVE_PORT_DEFAULT=8001
 
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). ds4-server is a compiled HIP binary;
@@ -201,7 +219,7 @@ ds4_bool() { droste::bool "${1:-}"; }
 
 PRE_LAUNCH="ds4_pre_launch"
 ds4_pre_launch() {
-    # Both resolvers source ENV_FILE under `set -a`, so its assignments are already
+    # Both resolvers source CFG_FILE under `set -a`, so its assignments are already
     # exported. This loop is belt-and-braces for a NATIVE DS4_* (DS4_THREADS, …) that
     # the USER exported into the container's create-time env instead, and for any
     # future caller that sources the spec without `set -a`.
@@ -247,7 +265,7 @@ ds4_pre_launch() {
         case "$(ds4_bool "$val")" in
             on)  unset "$native" ;;
             off) export "$native=1" ;;
-            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving ds4's default in place. Fix it in $ENV_FILE and restart the box." ;;
+            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving ds4's default in place. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -276,7 +294,7 @@ ds4_pre_launch() {
                 off) continue ;;
                 *) [ -n "${!var:-}" ] || continue ;;
             esac
-            serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DROSTE_DS4_BACKEND:-rocm} backend. Ignoring it; remove the line from $ENV_FILE."
+            serve::err "$var is set, but SSD expert streaming is Metal-only — ds4-server would exit at startup on the ${DROSTE_DS4_BACKEND:-rocm} backend. Ignoring it; remove the line from $CFG_FILE."
             unset "$var"
         done
     fi
@@ -284,7 +302,7 @@ ds4_pre_launch() {
     #    (`ds4.c:24504`: "directional steering needs --dir-steering-file").
     if [ -z "${DROSTE_DS4_DIR_STEERING_FILE:-}" ] \
        && { [ -n "${DROSTE_DS4_DIR_STEERING_FFN:-}" ] || [ -n "${DROSTE_DS4_DIR_STEERING_ATTN:-}" ]; }; then
-        serve::err "DROSTE_DS4_DIR_STEERING_FFN/_ATTN are set without DROSTE_DS4_DIR_STEERING_FILE — ds4-server would exit at startup. Ignoring the scales; set a steering file in $ENV_FILE or remove them."
+        serve::err "DROSTE_DS4_DIR_STEERING_FFN/_ATTN are set without DROSTE_DS4_DIR_STEERING_FILE — ds4-server would exit at startup. Ignoring the scales; set a steering file in $CFG_FILE or remove them."
         unset DROSTE_DS4_DIR_STEERING_FFN DROSTE_DS4_DIR_STEERING_ATTN
     fi
 
@@ -340,7 +358,7 @@ ds4_pre_launch() {
     for entry in "${DS4_BLANK_IS_DEFAULT[@]}"; do
         var="DROSTE_DS4_${entry%%:*}"
         if [ -n "${!var+set}" ] && [ -z "${!var}" ]; then
-            serve::err "$var is set but empty — ${entry#*:} Using droste's default instead; put a value in $ENV_FILE, or remove the line to say the same thing quietly."
+            serve::err "$var is set but empty — ${entry#*:} Using droste's default instead; put a value in $CFG_FILE, or remove the line to say the same thing quietly."
             unset "$var"
         fi
     done
@@ -472,7 +490,7 @@ ds4_pre_launch() {
         case "$(ds4_bool "$val")" in
             off) argv+=( "$flag" ) ;;
             on)  ;;
-            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving it on (ds4's default). Fix it in $ENV_FILE and restart the box." ;;
+            *)   [ -z "$val" ] || serve::err "$var='$val' is not on/off — leaving it on (ds4's default). Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
     # Raw catch-all, appended last. Quote-aware, unset-safe; quoting
@@ -523,7 +541,7 @@ ds4_pre_launch() {
     # under `set -euo pipefail` in the resolver lane, so a diagnostic that could fail
     # would take the box down harder than the silence it replaces (the s52 shape).
     if [ -n "$mpath" ] && [ ! -e "$mpath" ]; then
-        serve::err "the model file $mpath does not exist. ds4-server opens it at startup and exits when it cannot, so nothing will serve and the container will restart, over and over — for the first 90 minutes without ever reporting unhealthy, because that is this box's health start period. Bind a directory holding your GGUF to /opt/models, or point DROSTE_DS4_MODEL in $ENV_FILE at a file that is inside the box."
+        serve::err "the model file $mpath does not exist. ds4-server opens it at startup and exits when it cannot, so nothing will serve and the container will restart, over and over — for the first 90 minutes without ever reporting unhealthy, because that is this box's health start period. Bind a directory holding your GGUF to /opt/models, or point DROSTE_DS4_MODEL in $CFG_FILE at a file that is inside the box."
     fi
 
     SERVICE=( "${argv[@]}" )

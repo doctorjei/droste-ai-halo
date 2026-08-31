@@ -3,9 +3,12 @@
 #
 # ⭐ WHY THIS FILE EXISTS (case 2, s59). `server.env` is deleted and the five serve
 # settings move into the box's own `<box>.cfg`, which is ALSO the file both resolvers
-# source (under `set -a`) to hand the app its native settings. Two readers, one file:
-#   • the APP settings are read by SOURCING — that is what makes the file a config surface;
-#   • the SERVE settings are read by SCANNING — this file.
+# source (under `set -a`) to hand the app its native settings. ONE FILE, TWO READS, TWO
+# VERBS — and the names say which is which:
+#   • `droste::cfg_apply` (droste-cfgapply.sh) APPLIES all of the APP settings, by
+#     SOURCING the file in a child shell — that is what makes it a config surface;
+#   • `droste::cfg_get` (this file) PARSES one SERVE setting, by SCANNING, and NEVER
+#     sources.
 # They must not be the same read, because the second one runs somewhere the first is not
 # allowed to fail: the healthcheck fires every 30 s, and `--health-on-failure=restart`
 # turns any abort there into a container restart loop that ejects every interactive shell
@@ -326,7 +329,7 @@ droste::_cfg_open_quote() {
 # "absent" — rule 5: a blank value is treated exactly as absent, so blank means "no
 # opinion" and the caller applies droste's per-box default.
 #
-# FILE defaults to `${ENV_FILE:-}`; with neither an argument nor `ENV_FILE`, the answer is
+# FILE defaults to `${CFG_FILE:-}`; with neither an argument nor `CFG_FILE`, the answer is
 # empty. A box with no config file is a normal state, not a fault, so that case is SILENT —
 # only a file that EXISTS and cannot be read earns a message.
 #
@@ -367,7 +370,7 @@ droste::cfg_get() {
     local name=${1-} file=${2-}
 
     [ -n "$name" ] || { printf '%s' ''; return 0; }
-    [ -n "$file" ] || file=${ENV_FILE:-}
+    [ -n "$file" ] || file=${CFG_FILE:-}
     [ -n "$file" ] || { printf '%s' ''; return 0; }
 
     # NAME must be a shell identifier. Not defensiveness for its own sake: `name` is used

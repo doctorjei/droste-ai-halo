@@ -152,7 +152,7 @@ PY
 # (8888: the SERVICE line's) instead of printing garbage or failing the login
 # shell. The LAST assignment wins, which is cfg_get's rule as it was sourcing's.
 # ⚠️ The path is a literal here rather than read from the baked build-spec's
-# ENV_FILE, and that is the point: the file we tell the user to edit further down
+# CFG_FILE, and that is the point: the file we tell the user to edit further down
 # and the file we read here must be the same string, guaranteed by being one.
 serve_port() {
   local def=8888 file="${DROSTE_SERVE_ENV:-/opt/data/finetuning.cfg}" pv=""

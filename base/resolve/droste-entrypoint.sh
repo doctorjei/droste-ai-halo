@@ -29,7 +29,7 @@ source "$RESOLVE_DIR/droste-resolve.sh"
 # settings are the MERGED shape's supervision surface (they are what the healthcheck
 # and the server verbs act on), and this lane has neither.
 # ⚠️ WHAT DOES REACH THIS LANE IS THE SPEC'S OWN WORK — apply_spec below sources
-# ENV_FILE and runs PRE_LAUNCH in BOTH lanes, so whatever a box's PRE_LAUNCH builds
+# CFG_FILE and runs PRE_LAUNCH in BOTH lanes, so whatever a box's PRE_LAUNCH builds
 # into SERVICE applies to a direct `podman run` too. "The server lane ignores the
 # config file" has never been true of that half, and it is worth knowing which half
 # you are looking at before calling a difference between the lanes a bug.
@@ -44,7 +44,7 @@ fi
 
 # Row defaults BEFORE sourcing the spec (set -u safety; spec may omit any row).
 SERVICE=()
-ENV_FILE=""
+CFG_FILE=""
 OVERLAYS=()
 SURFACES=()
 CRITICAL=()

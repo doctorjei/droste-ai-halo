@@ -39,7 +39,7 @@ SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" )
 HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE (optional) ──────────────────────────────────────────────────────
+# ── CFG_FILE (optional) ──────────────────────────────────────────────────────
 # Seeded from templates/vllm.cfg (templates.yaml if_missing). vLLM's SERVE FLAGS
 # live in the YAML consumed via --config; this file carries the ~209 runtime
 # VLLM_* ENVIRONMENT VARIABLES, which are not expressible as YAML keys — several
@@ -67,7 +67,7 @@ HEALTH_ACCEPT="ok"
 # Every `VLLM_FOO=bar` a user uncomments is exported by the resolver itself. Only
 # the DROSTE_VLLM_* names below need translating — they are the settings where
 # passing the user's word through unprocessed would be wrong or fatal.
-ENV_FILE="/opt/data/vllm.cfg"
+CFG_FILE="/opt/data/vllm.cfg"
 
 # ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
 # The five SERVE settings live in vllm.cfg, under the prefix below:
@@ -80,7 +80,7 @@ ENV_FILE="/opt/data/vllm.cfg"
 # read also runs inside the healthcheck every 30s under --health-on-failure=restart,
 # where an abort is a restart loop that ejects every shell in the box.
 # 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
-# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# that names CFG_FILE and no prefix makes read_config refuse to serve and report the
 # IMAGE as broken, because otherwise all five settings would read as absent and the box
 # would silently stop serving.
 SERVE_CFG_PREFIX="DROSTE_VLLM_"
@@ -91,6 +91,17 @@ SERVE_CFG_PREFIX="DROSTE_VLLM_"
 # precedence — argparse_utils turns --config into arguments the real command line then
 # overrides — so a `host:` key can only be reserved for droste if something outranks it.
 # serve::apply_host puts --host on the command line; a comment in the yaml could not.
+#
+# The port a user gets when they set none — vLLM's own, and the value vllm.cfg already
+# shows on its commented DROSTE_VLLM_PORT line. 🚨 THE ROW IS WHAT MAKES THAT LINE TRUE
+# (§7a, ruled s60): the address has a library-wide default and the port had none, so
+# before this row an absent port did not mean "use 8000" — it meant the box refused to
+# serve. ⭐ AND THE PORT IS RESERVED WHERE TLS IS NOT, which is why it is always emitted:
+# both vllm.cfg's Reserved block and the yaml's `~~~ port ~~~` row say droste owns it, so
+# the flag beating a `port:` key is the reservation being ENFORCED rather than a choice
+# being destroyed. ⚠️ 8000 IS ALSO ds4-server's OWN DEFAULT — under host networking the
+# two boxes would collide, which is why ds4 is nudged to 8001 and this box keeps 8000.
+SERVE_PORT_DEFAULT=8000
 #
 # ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
 # and a wrong flag is not a wrong value — the server rejects the argv and never starts.
@@ -280,7 +291,7 @@ vllm_pick() {
         menu="$menu ${pair%%=*}"
         [ "${pair%%=*}" = "$val" ] && { printf '%s' "${pair#*=}"; return 0; }
     done
-    serve::err "DROSTE_VLLM_$suffix='$given' is not one of:$menu — leaving the setting at its default. Fix it in $ENV_FILE and restart the box."
+    serve::err "DROSTE_VLLM_$suffix='$given' is not one of:$menu — leaving the setting at its default. Fix it in $CFG_FILE and restart the box."
     return 1
 }
 
@@ -349,7 +360,7 @@ vllm_open_registry() {
         list="${list:+$list, }$name"
         [ "$val" = "$name" ] && return 0
     done
-    serve::warn "$label='$val' is not one of the $noun vLLM ships ($list). Passing it through unchanged in case a plugin registers it. If nothing does, this box will still start and report healthy, and then fail every multimodal request with 'AssertionError: Extension class $val not found'. Fix it in $ENV_FILE and restart the box."
+    serve::warn "$label='$val' is not one of the $noun vLLM ships ($list). Passing it through unchanged in case a plugin registers it. If nothing does, this box will still start and report healthy, and then fail every multimodal request with 'AssertionError: Extension class $val not found'. Fix it in $CFG_FILE and restart the box."
     return 0
 }
 
@@ -383,8 +394,8 @@ vllm_env() {
     # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (vllm.cfg:220) AND UNCOMMENTING IT AS
     # PRINTED TAKES EVERY GPU AWAY. Both resolvers source the file under `set -a`, so
     # the line arrives as CUDA_VISIBLE_DEVICES="" and reaches the server:
-    # droste-envfile.sh:155 exports it, and the name is not in the `loud` list at :70,
-    # so it does not even warn on the way past.
+    # droste-cfgapply.sh:365 exports it, and the name is in none of the three `loud`
+    # lists at :192-194, so it does not even warn on the way past.
     # The ROCm RUNTIME would shrug — rocclr/device/rocm/rocdevice.cpp:390-392 only
     # filters when `ordinals[0] != '\0'` — but TORCH'S PYTHON PARSER IS STRICTER THAN
     # THE RUNTIME IT WRAPS. torch/cuda/__init__.py:736-805 `_parse_visible_devices()`
@@ -777,7 +788,7 @@ vllm_env() {
     # ⇒ RELATIVE paths, resolved against the server's CWD instead of behind a bind. The
     # box starts, serves and reports itself healthy while its caches land inside the
     # container and vanish at the next recreate — the loud_dirs symptom
-    # (droste-envfile.sh:114), except that here the user asked for the DEFAULT.
+    # (droste-cfgapply.sh:129), except that here the user asked for the DEFAULT.
     # ⭐ SO THE FIX IS OURS AND IT IS HERE, NOT IN THE FILE. The four lines are accurate
     # prose about the option; making a blank behave as the absence makes them accurate in
     # every case, and touches nothing the user authored.
@@ -798,12 +809,12 @@ vllm_env() {
     # image (VLLM_CONFIG_ROOT) and it differs, measured — it is guarded on that evidence,
     # not for family symmetry with the cache line. Nothing else in the XDG family is
     # touched: droste sets none of them and the rest have no measured consequence here.
-    # ⭐ AND THIS COVERS ROUTES droste-envfile.sh CANNOT SEE — a create-time `--env`, or an
+    # ⭐ AND THIS COVERS ROUTES droste-cfgapply.sh CANNOT SEE — a create-time `--env`, or an
     # `export XDG_CACHE_HOME=` typed inside `distrobox enter` — because it reads the
     # environment the server is about to get rather than the file.
     # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default,
     # and delivering it is not ignoring the user. When the value did come from the box's
-    # file, load_env_file has already said the line was seen (XDG_CACHE_HOME is in its
+    # file, cfg_apply has already said the line was seen (XDG_CACHE_HOME is in its
     # loud_dirs) — though its sentence describes a MOVED directory, so for a CLEARED one
     # it warns about a hazard this guard has just removed. Worth fixing there, not here.
     if [ -n "${XDG_CACHE_HOME+set}" ] && [ -z "$XDG_CACHE_HOME" ]; then
@@ -831,7 +842,7 @@ vllm_env() {
         case "$(droste::bool "$val")" in
             on)  export "$var=$on" ;;
             off) export "$var=$off" ;;
-            *) serve::err "DROSTE_VLLM_$suffix='$val' is not a yes/no or on/off value — leaving $var as it is. Fix it in $ENV_FILE and restart the box." ;;
+            *) serve::err "DROSTE_VLLM_$suffix='$val' is not a yes/no or on/off value — leaving $var as it is. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -920,7 +931,7 @@ vllm_env() {
         case "$(droste::bool "$val")" in
             on)  export VLLM_DO_NOT_TRACK=1 VLLM_NO_USAGE_STATS=1 ;;
             off) unset VLLM_DO_NOT_TRACK; export VLLM_NO_USAGE_STATS=0 ;;
-            *) serve::err "DROSTE_VLLM_DO_NOT_TRACK='$val' is not a yes/no value — leaving telemetry as the image set it (opted out). Fix it in $ENV_FILE and restart the box." ;;
+            *) serve::err "DROSTE_VLLM_DO_NOT_TRACK='$val' is not a yes/no value — leaving telemetry as the image set it (opted out). Fix it in $CFG_FILE and restart the box." ;;
         esac
     fi
 
@@ -967,7 +978,7 @@ vllm_env() {
     val=${DROSTE_VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS:-}
     if [ -n "$val" ]; then
         case "$val" in
-            ''|*[!0-9]*) serve::err "DROSTE_VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS='$val' is not a whole number of seconds — leaving it at vLLM's default of 1. Fix it in $ENV_FILE and restart the box." ;;
+            ''|*[!0-9]*) serve::err "DROSTE_VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS='$val' is not a whole number of seconds — leaving it at vLLM's default of 1. Fix it in $CFG_FILE and restart the box." ;;
             *) export VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS="$val" ;;
         esac
     fi
@@ -1122,7 +1133,7 @@ vllm_pre_launch() {
     if [ -n "${DROSTE_VLLM_CONFIG+set}" ] && [ -z "$DROSTE_VLLM_CONFIG" ]; then
         DROSTE_VLLM_CONFIG=${VLLM_CONFIG_DEFAULT:-/opt/data/vllm_config.yaml}
         export DROSTE_VLLM_CONFIG
-        serve::err "DROSTE_VLLM_CONFIG is set but empty in $ENV_FILE, and vLLM cannot be started without a config file — using $DROSTE_VLLM_CONFIG instead. Give it a path or comment the line out, and restart the box."
+        serve::err "DROSTE_VLLM_CONFIG is set but empty in $CFG_FILE, and vLLM cannot be started without a config file — using $DROSTE_VLLM_CONFIG instead. Give it a path or comment the line out, and restart the box."
     fi
 
     vllm_env

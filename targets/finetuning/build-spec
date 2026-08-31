@@ -9,11 +9,11 @@
 # train.py land on the persistent workspace mount. --notebook-dir is a live
 # jupyter-server alias for ServerApp.root_dir. Default token auth stays ON — the
 # token rerolls every start and `jupyter server list` is how you read it;
-# JUPYTER_TOKEN in ENV_FILE fixes one (which only became reachable when this box
-# got an ENV_FILE at all).
+# JUPYTER_TOKEN in CFG_FILE fixes one (which only became reachable when this box
+# got an CFG_FILE at all).
 #
 # ONE array, used twice. SERVICE is a usable argv on its own AND
-# finetuning_pre_launch REBUILDS it FROM THIS ARRAY once ENV_FILE has been
+# finetuning_pre_launch REBUILDS it FROM THIS ARRAY once CFG_FILE has been
 # sourced, so DROSTE_JUPYTER_EXTRA_ARGS can join the command line. Rebuilding
 # from the array rather than appending to SERVICE means calling PRE_LAUNCH twice
 # cannot grow the argv, and it retires the old "keep the two copies in step"
@@ -66,7 +66,7 @@ SERVICE=( "${JUPYTER_ARGV_BASE[@]}" )
 HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
-# ── ENV_FILE ─────────────────────────────────────────────────────────────────
+# ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from templates/finetuning.cfg (templates.yaml if_missing). Both resolvers
 # source it under `set -a`, so every assignment reaches the JupyterLab process —
 # and that is the ONLY mechanism that can act before Jupyter reads any config,
@@ -81,16 +81,16 @@ HEALTH_ACCEPT="ok"
 #
 # ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
 # in neither — a knob present but inert, which is worse than an absent one.
-ENV_FILE="/opt/data/finetuning.cfg"
+CFG_FILE="/opt/data/finetuning.cfg"
 
 # ── SERVE — the four rows droste-serve.sh reads out of this spec ─────────────
-# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# The five SERVE settings live in the same CFG_FILE as everything else, under the
 # prefix below: DROSTE_JUPYTER_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
 # serve::read_config PARSES them with droste::cfg_get and never sources the file — that
 # read also runs inside the healthcheck every 30s under --health-on-failure=restart,
 # where an abort is a restart loop that ejects every shell in the box.
 # 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
-# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# that names CFG_FILE and no prefix makes read_config refuse to serve and report the
 # IMAGE as broken, because otherwise all five settings would read as absent and the box
 # would silently stop serving.
 # ⭐ THIS IS THE BOX WHERE THE PREFIX RULE IS OBSERVABLE. It names the APPLICATION, not
@@ -103,6 +103,13 @@ SERVE_CFG_PREFIX="DROSTE_JUPYTER_"
 # a --host — traitlets exits 2 on an unrecognised flag rather than ignoring it, so the
 # server would never start. --port needs no row (all five agree).
 SERVE_HOST_FLAG=--ip
+# The port a user gets when they set none — Jupyter's own, and the value finetuning.cfg
+# already shows on its commented DROSTE_JUPYTER_PORT line. 🚨 THE ROW IS WHAT MAKES THAT
+# LINE TRUE (§7a, ruled s60): the address has a library-wide default and the port had
+# none, so before this row an absent port did not mean "use 8888" — it meant the box
+# refused to serve. It must stay equal to the literal after --port in JUPYTER_ARGV_BASE;
+# that copy is what a direct `podman run` gets, where no launcher runs at all.
+SERVE_PORT_DEFAULT=8888
 # ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
 # and a wrong flag is not a wrong value — the server rejects the argv and never starts.
 # 🚨 THE NAMES ARE --certfile / --keyfile, NOT the --tls-* pair finetuning.cfg's
@@ -219,7 +226,7 @@ jupyter_env() {
     # 89). Jei's ruling (s57) replaces it:
     # ⭐ ANYTHING THAT COULD TAKE DOWN THE BOX ON AN EMPTY STRING, WE UNSET IF EMPTY.
     #
-    # ENV_FILE is sourced under `set -a`, so uncommenting ANY line hands the server an
+    # CFG_FILE is sourced under `set -a`, so uncommenting ANY line hands the server an
     # EMPTY STRING rather than an absence. All 18 natives finetuning.cfg exposes were
     # MEASURED at the pins — each reader executed twice in isolated subprocesses, once
     # with the name absent and once with it "", and the outputs compared. Four differ:
@@ -333,7 +340,7 @@ jupyter_env() {
     # wiring says nothing at all unless the user does.
     # 🚨 WITHOUT THE FIRST OF THESE THE WHOLE TRAIT FILE IS INERT, SILENTLY.
     # templates.yaml seeds jupyter_server_config.py to /opt/data/, beside this box's
-    # ENV_FILE, and that directory is on Jupyter's config search path ONLY because
+    # CFG_FILE, and that directory is on Jupyter's config search path ONLY because
     # JUPYTER_CONFIG_DIR names it (jupyter_core/paths.py:156-157).
     # ⭐ FLAT ON PURPOSE (Jei, s56): the two halves of the config surface sit
     # together where a user looks for them. /opt/data holds nothing else but
@@ -378,7 +385,7 @@ jupyter_env() {
         case "$(droste::bool "$val")" in
             on)  export "$var=$on" ;;
             off) export "$var=$off" ;;
-            *)   serve::err "DROSTE_JUPYTER_$suffix='$val' is not a yes/no value — leaving $var as it is. Use yes or no. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "DROSTE_JUPYTER_$suffix='$val' is not a yes/no value — leaving $var as it is. Use yes or no. Fix it in $CFG_FILE and restart the box." ;;
         esac
     done
 
@@ -430,7 +437,7 @@ jupyter_env() {
     # belongs.
     # ⚠️ Every arm returns 0: PRE_LAUNCH runs unguarded under `set -euo pipefail`.
     if [ -n "${DROSTE_JUPYTER_SEARCH_VENV_FIRST+set}" ] && [ -z "$DROSTE_JUPYTER_SEARCH_VENV_FIRST" ]; then
-        serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST is set but empty — it is a yes/no setting, so an empty value cannot mean anything, and leaving it empty would hand the search order to a permission test on /opt/venv instead of to a decision. Using droste's default (no: your own config and data dirs are searched before /opt/venv's); put yes or no in $ENV_FILE, or remove the line to say the same thing quietly."
+        serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST is set but empty — it is a yes/no setting, so an empty value cannot mean anything, and leaving it empty would hand the search order to a permission test on /opt/venv instead of to a decision. Using droste's default (no: your own config and data dirs are searched before /opt/venv's); put yes or no in $CFG_FILE, or remove the line to say the same thing quietly."
         unset DROSTE_JUPYTER_SEARCH_VENV_FIRST
     fi
     val=${DROSTE_JUPYTER_SEARCH_VENV_FIRST-}
@@ -446,7 +453,7 @@ jupyter_env() {
             off) export JUPYTER_PREFER_ENV_PATH=0 ;;
             # Never leave the user's string on the wire: envset() would read
             # almost any typo as TRUE, which is the dangerous direction.
-            *)   serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST='$val' is not a yes/no value — using droste's default (no: your own config and data dirs are searched before /opt/venv's). Use yes or no. Fix it in $ENV_FILE and restart the box."
+            *)   serve::err "DROSTE_JUPYTER_SEARCH_VENV_FIRST='$val' is not a yes/no value — using droste's default (no: your own config and data dirs are searched before /opt/venv's). Use yes or no. Fix it in $CFG_FILE and restart the box."
                  : "${JUPYTER_PREFER_ENV_PATH=0}"
                  export JUPYTER_PREFER_ENV_PATH ;;
         esac
@@ -466,7 +473,7 @@ jupyter_env() {
         case "$(droste::bool "$val")" in
             on)  export JUPYTER_NO_CONFIG=1 ;;
             off) unset JUPYTER_NO_CONFIG ;;
-            *)   serve::err "DROSTE_JUPYTER_SKIP_CONFIG='$val' is not a yes/no value — leaving config files loading normally. Use yes or no. Fix it in $ENV_FILE and restart the box." ;;
+            *)   serve::err "DROSTE_JUPYTER_SKIP_CONFIG='$val' is not a yes/no value — leaving config files loading normally. Use yes or no. Fix it in $CFG_FILE and restart the box." ;;
         esac
     fi
 }
@@ -631,7 +638,7 @@ finetuning_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-env-for-triton.sh
 
-    # After ENV_FILE has been sourced: turn the user's finetuning.cfg into the
+    # After CFG_FILE has been sourced: turn the user's finetuning.cfg into the
     # environment the server will actually see.
     jupyter_env
 
@@ -642,7 +649,7 @@ finetuning_pre_launch() {
     # TWO EXCEPTIONS SINCE s60: they are reserved settings, and serve::apply_host /
     # serve::apply_port rewrite the value after EVERY occurrence of their flag — the
     # catch-all's copy included. A user asking for a different address writes
-    # DROSTE_JUPYTER_HOST in $ENV_FILE, which is the surface that owns it.
+    # DROSTE_JUPYTER_HOST in $CFG_FILE, which is the surface that owns it.
     # Quote-aware split (droste::split_args), matching the other ports:
     # a value MAY contain spaces, and it is not glob-expanded.
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_JUPYTER_EXTRA_ARGS:-}")

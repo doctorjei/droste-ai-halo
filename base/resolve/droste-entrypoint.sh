@@ -19,10 +19,20 @@ RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
 source "$RESOLVE_DIR/droste-resolve.sh"
 # The shared launch path (serve::exec_service below). Sourcing it is inert: the
 # library only defines functions + defaults, reads no config, and NOTHING in the
-# server lane consults server.env — the operator of a direct run chose the port
-# on their own command line, so rewriting the in-container bind port would break
-# exactly the deployments this image still has to serve. droste ships no
-# published-port definition of its own.
+# server lane consults the box's serve settings: this file calls no
+# serve::read_config and no serve::maybe_launch, so the port / address / TLS
+# application that lives behind that door never runs here. The operator of a direct
+# run chose the address and port on their own command line, so overriding either from
+# a config file would break exactly the deployments this image still has to serve.
+# droste ships no published-port definition of its own.
+# ⚠️ THAT IS A DELIBERATE ASYMMETRY WITH THE INIT HOOK, not an omission: the serve
+# settings are the MERGED shape's supervision surface (they are what the healthcheck
+# and the server verbs act on), and this lane has neither.
+# ⚠️ WHAT DOES REACH THIS LANE IS THE SPEC'S OWN WORK — apply_spec below sources
+# ENV_FILE and runs PRE_LAUNCH in BOTH lanes, so whatever a box's PRE_LAUNCH builds
+# into SERVICE applies to a direct `podman run` too. "The server lane ignores the
+# config file" has never been true of that half, and it is worth knowing which half
+# you are looking at before calling a difference between the lanes a bug.
 # shellcheck source=/dev/null
 source "$RESOLVE_DIR/droste-serve.sh"
 

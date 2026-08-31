@@ -22,12 +22,16 @@
 #
 # THE SERVER DOOR (merged-container shape): after the spec is applied, the hook
 # asks droste-serve.sh whether this start should also bring the box's SERVICE up
-# — the answer lives in server.env on the per-box data volume (SERVE=1, PORT=…),
-# not in this file and not in the container's baked env, so it is editable and
-# survives recreates. Nothing happens without that file, so an interactive-only
-# box behaves exactly as it did before. `podman start` replaying the init line is
-# what makes this the "server door"; podman's healthcheck restarting the
-# container is what supervises it (see droste-healthcheck.sh).
+# — the answer lives in the box's own <app>.cfg on the per-box data volume
+# (DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT), not in this file and not in the
+# container's baked env, so it is editable and survives recreates. That is the SAME
+# file the resolver hands the app at step 6, but it is not the same READ: the app
+# settings are SOURCED in a child shell, the serve settings are PARSED key by key
+# (droste::cfg_get) — because the healthcheck asks these every 30s and must not be
+# able to trip over anything in a file the user owns. Nothing happens without that
+# file, so an interactive-only box behaves exactly as it did before. `podman start`
+# replaying the init line is what makes this the "server door"; podman's healthcheck
+# restarting the container is what supervises it (see droste-healthcheck.sh).
 set -euo pipefail
 
 export DROSTE_LANE=distrobox
@@ -125,9 +129,18 @@ fi
 # restarts, so NOTHING RESETS IT BY ITSELF. This line is the entire enforcement. Remove
 # it and a `server_stop` becomes permanent and silent, which is the exact class of bug
 # the two-setting split was built to remove.
-# ⚙️ It MOVED ABOVE apply_spec in s47 (it used to sit beside maybe_launch): it reads
-# server.env and writes the state dir, both on volumes podman binds at container start,
-# so it never needed the mounts — and the stamp below needs to know the intent.
+# ⚙️ It MOVED ABOVE apply_spec in s47 (it used to sit beside maybe_launch): it reads the
+# serve settings out of the box's <app>.cfg and writes the state dir, both on volumes
+# podman binds at container start, so it never needed the mounts — and the stamp below
+# needs to know the intent.
+# ⚠️ DO NOT MOVE IT BACK DOWN NOW THAT THE SETTINGS LIVE IN <app>.cfg, even though that
+# file is SEEDED by apply_spec's template step and so does not exist on a brand-new box's
+# FIRST start. A missing file reads as every setting absent ⇒ intent 0 ⇒ a first start
+# that does not serve, which is correct rather than a regression (the user has not chosen
+# anything yet, and the next start reads the seeded file). Moving this below apply_spec to
+# "fix" that costs the stamp its intent, and a long model scan then reads as "asked to
+# serve and did not": UNHEALTHY, a DIED warning on every tty, and a relaunch before the
+# overlays are mounted. Ruled s60 (contract B2).
 serve::reset_active || serve::warn "could not reset the server intent flag — continuing."
 
 # ⭐ THEN SAY A LAUNCH IS COMING — BEFORE apply_spec, WHICH IS THE WHOLE FIX.
@@ -236,7 +249,7 @@ cat "$RESOLVE_LOG" >&2
 # problem must never fail the init hook — distrobox reports a failed hook as a
 # generic error and the box would become hard to enter, which is the opposite of
 # what we want when the service is the broken part. maybe_launch says nothing at
-# all unless server.env turns serving on.
+# all unless the box's <app>.cfg turns serving on.
 # ⚙️ THE INTENT RESET AND THE `starting` STAMP RUN ABOVE, BEFORE apply_spec (s47) — see
 # the block there for why. maybe_launch re-reads the record this start already wrote:
 # its pid field is "-", which _pid_is_ours rejects, so it falls straight through to the

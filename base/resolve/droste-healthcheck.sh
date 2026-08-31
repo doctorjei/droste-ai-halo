@@ -14,17 +14,34 @@
 # /health with 503 while it loads. With --health-on-failure=restart and a short
 # start period the container restarts itself forever and never finishes loading.
 #
-# What it does: read the SAME serve config the init hook reads (server.env: SERVE,
-# PORT), then require BOTH halves of "this box is serving":
+# What it does: read the SAME serve settings the init hook reads — the box's
+# DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT, which live in its own <app>.cfg
+# beside every other setting the user edits — then require BOTH halves of "this box
+# is serving":
 #
 #   1. OUR SERVICE IS RUNNING — the state record droste-serve.sh writes at every
 #      container start says the launch succeeded, and that exact process (pid +
 #      process start time) is still alive. serve::state_ok.
 #   2. IT ANSWERS — curl the box's endpoint (build-spec rows HEALTH_PATH /
-#      HEALTH_ACCEPT) on 127.0.0.1; the container shares the host network
-#      namespace, so the service's real port is reachable from inside.
+#      HEALTH_ACCEPT) at the address the server BINDS (serve::probe_addr: the
+#      configured HOST, or 127.0.0.1 when that is the 0.0.0.0 wildcard); the
+#      container shares the host network namespace, so the service's real port is
+#      reachable from inside.
+#
+# ⚠️ THE PROBE ADDRESS IS NOT A CONSTANT ANY MORE, and the literal it replaced was a
+# restart loop waiting to happen: the moment a user binds their server to a specific
+# address, a probe still asking 127.0.0.1 gets nothing, reports UNHEALTHY forever and
+# --health-on-failure=restart bounces the container on a server that is working
+# perfectly. serve::probe_addr is the ONE place that rule lives.
 #
 # Exit 0 = healthy, non-zero = unhealthy.
+#
+# 🚨 THOSE SETTINGS ARE PARSED, NEVER SOURCED (droste::cfg_get, droste-cfg.sh), and
+# for this file that is a safety property rather than a style choice. <app>.cfg is
+# several hundred lines of the USER's own settings; this probe fires every 30s; and
+# --health-on-failure=restart turns any abort in it into a container restart loop
+# that ejects every interactive shell in the box. A typo in their own config file
+# must never be able to do that.
 #
 # ⚠️ GATE 1 IS NOT REDUNDANT. These boxes use HOST networking, so the port is not
 # ours by construction: when the server door finds the port already taken it
@@ -41,15 +58,16 @@
 #
 # The state record is the DISTROBOX-lane server door's (serve::maybe_launch): the
 # foreground server lane execs its service as pid 1 and writes no record — but it
-# also never reads server.env, so SERVE stays 0 there and this script exits at the
-# gate below without ever consulting the record. (droste-setup.sh wires these
-# health flags for the merged/distrobox shape only.)
+# also never reads the serve settings and never sets the intent flag, so this script
+# exits at the gate below without ever consulting the record. (droste-setup.sh wires
+# these health flags for the merged/distrobox shape only.)
 #
 # A box that is NOT configured to serve is HEALTHY BY DEFINITION (exit 0): the
 # healthcheck flags may be baked into a container the user later turns serving off
 # on, and an interactive-only box must not restart-loop because nothing is
-# listening. Same for an unreadable/malformed server.env — the init hook already
-# warned about it in the container log.
+# listening. Same for a missing or unreadable <app>.cfg, and for serve settings it
+# cannot make sense of — the init hook already warned about that in the container
+# log, and warning again every 30s would only train the log to be ignored.
 set -uo pipefail
 
 RESOLVE_DIR=${RESOLVE_DIR:-/opt/resources/resolve}
@@ -61,11 +79,12 @@ set +e   # this script decides its own exit codes
 
 serve::read_config
 # ⭐ GATE 0 IS INTENT, NOT CONFIG (s45), AND THAT SUBSTITUTION IS THE WHOLE FIX.
-# This used to read SERVE from server.env and therefore asked "is this box configured
-# to serve AT BOOT?" when the question it needs is "is this box supposed to be serving
-# RIGHT NOW?". Because of that, a user who stopped the service by hand got the
-# container restarted under them forever — server.env still said SERVE=1, so every
-# probe read the box as one that ought to be serving and podman bounced it.
+# This used to read the box's "serve at box start" setting straight out of its config
+# and therefore asked "is this box configured to serve AT BOOT?" when the question it
+# needs is "is this box supposed to be serving RIGHT NOW?". Because of that, a user who
+# stopped the service by hand got the container restarted under them forever — the
+# config still said to start the server with the box, so every probe read the box as
+# one that ought to be serving and podman bounced it.
 # state/.IS_ACTIVE answers the question actually being asked, and it is reset from
 # STARTUP_ENABLED at every container start, so "stopped" stays temporary.
 if ! serve::is_active; then
@@ -126,7 +145,10 @@ serve::read_health_spec
 # --health-on-failure=restart turned that into a restart loop.
 code=$(serve::probe "$SERVE_PORT" "$HEALTH_PATH" "$DROSTE_HEALTH_TIMEOUT")
 rc=$?
-url="$(serve::probe_scheme)://127.0.0.1:${SERVE_PORT}${HEALTH_PATH}"
+# ⚠️ REBUILT HERE FOR THE MESSAGES ONLY — serve::probe builds its own URL from these
+# same two helpers, so a message naming a different address than the one actually asked
+# would be worse than no message at all. Keep them in step; never inline either rule.
+url="$(serve::probe_scheme)://$(serve::probe_addr):${SERVE_PORT}${HEALTH_PATH}"
 
 # curl could not get an HTTP response at all (refused, timeout, reset): 000.
 if [ -z "$code" ] || [ "$code" = "000" ]; then

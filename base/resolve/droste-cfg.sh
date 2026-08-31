@@ -47,11 +47,20 @@
 # list. The five-name restriction belongs to the CALLER, because the parser is also what
 # the differential harness drives against arbitrary fixture names.
 #
-#   DROSTE_SERVE_STARTUP_ENABLED   start this box's server when the BOX starts
-#   DROSTE_SERVE_HOST              address the server BINDS
-#   DROSTE_SERVE_PORT              port it BINDS (host networking: nothing is remapped)
-#   DROSTE_SERVE_TLS_CERT          PEM certificate path
-#   DROSTE_SERVE_TLS_KEY           PEM private key path
+# 🚨 THE PREFIX IS PER BOX — `DROSTE_<APP>_`, THE APPLICATION, NOT THE BOX. The names
+# below were written `DROSTE_SERVE_*` while this file was being built; that prefix was
+# retired before it ever shipped (Jei, s59: *"DROSTE_<APP>_PORT and DROSTE_<APP>_HOST I
+# think are the right calls here… for all of these, to avoid confusion"*) and it now
+# exists NOWHERE in the tree. Corrected s60.
+# ⚠️ finetuning's are `DROSTE_JUPYTER_*` — the APPLICATION, not the box; it is the only
+# one of the five where the distinction is observable, which is what settles it.
+# The caller supplies the prefix (`SERVE_CFG_PREFIX`); this parser never builds a name.
+#
+#   DROSTE_<APP>_STARTUP_ENABLED   start this box's server when the BOX starts
+#   DROSTE_<APP>_HOST              address the server BINDS
+#   DROSTE_<APP>_PORT              port it BINDS (host networking: nothing is remapped)
+#   DROSTE_<APP>_TLS_CERT          PEM certificate path
+#   DROSTE_<APP>_TLS_KEY           PEM private key path
 #
 # ⭐ TLS IS ON IFF BOTH CERT AND KEY ARE SET — derived by the caller, never declared here.
 # One set and not the other is a CONFIG ERROR to be reported, not silently half-applied.
@@ -122,7 +131,7 @@ droste::_cfg_note() {
 # documents its settings on the assignment line itself — measured at the tip: 152 such lines
 # in llama.cfg, 119 in vllm.cfg, 22 in ds4.cfg, 17 in finetuning.cfg, 2 in comfyui.cfg. The
 # user turns a setting on by DELETING THE LEADING `#`, which leaves
-# `DROSTE_SERVE_PORT=8188        # port it binds`. A parser that took the rest of the line
+# `DROSTE_LLAMA_PORT=8188        # port it binds`. A parser that took the rest of the line
 # would read that port as `8188        # port it binds`, i.e. it would hand the user's
 # DOCUMENTATION to the server as part of its configuration. The cut is at the first `#`
 # that begins the value or follows whitespace (`FOO=a#b` keeps the `#`; `FOO=a #b` does
@@ -130,7 +139,7 @@ droste::_cfg_note() {
 # read it that way.
 #
 # ⚠️ AN UNQUOTED VALUE'S INTERIOR SPACES ARE KEPT WHOLE. A config file does not word-split:
-# the value is the text the user typed. `DROSTE_SERVE_TLS_CERT=/opt/my certs/a.pem` comes
+# the value is the text the user typed. `DROSTE_LLAMA_TLS_CERT=/opt/my certs/a.pem` comes
 # back entire, so an error message names the exact string they wrote rather than a path
 # they never wrote. (The templates still tell users to quote values containing spaces —
 # unquoted leaves them at the mercy of the comment cut and the trailing strip.)
@@ -269,7 +278,7 @@ droste::_cfg_take_export() {
 # leading whitespace, optional `export` plus whitespace, then `IDENT=` — and NOTHING else.
 # ⚠️ THE IDENTIFIER TEST IS NOT DEFENSIVENESS, IT IS THE PREDICATE. Without it a `#`
 # comment ending in `\`, or a line of prose carrying a stray quote, would continue onto the
-# next line and swallow a real setting. `# DROSTE_SERVE_PORT="8188\` must fold nothing.
+# next line and swallow a real setting. `# DROSTE_LLAMA_PORT="8188\` must fold nothing.
 # ⚠️ The value's LEADING WHITESPACE comes off before the quote test here too — the same
 # load-bearing order as `_cfg_unquote`'s steps 1 and 2, for the same reason: `NAME= "a\` is
 # a quoted value and must be seen as one.
@@ -311,7 +320,7 @@ droste::_cfg_open_quote() {
 }
 
 # ── droste::cfg_get — THE ENTRY POINT ────────────────────────────────────────
-# Usage:  value=$(droste::cfg_get DROSTE_SERVE_PORT [/path/to/app.cfg])
+# Usage:  value=$(droste::cfg_get DROSTE_LLAMA_PORT [/path/to/app.cfg])
 #
 # Prints the value (possibly empty) on stdout and ALWAYS EXITS 0. Empty output means
 # "absent" — rule 5: a blank value is treated exactly as absent, so blank means "no
@@ -401,8 +410,8 @@ droste::cfg_get() {
             # looking for. Folding after the name test was a real defect (caught s60 by the
             # differential harness, which the single-lane suite structurally cannot see,
             # because it only ever queries the name that STARTS the span):
-            #     DROSTE_SERVE_HOST="a\
-            #     DROSTE_SERVE_PORT=9999\
+            #     DROSTE_LLAMA_HOST="a\
+            #     DROSTE_LLAMA_PORT=9999\
             #     b"
             # is ONE assignment of HOST. Asked for PORT, a name-dependent fold skips line 1
             # (wrong name, `continue`) and then reads line 2 as an assignment in its own

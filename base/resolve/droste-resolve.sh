@@ -45,7 +45,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
 # neither the installer nor a wipe has to guess from a path's contents:
 #   /opt/data          PER-BOX PERSISTENT DATA. Irreplaceable-if-lost: configs
-#                      (server.env, *.cfg, vllm_config.yaml), comfyui user/ +
+#                      (<app>.cfg, vllm_config.yaml), comfyui user/ +
 #                      custom_nodes upper + model-tree, ds4 sessions/ + cockpit/,
 #                      finetuning workspace, the .droste-*.log files. Backed up.
 #   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
@@ -68,10 +68,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 : "${RESOLVE_TEMPLATES_DIR:=/opt/resources/templates}"
 : "${RESOLVE_APPLY_TEMPLATES:=/opt/resources/resolve/apply_templates.py}"
 : "${DROSTE_OVERLAY_MODE:=auto}"   # auto (kernel→fuse→copy) | kernel | fuse | copy (non-auto = forced, no fallback)
-# The per-box settings file on the DATA volume — droste-serve.sh's SERVE/PORT live
-# in it. Same name and default as DROSTE_SERVE_ENV there on purpose: it is ONE
-# file, and a test can point both libraries at one fixture by exporting this.
-: "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"
+# 🚨 NO DROSTE_SERVE_ENV DEFAULT HERE, AND THAT ABSENCE IS LOAD-BEARING (s60). This
+# library used to seed it to a single literal ($DROSTE_DATA_DIR/server.env) so both
+# libraries named one file. server.env is gone: the serve settings now live in the box's
+# own <app>.cfg, whose path is PER BOX and is declared by the build-spec's ENV_FILE row,
+# so droste-serve.sh is the one place that resolves it.
+# ⚠️ AND A LEFTOVER LITERAL HERE WOULD NOT BE MERELY STALE, IT WOULD SPLIT THE TWO DOORS.
+# The init hook sources THIS library first, so its value would stand where nothing else
+# supplied one; droste-healthcheck.sh sources droste-serve.sh ALONE and would never see
+# it. The two would then disagree about which file holds the settings — and the one they
+# disagreed on names a file s60 deleted. Overriding the path from a test still works the
+# way it always did: export DROSTE_SERVE_ENV before sourcing droste-serve.sh.
 # DROSTE_RESOLVE_DRYRUN (bare name) — echo mount commands instead of running them.
 # ALLOW_EPHEMERAL     (bare name) — downgrade a CRITICAL unbound hard-error to a warning.
 
@@ -833,6 +840,12 @@ resolve::apply_spec() {
     # reads LLAMA_ARG_* from its environment) while a typo in the user's config warns
     # instead of aborting this resolver under `set -euo pipefail`. Rationale, costs and
     # the sentinel trick: droste-envfile.sh.
+    # ⭐ TWO READERS, ONE FILE, AND THIS IS ONLY THE FIRST. The same <app>.cfg also
+    # carries the box's SERVE settings (DROSTE_<APP>_STARTUP_ENABLED / _HOST / _PORT /
+    # _TLS_*), and those are never read this way: droste-serve.sh SCANS them with
+    # droste::cfg_get, because the healthcheck asks the same questions every 30s in a
+    # place where sourcing anything at all is not allowed to fail. Do not fold the two
+    # reads together — they run in different places under different consequences.
     droste::load_env_file "${ENV_FILE:-}"
 
     # 7) PRE_LAUNCH function (defined in build-spec)

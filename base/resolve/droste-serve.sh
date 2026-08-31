@@ -8,46 +8,71 @@
 #
 #   droste-entrypoint.sh  (SERVER lane, pid1)  -> serve::exec_service
 #       foreground exec, exactly as before this file existed. The server lane is
-#       DELIBERATELY untouched by everything else here: it never reads server.env,
-#       never rewrites the port (the operator chose that port at run time on their
-#       own command line — droste ships no published-port definition), never
-#       backgrounds anything. A direct `podman run` still works from these images.
+#       DELIBERATELY untouched by everything else here: it never reads the serve
+#       settings, never rewrites the port or the bind address (the operator chose
+#       both at run time on their own command line — droste ships no published-port
+#       definition), never backgrounds anything. A direct `podman run` still works
+#       from these images.
 #
 #   droste-init-hook.sh   (DISTROBOX lane, runs from the container's init line)
 #                                                  -> serve::maybe_launch
 #       the MERGED-container "server door": `podman start <box>` replays the
 #       distrobox init line, the hook applies the spec, and this library decides
 #       whether that start should also bring the box's service up. The decision
-#       lives in a config file on the per-box DATA volume (server.env, below), so
+#       lives in the box's OWN config file on the per-box DATA volume (below), so
 #       it is toggleable with an editor + `podman restart` and survives image
 #       updates and container recreation.
 #
-# server.env (default /opt/data/server.env — same format and place as llama.cfg /
-# ds4.cfg) is shell-sourceable KEY=VALUE:
-#       STARTUP_ENABLED=1  # 1/true/yes/on = start this box's server when the BOX starts
-#       PORT=8188          # the HOST port the service binds DIRECTLY (host networking:
-#                          # e.g. ds4 binds 8001 itself instead of its own default 8000)
+# ── THE FIVE SERVE SETTINGS ─────────────────────────────────────────────────
+# They live in /opt/data/<app>.cfg — the SAME file the user edits for every other
+# setting this box has, beside them and in the same namespace. There is no second
+# config file: `server.env` was deleted in s60 precisely because a user should not
+# have to learn that the port lives somewhere other than everything else.
+# The PATH comes from the build-spec's ENV_FILE row and the PREFIX from its
+# SERVE_CFG_PREFIX row (see serve::_read_serve_spec); the names are the box's own
+# — DROSTE_LLAMA_*, DROSTE_COMFYUI_*, and DROSTE_JUPYTER_* on finetuning, because
+# the prefix names the APPLICATION, not the box:
 #
-# ⭐ TWO SETTINGS, AND THE IMPORTANT PART IS THE LIFETIMES (s45). server.env used to
-# carry one knob, `SERVE`, meaning two different things at once — "start at box start"
-# AND "this box is supposed to be serving". That single conflation is why stopping the
-# service by hand got the container restarted under you, forever, and why holding the
-# door shut for a test meant editing a file that SURVIVES RECREATE.
+#       DROSTE_<APP>_STARTUP_ENABLED=yes  # start this box's server when the BOX starts
+#       DROSTE_<APP>_HOST=0.0.0.0         # the address the service BINDS. IPv4 literal
+#                                         # only; blank or absent = 0.0.0.0
+#       DROSTE_<APP>_PORT=8188            # the HOST port the service binds DIRECTLY
+#                                         # (host networking: nothing is remapped, so
+#                                         # e.g. ds4 binds 8001 itself instead of its
+#                                         # own default 8000)
+#       DROSTE_<APP>_TLS_CERT=/path.pem   # PEM cert and key. TLS is on IFF BOTH are
+#       DROSTE_<APP>_TLS_KEY=/path.pem    # set; one alone REFUSES to serve (§6)
 #
-#   | | STARTUP_ENABLED           | state/.IS_ACTIVE                        |
-#   |-|--------------------------|-----------------------------------------|
-#   | what     | a KEY in server.env | a FILE in the program-cache state dir |
+# 🚨 THEY ARE PARSED, NEVER SOURCED — droste::cfg_get (droste-cfg.sh), and for this
+# library that is a safety property rather than a style choice. The same file IS
+# sourced a few milliseconds later, in a child shell, to hand the app its native
+# settings; but THIS read also runs inside droste-healthcheck.sh, which fires every
+# 30s under --health-on-failure=restart, so an abort there is a container restart
+# loop that ejects every interactive shell in the box. A user's typo in several
+# hundred lines of their own config must never be able to do that.
+# Missing, unreadable or malformed file => do not serve, no error: an interactive-only
+# box must never fail to start because of this file.
+#
+# ⭐ AND THE IMPORTANT PART IS THE LIFETIMES (s45). The file used to carry one knob,
+# `SERVE`, meaning two different things at once — "start at box start" AND "this box
+# is supposed to be serving". That single conflation is why stopping the service by
+# hand got the container restarted under you, forever, and why holding the door shut
+# for a test meant editing a file that SURVIVES RECREATE.
+#
+#   | | DROSTE_<APP>_STARTUP_ENABLED | state/.IS_ACTIVE                    |
+#   |-|------------------------------|-------------------------------------|
+#   | what     | a KEY in <app>.cfg  | a FILE in the program-cache state dir |
 #   | written  | by the USER         | by the MACHINE (the verbs, the hook)  |
 #   | lifetime | persistent, survives recreate | reset EVERY container start  |
 #   | means    | start it at box start | it SHOULD be running right now      |
 #
 # So a stop is ALWAYS TEMPORARY and the user has to remember nothing. Putting the
-# "now" flag in server.env would have re-created the original foot-gun.
-# 🚨 `SERVE` is still READ as a fallback (there are live boxes) — see read_config.
-# Missing, unreadable or malformed file => do not serve, no error: an interactive-only
-# box must never fail to start because of this file. It is read in a SUBSHELL (a
-# syntax error or a stray `exit` inside it can therefore not abort the init hook,
-# and nothing it assigns leaks into the hook's environment).
+# "now" flag in <app>.cfg would have re-created the original foot-gun.
+# 🚨 A FILE IS A LOCATION; A LIFETIME IS A CONTRACT. Only the location moved in s60 —
+# .IS_ACTIVE, .SCHEME and .PREFIX stay machine-written in the state dir and must never
+# be folded into the config file.
+# ✅ THE LEGACY `SERVE=` KEY IS GONE, not deprecated (s60). Jei confirmed no box
+# carries it, and a guard that strands nothing is padding.
 #
 # Supervision is podman's (`--health-cmd` + `--health-on-failure=restart`, wired at
 # create time by droste-setup.sh), probing droste-healthcheck.sh from inside the
@@ -93,6 +118,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # own prefixed versions: the names resolve when the function runs, not when it loads.
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
+# droste::cfg_get — the SCANNING reader for the box's own <app>.cfg. serve::read_config
+# is its only caller here, and sourcing it unconditionally is what lets the healthcheck
+# keep sourcing THIS file alone. Definitions only, no side effects (see droste-cfg.sh).
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 
 # ── Config (override via env before sourcing) ───────────────────────────────
 # Two per-box roots, same names and defaults as droste-resolve.sh (this library is
@@ -103,17 +133,23 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 # the box is recreated).
 : "${DROSTE_DATA_DIR:=/opt/data}"
 : "${DROSTE_PCACHE_DIR:=/opt/program-cache}"
-: "${DROSTE_SERVE_ENV:=$DROSTE_DATA_DIR/server.env}"      # the serve config file
+# ⚠️ NO LITERAL DEFAULT FOR THE CONFIG FILE ANY MORE, and that is the point: there is
+# no one path that is right for all five boxes now that the serve settings live in the
+# box's own <app>.cfg. serve::read_config fills these two in from the baked build-spec
+# (serve::_read_serve_spec) on every call. Setting either one here — or in the
+# environment before sourcing — is a TEST override, honoured only when the build-spec
+# declares nothing; production always has a spec and the spec always wins.
+: "${DROSTE_SERVE_ENV:=}"          # the box's config file, from the spec's ENV_FILE
+: "${SERVE_CFG_PREFIX:=}"          # its setting prefix, from the spec's SERVE_CFG_PREFIX
 # ── The state folder (s45) ──────────────────────────────────────────────────
 # Per-start state lives in ONE folder on the PROGRAM CACHE, and the folder supplies the
-# context so the names inside it can be short (the same argument that lets server.env
-# carry a bare PORT):
+# context so the names inside it can be short:
 #   state/launch      the launch record  — OBSERVATION: what we launched, and how it went
 #   state/.IS_ACTIVE  0/1                — INTENT: should a server be running right now
 # Keeping those in two files is the point, not an accident: they answer different
 # questions and are written at different moments (a `stop` sets intent with no launch
-# involved). Folding intent into the record — or into server.env — would re-create the
-# very conflation this split exists to remove.
+# involved). Folding intent into the record — or into the box's <app>.cfg — would
+# re-create the very conflation this split exists to remove.
 # ⚠️ RENAMED FROM `.droste-serve.pid`: that name described one of its five fields. An
 # existing box has its record at the old path, so the first start on new code finds none;
 # state_ok already reports that honestly ("no launch record …"), so the cost is ONE
@@ -124,10 +160,38 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-envfile.sh"
 : "${DROSTE_SERVE_SCHEME:=$DROSTE_SERVE_STATE_DIR/.SCHEME}"     # http|https, LEARNED
 : "${DROSTE_SERVE_PREFIX:=$DROSTE_SERVE_STATE_DIR/.PREFIX}"     # path prefix, DECLARED
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
-# The flag every one of the five services takes for its listen port (comfyui
-# main.py, jupyter lab, vllm serve, llama-server, ds4-server all spell it
-# `--port`). A build-spec may override it if a future port differs.
+# ── The four flags this library puts on the command line ────────────────────
+# 🚨 EVERY BOX GETS A COMMAND-LINE FLAG, AND NO BOX GETS AN ENVIRONMENT VARIABLE OR A
+# CONFIG KEY (ruled s60). A CLI flag outranks an env var (llama's LLAMA_ARG_*), a YAML
+# key (vllm's vllm_config.yaml) and a built-in default (all five), which is what makes
+# the "reserved by droste" block in each <app>.cfg TRUE rather than merely advisory —
+# a claim nothing enforces is advice. It also sidesteps the s57 box-killer outright:
+# LLAMA_ARG_HOST="" binds ::1 only and restart-loops the box, and a variable we never
+# set cannot be blank.
+#
+# The port flag is uniform: comfyui main.py, jupyter lab, vllm serve, llama-server and
+# ds4-server all spell it `--port`. The other three are NOT, so a build-spec overrides
+# them by plain assignment — the spec is sourced AFTER this library in both doors, so
+# its assignment wins over the default below.
+#   host:  --host (llama, vllm, ds4) · --listen (comfyui) · --ip (jupyter)
+#   TLS:   --ssl-cert-file/--ssl-key-file (llama) · --ssl-certfile/--ssl-keyfile (vllm)
+#          --tls-certfile/--tls-keyfile (comfyui) · --certfile/--keyfile (jupyter)
+# ⚠️ THE TLS PAIR HAS NO DEFAULT ON PURPOSE. There is no majority spelling to default
+# to, and a wrong flag is not a wrong value — the server rejects the argv and never
+# starts, which under --health-on-failure=restart is a restart loop. Empty means "this
+# box declares no TLS flags", and serve::apply_tls says so out loud rather than
+# guessing. ds4 ships no TLS settings at all (verified at its pin: zero ssl/tls matches
+# in ds4_server.c), so on that box the pair is empty and nothing ever reads it.
 : "${SERVE_PORT_FLAG:=--port}"
+: "${SERVE_HOST_FLAG:=--host}"
+: "${SERVE_TLS_CERT_FLAG:=}"
+: "${SERVE_TLS_KEY_FLAG:=}"
+# Our default bind address, and it is OURS rather than any server's (Jei, s59: "all
+# should default to 0.0.0.0"). Four boxes already forced it in their spec; llama did
+# not, so llama's behaviour CHANGES here — it bound llama.cpp's own loopback default
+# and nothing reported it, because the probe asked 127.0.0.1 and a loopback-only
+# listener answers that perfectly.
+: "${SERVE_HOST_DEFAULT:=0.0.0.0}"
 : "${DROSTE_SERVE_STOP_WAIT:=15}"   # seconds to wait for a stale instance to die
 
 # ── Messaging (independent of droste-resolve.sh: droste-healthcheck.sh sources
@@ -216,75 +280,248 @@ serve::_own_dirs() {
 }
 
 # ── Config reading ──────────────────────────────────────────────────────────
-# read_config — parse server.env into SERVE_STARTUP_ENABLED (0/1), SERVE_PORT (digits
-# or ""), SERVE_CONFIG_ERR (human message or ""). NEVER fails, never aborts the
-# caller: the file is sourced inside a subshell with errexit/nounset OFF and all
-# of its output discarded, and only the keys we care about are printed back
-# and then validated. So a hand-edited file with a typo degrades to "don't
-# serve" instead of taking the box down.
-# PORT is REQUIRED when startup is on: the healthcheck probe reads the same key, so
-# a serve-without-port box would run unsupervised on a port nobody agreed on.
+# _read_serve_spec — WHERE the box's config file is, and what its settings are CALLED.
+# Both answers are baked, per box, in /opt/resources/build-spec:
+#
+#       ENV_FILE="/opt/data/llama.cfg"
+#       SERVE_CFG_PREFIX="DROSTE_LLAMA_"
+#
+# 🚨 READ HERE, NEVER INHERITED. droste-healthcheck.sh sources THIS library ALONE and
+# never runs resolve::apply_spec, so nothing in this file may assume a build-spec has
+# already been sourced. Sourced in a SUBSHELL for the same reason serve::read_health_spec
+# is — that function is the precedent and this one follows it rather than inventing a
+# second baked default: a spec-level side effect must not be able to reach a health probe.
+# ⚠️ A spec declaring neither row leaves whatever the caller already set, which is what
+# makes DROSTE_SERVE_ENV / SERVE_CFG_PREFIX usable as TEST overrides. Production always
+# has a spec and the spec always wins, so the override can never mask a real box.
+# ⚠️ NOT the same thing as $DROSTE_SERVE_PREFIX (the state file holding the server's URL
+# path prefix). This one is the prefix of the SETTING NAMES.
+#
+# RETURNS 0 when a build-spec was there to read, 1 when there was none — and that
+# distinction is the whole difference between "this is not a droste box" (a lab, the
+# server lane, a harness: silence is right) and "this box's spec forgot a row" (an image
+# defect that must be said out loud). Read_config uses it for exactly that.
+serve::_read_serve_spec() {
+    local spec=${1:-${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}} raw="" k v
+    [ -f "$spec" ] && [ -r "$spec" ] || return 1
+    raw=$(
+        set +e +u +o pipefail
+        # shellcheck disable=SC1090
+        . "$spec" >/dev/null 2>&1
+        printf 'file=%s\nprefix=%s\n' "${ENV_FILE-}" "${SERVE_CFG_PREFIX-}"
+    ) 2>/dev/null || raw=""
+    while IFS='=' read -r k v; do
+        case "$k" in
+            file)   [ -n "${v:-}" ] && DROSTE_SERVE_ENV=$v ;;
+            prefix) [ -n "${v:-}" ] && SERVE_CFG_PREFIX=$v ;;
+        esac
+    done <<<"$raw"
+    return 0
+}
+
+# 🚨 RESOLVED AT LOAD TIME, NOT ONLY INSIDE read_config, and that is a fix rather than an
+# optimisation: $DROSTE_SERVE_ENV is named in messages that are built BEFORE any config is
+# read — droste-server.sh's usage text is assembled as the script loads — and an empty path
+# in a sentence telling a user where to go and edit something is a value that neither works
+# nor complains. One read at load means the name is true from the first line of output.
+# read_config repeats it because a harness may swap the spec between calls; it is a file
+# read in a subshell either way, and it happens once per probe, not once per line.
+serve::_read_serve_spec || true
+
+# _is_ipv4 — is this string a dotted-quad IPv4 LITERAL? Nothing else is accepted as a
+# bind address (§5, ruled s59/s60): a hostname would have to be resolved, and the
+# address a probe must use is then whatever that name happened to resolve to at launch
+# — a moving target inside a health probe that restarts containers.
+# ⚠️ AN OCTET WITH A LEADING ZERO IS REJECTED, deliberately: inet_pton(AF_INET) rejects
+# it too (it is the historical octal form), so `010.0.0.1` is not the address the user
+# thinks they typed. Better to say so than to hand it on and let each of five servers
+# disagree about what it means.
+serve::_is_ipv4() {
+    local a=${1-} o
+    [[ $a =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[@]:1}"; do
+        case $o in 0[0-9]*) return 1 ;; esac
+        [ "$o" -le 255 ] || return 1
+    done
+    return 0
+}
+
+# read_config — read the five serve settings out of the box's own <app>.cfg into
+# SERVE_STARTUP_ENABLED (0/1), SERVE_PORT (digits or ""), SERVE_HOST (always an IPv4
+# literal), SERVE_TLS_CERT / SERVE_TLS_KEY (paths or ""), plus one _ERR twin per setting
+# and the TWO consumer channels — SERVE_CONFIG_ERR ("we refuse to serve, here is why")
+# and SERVE_CONFIG_WARN ("we are serving, but not exactly as you asked"). See the block
+# at the end of this function for why a display reads two names and not seven.
+#
+# 🚨 IT PARSES, IT DOES NOT SOURCE (s60). The old body sourced the file in a discarding
+# subshell, which was safe for a droste-owned server.env of two keys; the file is now
+# several hundred lines of the USER's own settings, so the read goes through
+# droste::cfg_get. Same guarantee, kept for the same reason: this runs inside the
+# healthcheck, every 30s, under --health-on-failure=restart. NEVER fails, never aborts
+# the caller — a hand-edited file with a typo degrades to "don't serve" or to our
+# default, never to a box that will not start.
+#
+# ⭐ IT SETS THE _ERR STRINGS AND PRINTS NOTHING. The launch path (serve::maybe_launch,
+# the verbs) says them once, where a human is watching; the probe path reads the same
+# values and stays quiet, because a warning repeated every 30s — ~2,880 times a day —
+# trains the reader to ignore the log, which costs us the warnings that matter.
 #
 # ⭐ THE KEY IS `STARTUP_ENABLED`, AND IT ANSWERS EXACTLY ONE QUESTION: "start the
 # server when the box starts". It does NOT mean "this box should be serving right
 # now" — that is state/.IS_ACTIVE, and conflating the two is the bug this whole
 # design exists to remove (a user who stopped the service by hand used to get the
-# container restarted under them, forever, because the box still said SERVE=1).
+# container restarted under them, forever, because the box still said it should serve).
 # The name is Jei's, and so is the reason: "enabled" alone reads as "on right now"
 # to anyone who does not speak systemd, so STARTUP supplies the disambiguation.
-# The dropped SERVE_ prefix is no loss — server.env already supplies the noun, and
-# its other key is a bare PORT.
 #
-# 🚨 `SERVE` IS STILL READ, AS A FALLBACK, AND THE FALLBACK MUST NOT BE DROPPED IN
-# THE SAME RELEASE THAT INTRODUCES THE NEW KEY. There are live boxes whose file says
-# `SERVE=1`; a straight rename would make every one of them silently stop serving
-# with nothing saying why. Same rule as the path-spelling work: READ TOLERANTLY,
-# WRITE THE NEW FORM (the installer rewrites the file on its next modify run).
-# STARTUP_ENABLED WINS when both are present — an explicit new key is a deliberate
-# statement, and a stale SERVE beside it is what a half-migrated file looks like.
+# 🚨 NORMALISE BLANKS FIRST, APPLY DEFAULTS SECOND (§5). A blank is not a value: it must
+# behave exactly as if the setting were absent, which for HOST means our 0.0.0.0 and not
+# the empty string. Measured, and it is not academic — LLAMA_ARG_HOST="" binds ::1 only
+# and restart-loops the box, so the order of these two steps is a box-killer either way.
 serve::read_config() {
-    local file=${1:-$DROSTE_SERVE_ENV} raw="" k v sv="" ev="" pv="" src=""
+    local file=${1-} pfx="" v="" spec=0
     SERVE_STARTUP_ENABLED=0
     SERVE_PORT=""
+    SERVE_TLS_CERT=""
+    SERVE_TLS_KEY=""
+    SERVE_STARTUP_ENABLED_ERR=""
     SERVE_PORT_ERR=""
+    SERVE_HOST_ERR=""
+    SERVE_TLS_ERR=""
     SERVE_CONFIG_ERR=""
-    [ -f "$file" ] && [ -r "$file" ] || return 0
-    raw=$(
-        set +e +u +o pipefail
-        # shellcheck disable=SC1090
-        . "$file" >/dev/null 2>&1
-        printf 'startup=%s\nserve=%s\nport=%s\n' "${STARTUP_ENABLED-}" "${SERVE-}" "${PORT-}"
-    ) 2>/dev/null || raw=""
-    while IFS='=' read -r k v; do
-        case "$k" in
-            startup) ev=$v ;;
-            serve)   sv=$v ;;
-            port)    pv=$v ;;
-        esac
-    done <<<"$raw"
-    # New key if it is present at all; the legacy key only when it is not.
-    if [ -n "$ev" ]; then src=STARTUP_ENABLED; else src=SERVE; ev=$sv; fi
-    case "${ev,,}" in
-        1|true|yes|on) SERVE_STARTUP_ENABLED=1 ;;
-        *)             SERVE_STARTUP_ENABLED=0 ;;
+    SERVE_CONFIG_WARN=""
+    # The default is applied BEFORE the file is even opened, so every later arm —
+    # absent, blank, refused — lands on it without a second code path.
+    SERVE_HOST=$SERVE_HOST_DEFAULT
+    serve::_read_serve_spec && spec=1
+    [ -n "$file" ] || file=$DROSTE_SERVE_ENV
+    pfx=$SERVE_CFG_PREFIX
+    if [ -z "$file" ]; then
+        # No config file. With NO BUILD-SPEC that is a normal state — the server lane, a
+        # lab, a harness — and silence is right. WITH one it is an image defect: the box
+        # declares a server but nowhere to configure it, so every message that names the
+        # config file would print an empty path and the box would quietly never serve.
+        [ "$spec" -eq 1 ] && SERVE_CONFIG_ERR="this box's build-spec declares no ENV_FILE, so there is nowhere to read its serve settings from — not serving, and nothing can be configured. This is a bug in the image, not in your config file."
+        return 0
+    fi
+    if [ -z "$pfx" ]; then
+        # A file with no prefix is the same class of defect one step further on: the
+        # build-spec names the config file but not what its settings are CALLED, so all
+        # five read as absent and the box silently stops serving.
+        SERVE_CONFIG_ERR="this box's build-spec declares ENV_FILE=$file but no SERVE_CFG_PREFIX, so its serve settings cannot be found — not serving. This is a bug in the image, not in your config file."
+        return 0
+    fi
+    # 🚨 ASK ABOUT READABILITY ONCE, HERE, AND NOT FIVE TIMES BELOW. droste::cfg_get warns
+    # about an unreadable file and dedups with a memo — but the memo is a variable, the
+    # normal call shape is `v=$(droste::cfg_get …)`, and a subshell's assignment dies with
+    # the subshell. So five substitution calls produce five identical lines, and this
+    # function runs inside the health probe every 30s: ~14,400 copies of one sentence a
+    # day, which is how a log stops being read. The call pattern is OURS, so the fix is.
+    # (A missing file stays SILENT — a box with no config file yet is a normal state.)
+    if [ -e "$file" ] && [ ! -r "$file" ]; then
+        SERVE_CONFIG_ERR="cannot read $file — every setting in it reads as unset, so this box is not serving. Check the file's permissions."
+        return 0
+    fi
+
+    # ── STARTUP_ENABLED — {yes, no}, through the ONE boolean parser ──────────
+    # droste::bool is a whitelist and case-folds, so `Yes`, `ON` and `1` all work and
+    # `Off` cannot accidentally read as on (the blacklist it replaced did exactly that).
+    # An UNRECOGNISED value is not a fall-through: it takes our default AND says so.
+    v=$(droste::cfg_get "${pfx}STARTUP_ENABLED" "$file")
+    case "$(droste::bool "$v")" in
+        on)  SERVE_STARTUP_ENABLED=1 ;;
+        off) SERVE_STARTUP_ENABLED=0 ;;
+        *)   SERVE_STARTUP_ENABLED=0
+             [ -z "$v" ] || SERVE_STARTUP_ENABLED_ERR="${pfx}STARTUP_ENABLED='$v' is not a yes/no value — the server will not be started with the box. Use yes or no in $file." ;;
     esac
-    # ⭐ PORT IS PARSED ALWAYS, not only when startup is on — this MOVED in s45 and the
-    # move is load-bearing. The verbs can now start a server on a box whose
-    # STARTUP_ENABLED is 0 (Jei's ruling: starting by hand must not rewrite what the box
-    # does at boot), and that launch needs the port exactly as much as a boot-time one.
-    # Under the old early return it would have found SERVE_PORT empty.
-    if [[ $pv =~ ^[0-9]+$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
-        SERVE_PORT=$pv
+
+    # ── PORT ────────────────────────────────────────────────────────────────
+    # ⭐ PARSED ALWAYS, not only when startup is on — this MOVED in s45 and the move is
+    # load-bearing. The verbs can start a server on a box whose STARTUP_ENABLED is no
+    # (Jei's ruling: starting by hand must not rewrite what the box does at boot), and
+    # that launch needs the port exactly as much as a boot-time one.
+    v=$(droste::cfg_get "${pfx}PORT" "$file")
+    if [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 65535 ]; then
+        SERVE_PORT=$v
     else
-        SERVE_PORT_ERR="$file has no usable PORT (got '${pv}') — add e.g. PORT=8188."
+        SERVE_PORT_ERR="$file has no usable ${pfx}PORT (got '${v}') — add e.g. ${pfx}PORT=8188."
     fi
-    # A box asked to serve AT STARTUP without a usable port must not serve, and must say
-    # why: the healthcheck probe reads the same key, so it would otherwise run
-    # unsupervised on a port nobody agreed on. (Unchanged behaviour, new placement.)
-    if [ "$SERVE_STARTUP_ENABLED" -eq 1 ] && [ -z "$SERVE_PORT" ]; then
+
+    # ── HOST ────────────────────────────────────────────────────────────────
+    # 🚫 NO PER-BOX WORDING. One message, identical on all five boxes; the two arms
+    # discriminate on the VALUE, never on the box — a `:` says the user reached for
+    # IPv6, anything else says they typed something that is not an address at all
+    # (a hostname, a URL, a typo). Both fall back to our default and serve.
+    v=$(droste::cfg_get "${pfx}HOST" "$file")
+    if [ -n "$v" ] && ! serve::_is_ipv4 "$v"; then
+        case $v in
+            *:*) SERVE_HOST_ERR="${pfx}HOST='$v' is an IPv6 address — this box binds an IPv4 literal only, so it is being ignored and the server binds $SERVE_HOST_DEFAULT instead. Put an IPv4 address in $file and restart the container." ;;
+            *)   SERVE_HOST_ERR="${pfx}HOST='$v' is not an IPv4 address — this box binds an IPv4 literal only, so it is being ignored and the server binds $SERVE_HOST_DEFAULT instead. Put an IPv4 address in $file and restart the container." ;;
+        esac
+    elif [ -n "$v" ]; then
+        SERVE_HOST=$v
+    fi
+
+    # ── TLS — on IFF BOTH are set, and ONE ALONE REFUSES TO SERVE ───────────
+    # ⭐ The reasoning, since the alternative is defensible: a user who set a certificate
+    # BELIEVES the port is encrypted. Serving plaintext on it behind a warning they may
+    # never read is a security-shaped surprise; a box that refuses and says why is
+    # merely down.
+    # ⚠️ A PATH IS VALIDATED BY EXISTENCE, NEVER BY PLAUSIBILITY — "   " is a legal file
+    # name on Linux, so there is no shape test to make here. `-e`, not `-r`: this runs as
+    # root while the service runs as the box user, so OUR ability to read the file says
+    # nothing about the server's, and a privilege-dependent verdict is worse than none.
+    SERVE_TLS_CERT=$(droste::cfg_get "${pfx}TLS_CERT" "$file")
+    SERVE_TLS_KEY=$(droste::cfg_get "${pfx}TLS_KEY" "$file")
+    if [ -n "$SERVE_TLS_CERT" ] || [ -n "$SERVE_TLS_KEY" ]; then
+        if [ -z "$SERVE_TLS_KEY" ]; then
+            SERVE_TLS_ERR="${pfx}TLS_CERT is set but ${pfx}TLS_KEY is not — TLS needs both, and serving plaintext on a port you asked to encrypt would be worse than not serving. Set both in $file, or neither."
+        elif [ -z "$SERVE_TLS_CERT" ]; then
+            SERVE_TLS_ERR="${pfx}TLS_KEY is set but ${pfx}TLS_CERT is not — TLS needs both, and serving plaintext on a port you asked to encrypt would be worse than not serving. Set both in $file, or neither."
+        elif [ ! -e "$SERVE_TLS_CERT" ]; then
+            SERVE_TLS_ERR="${pfx}TLS_CERT points at '$SERVE_TLS_CERT', which does not exist — the server would fail to start and the box would restart in a loop. Fix the path in $file, or remove both TLS lines to serve plain HTTP."
+        elif [ ! -e "$SERVE_TLS_KEY" ]; then
+            SERVE_TLS_ERR="${pfx}TLS_KEY points at '$SERVE_TLS_KEY', which does not exist — the server would fail to start and the box would restart in a loop. Fix the path in $file, or remove both TLS lines to serve plain HTTP."
+        fi
+    fi
+    if [ -n "$SERVE_TLS_ERR" ]; then
+        # Refuse, and refuse WHOLE: half-applied TLS is the state this check exists to
+        # prevent, so neither path survives into the argv.
+        SERVE_TLS_CERT=""
+        SERVE_TLS_KEY=""
         SERVE_STARTUP_ENABLED=0
-        SERVE_CONFIG_ERR="$file sets $src=$ev but no usable PORT (got '${pv}') — not serving. Add e.g. PORT=8188 and restart the container."
+        SERVE_CONFIG_ERR="$SERVE_TLS_ERR"
     fi
+
+    # A box asked to serve AT STARTUP without a usable port must not serve, and must say
+    # why: the healthcheck probe reads the same setting, so it would otherwise run
+    # unsupervised on a port nobody agreed on. (Unchanged behaviour, new placement.)
+    # An earlier SERVE_CONFIG_ERR is never overwritten — the first refusal is the one
+    # that explains the box's state, and a second message would only compete with it.
+    if [ "$SERVE_STARTUP_ENABLED" -eq 1 ] && [ -z "$SERVE_PORT" ] && [ -z "$SERVE_CONFIG_ERR" ]; then
+        SERVE_STARTUP_ENABLED=0
+        SERVE_CONFIG_ERR="$file asks for the server to start with the box but has no usable ${pfx}PORT — not serving. Add e.g. ${pfx}PORT=8188 and restart the container."
+    fi
+
+    # ── THE TWO CHANNELS A CONSUMER HAS TO KNOW ABOUT ───────────────────────
+    #   SERVE_CONFIG_ERR   we REFUSE to serve, and this says why.
+    #   SERVE_CONFIG_WARN  we ARE serving, but not exactly as asked: a value was
+    #                      rejected and ours was used instead. Newline-separated.
+    # 🚨 TWO, NOT SEVEN. The per-setting _ERR twins above exist for PRECISION — a test
+    # asserts on one, and a message names exactly the setting that is wrong — but a
+    # DISPLAY (droste-server.sh's status, the verbs, both doors) reads these two. A
+    # consumer that has to learn a new variable name every time a setting is added is
+    # the coupling that rots, and the setting everyone forgets to add is the one no
+    # user ever sees.
+    # ⚠️ SERVE_PORT_ERR IS DELIBERATELY NOT IN EITHER CHANNEL. When it matters it has
+    # already become the SERVE_CONFIG_ERR above; when it does not, it says "this box
+    # has no port" about an interactive-only box that was never meant to have one, and
+    # a status line that nags every such box is a warning that teaches people to stop
+    # reading warnings. The launch path still prints it at the moment it refuses.
+    for v in "$SERVE_STARTUP_ENABLED_ERR" "$SERVE_HOST_ERR"; do
+        [ -n "$v" ] || continue
+        SERVE_CONFIG_WARN="${SERVE_CONFIG_WARN}${SERVE_CONFIG_WARN:+$'\n'}$v"
+    done
     return 0
 }
 
@@ -340,8 +577,8 @@ serve::reset_active() {
 
 # read_health_spec — pull the per-box probe endpoint out of the baked build-spec
 # (rows HEALTH_PATH / HEALTH_ACCEPT; see base/resolve/build-spec.example). Sourced
-# in a SUBSHELL for the same reason server.env is: the health probe must not be
-# able to trip over spec-level side effects. Defaults are the safe generic pair
+# in a SUBSHELL for the same reason serve::_read_serve_spec is: the health probe must
+# not be able to trip over spec-level side effects. Defaults are the safe generic pair
 # ("/" and "ok" = any 2xx/3xx).
 serve::read_health_spec() {
     local spec=${1:-${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}} raw="" k v
@@ -433,6 +670,48 @@ serve::_remember_scheme() {
     serve::_own "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
 }
 
+# ── Talking to our own server: the ADDRESS ──────────────────────────────────
+# probe_addr — the address every probe in this project asks. THE SINGLE SOURCE for all
+# four call sites (three here, one in droste-healthcheck.sh); they each carried the
+# literal `127.0.0.1` until s60, which was a restart loop waiting for its trigger: the
+# moment a user binds their server to one specific address, a probe still asking
+# loopback gets nothing, reports UNHEALTHY forever, and --health-on-failure=restart
+# bounces a container whose server is working perfectly.
+#
+#   | SERVE_HOST                    | probe        |
+#   |-------------------------------|--------------|
+#   | unset / 0.0.0.0 (the wildcard)| 127.0.0.1    |
+#   | a specific IPv4 literal       | that address |
+#
+# ⭐ WHY THIS ONE IS DERIVED AND NOT DECLARED. The other two things a probe has to know
+# about our own server are not: the SCHEME is probed (the user turns TLS on in four
+# different spellings, and the build-spec is baked and cannot know) and the path PREFIX
+# is declared by the box's own PRE_LAUNCH. The address is already in the value we just
+# read, so a setting for it would be a second place to get it wrong.
+# ⚠️ A wildcard listener answers on loopback too, so 127.0.0.1 stays the right question
+# for 0.0.0.0 — cheaper and immune to a machine with no route to its own external IP.
+#
+# 🚨 IT READS THE CONFIG ITSELF WHEN NOBODY ELSE HAS, AND THAT IS NOT DEFENSIVENESS.
+# Every arm of this function returns a PLAUSIBLE address, so a caller that forgot
+# serve::read_config gets 127.0.0.1 — silently right for a wildcard box and silently
+# WRONG for a box bound to one address, which is exactly the distinction serve::_port_busy
+# must not get wrong (a wildcard listener and a specific-address listener are different
+# occupancy questions; the wrong one either misses a real conflict or invents one). A
+# comment saying "call read_config first" cannot fail loudly, so this does the call.
+# ⭐ THE TEST IS PRESENCE, NEVER VALUE — `${SERVE_HOST+set}`, not `${SERVE_HOST:-}`. An
+# empty SERVE_HOST is a state read_config never produces (it normalises blanks to the
+# default before the file is even opened), so "set but empty" can only be a caller who
+# meant it, and a value test would throw that away and re-read over the top of them.
+# read_config always assigns SERVE_HOST, so this runs at most once per shell and never
+# recurses — nothing in read_config asks for an address.
+serve::probe_addr() {
+    [ -n "${SERVE_HOST+set}" ] || serve::read_config
+    case "${SERVE_HOST:-}" in
+        ''|0.0.0.0) printf '127.0.0.1\n' ;;
+        *)          printf '%s\n' "$SERVE_HOST" ;;
+    esac
+}
+
 # serve::probe — ask our own endpoint, learning the scheme if it moved. Echoes the
 # HTTP code (or 000) and returns curl's rc for the attempt that produced it, so a
 # caller can still tell "refused" from "answered badly" exactly as before.
@@ -440,11 +719,14 @@ serve::_remember_scheme() {
 # a user who turns TLS on and restarts is re-detected rather than remembered wrong.
 serve::probe() {
     local port=$1 path=${2:-/} timeout=${3:-${DROSTE_HEALTH_TIMEOUT:-5}}
-    local scheme other code rc=0
+    local scheme other addr code rc=0
     command -v curl >/dev/null 2>&1 || { printf '000\n'; return 1; }
     scheme=$(serve::probe_scheme)
+    # ONE address for both attempts: the retry exists to settle the SCHEME, and moving
+    # the address between the two would make its answer unattributable.
+    addr=$(serve::probe_addr)
     code=$(curl -s -k -o /dev/null -w '%{http_code}' --max-time "$timeout" \
-        "$scheme://127.0.0.1:${port}${path}" 2>/dev/null) || rc=$?
+        "$scheme://${addr}:${port}${path}" 2>/dev/null) || rc=$?
     # Answered, or nothing is listening at all: either way the scheme is not the
     # question. rc 7 must not trigger a retry — see the table above.
     if { [ -n "$code" ] && [ "$code" != 000 ]; } || [ "$rc" -eq 7 ]; then
@@ -453,7 +735,7 @@ serve::probe() {
     case "$scheme" in http) other=https ;; *) other=http ;; esac
     rc=0
     code=$(curl -s -k -o /dev/null -w '%{http_code}' --max-time "$timeout" \
-        "$other://127.0.0.1:${port}${path}" 2>/dev/null) || rc=$?
+        "$other://${addr}:${port}${path}" 2>/dev/null) || rc=$?
     if [ -n "$code" ] && [ "$code" != 000 ]; then
         serve::_remember_scheme "$other"
         serve::info "the endpoint answers ${other}, not ${scheme}; probing ${other} from now on."
@@ -461,37 +743,99 @@ serve::probe() {
     printf '%s\n' "${code:-000}"; return "$rc"
 }
 
-# ── Port plumbing ───────────────────────────────────────────────────────────
-# apply_port — put the configured port into the SERVICE argv, in place. Replace
-# the value after every existing $SERVE_PORT_FLAG (comfyui/jupyter carry one in
-# the spec; ds4's PRE_LAUNCH emits one only if a user re-adds DROSTE_DS4_PORT,
-# which templates/ds4.cfg now deliberately omits), else append the flag
-# (llama/vllm/ds4 otherwise take their port from an env file / config file /
-# their own built-in default — a trailing CLI flag wins over all of those in
-# llama.cpp, vLLM and ds4-server, which is what "installer-owned ports"
-# requires).
-serve::apply_port() {
-    local port=$1 i=0 n=${#SERVICE[@]} found=0
+# ── Argv plumbing: the four flags ───────────────────────────────────────────
+# _apply_flag — put ONE value into the SERVICE argv, in place: replace the value after
+# EVERY existing occurrence of the flag, and append flag+value only if the flag is not
+# there at all. Every-occurrence rather than first is deliberate — a duplicated flag
+# whose two copies disagreed would hand the outcome to whichever the server's parser
+# happens to keep, and this way they cannot disagree.
+# ⭐ ONE BODY, FOUR CALLERS (port, host, TLS cert, TLS key). apply_port carried this
+# loop alone until s60; a second hand-written copy for host is how two flags that are
+# supposed to behave identically start to differ.
+serve::_apply_flag() {
+    local flag=$1 val=$2 i=0 n=${#SERVICE[@]} found=0
+    [ -n "$flag" ] || return 0
     while [ "$i" -lt "$n" ]; do
-        if [ "${SERVICE[$i]}" = "$SERVE_PORT_FLAG" ]; then
+        if [ "${SERVICE[$i]}" = "$flag" ]; then
             found=1
             if [ $((i + 1)) -lt "$n" ]; then
-                SERVICE[i + 1]=$port
+                SERVICE[i + 1]=$val
             else
-                SERVICE+=("$port")
+                SERVICE+=("$val")
             fi
         fi
         i=$((i + 1))
     done
-    [ "$found" -eq 1 ] || SERVICE+=("$SERVE_PORT_FLAG" "$port")
+    [ "$found" -eq 1 ] || SERVICE+=("$flag" "$val")
+    return 0
 }
 
-# _port_busy — is anything answering on 127.0.0.1:<port>? Uses curl (baked in the
-# runtime base; bash /dev/tcp is not guaranteed to be compiled in). curl exit 7 =
-# connection refused = free; anything else (0 = answered, 28 = timed out, protocol
-# junk) is treated as occupied — under host networking that could be our own
+# apply_port — put the configured port into the SERVICE argv. The flag is already
+# there on some boxes (comfyui/jupyter carry one in the spec; ds4's PRE_LAUNCH emits
+# one from DROSTE_DS4_PORT, which is the SAME cfg value we read, so the two agree —
+# an agreement worth asserting rather than assuming) and absent on others
+# (llama/vllm otherwise take their port from an env file / config file / their own
+# built-in default — a trailing CLI flag wins over all of those in llama.cpp, vLLM
+# and ds4-server, which is what "installer-owned ports" requires).
+serve::apply_port() {
+    serve::_apply_flag "$SERVE_PORT_FLAG" "$1"
+}
+
+# apply_host — the same, for the bind address. Exactly the same shape as apply_port
+# and for exactly the same reason: ds4 and comfyui already put a host flag in their
+# argv, llama puts none at all, and both cases have to end up with OUR value.
+# ⚠️ The value is always an IPv4 literal by the time it gets here — read_config
+# normalises a blank to 0.0.0.0 and refuses anything that is not a dotted quad — so
+# nothing downstream has to think about bracketing an IPv6 address into a URL.
+serve::apply_host() {
+    serve::_apply_flag "$SERVE_HOST_FLAG" "$1"
+}
+
+# apply_tls — make sure the certificate and key REACHED the command line, and ONLY when
+# the user set them.
+# 🚨 NEVER A DEFAULT (Jei, s60). A CLI flag outranks a YAML key, so emitting a default
+# path here would silently beat a user's own `ssl-certfile:` in vllm_config.yaml and
+# destroy the choice that file grants them. No setting ⇒ no flag ⇒ their file decides.
+# read_config has already refused to serve if only one of the two was set, or if either
+# path does not exist, so reaching here with both non-empty means TLS is genuinely on.
+#
+# ⭐ IT IS A BACKSTOP, NOT THE PRIMARY EMITTER, and the shape follows from where the
+# knowledge lives. Every port spells the pair differently (--ssl-cert-file /
+# --ssl-certfile / --tls-certfile / --certfile), and each box's PRE_LAUNCH already
+# translates its own settings into its own flags — so on all five, TLS is on the argv
+# before this runs. A box that declares SERVE_TLS_CERT_FLAG/_KEY_FLAG gets the flags
+# from here instead; a box that declares neither is checked rather than trusted.
+# ⚠️ THE CHECK IS FOR THE USER'S OWN PATH IN THE ARGV, not for a flag name — a flag name
+# would need us to know the four spellings we just said we do not. If the exact string
+# the user configured is in the command line, somebody put it there. If it is not, TLS
+# was configured and did NOT happen, which the user must hear: they believe that port is
+# encrypted. Guessing a flag name instead would make the server reject its own argv and
+# restart-loop the box, which is worse than either.
+serve::apply_tls() {
+    local a
+    [ -n "${SERVE_TLS_CERT:-}" ] && [ -n "${SERVE_TLS_KEY:-}" ] || return 0
+    if [ -n "$SERVE_TLS_CERT_FLAG" ] && [ -n "$SERVE_TLS_KEY_FLAG" ]; then
+        serve::_apply_flag "$SERVE_TLS_CERT_FLAG" "$SERVE_TLS_CERT"
+        serve::_apply_flag "$SERVE_TLS_KEY_FLAG" "$SERVE_TLS_KEY"
+        return 0
+    fi
+    for a in ${SERVICE[@]+"${SERVICE[@]}"}; do
+        [ "$a" = "$SERVE_TLS_CERT" ] && return 0
+    done
+    serve::warn "TLS is configured in this box's config file but its certificate never reached the server's command line — the server is starting WITHOUT TLS, on a port you asked to encrypt. This is a bug in the image, not in your config file."
+    return 0
+}
+
+# _port_busy — is anything answering on <the address we would bind>:<port>? Uses curl
+# (baked in the runtime base; bash /dev/tcp is not guaranteed to be compiled in). curl
+# exit 7 = connection refused = free; anything else (0 = answered, 28 = timed out,
+# protocol junk) is treated as occupied — under host networking that could be our own
 # survivor from a previous start, another droste box, or a host process, and in
 # every one of those cases starting a second binder is wrong.
+# ⚠️ IT ASKS THE SAME ADDRESS THE PROBE DOES, and that is a correctness rule rather
+# than tidiness: "is 0.0.0.0:8080 free?" and "is 10.0.0.5:8080 free?" are DIFFERENT
+# occupancy questions, and asking the wrong one either misses a real conflict or
+# invents one that does not exist.
 serve::_port_busy() {
     local port=$1 rc=0
     command -v curl >/dev/null 2>&1 || return 1
@@ -502,7 +846,7 @@ serve::_port_busy() {
     # TLS server answers that question by refusing to speak HTTP, which is not exit 7.
     # Every mismatch rc measured (35, 56, 60) is likewise not 7, so the verdict is
     # correct on both schemes without a second probe on the hot path.
-    curl -s -k -o /dev/null --max-time 3 "http://127.0.0.1:$port/" >/dev/null 2>&1 || rc=$?
+    curl -s -k -o /dev/null --max-time 3 "http://$(serve::probe_addr):$port/" >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne 7 ]
 }
 
@@ -706,7 +1050,7 @@ serve::state_ok() {
             # fault — but still `return 1`, because the question this function answers
             # is "is our service up", and it is not. The healthcheck never sees this:
             # a stop clears .IS_ACTIVE and the probe exits at that gate first.
-            SERVE_STATE_MSG="the server was stopped by hand (server_stop). It starts again with the box unless STARTUP_ENABLED=0 in $DROSTE_SERVE_ENV."
+            SERVE_STATE_MSG="the server was stopped by hand (server_stop). It starts again with the box unless ${SERVE_CFG_PREFIX}STARTUP_ENABLED=no in $DROSTE_SERVE_ENV."
             return 1
             ;;
         *)
@@ -920,9 +1264,9 @@ serve::launch() {
 # they are not the same question, and every other caller reaches this function when
 # they DISAGREE: server_start on a box whose startup is off, and the healthcheck's
 # relaunch after a user ran server_stop (intent 0 ⇒ leave it down; the old code would
-# have fought the user forever because server.env still said SERVE=1).
+# have fought the user forever because the config still said to serve).
 serve::maybe_launch() {
-    local token
+    local token _w
     serve::read_config
     if [ -n "${SERVE_CONFIG_ERR:-}" ]; then
         serve::warn "$SERVE_CONFIG_ERR"
@@ -936,12 +1280,24 @@ serve::maybe_launch() {
         # before it ever looks at the record.
         return 0
     fi
+    # ⭐ THE NON-FATAL MESSAGES ARE SAID HERE. read_config sets them and prints nothing,
+    # because it also runs inside a health probe that fires every 30s; this function runs
+    # when a box is actually being brought up, which is the moment a human is watching the
+    # container log. Below the intent gate so an interactive-only box stays as silent as
+    # it has always been. One line each, through serve::warn, so every line keeps the
+    # prefix — a multi-line printf would leave the second sentence looking like the
+    # server's own output.
+    if [ -n "${SERVE_CONFIG_WARN:-}" ]; then
+        while IFS= read -r _w; do
+            [ -z "$_w" ] || serve::warn "$_w"
+        done <<<"$SERVE_CONFIG_WARN"
+    fi
     if [ -z "${SERVE_PORT:-}" ]; then
-        # Reachable now that intent and config can disagree: a box with
-        # STARTUP_ENABLED=0 and no PORT, started by hand. read_config's own
-        # startup-time check never fires for it, so say it here rather than
-        # launching a service with no agreed port.
-        serve::warn "${SERVE_PORT_ERR:-no usable PORT in $DROSTE_SERVE_ENV} — not serving."
+        # Reachable now that intent and config can disagree: a box whose startup setting
+        # is `no` and which has no port, started by hand. read_config's own startup-time
+        # check never fires for it, so say it here rather than launching a service with
+        # no agreed port.
+        serve::warn "${SERVE_PORT_ERR:-no usable port in $DROSTE_SERVE_ENV} — not serving."
         return 0
     fi
     token=$(serve::_instance_token)
@@ -980,11 +1336,16 @@ serve::maybe_launch() {
             return 0
         fi
         serve::_not_serving refused "$token" - - \
-            "port $SERVE_PORT is already in use (host networking: another droste box or a host process?) — not starting a second listener. Change PORT in $DROSTE_SERVE_ENV or free the port, then restart the container."
+            "port $SERVE_PORT is already in use at $(serve::probe_addr) (host networking: another droste box or a host process?) — not starting a second listener. Change ${SERVE_CFG_PREFIX}PORT in $DROSTE_SERVE_ENV or free the port, then restart the container."
         return 0
     fi
 
+    # The argv, finished. All three are idempotent replacements, so a spec that already
+    # carries a flag keeps ONE of it with OUR value — and a relaunch through this same
+    # function does not accumulate copies.
     serve::apply_port "$SERVE_PORT"
+    serve::apply_host "$SERVE_HOST"
+    serve::apply_tls
     serve::launch "$token" || serve::warn "service launch failed — the box is still usable interactively; see $DROSTE_SERVE_LOG."
     return 0
 }

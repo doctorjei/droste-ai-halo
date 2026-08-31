@@ -1609,10 +1609,10 @@ probe_linger() {
   return 0
 }
 
-# ── The box's <app>.cfg: parse + surgical single-line merge (case 2, s59) ────
+# ── The box's <box>.cfg: parse + surgical single-line merge (case 2, s59) ────
 # THE FILE IS THE USER'S, AND THAT IS THE WHOLE DIFFICULTY. The retired
 # `server.env` was droste's outright, so its emitter could truncate and rewrite
-# it on every reconfigure. `<app>.cfg` is seeded ONCE by the box (if_missing) and belongs to
+# it on every reconfigure. `<box>.cfg` is seeded ONCE by the box (if_missing) and belongs to
 # the user from then on: it carries the application's own settings, the user's
 # comments and the user's edits. So the installer may only MERGE one line at a
 # time, and every other byte must come out exactly as it went in.
@@ -2075,7 +2075,7 @@ cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
   if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
     warn "cfg_set: '$name' is not a shell variable name $EMD nothing written"; return 1
   fi
-  # 🚨 A FILE THAT IS NOT THERE IS A REFUSAL, NEVER A CREATE. <app>.cfg is seeded
+  # 🚨 A FILE THAT IS NOT THERE IS A REFUSAL, NEVER A CREATE. <box>.cfg is seeded
   # if_missing by apply_templates.py at the box's FIRST CONTAINER START, and that
   # seeding is SKIPPED when the destination already exists. So a cfg_set that
   # appended into a missing path would leave a five-line stub that PERMANENTLY

@@ -19,6 +19,16 @@
 # cannot grow the argv, and it retires the old "keep the two copies in step"
 # hazard — there is only one copy now. (comfyui's HEAD/TAIL split is the same
 # idea; this box needs no TAIL because nothing here is nargs-greedy.)
+# ⭐ THE ADDRESS AND THE PORT ARE DROSTE DEFAULTS HERE, NOT CONSTANTS (s60). They used
+# to be owned by server.env; they are DROSTE_JUPYTER_HOST and DROSTE_JUPYTER_PORT now,
+# in finetuning.cfg, and serve::apply_host / serve::apply_port REWRITE the token after
+# --ip and after --port before the service is launched. So what these two literals are
+# is the answer a box gets when its user set neither — and the argv a direct
+# `podman run` of this image gets, where no launcher runs at all.
+# ⚠️ DO NOT TRANSLATE EITHER OF THEM IN PRE_LAUNCH. The launcher reads the same two cfg
+# keys through droste::cfg_get and is the only place that validates them (an IPv4
+# literal, one message on all five boxes); a second reader here would be a second
+# mechanism that agrees with it only until one of the two changes.
 JUPYTER_ARGV_BASE=(
     jupyter lab --ip 0.0.0.0 --port 8888 --notebook-dir=/opt/workspace
     --no-browser --allow-root
@@ -72,6 +82,39 @@ HEALTH_ACCEPT="ok"
 # ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
 # in neither — a knob present but inert, which is worse than an absent one.
 ENV_FILE="/opt/data/finetuning.cfg"
+
+# ── SERVE — the four rows droste-serve.sh reads out of this spec ─────────────
+# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# prefix below: DROSTE_JUPYTER_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
+# serve::read_config PARSES them with droste::cfg_get and never sources the file — that
+# read also runs inside the healthcheck every 30s under --health-on-failure=restart,
+# where an abort is a restart loop that ejects every shell in the box.
+# 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
+# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# IMAGE as broken, because otherwise all five settings would read as absent and the box
+# would silently stop serving.
+# ⭐ THIS IS THE BOX WHERE THE PREFIX RULE IS OBSERVABLE. It names the APPLICATION, not
+# the box: the box is `finetuning`, the server is Jupyter, and every droste-owned
+# setting here is DROSTE_JUPYTER_* — there is no DROSTE_FINETUNING_ anything. On the
+# other four the two names coincide, which is why the rule reads as obvious there.
+SERVE_CFG_PREFIX="DROSTE_JUPYTER_"
+# The flags this box spells differently from the library's defaults. serve::apply_host
+# defaults to --host; Jupyter says --ip, and without the row the launcher would APPEND
+# a --host — traitlets exits 2 on an unrecognised flag rather than ignoring it, so the
+# server would never start. --port needs no row (all five agree).
+SERVE_HOST_FLAG=--ip
+# ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
+# and a wrong flag is not a wrong value — the server rejects the argv and never starts.
+# 🚨 THE NAMES ARE --certfile / --keyfile, NOT the --tls-* pair finetuning.cfg's
+# "Covers:" line prints — that is comfyui's spelling. Read at the pin: jupyter_server
+# 2.21.0's ServerApp.aliases maps "certfile" → ServerApp.certfile and "keyfile" →
+# ServerApp.keyfile (serverapp.py:854-855).
+# ⭐ THE FLAGS ARE DECLARED HERE; WHETHER THEY ARE EMITTED IS THE LAUNCHER'S CALL —
+# serve::apply_tls emits them ONLY when the user set both, because a flag we emit
+# outranks a c.ServerApp.certfile in this box's own jupyter_server_config.py, and a
+# default would destroy the choice that file grants.
+SERVE_TLS_CERT_FLAG=--certfile
+SERVE_TLS_KEY_FLAG=--keyfile
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # venv overlay (universal): user pip installs land on /opt/program-cache (CACHE
@@ -595,8 +638,12 @@ finetuning_pre_launch() {
     # Rebuild SERVICE now that DROSTE_JUPYTER_EXTRA_ARGS is known. It goes LAST
     # deliberately: a Jupyter command-line flag beats every config file AND a
     # repeated flag resolves to the later one, so appending is what makes the
-    # catch-all able to override an argument droste sets (--ip is the one users
-    # ask for). Quote-aware split (droste::split_args), matching the other ports:
+    # catch-all able to override an argument droste sets. ⚠️ --ip AND --port ARE THE
+    # TWO EXCEPTIONS SINCE s60: they are reserved settings, and serve::apply_host /
+    # serve::apply_port rewrite the value after EVERY occurrence of their flag — the
+    # catch-all's copy included. A user asking for a different address writes
+    # DROSTE_JUPYTER_HOST in $ENV_FILE, which is the surface that owns it.
+    # Quote-aware split (droste::split_args), matching the other ports:
     # a value MAY contain spaces, and it is not glob-expanded.
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_JUPYTER_EXTRA_ARGS:-}")
     SERVICE=( "${JUPYTER_ARGV_BASE[@]}" ${_extra[@]+"${_extra[@]}"} )

@@ -133,23 +133,41 @@ PY
 }
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
-# lane the init hook launches llama-server with PORT from /opt/data/server.env
-# (appended as --port, which wins over LLAMA_ARG_PORT), so a baked-in number in
-# the text below would be wrong for every box that changed it. Parsed the way
-# droste-serve.sh's serve::read_config does it — sourced in a SUBSHELL with
-# errexit/nounset off, its output discarded and its stdin closed, then validated
-# — so a missing, unreadable or hand-mangled file quietly falls back to the
-# in-container default (8080: llama-server's own) instead of printing garbage or
-# failing the login shell. Last assignment wins, as in any sourced shell file.
+# lane the init hook launches llama-server with DROSTE_LLAMA_PORT from
+# /opt/data/llama.cfg (appended as --port, which wins over LLAMA_ARG_PORT), so a
+# baked-in number in the text below would be wrong for every box that changed it.
+# 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
+# droste-owned server.env, which was safe to source; they now live in the USER's
+# own llama.cfg, several hundred lines of their settings. So this asks
+# droste::cfg_get — the scanning reader written for exactly this — and gets a
+# VALUE back instead of executing the user's file at every login.
+# The rest of the discipline is unchanged and deliberate: the read runs in a
+# SUBSHELL with errexit/nounset off, its stdin closed and its stderr discarded
+# (cfg_get warns about a mangled line, and a login banner is not where a user
+# wants to meet that), then the answer is range-checked — so a missing,
+# unreadable or hand-mangled file quietly falls back to the in-container default
+# (8080: llama-server's own) instead of printing garbage or failing the login
+# shell. The LAST assignment wins, which is cfg_get's rule as it was sourcing's.
+# ⚠️ The path is a literal here rather than read from the baked build-spec's
+# ENV_FILE, and that is the point: the file we tell the user to edit further down
+# and the file we read here must be the same string, guaranteed by being one.
 serve_port() {
-  local def=8080 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  local def=8080 file="${DROSTE_SERVE_ENV:-/opt/data/llama.cfg}" pv=""
   if [[ -f "$file" && -r "$file" ]]; then
     pv=$(
       set +e +u +o pipefail
-      # shellcheck disable=SC1090
-      . "$file" >/dev/null 2>&1 </dev/null
-      printf '%s' "${PORT-}"
-    ) 2>/dev/null || pv=""
+      # 🚨 THE STDERR REDIRECT BELONGS IN HERE, NOT ON THE CLOSING `)`. A trailing
+      # `2>/dev/null` on an ASSIGNMENT is applied AFTER the command substitution has
+      # already run — expansions precede redirections in a simple command — so it
+      # silences nothing that happens inside it. Measured, not deduced: cfg_get's
+      # "unterminated quote" warning printed into a login banner through exactly
+      # that gap. `exec` covers the source, the parser and anything added later.
+      exec 2>/dev/null
+      [ -r /opt/resources/resolve/droste-cfg.sh ] || exit 1
+      # shellcheck disable=SC1091
+      . /opt/resources/resolve/droste-cfg.sh >/dev/null </dev/null || exit 1
+      droste::cfg_get DROSTE_LLAMA_PORT "$file"
+    ) || pv=""
   fi
   if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
     printf '%s\n' "$pv"
@@ -158,10 +176,55 @@ serve_port() {
   fi
 }
 
+# The address to REACH this box's service, for the URLs printed below.
+# `localhost` was a safe constant only while every box bound the wildcard;
+# DROSTE_LLAMA_HOST is a user setting now, so a box bound to one interface would
+# otherwise be handed a URL that answers nothing — the same silent-lie defect as
+# a stale port, on the first thing a user reads. This box is the one where it is
+# not hypothetical: llama-server's own default is loopback, and s60 is what made
+# every box bind 0.0.0.0 unless the user says otherwise.
+# Asks droste-serve.sh's serve::probe_addr: THE single source every probe in this
+# project uses, so the banner and the healthcheck cannot disagree about where the
+# server is. Deriving it here instead would copy two rules (the wildcard test and
+# the IPv4 validation, which rejects e.g. a leading-zero octet the server would
+# never have bound) into a place nobody would think to update.
+# Run in a SUBSHELL, same discipline as serve_port: sourcing that library sets a
+# dozen DROSTE_* defaults, turns errexit back on and defines the serve::
+# namespace, none of which belongs in a user's interactive shell — and a library
+# that is missing or broken must not take the login with it.
+# ⚠️ THIS IS A DISPLAY ADDRESS, NOT A BIND ADDRESS. probe_addr answers "where do
+# I reach it", so a wildcard bind comes back as loopback — right in a URL and
+# catastrophic in a --host flag, which would then bind loopback ONLY.
+# 127.0.0.1 is rendered `localhost`: the same endpoint, the friendlier spelling,
+# and the text every box printed before HOST was a setting. Anything that is not
+# a specific dotted quad lands there too — a validated shape check on our own
+# library's answer, so a change upstream of us cannot put a hostname, an empty
+# string or a wildcard into a printed URL.
+serve_addr() {
+  local a
+  a=$(
+    set +e +u +o pipefail
+    # Same reason as serve_port's: a trailing redirect cannot reach inside a
+    # command substitution, and this library reports on stderr by design.
+    exec 2>/dev/null
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
+    serve::read_config >/dev/null
+    serve::probe_addr
+  ) || a=""
+  case "$a" in
+    ''|0.0.0.0|127.0.0.1) a=localhost ;;
+  esac
+  [[ "$a" == localhost || "$a" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || a=localhost
+  printf '%s\n' "$a"
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
 SERVE_PORT="$(serve_port)"
+SERVE_ADDR="$(serve_addr)"
 
 echo
 printf '%s\n' \
@@ -188,15 +251,19 @@ printf '  - %-18s → %s\n' "config" "/opt/data/llama.cfg (LLAMA_ARG_* lines + D
 printf '  - %-18s → %s\n' "models" "-hf downloads land in the shared HF cache (~/.cache/huggingface)"
 printf '  - %-18s → %s\n' "local GGUFs" "bind read-only at /opt/models"
 printf '  - %-18s → %s\n' "VRAM helper" "gguf-vram-estimator.py <model>.gguf"
-printf '  - %-18s → %s\n' "API test" "curl localhost:$SERVE_PORT/v1/chat/completions"
+printf '  - %-18s → %s\n' "API test" "curl $SERVE_ADDR:$SERVE_PORT/v1/chat/completions"
 echo
 printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
 printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
 printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
-printf '  - %-18s → %s\n' "at box start" "STARTUP_ENABLED in /opt/data/server.env"
+printf '  - %-18s → %s\n' "at box start" "DROSTE_LLAMA_STARTUP_ENABLED in /opt/data/llama.cfg"
 echo
-printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
+# The middle field is the address the FORWARD lands on at the far end, so it has
+# to be the one the server actually bound: with host networking the listener is
+# on the host itself, and `localhost` there answers nothing on a box whose
+# DROSTE_LLAMA_HOST names one interface.
+printf 'SSH tip: ssh -L %s:%s:%s user@host\n\n' "$SERVE_PORT" "$SERVE_ADDR" "$SERVE_PORT"
 
 unset PROMPT_COMMAND
 PS1='\u@\h:\w\$ '

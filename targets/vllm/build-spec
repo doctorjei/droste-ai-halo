@@ -69,6 +69,40 @@ HEALTH_ACCEPT="ok"
 # passing the user's word through unprocessed would be wrong or fatal.
 ENV_FILE="/opt/data/vllm.cfg"
 
+# ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
+# The five SERVE settings live in vllm.cfg, under the prefix below:
+# DROSTE_VLLM_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
+# ⚠️ IN vllm.cfg AND NOT IN THE YAML, deliberately, and this is the one box where that
+# needs saying: the yaml is where vLLM's FLAGS live, so `host:` and `port:` keys exist
+# there and are marked "Reserved by Droste — do not set". The settings droste reads are
+# the .cfg ones; the yaml keys are what the reservation is protecting.
+# serve::read_config PARSES them with droste::cfg_get and never sources the file — that
+# read also runs inside the healthcheck every 30s under --health-on-failure=restart,
+# where an abort is a restart loop that ejects every shell in the box.
+# 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
+# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# IMAGE as broken, because otherwise all five settings would read as absent and the box
+# would silently stop serving.
+SERVE_CFG_PREFIX="DROSTE_VLLM_"
+#
+# 🚨 NO SERVE_HOST_FLAG ROW, AND THAT IS AN ANSWER RATHER THAN AN OMISSION: `vllm serve`
+# spells it --host, which is serve::apply_host's own default. The same goes for --port.
+# ⭐ AND THE FLAG IS WHY THE YAML'S RESERVATION IS TRUE. YAML is vLLM's LOWEST
+# precedence — argparse_utils turns --config into arguments the real command line then
+# overrides — so a `host:` key can only be reserved for droste if something outranks it.
+# serve::apply_host puts --host on the command line; a comment in the yaml could not.
+#
+# ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
+# and a wrong flag is not a wrong value — the server rejects the argv and never starts.
+# These are vLLM's own --ssl-certfile / --ssl-keyfile, the pair vllm.cfg's Security
+# block names and the same words as the yaml's ssl-certfile / ssl-keyfile keys.
+# ⭐ THE FLAGS ARE DECLARED HERE; WHETHER THEY ARE EMITTED IS THE LAUNCHER'S CALL —
+# serve::apply_tls emits them ONLY when the user set both. This is exactly the box that
+# rule was written for: the yaml's ssl-* keys are NOT reserved, so the user may turn TLS
+# on there, and a default emitted on the command line would silently beat it.
+SERVE_TLS_CERT_FLAG=--ssl-certfile
+SERVE_TLS_KEY_FLAG=--ssl-keyfile
+
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Overlay the persisted upper over the WHOLE baked venv (captures bin/ console
 # scripts too and avoids pinning a pythonX.Y path) so user pip installs persist

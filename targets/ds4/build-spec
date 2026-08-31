@@ -24,6 +24,25 @@ HEALTH_ACCEPT="ok"
 # DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
 ENV_FILE="/opt/data/ds4.cfg"
 
+# ── SERVE — the row droste-serve.sh reads out of this spec ───────────────────
+# The SERVE settings live in the same ENV_FILE as everything else, under the prefix
+# below: DROSTE_DS4_STARTUP_ENABLED / _HOST / _PORT. serve::read_config PARSES them with
+# droste::cfg_get and never sources the file — that read also runs inside the
+# healthcheck every 30s under --health-on-failure=restart, where an abort is a restart
+# loop that ejects every shell in the box.
+# 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
+# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# IMAGE as broken, because otherwise every setting would read as absent and the box
+# would silently stop serving.
+SERVE_CFG_PREFIX="DROSTE_DS4_"
+# 🚨 NO SERVE_TLS_*_FLAG ROWS, AND THAT IS THE ANSWER, NOT AN OVERSIGHT (ruled s60):
+# ds4 ships NO TLS settings at all — verified at the pin, zero ssl/tls matches in
+# ds4_server.c — so ds4.cfg offers neither name and serve::apply_tls has nothing to
+# apply. ⚠️ Do not "complete the set" by inventing a pair here; a flag ds4-server does
+# not know is not a wrong value, it is an argv the binary rejects at startup.
+# ⚠️ No SERVE_HOST_FLAG row either: ds4-server spells it --host, which is
+# serve::apply_host's own default, and --port is the default for all five.
+
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). ds4-server is a compiled HIP binary;
 # the overlay serves cockpit/hf-CLI/user pip installs (whole venv, so console

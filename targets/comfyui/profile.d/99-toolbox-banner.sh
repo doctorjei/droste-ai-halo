@@ -132,29 +132,89 @@ PY
 }
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
-# lane the init hook launches ComfyUI with PORT from /opt/data/server.env, so a
-# baked-in number in the text below (and in start_comfy_ui) would be wrong for
-# every box that changed it. Parsed the way droste-serve.sh's serve::read_config
-# does it — sourced in a SUBSHELL with errexit/nounset off, its output discarded
-# and its stdin closed, then validated — so a missing, unreadable or hand-mangled
-# file quietly falls back to the in-container default (8188: the SERVICE line's)
-# instead of printing garbage or failing the login shell. Last assignment wins,
-# as in any sourced shell file.
+# lane the init hook launches ComfyUI with DROSTE_COMFYUI_PORT from
+# /opt/data/comfyui.cfg, so a baked-in number in the text below (and in
+# start_comfy_ui) would be wrong for every box that changed it.
+# 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
+# droste-owned server.env, which was safe to source; they now live in the USER's
+# own comfyui.cfg, several hundred lines of their settings. So this asks
+# droste::cfg_get — the scanning reader written for exactly this — and gets a
+# VALUE back instead of executing the user's file at every login.
+# The rest of the discipline is unchanged and deliberate: the read runs in a
+# SUBSHELL with errexit/nounset off, its stdin closed and its stderr discarded
+# (cfg_get warns about a mangled line, and a login banner is not where a user
+# wants to meet that), then the answer is range-checked — so a missing,
+# unreadable or hand-mangled file quietly falls back to the in-container default
+# (8188: the SERVICE line's) instead of printing garbage or failing the login
+# shell. The LAST assignment wins, which is cfg_get's rule as it was sourcing's.
+# ⚠️ The path is a literal here rather than read from the baked build-spec's
+# ENV_FILE, and that is the point: the file we tell the user to edit further down
+# and the file we read here must be the same string, guaranteed by being one.
 serve_port() {
-  local def=8188 file="${DROSTE_SERVE_ENV:-/opt/data/server.env}" pv=""
+  local def=8188 file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}" pv=""
   if [[ -f "$file" && -r "$file" ]]; then
     pv=$(
       set +e +u +o pipefail
-      # shellcheck disable=SC1090
-      . "$file" >/dev/null 2>&1 </dev/null
-      printf '%s' "${PORT-}"
-    ) 2>/dev/null || pv=""
+      # 🚨 THE STDERR REDIRECT BELONGS IN HERE, NOT ON THE CLOSING `)`. A trailing
+      # `2>/dev/null` on an ASSIGNMENT is applied AFTER the command substitution has
+      # already run — expansions precede redirections in a simple command — so it
+      # silences nothing that happens inside it. Measured, not deduced: cfg_get's
+      # "unterminated quote" warning printed into a login banner through exactly
+      # that gap. `exec` covers the source, the parser and anything added later.
+      exec 2>/dev/null
+      [ -r /opt/resources/resolve/droste-cfg.sh ] || exit 1
+      # shellcheck disable=SC1091
+      . /opt/resources/resolve/droste-cfg.sh >/dev/null </dev/null || exit 1
+      droste::cfg_get DROSTE_COMFYUI_PORT "$file"
+    ) || pv=""
   fi
   if [[ "$pv" =~ ^[0-9]{1,5}$ ]] && [ "$pv" -ge 1 ] && [ "$pv" -le 65535 ]; then
     printf '%s\n' "$pv"
   else
     printf '%s\n' "$def"
   fi
+}
+
+# The address to REACH this box's service, for the URLs printed below.
+# `localhost` was a safe constant only while every box bound the wildcard;
+# DROSTE_COMFYUI_HOST is a user setting now, so a box bound to one interface
+# would otherwise be handed a URL that answers nothing — the same silent-lie
+# defect as a stale port, on the first thing a user reads.
+# Asks droste-serve.sh's serve::probe_addr: THE single source every probe in this
+# project uses, so the banner and the healthcheck cannot disagree about where the
+# server is. Deriving it here instead would copy two rules (the wildcard test and
+# the IPv4 validation, which rejects e.g. a leading-zero octet the server would
+# never have bound) into a place nobody would think to update.
+# Run in a SUBSHELL, like serve_running below: sourcing that library sets a dozen
+# DROSTE_* defaults, turns errexit on and defines the serve:: namespace, none of
+# which belongs in a user's interactive shell.
+# ⚠️ THIS IS A DISPLAY ADDRESS, NOT A BIND ADDRESS. probe_addr answers "where do I
+# reach it", so a wildcard bind comes back as loopback — right in a URL and
+# catastrophic in a --listen flag, which would then bind loopback ONLY. Never
+# feed this to a server.
+# 127.0.0.1 is rendered `localhost`: the same endpoint, the friendlier spelling,
+# and the text every box printed before HOST was a setting. Anything that is not
+# a specific dotted quad lands there too — a validated shape check on our own
+# library's answer, so a future change upstream of us cannot put a hostname, an
+# empty string or a wildcard into a printed URL.
+serve_addr() {
+  local a
+  a=$(
+    set +e +u +o pipefail
+    # Same reason as serve_port's: a trailing redirect cannot reach inside a
+    # command substitution, and this library reports on stderr by design.
+    exec 2>/dev/null
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
+    serve::read_config >/dev/null
+    serve::probe_addr
+  ) || a=""
+  case "$a" in
+    ''|0.0.0.0|127.0.0.1) a=localhost ;;
+  esac
+  [[ "$a" == localhost || "$a" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || a=localhost
+  printf '%s\n' "$a"
 }
 
 # serve_running — is THIS box's service up right now? Prints "<pid> <port>" and
@@ -166,7 +226,9 @@ serve_port() {
 # a SUBSHELL, like serve_port above: sourcing droste-serve.sh sets a dozen
 # DROSTE_* defaults and defines the serve:: namespace, none of which belongs in a
 # user's interactive shell. errexit/nounset off and stdin closed so a hand-edited
-# server.env cannot take the login shell down with it.
+# comfyui.cfg cannot take the login shell down with it — read_config PARSES that
+# file (droste::cfg_get) rather than sourcing it, but this subshell is what makes
+# a broken LIBRARY harmless too.
 serve_running() {
   ( set +e +u +o pipefail
     [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
@@ -187,6 +249,7 @@ MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
 SERVE_PORT="$(serve_port)"
+SERVE_ADDR="$(serve_addr)"
 
 echo
 printf '%s\n' \
@@ -211,9 +274,9 @@ printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 # distrobox/toolbox shell nothing autostarts", which was true when the distrobox
 # lane and the server lane were two separate containers. Since the merge it is
 # ONE container with two doors, and the server door autostarts whenever
-# server.env says SERVE=1 — so the old line invited the user to start a second
-# ComfyUI on a port the first one already holds.
-printf 'ComfyUI server: http://localhost:%s\n' "$SERVE_PORT"
+# DROSTE_COMFYUI_STARTUP_ENABLED says so — so the old line invited the user to
+# start a second ComfyUI on a port the first one already holds.
+printf 'ComfyUI server: http://%s:%s\n' "$SERVE_ADDR" "$SERVE_PORT"
 if serve_running >/dev/null; then
   printf '  - ALREADY SERVING on port %s. Stop it with: server_stop\n' "$SERVE_PORT"
   printf '    Logs: tail -f /opt/data/.droste-serve.log\n'
@@ -222,12 +285,16 @@ else
 fi
 printf '  - server_start · server_stop · server_restart · server_status\n'
 printf '    These act on the SERVER, not the box. A stop lasts until the box\n'
-printf '    restarts; for a permanent change set STARTUP_ENABLED in\n'
-printf '    /opt/data/server.env.\n'
+printf '    restarts; for a permanent change set DROSTE_COMFYUI_STARTUP_ENABLED\n'
+printf '    in /opt/data/comfyui.cfg.\n'
 echo
 printf 'Model downloaders (shared HF cache; scanner links them in at start):\n'
 printf '  get_wan22.sh · get_qwen_image.sh · get_hunyuan15.sh · get_ltx2.sh\n\n'
-printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_PORT"
+# The middle field is the address the FORWARD lands on at the far end, so it has
+# to be the one the server actually bound: with host networking the listener is
+# on the host itself, and `localhost` there answers nothing on a box whose
+# DROSTE_COMFYUI_HOST names one interface.
+printf 'SSH tip: ssh -L %s:%s:%s user@host\n\n' "$SERVE_PORT" "$SERVE_ADDR" "$SERVE_PORT"
 
 # Launcher (flags match the container SERVICE line). A function, not an alias:
 # the extra-model-paths config is only seeded where an init hook ran (distrobox);
@@ -235,7 +302,10 @@ printf 'SSH tip: ssh -L %s:localhost:%s user@host\n\n' "$SERVE_PORT" "$SERVE_POR
 # unguarded open() would crash on the missing file — pass the flag only if the
 # file exists.
 # serve_port is re-read here rather than reusing $SERVE_PORT from banner time, so
-# a server.env edited during the session takes effect on the next launch.
+# a comfyui.cfg edited during the session takes effect on the next launch.
+# ⚠️ `--listen 0.0.0.0` stays a literal: this is a BIND address, and the banner's
+# $SERVE_ADDR is a display one (0.0.0.0 shows as localhost). It also means this
+# foreground lane does not follow DROSTE_COMFYUI_HOST — flagged, not fixed here.
 # start_comfy_ui — KEPT AS AN ALIAS, because users may know this name (it predates the
 # verbs). It names the new verb once and then does what it always did: run ComfyUI in
 # the FOREGROUND of this shell, which is still the right tool for watching a run.
@@ -250,13 +320,13 @@ start_comfy_ui() {
   local state pid port
   if state=$(serve_running); then
     read -r pid port <<<"$state"
-    printf 'ComfyUI is ALREADY RUNNING (pid %s) on port %s → http://localhost:%s\n' \
-      "$pid" "$port" "$port"
+    printf 'ComfyUI is ALREADY RUNNING (pid %s) on port %s → http://%s:%s\n' \
+      "$pid" "$port" "$(serve_addr)" "$port"
     printf '  logs: tail -f /opt/data/.droste-serve.log\n\n'
     printf 'To run one here in the foreground instead, stop the server first:\n'
     printf '  server_stop\n'
     printf 'That lasts until the box restarts. For a permanent change, set\n'
-    printf 'STARTUP_ENABLED=0 in /opt/data/server.env.\n'
+    printf 'DROSTE_COMFYUI_STARTUP_ENABLED=no in /opt/data/comfyui.cfg.\n'
     return 1
   fi
   printf 'Tip: server_start runs ComfyUI in the background, supervised, and\n'

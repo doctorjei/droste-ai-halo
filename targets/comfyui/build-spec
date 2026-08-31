@@ -15,9 +15,8 @@
 #
 # SPLIT IN TWO because the argv now has a USER-CONFIGURABLE MIDDLE: comfyui_argv
 # rebuilds SERVICE as HEAD + the flags translated from comfyui.cfg + TAIL. What
-# stays in these two arrays is what is NOT user-facing and survives every
-# setting — the bind address, the port (owned by server.env; the launcher rewrites
-# the token after --port), and the model-paths config. The two perf flags that
+# stays in these two arrays is what this file does not translate — the bind
+# address, the port, and the model-paths config. The two perf flags that
 # used to sit here, --disable-mmap and --disable-smart-memory, became the
 # WEIGHT_LOADING and MODEL_RESIDENCY settings and are emitted from the table below
 # at their defaults.
@@ -29,6 +28,16 @@
 # authority on which default is current, and this comment follows it.
 # ⚠️ --extra-model-paths-config is nargs='+', so it STAYS LAST: any later token
 # that does not begin with `-` would be swallowed as a second config path.
+# ⭐ THE ADDRESS AND THE PORT ARE DROSTE DEFAULTS HERE, NOT CONSTANTS (s60). They used
+# to be owned by server.env; they are DROSTE_COMFYUI_HOST and DROSTE_COMFYUI_PORT now,
+# in comfyui.cfg, and serve::apply_host / serve::apply_port REWRITE the token after
+# --listen and after --port before the service is launched. So what these two literals
+# are is the answer a box gets when its user set neither — and the argv a direct
+# `podman run` of this image gets, where no launcher runs at all.
+# ⚠️ DO NOT TRANSLATE EITHER OF THEM IN comfyui_argv. The launcher reads the same two
+# cfg keys through droste::cfg_get and is the only place that validates them (an IPv4
+# literal, one message on all five boxes); a second reader here would be a second
+# mechanism that agrees with it only until one of the two changes.
 COMFYUI_ARGV_HEAD=(
     python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
@@ -52,6 +61,34 @@ HEALTH_ACCEPT="ok"
 # No export loop (unlike ds4/llama): nothing downstream reads them from the
 # environment, they only ever become argv.
 ENV_FILE="/opt/data/comfyui.cfg"
+
+# ── SERVE — the four rows droste-serve.sh reads out of this spec ─────────────
+# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# prefix below: DROSTE_COMFYUI_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
+# serve::read_config PARSES them with droste::cfg_get and never sources the file — that
+# read also runs inside the healthcheck every 30s under --health-on-failure=restart,
+# where an abort is a restart loop that ejects every shell in the box.
+# 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
+# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# IMAGE as broken, because otherwise all five settings would read as absent and the box
+# would silently stop serving.
+# ⭐ THE PREFIX IS THE APPLICATION'S NAME. It coincides with the box name here; it does
+# not on finetuning, whose settings are DROSTE_JUPYTER_*.
+SERVE_CFG_PREFIX="DROSTE_COMFYUI_"
+# The flags this box spells differently from the library's defaults. serve::apply_host
+# defaults to --host; this box says --listen, and without the row the launcher would
+# APPEND a --host that ComfyUI's argparse has never heard of — the server would reject
+# its own argv and the box would restart-loop. --port needs no row (all five agree).
+SERVE_HOST_FLAG=--listen
+# ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
+# and a wrong flag is not a wrong value — the server rejects the argv and never starts.
+# Read at the pin (comfy/cli_args.py:65-66 at COMFYUI_REF 4da9e2db = v0.33.3), and the
+# names comfyui.cfg's Security block already documents.
+# ⭐ THE FLAGS ARE DECLARED HERE; WHETHER THEY ARE EMITTED IS THE LAUNCHER'S CALL —
+# serve::apply_tls emits them ONLY when the user set both, because a flag we emit
+# outranks every other way of turning TLS on and a default would destroy that choice.
+SERVE_TLS_CERT_FLAG=--tls-certfile
+SERVE_TLS_KEY_FLAG=--tls-keyfile
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
 # Baked lowers are load-bearing (venv, the 3 baked custom nodes); user writes

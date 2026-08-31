@@ -8,9 +8,9 @@
 #
 # ONE CONTAINER PER BOX, TWO DOORS (the merged shape): `distrobox assemble`
 # creates `droste-<box>-halo`; `distrobox enter` is the interactive door and
-# `podman start` is the server door (the init hook reads server.env from the
-# box's data dir and launches the service on its configured port). There is no
-# separate server container and no compose file any more.
+# `podman start` is the server door (the init hook reads the box's <box>.cfg
+# from its data dir and launches the service on its configured port). There is
+# no separate server container and no compose file any more.
 #
 # It guides every bind in the mount contract, host ports, whether each box
 # serves at box start / at host boot, and overlay-hostile-filesystem
@@ -19,12 +19,18 @@
 #   <box>-halo.ini                   (distrobox assemble record — the ONE
 #                                     container definition, healthcheck flags
 #                                     and all)
-#   <data dir>/server.env            (the serve config the box reads at every
-#                                     start: STARTUP_ENABLED=1/0 + PORT=<host port>)
 #   NOTES.md                         (full guide with YOUR real paths baked in)
 # and optionally pulls images / creates boxes / starts servers (build ladder).
 # Boxes asked to start at HOST BOOT also get a systemd user unit
 # (~/.config/systemd/user/droste-<box>.service) doing `podman start`.
+#
+# THE PORT AND BOX-START ANSWERS ARE NOT AN EMITTED FILE. They are two settings
+# in the box's OWN config file, <data dir>/<box>.cfg, which the box seeds from
+# its baked template at its FIRST CONTAINER START and which belongs to the user
+# from then on. So the installer creates the box, STARTS it once (that start is
+# what seeds the file), merges those two lines into it, and restarts it if
+# anything changed — see write_box_cfg. It never creates that file itself: doing
+# so would block the seed and cost the user every other setting in it.
 #
 # Re-runs are safe: existing definition files are detected and listed, and you
 # choose keep / modify / recreate for them — SETTINGS FILES are never silently
@@ -91,8 +97,9 @@ declare -A BIND_PROMPT=(
 
 # Default HOST-side port offered at the prompt. In the merged shape there is no
 # publish/remap to be had (distrobox containers use HOST networking), so this is
-# the port the service BINDS: droste-setup.sh writes it into server.env and the
-# init hook passes it to the service. ds4's upstream default is 8000, same as
+# the port the service BINDS: droste-setup.sh records it as DROSTE_<APP>_PORT in
+# the box's <box>.cfg and the init hook passes it to the service on the command
+# line. ds4's upstream default is 8000, same as
 # vllm, so its default is nudged to 8001 to keep both runnable side by side.
 declare -A BOX_HOST_PORT=(
   [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8001 [finetuning]=8888
@@ -128,13 +135,39 @@ declare -A BOX_HAS_MODELS=(
   [comfyui]=1 [llama]=1 [vllm]=1 [ds4]=1 [finetuning]=0
 )
 
-# Config file seeded (if missing) onto /opt/data at first start.
-declare -A BOX_CONFIG=(
+# The box's SETTINGS FILE, seeded (if missing) onto /opt/data at the box's FIRST
+# CONTAINER START and owned by the user from then on. This is the file the five
+# serve settings live in, so this map is what the installer writes through — it
+# MIRRORS `ENV_FILE` in each target's baked build-spec (/opt/data/<box>.cfg) and
+# has to keep mirroring it. The name follows the BOX; the settings inside it
+# follow the APPLICATION (see BOX_APP).
+declare -A BOX_CFG=(
   [comfyui]="comfyui.cfg"
   [llama]="llama.cfg"
-  [vllm]="vllm_config.yaml"
+  [vllm]="vllm.cfg"
   [ds4]="ds4.cfg"
-  [finetuning]=""
+  [finetuning]="finetuning.cfg"
+)
+
+# A SECOND seeded file, where the box has one. vllm's model/engine configuration
+# is its own YAML rather than a setting in vllm.cfg, and the user is told about
+# it by name; nothing else here has one. NOT a settings file — never written by
+# this installer, only named in NOTES.md so the user can find it.
+declare -A BOX_CFG_EXTRA=(
+  [comfyui]="" [llama]="" [vllm]="vllm_config.yaml" [ds4]="" [finetuning]=""
+)
+
+# 📐 THE DROSTE-OWNED PREFIX IS `DROSTE_<APP>_*` — THE APPLICATION, NOT THE BOX.
+# It looks like the box name on four of five because the names COINCIDE;
+# finetuning is the box where the distinction is observable and it settles it —
+# every droste-owned setting there is DROSTE_JUPYTER_*, and there is no such
+# thing as a DROSTE_FINETUNING_* (targets/finetuning/build-spec says so).
+declare -A BOX_APP=(
+  [comfyui]="COMFYUI"
+  [llama]="LLAMA"
+  [vllm]="VLLM"
+  [ds4]="DS4"
+  [finetuning]="JUPYTER"
 )
 
 # One-line explanations for the prompted bind families (what lives there).
@@ -174,7 +207,7 @@ INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 
 # ── Healthcheck contract (P1's droste-healthcheck.sh, baked in every image) ───
 # droste-setup.sh wires podman's healthcheck at CREATE time (the images carry no
-# HEALTHCHECK of their own): the probe reads the box's server.env for the port
+# HEALTHCHECK of their own): the probe reads the box's <box>.cfg for the port
 # and the build-spec for the endpoint, and answers HEALTHY for a box that is not
 # configured to serve — so these flags are unconditional, interactive-only boxes
 # included. With --health-on-failure=restart a failing probe restarts the
@@ -261,8 +294,9 @@ Interactive setup for the droste *-halo AI boxes (Strix Halo / gfx1151).
 ONE container per box (droste-<box>-halo), entered with distrobox and
 served with podman. Guides binds, ports, serve-at-box-start and
 serve-at-host-boot, and filesystem gotchas; writes per-box recreation
-records (<box>-halo.ini + server.env) plus a NOTES.md, and can pull
-images, create boxes, and start servers.
+records (<box>-halo.ini) plus a NOTES.md, and can pull images, create
+boxes, record your port and startup answers in each box's own
+<box>.cfg, and start servers.
 
 BOX      comfyui llama vllm ds4 finetuning   (default: interactive menu)
 
@@ -1323,7 +1357,7 @@ ask_port() {  # box default → ANS_PORT
 
 # ── State ────────────────────────────────────────────────────────────────────
 declare -A ACTION            # box → new|keep|recreate|modify
-declare -A CFG_BOXSV         # box → 1|""  serve when the BOX starts (server.env)
+declare -A CFG_BOXSV         # box → 1|""  serve when the BOX starts (<box>.cfg)
 declare -A CFG_HSTSV         # box → 1|""  start the box at HOST BOOT (user unit)
 declare -A CFG_PORT          # box → host port the service binds
 declare -A CFG_MODE          # box → ""|fuse|copy|ignore  (overlay mitigation)
@@ -1576,9 +1610,9 @@ probe_linger() {
 }
 
 # ── The box's <app>.cfg: parse + surgical single-line merge (case 2, s59) ────
-# THE FILE IS THE USER'S, AND THAT IS THE WHOLE DIFFICULTY. `server.env` was
-# droste's outright, so emit_serve_env could truncate and rewrite it on every
-# reconfigure. `<app>.cfg` is seeded ONCE by the box (if_missing) and belongs to
+# THE FILE IS THE USER'S, AND THAT IS THE WHOLE DIFFICULTY. The retired
+# `server.env` was droste's outright, so its emitter could truncate and rewrite
+# it on every reconfigure. `<app>.cfg` is seeded ONCE by the box (if_missing) and belongs to
 # the user from then on: it carries the application's own settings, the user's
 # comments and the user's edits. So the installer may only MERGE one line at a
 # time, and every other byte must come out exactly as it went in.
@@ -1610,11 +1644,19 @@ probe_linger() {
 # polices nothing — that restriction belongs to the caller, and the differential
 # harness drives arbitrary names):
 #
-#   DROSTE_SERVE_STARTUP_ENABLED   start this box's server when the BOX starts
-#   DROSTE_SERVE_HOST              address the server BINDS
-#   DROSTE_SERVE_PORT              port it BINDS (host networking: no remap)
-#   DROSTE_SERVE_TLS_CERT          PEM certificate path
-#   DROSTE_SERVE_TLS_KEY           PEM private key path
+# ⚠️ THE PREFIX IS PER APPLICATION, not a fixed DROSTE_SERVE_ — see BOX_APP:
+# DROSTE_COMFYUI_*, DROSTE_LLAMA_*, DROSTE_VLLM_*, DROSTE_DS4_*, and (on the
+# finetuning box) DROSTE_JUPYTER_*. cfg_name builds them.
+#
+#   DROSTE_<APP>_STARTUP_ENABLED   start this box's server when the BOX starts
+#   DROSTE_<APP>_HOST              address the server BINDS
+#   DROSTE_<APP>_PORT              port it BINDS (host networking: no remap)
+#   DROSTE_<APP>_TLS_CERT          PEM certificate path
+#   DROSTE_<APP>_TLS_KEY           PEM private key path
+#
+# ⚠️ THE INSTALLER ONLY ASKS ABOUT TWO OF THEM — STARTUP_ENABLED and PORT — so
+# those are the only two it ever writes. The other three are the user's to set
+# in the file, and cfg_get reads whatever is there.
 #
 # ⚠️ NEITHER FUNCTION RESOLVES A PATH SPELLING. Both take the FILE argument as
 # the kernel needs it spelled; the caller runs fs_path (the path spelling
@@ -1695,8 +1737,8 @@ cfg_take_export() {  # body → CFG_LINE_PREFIX + CFG_LINE_BODY
 # 🚨 INLINE COMMENTS ARE STRIPPED, AND THAT IS NOT OPTIONAL: every template in
 # this project documents a setting on the assignment line itself, and the user
 # turns one on by DELETING THE LEADING `#`. That leaves
-# `DROSTE_SERVE_PORT=8188        # port it binds` — which `source` reads as
-# `8188` and a take-the-rest-of-the-line parser reads as `8188        # port it
+# `DROSTE_LLAMA_PORT=8080        # port it binds` — which `source` reads as
+# `8080` and a take-the-rest-of-the-line parser reads as `8080        # port it
 # binds`. The cut is at the first `#` that begins the value or follows
 # whitespace.
 # ⚠️ Text after a CLOSING quote is dropped: the value IS the quoted span, full
@@ -1799,8 +1841,8 @@ cfg_split_rhs() {  # text-after-the-= → sets CFG_LINE_VALUE/TAIL/QUOTE/OPEN
 # 🚨 THE TEST IS NAME-BLIND ON PURPOSE. A continued value belonging to some
 # OTHER setting swallows its own continuation lines, and one of those lines can
 # look exactly like an assignment of the name we are after:
-#     DROSTE_APP_NOTE="see \
-#     DROSTE_SERVE_PORT=9000"
+#     DROSTE_LLAMA_NOTE="see \
+#     DROSTE_LLAMA_PORT=9000"
 # Reading that second line as an assignment would invent a setting out of
 # another one's value, so the scan joins logical lines for EVERY name and only
 # then asks whether the result is ours.
@@ -1843,13 +1885,13 @@ cfg_split_active() {  # NAME LINE → 0 when LINE is an ACTIVE assignment of NAM
   return 0
 }
 
-# A COMMENTED template line for NAME — `# DROSTE_SERVE_PORT=8188   # port it
+# A COMMENTED template line for NAME — `# DROSTE_LLAMA_PORT=8080   # port it
 # binds`, which is how every setting ships. cfg_set uncomments it in place so
 # the value lands beside its own documentation, which is where the user looks
 # for it.
 # ⚠️ Exactly ONE leading `#` is stripped, and the whitespace that FOLLOWS it;
 # the whitespace that PRECEDED it is the line's indentation and is kept. A prose
-# line that merely mentions the name ("# set DROSTE_SERVE_PORT= to change") does
+# line that merely mentions the name ("# set DROSTE_LLAMA_PORT= to change") does
 # not match, because what follows the `#` must start with `NAME=`.
 cfg_split_commented() {  # NAME LINE → 0 when LINE is a commented assignment of NAME
   local name=$1 line=$2 indent body
@@ -1940,7 +1982,7 @@ cfg_note_line() {  # NAME → 0, having said whatever this line earns
 }
 
 # ── cfg_get — THE READ ENTRY POINT (installer half of the shared contract) ───
-# Usage:  value=$(cfg_get DROSTE_SERVE_PORT "$file")
+# Usage:  value=$(cfg_get DROSTE_LLAMA_PORT "$file")
 #
 # Prints the value (possibly empty) on stdout and ALWAYS EXITS 0. Empty output
 # means "absent" — rule 5: a blank value is treated exactly as absent, so blank
@@ -1990,7 +2032,7 @@ cfg_get() {  # NAME FILE → the value on stdout, always 0
 }
 
 # ── cfg_set — THE MERGE (installer only; the box never writes this file) ─────
-# Usage:  cfg_set DROSTE_SERVE_PORT 8188 "$file"
+# Usage:  cfg_set DROSTE_LLAMA_PORT 8080 "$file"
 # 0 on success INCLUDING the no-op; 1 when the file could not be written or does
 # not exist, and in either case the original is exactly as it was.
 #
@@ -2182,11 +2224,20 @@ box_ctr()   { printf 'droste-%s-halo' "$1"; }
 ini_file()  { printf '%s/%s-halo.ini' "$EMIT_DIR" "$1"; }
 unit_name() { printf 'droste-%s.service' "$1"; }
 unit_file() { printf '%s/.config/systemd/user/%s' "$HOME" "$(unit_name "$1")"; }
-# The serve config the box reads at EVERY start (P1's droste-serve.sh), living
-# on the box's data volume as /opt/data/server.env.
-serve_env_file() {  # box → path ("" when the data dir is not known yet)
+# The box's settings file on the HOST side of its data bind: /opt/data/<box>.cfg
+# inside the box is <data dir>/<box>.cfg here. It is the one file that carries
+# the serve settings the box reads at EVERY start (P1's droste-serve.sh) AND the
+# several hundred application settings the box seeded for the user — which is
+# why the installer only ever MERGES single lines into it (cfg_set), and never
+# creates it.
+box_cfg_file() {  # box → path ("" when the data dir is not known yet)
   local d=${PATHS["$1:data"]:-${EXD_PATH["$1:data"]:-}}
-  [[ -n $d ]] && printf '%s/server.env' "$d"
+  [[ -n $d ]] && printf '%s/%s' "$d" "${BOX_CFG[$1]}"
+}
+
+# The name of one of the five serve settings for a box: DROSTE_<APP>_<KEY>.
+cfg_name() {  # box key → DROSTE_<APP>_<KEY>
+  printf 'DROSTE_%s_%s' "${BOX_APP[$1]}" "$2"
 }
 
 dest_to_label() {  # box dest → label ("" if unknown)
@@ -2266,7 +2317,7 @@ parse_existing_ini() {  # box
       EXD_MODE[$box]=${BASH_REMATCH[1]}
     elif [[ $line =~ ^#[[:space:]]*droste-setup:[[:space:]]*port=([0-9]+)[[:space:]]+box-start=([a-z]+)[[:space:]]+host-boot=([a-z]+) ]]; then
       # The record line emit_ini writes: what THIS installer last answered. It
-      # is the fallback for the two live sources below (server.env + systemd),
+      # is the fallback for the two live sources below (<box>.cfg + systemd),
       # which are what the user may have changed by hand since.
       EXD_PORT[$box]=${BASH_REMATCH[1]}
       [[ ${BASH_REMATCH[2]} == yes ]] && EXD_BOXSV[$box]=1
@@ -2286,35 +2337,42 @@ parse_existing_ini() {  # box
   return 0
 }
 
-# The LIVE serve state of a box: server.env (which the user may have edited with
-# an editor — that is the whole point of the file) wins over the ini's record of
-# what droste-setup.sh last wrote. Parsed the same defensive way P1's serve library
-# parses it: shell-sourceable KEY=VALUE, anything unusable simply ignored.
-parse_serve_env() {  # box
-  local box=$1 f line k v
-  f=$(serve_env_file "$box") || return 0
+# The LIVE serve state of a box: its <box>.cfg (which the user may have edited
+# with an editor — that is the whole point of the file) wins over the ini's
+# record of what droste-setup.sh last wrote. THIS IS THE READ-BACK THAT MAKES A
+# MODIFY RUN SAFE: a hand-edited port or startup answer becomes the DEFAULT the
+# prompt offers, so the run shows the user their own setting instead of silently
+# proposing to overwrite it.
+#
+# 🚨 PARSE, NEVER SOURCE — via cfg_get, the installer's half of the shared
+# contract. The retired server.env was droste's outright and could be read with an
+# ad-hoc regex; <box>.cfg is the user's several-hundred-line config file and the
+# only reading of it that may ever be trusted is the one the box itself uses.
+#
+# ⚠️ ABSENT IS NOT "no". cfg_get answers "" for absent AND for blank (rule 5:
+# blank means "no opinion"), and in both cases the box falls back to the droste
+# default — so the installer must NOT read that as an answer and must leave the
+# ini's record standing as the fallback. Only a value the user actually wrote
+# overrides it. The old code assigned EXD_BOXSV="" on anything non-truthy,
+# which turned "the file says nothing" into "the user said no".
+parse_box_cfg() {  # box
+  local box=$1 f v
+  f=$(box_cfg_file "$box") || return 0
   [[ -n $f ]] || return 0
   f=$(fs_path "$f")      # a data dir the user spelled with ~ is still a dir
   [[ -f $f && -r $f ]] || return 0
-  while IFS= read -r line; do
-    line=${line%%#*}
-    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]] || continue
-    k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
-    case "$k" in
-      # STARTUP_ENABLED is the key since s45; SERVE is its predecessor and is still
-      # read, because live boxes have it. Order matters: the loop takes the LAST
-      # assignment it sees, so a file carrying both ends up with whatever is written
-      # lower — which is why emit_serve_env writes ONLY the new key and drops the old
-      # one on the next modify run, rather than leaving two keys to disagree.
-      STARTUP_ENABLED|SERVE)
-        case "${v,,}" in
-          1|true|yes|on) EXD_BOXSV[$box]=1 ;;
-          *)             EXD_BOXSV[$box]="" ;;
-        esac ;;
-      PORT)
-        [[ $v =~ ^[0-9]+$ ]] && EXD_PORT[$box]=$v ;;
+  # STARTUP_ENABLED's vocabulary is {yes, no} — that is what the file's own menu
+  # shows and what cfg_set writes. Read TOLERANTLY anyway (the box's droste::bool
+  # accepts on/1/true too, and a file is the user's to type into); write one form.
+  v=$(cfg_get "$(cfg_name "$box" STARTUP_ENABLED)" "$f")
+  if [[ -n $v ]]; then
+    case "${v,,}" in
+      1|true|yes|on) EXD_BOXSV[$box]=1 ;;
+      *)             EXD_BOXSV[$box]="" ;;
     esac
-  done < "$f"
+  fi
+  v=$(cfg_get "$(cfg_name "$box" PORT)" "$f")
+  [[ $v =~ ^[0-9]+$ ]] && EXD_PORT[$box]=$v
   return 0
 }
 
@@ -2341,9 +2399,9 @@ detect_existing() {
               --format '{{.State}}' 2>/dev/null | head -n1) || state=""
       [[ -n $state ]] && EX_CTR[$box]=$state
     fi
-    # ini FIRST: it is what says where the data dir (hence server.env) is.
+    # ini FIRST: it is what says where the data dir (hence <box>.cfg) is.
     parse_existing_ini "$box"
-    parse_serve_env "$box"
+    parse_box_cfg "$box"
     parse_host_unit "$box"
   done
   return 0
@@ -2905,7 +2963,7 @@ general_setup() {
   ask_yn "Use default ports for all services" "$SEED_PORTS"
   [[ $ANS_YN -eq 1 ]] && PORTS_DEFAULT=1
   # Does a box's SERVICE come up when its container starts?
-  # (server.env STARTUP_ENABLED — this asks about BOX START only, never about
+  # (DROSTE_<APP>_STARTUP_ENABLED — this asks about BOX START only, never about
   # whether a server should be up right now; that is the box's own .IS_ACTIVE.)
   # "case-by-case" hands the question to each box's own section.
   ask_ync "Start servers at box start" "$SEED_SERVE"
@@ -4446,8 +4504,9 @@ configure_box() {  # box
 
   # ── <Box> Paths ───────────────────────────────────────────────────────────
   # The data dir (+ fs probe / overlay mitigation), then the other CRITICAL
-  # binds. /opt/data is where server.env lands, so this path is what decides
-  # where the box reads its serve config from.
+  # binds. /opt/data is where the box seeds <box>.cfg, so this path is what
+  # decides where the box reads its settings from — and where the installer
+  # merges the port and box-start answers after the first start.
   if [[ ${#todo[@]} -gt 0 ]]; then
     if [[ $asked -eq 0 ]]; then
       asked=1
@@ -4647,10 +4706,10 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     printf '# Modeled on targets/%s/distrobox.ini (droste-ai-halo repo).\n' "$box"
     printf '# ONE container, two doors: "distrobox enter %s" for an\n' "$(box_ctr "$box")"
     printf '# interactive shell, "podman start %s" to bring the\n' "$(box_ctr "$box")"
-    printf '# service up (the init hook reads %s/server.env\n' "$data"
+    printf '# service up (the init hook reads %s/%s\n' "$data" "${BOX_CFG[$box]}"
     printf '# at every start and launches on the port recorded there).\n'
     # The record of what this installer last answered — read back on the next
-    # run as the fallback for server.env (port, box start) and for the systemd
+    # run as the fallback for <box>.cfg (port, box start) and for the systemd
     # user unit (host boot), both of which the user may have changed by hand.
     # The "droste-setup:" key is an on-disk FORMAT, not the script's name: it
     # must keep matching the reader in parse_existing_ini for already-written
@@ -4676,7 +4735,7 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     flags+=" --stop-timeout $STOP_TIMEOUT"
     # Supervision, unconditionally: the probe answers HEALTHY for a box that is
     # not serving, so an interactive-only box is not restart-looped by it, and a
-    # box whose server.env is turned on later is supervised without a recreate.
+    # box whose <box>.cfg turns serving on later is supervised without a recreate.
     flags+=" --health-cmd $HEALTH_CMD"
     flags+=" --health-interval $HEALTH_INTERVAL"
     flags+=" --health-timeout ${BOX_HEALTH_TIMEOUT[$box]}"
@@ -4733,10 +4792,10 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
       vols="$vols $(fs_path "$MODELS_DIR"):/opt/models:ro"
       spell="$spell $MODELS_DIR:/opt/models:ro"
     fi
-    printf '# /opt/data = this box%s PERSISTENT state (your work, the seeded\n' "'s"
-    printf '# configs, server.env) — never wiped. /opt/program-cache = its PROGRAM\n'
-    printf '# CACHE (venv upper, scratch, per-box caches) — the installer offers to\n'
-    printf '# empty it when it finds an older generation there.\n'
+    printf '# /opt/data = this box%s PERSISTENT state (your work and the seeded\n' "'s"
+    printf '# configs, %s among them) — never wiped. /opt/program-cache\n' "${BOX_CFG[$box]}"
+    printf '# = its PROGRAM CACHE (venv upper, scratch, per-box caches) — the\n'
+    printf '# installer offers to empty it when it finds an older generation there.\n'
     printf '# Shared compute caches across ALL droste boxes are folded into the\n'
     printf '# single volume= value below (distrobox reads only the LAST volume=).\n'
     printf 'volume="%s"\n' "$vols"
@@ -4787,54 +4846,86 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
   return 0
 }
 
-# The serve config, written into the box's DATA dir — the file P1's
-# droste-serve.sh reads at every container start (and droste-healthcheck.sh
-# reads for the port). It is deliberately NOT listed in the Executing section:
-# it is one line of answers the user already gave, not a definition to review.
+# ── The box's settings file: recording the two answers we asked for ──────────
+# 🚨 THE INSTALL ORDER IS THE WHOLE DESIGN, AND IT IS NOT A CONVENTION:
+#     create → START (the start is what SEEDS <box>.cfg) → cfg_set → restart.
+# <box>.cfg is seeded `if_missing` by apply_templates.py at the box's FIRST
+# CONTAINER START, and the seeder SKIPS a destination that already exists. An
+# installer that wrote the file FIRST would leave a small stub that PERMANENTLY
+# BLOCKS the seed: the user would get a config file holding the serve settings
+# and NONE of the several hundred documented application settings, with nothing
+# failing and nothing warning. cfg_set REFUSES to create a missing file, which
+# is what turns this ordering into a guarantee — see the refusal in cfg_set, and
+# do not add a create path at either end.
 #
-# NEVER touched for a KEPT box (keep = "change nothing about settings", and this
-# file is a settings file the user may well have hand-edited); rewritten from
-# the current answers for every box that is (re)configured.
+# ⚠️ The box is therefore STARTED even at the rung that only creates. That start
+# is not "running the box": the FIRST start has no cfg to read, so the serve
+# intent reads as absent, no server is launched (contract B2), and create_box
+# puts the container back to the state the rung asked for afterwards. The
+# alternative is dropping two answers the user just gave on the floor.
 #
-# The rewrite carries NOTHING over: the two keys it writes are the two it asked
-# about, and any other key a user put in the file by hand is a key the box's
-# serve library ignores (it reads STARTUP_ENABLED/SERVE and PORT and nothing
-# else), so there is nothing here worth preserving across a run that was told to
-# reconfigure.
+# NEVER touched for a KEPT box (keep = "change nothing about settings"): only a
+# box being created gets here at all, and only the settings it was ASKED about
+# are merged. Every other byte of the file is the user's and comes out exactly
+# as it went in.
+
+# How long to wait for the seed. The init hook mounts the overlays and, on a
+# comfyui box with no registry yet, scans the model tree — minutes, not seconds.
+# The template step runs before the launch but after the mounts, so this has to
+# be generous; it is a CEILING, not a delay (the poll returns the moment the
+# file settles).
+CFG_SEED_WAIT=300
+cfg_wait_seed() {  # file → 0 once it exists and has stopped growing, 1 on timeout
+  local f=$1 i=0 n=$(( CFG_SEED_WAIT * 2 )) cur="" prev=""
+  while [[ $i -lt $n ]]; do
+    if [[ -f $f ]]; then
+      # apply_templates.py seeds with shutil.copy2, which is NOT atomic: the file
+      # can exist while it is still being written. Two consecutive polls agreeing
+      # on a non-zero size is the cheap way to not merge into half a file.
+      cur=$(wc -c < "$f" 2>/dev/null) || cur=""
+      if [[ -n $cur && $cur -gt 0 && $cur == "$prev" ]]; then return 0; fi
+      prev=$cur
+    fi
+    sleep 0.5
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Merge this run's answers into the box's settings file. Runs as one run_step
+# child, so everything it says lands in that step's log; it reports a real value
+# CHANGE by touching the marker file, which is what tells create_box whether a
+# restart is owed. (A child cannot hand a variable back to the parent.)
 #
-# ⭐ THIS IS THE WRITE HALF OF THE s45 KEY MIGRATION: read tolerantly, write the new
-# form. The old key was `SERVE`, which meant "start at box start" AND "is supposed to
-# be serving" at the same time; it is now `STARTUP_ENABLED` and means only the first.
-# A rewritten file carries the new key ALONE — dropping `SERVE` is safe precisely
-# because the box's library still reads it as a fallback.
-# 🚨 THAT FALLBACK IS WHAT MAKES THIS SAFE, AND IT MUST NOT BE REMOVED IN THE SAME
-# RELEASE. A box the user KEEPS is never rewritten (keep = "change nothing about
-# settings"), so live boxes go on carrying `SERVE=1` until some later modify run
-# touches them — and if the library stopped reading it, every one of those boxes would
-# silently stop serving with nothing saying why.
-emit_serve_env() {  # box
-  local box=$1 f
-  f=$(serve_env_file "$box") || return 0
+# The vocabulary is the file's OWN: STARTUP_ENABLED's menu reads {yes, no*}, so
+# that is what gets written. The retired server.env wrote `1`, which under a
+# {yes, no} menu would have the user open their config file and find a value
+# that is not in its own list of values.
+write_box_cfg() {  # box marker → 0 recorded, 1 something could not be recorded
+  local box=$1 marker=$2 f key val name cur rc=0
+  f=$(box_cfg_file "$box") || return 0
   [[ -n $f ]] || return 0
   f=$(fs_path "$f")      # the box's data dir, as the kernel needs it spelled
-  mkdir -p "$(dirname "$f")" 2>/dev/null || :
-  {
-    printf '# server.env — read by droste-init-hook.sh at every container start.\n'
-    printf '# Written by droste-setup.sh on %s; safe to edit by hand:\n' "$(date +%F)"
-    printf '#   STARTUP_ENABLED=1  start this box'"'"'s server when the BOX starts\n'
-    printf '#                      (0 = interactive only, nothing is launched)\n'
-    printf '#   PORT=              the port the server binds (host networking: no remap)\n'
-    printf '#\n'
-    printf '# To start or stop the server WITHOUT changing this file, run inside the box:\n'
-    printf '#   server_start · server_stop · server_restart · server_status\n'
-    printf '# A stop that way lasts until the box restarts. THIS file is the permanent\n'
-    printf '# setting, and it survives recreating the box.\n'
-    printf '# Take a change here live with:  %s restart %s\n' \
-      "${RUNTIME:-podman}" "$(box_ctr "$box")"
-    printf 'STARTUP_ENABLED=%s\n' "$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf 1 || printf 0)"
-    printf 'PORT=%s\n' "${CFG_PORT[$box]}"
-  } > "$f" 2>/dev/null || warn "could not write $f $EMD the box will not know its serve setting"
-  return 0
+  if ! cfg_wait_seed "$f"; then
+    warn "$f has not appeared after ${CFG_SEED_WAIT}s $EMD the box seeds it at its first start, so your port and startup answers were not recorded"
+    return 1
+  fi
+  for key in STARTUP_ENABLED PORT; do
+    case $key in
+      STARTUP_ENABLED) val=$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf yes || printf no) ;;
+      PORT)            val=${CFG_PORT[$box]} ;;
+    esac
+    name=$(cfg_name "$box" "$key")
+    cur=$(cfg_get "$name" "$f")
+    if ! cfg_set "$name" "$val" "$f"; then rc=1; continue; fi
+    # The marker means "a value on disk is not what it was", which is the only
+    # thing a restart is for. cfg_set is idempotent — an unchanged value writes
+    # nothing at all — so this mirrors its own no-op test rather than guessing.
+    # No marker (mktemp failed) is not an error here: the caller then treats the
+    # settings as changed, which costs a restart and is the safe direction.
+    if [[ -n $marker && $cur != "$val" ]]; then printf '1\n' > "$marker" || :; fi
+  done
+  return $rc
 }
 
 # ── Host-boot: a systemd USER unit per box ───────────────────────────────────
@@ -5672,8 +5763,19 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
 }
 
 # ── Execution (the ladder rungs) ─────────────────────────────────────────────
+# Was this box (re)configured this run, or merely KEPT? The ladder acts on both
+# — its create rung always replaces the container — but a KEPT box's SETTINGS
+# are never touched, and <box>.cfg is a settings file.
+is_configured() {  # box → 0 when it is in CONFIGURE
+  local b
+  for b in ${CONFIGURE[@]+"${CONFIGURE[@]}"}; do
+    [[ $b == "$1" ]] && return 0
+  done
+  return 1
+}
+
 create_box() {  # box
-  local box=$1 name log rc=0 src=0
+  local box=$1 name log rc=0 src=0 marker="" serve=0 record=0
   name=$(box_ctr "$box")
   log=$(step_log create "$name")
   : > "$log"
@@ -5698,14 +5800,57 @@ create_box() {  # box
     distrobox assemble create --file "$(fs_path "$(ini_file "$box")")" || rc=$?
   if [[ $rc -eq 0 ]]; then
     SESSION_STATE[$box]=STOPPED
-    # The [A] rung starts only the boxes whose server is meant to come up with
-    # the box (Jei's rev-2 semantics): starting a STARTUP_ENABLED=0 box would be an
-    # idle container. `podman start` is what replays the init line, which is
-    # what launches the service — there is no separate server container.
-    if [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" && -n $RUNTIME ]]; then
+    # Two independent reasons to start the container we just created:
+    #
+    #  1. THE SEEDING START. `podman start` is what replays the init line, and
+    #     the init line is what SEEDS <box>.cfg from the baked template — so the
+    #     box has to run ONCE before the installer has a file to record its port
+    #     and box-start answers in. That start does not serve: the file it is
+    #     about to create is the file the serve intent is read from, so on a
+    #     brand-new box the intent reads as absent and nothing is launched.
+    #     ONLY for a (re)configured box. KEEP means "change nothing about
+    #     settings", and its <box>.cfg is a settings file.
+    #  2. The [A] rung's own reason: a box whose server is meant to come up when
+    #     the box does. Unchanged.
+    #
+    # Whatever the reason, the container ends the run in the state the rung and
+    # the answer asked for — running only when (2) holds.
+    serve=0; record=0
+    [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" ]] && serve=1
+    is_configured "$box" && record=1
+    if [[ -n $RUNTIME ]] && [[ $serve -eq 1 || $record -eq 1 ]]; then
       src=0
       run_step "starting" "$log" "$RUNTIME" start "$name" || src=$?
-      if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=ACTIVE; else rc=1; fi
+      if [[ $src -eq 0 ]]; then
+        SESSION_STATE[$box]=ACTIVE
+        if [[ $record -eq 1 ]]; then
+          # The answers, merged one line at a time into the file the box just
+          # seeded. The marker is how the child reports that a value on disk
+          # actually changed — a restart is owed only then, and cfg_set writes
+          # nothing at all when the value is already what we would write.
+          marker=$(mktemp "${TMPDIR:-/tmp}/droste-cfg.XXXXXX" 2>/dev/null) || marker=""
+          run_step "configuring" "$log" write_box_cfg "$box" "$marker" || rc=1
+          # It is meant to serve, and it did not serve on the seeding start
+          # because the setting was not there to read yet. An EMPTY marker path
+          # means mktemp failed and we do not know — restart anyway, which costs
+          # a restart and is the safe direction.
+          if [[ $serve -eq 1 ]] && { [[ -z $marker ]] || [[ -s $marker ]]; }; then
+            src=0
+            run_step "restarting" "$log" "$RUNTIME" restart "$name" || src=$?
+            [[ $src -eq 0 ]] || rc=1
+          fi
+          [[ -n $marker ]] && rm -f "$marker"
+        fi
+        if [[ $serve -eq 0 ]]; then
+          # The start was ours, not the user's: the [c] rung stops at "created",
+          # and a box whose server is not meant to come up with it would
+          # otherwise be left running as an idle container.
+          run_step "stopping" "$log" "$RUNTIME" stop "$name" || rc=1
+          SESSION_STATE[$box]=STOPPED
+        fi
+      else
+        rc=1
+      fi
     fi
   fi
   if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi
@@ -5784,13 +5929,17 @@ execute() {
     done
   done
   # Emit definitions ONLY for (re)configured boxes — kept boxes are never
-  # rewritten (never-clobber). server.env rides along, unlisted (see
-  # emit_serve_env): it holds the same answers, in the box's own data dir.
+  # rewritten (never-clobber).
+  # ⚠️ THE PORT AND BOX-START ANSWERS ARE NOT WRITTEN HERE. They live in the
+  # box's own <box>.cfg, which does not exist until the box has started once and
+  # seeded it — so recording them belongs to create_box, after the start, and a
+  # rung that never creates a box has nowhere to put them yet. The ini's
+  # `# droste-setup: port=… box-start=…` record line carries them meanwhile, and
+  # is what the next run reads back.
   if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
     exec_hdr "Writing Configuration Files"
     for box in "${CONFIGURE[@]}"; do
       emit_ini "$box"
-      emit_serve_env "$box"
     done
   fi
   # Boot auto-start is settled at EVERY rung, not just create: it is an answer
@@ -5888,11 +6037,12 @@ write_notes() {
     printf -- '- **Interactive door** — `distrobox enter droste-<box>-halo`.\n'
     printf '  A shell in your own $HOME, with the box%s toolchain.\n' "'s"
     printf -- '- **Server door** — `podman start droste-<box>-halo`. Starting the\n'
-    printf '  container replays its init line, which reads `server.env` from the\n'
+    printf '  container replays its init line, which reads `<box>.cfg` from the\n'
     printf '  box%s data dir and launches the service on the port recorded there.\n' "'s"
-    printf '\nEntering a stopped box therefore starts it — and, if `STARTUP_ENABLED=1`, its\n'
-    printf 'service with it. Both doors are the SAME environment: a `pip install`\n'
-    printf 'you do interactively is what the served process runs.\n'
+    printf '\nEntering a stopped box therefore starts it — and, if its\n'
+    printf '`DROSTE_<APP>_STARTUP_ENABLED` is `yes`, its service with it. Both doors\n'
+    printf 'are the SAME environment: a `pip install` you do interactively is what\n'
+    printf 'the served process runs.\n'
     printf '\n## Your installation\n\n'
     printf '| Box | Start w Box | Start w Host | Port | Data dir | Cache dir |\n'
     printf '|---|---|---|---|---|---|\n'
@@ -5937,7 +6087,7 @@ write_notes() {
     printf '  everything you authored: the seeded config you edited, the model\n'
     printf '  tree, ComfyUI%s `user/` and custom nodes, ds4%s saved sessions, the\n' \
       "'s" "'s"
-    printf '  finetuning workspace, `server.env`. droste-setup.sh deletes\n'
+    printf '  finetuning workspace, your `<box>.cfg`. droste-setup.sh deletes\n'
     printf '  nothing here unasked: the one way it ever does is the "remove data\n'
     printf '  at new path" answer, when a move you accepted lands on a directory\n'
     printf '  that already has something in it — and that question names the\n'
@@ -5975,17 +6125,33 @@ write_notes() {
     printf 'next time the box starts, so you can never leave a box quietly dead\n'
     printf 'and forget why. These verbs act on the SERVER; to restart the whole\n'
     printf 'container use `podman restart <name>`.\n\n'
-    printf '**Permanently** — `<data dir>/server.env`, read at EVERY box start:\n\n'
-    printf '    STARTUP_ENABLED=1   # 0 = interactive only, nothing is launched\n'
-    printf '    PORT=8188           # the port the server binds (host networking)\n\n'
-    printf 'Edit it and `podman restart <name>` — no recreate needed, and the\n'
-    printf 'file survives image updates and box recreation. droste-setup.sh writes\n'
-    printf 'it from your answers for every box it (re)configures, and leaves it\n'
-    printf 'alone for boxes you asked to KEEP.\n\n'
-    printf 'If you have used droste before, this key used to be called `SERVE`.\n'
-    printf 'Old files still work — `SERVE` is still read — and the next time\n'
-    printf 'droste-setup.sh reconfigures a box it rewrites the file with the new\n'
-    printf 'name.\n'
+    printf '**Permanently** — two settings in the box%s OWN config file, read at\n' "'s"
+    printf 'EVERY box start. That file is seeded from the image the first time the\n'
+    printf 'box starts and is YOURS from then on; it also documents every other\n'
+    printf 'setting the application takes. STARTUP_ENABLED takes `{yes, no}` (no =\n'
+    printf 'interactive only, nothing is launched); PORT is the port the server\n'
+    printf 'BINDS — these boxes share the host network, so nothing is remapped.\n'
+    printf 'Yours, from the answers you gave this run:\n\n'
+    for box in "${SELECTED[@]}"; do
+      data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-<data-dir>}}"
+      printf '    %s/%s\n' "$data" "${BOX_CFG[$box]}"
+      printf '      DROSTE_%s_STARTUP_ENABLED=%s\n' \
+        "${BOX_APP[$box]}" "$(yn_word "$(box_boxsv "$box")")"
+      printf '      DROSTE_%s_PORT=%s\n' \
+        "${BOX_APP[$box]}" "$(box_port_disp "$box")"
+    done
+    printf '\nEdit and `podman restart <name>` — no recreate needed, and the file\n'
+    printf 'survives image updates and box recreation. droste-setup.sh MERGES those\n'
+    printf 'two lines, one line at a time, for every box it CREATES: everything\n'
+    printf 'else in the file comes out exactly as you wrote it, comments included.\n'
+    printf 'Boxes you asked to KEEP are not touched at all, and a run that stopped\n'
+    printf 'short of creating a box has not recorded them anywhere but the box%s\n' "'s"
+    printf 'ini — create the box and they land in the file above.\n\n'
+    printf 'That is also why a newly created box is started once before your\n'
+    printf 'answers are recorded: the box has to seed its own config file before\n'
+    printf 'there is anything to record them in. The installer never writes that\n'
+    printf 'file itself — a file already sitting there would stop the box seeding\n'
+    printf 'it, and you would lose every other setting in it.\n'
     printf '\n## Supervision (podman healthcheck)\n\n'
     printf 'Each box is created with a healthcheck that probes its service from\n'
     printf 'inside (`--health-on-failure=restart`), so a wedged or crashed server\n'
@@ -5998,7 +6164,7 @@ write_notes() {
     printf 'knows you meant it.\n\n'
     printf 'The probe checks TWO things: that the service THIS box started is\n'
     printf 'still running, and that it answers. Both are needed because the boxes\n'
-    printf 'share the host network: if the port in `server.env` is already taken\n'
+    printf 'share the host network: if the port in `<box>.cfg` is already taken\n'
     printf 'when the box starts, the box does NOT start a second listener (it\n'
     printf 'says so in `<data dir>/.droste-serve.log`) and reports UNHEALTHY —\n'
     printf 'the stranger on that port is not your server. Give the box its own\n'
@@ -6076,7 +6242,7 @@ write_notes() {
       fi
     done
     printf '\nRecreating replaces the container; your data dir, your cache dir,\n'
-    printf 'server.env and the in-box overlays under them are untouched — that\n'
+    printf 'your `<box>.cfg` and the in-box overlays under them are untouched — that\n'
     printf 'is what makes in-box installs survive a recreate (pip packages ride\n'
     printf 'the environment overlay in the cache dir, custom nodes their own\n'
     printf 'overlay in the data dir).\n'
@@ -6128,8 +6294,8 @@ write_notes() {
         "$box" "${CFG_PORT[$box]}" "$(yn_word "${CFG_BOXSV[$box]:-}")" \
         "$(yn_word "${CFG_HSTSV[$box]:-}")" "${PATHS["$box:data"]}" \
         "${PATHS["$box:pcache"]}" "$note" \
-        "$([[ -n ${BOX_CONFIG[$box]} ]] \
-           && printf ' Seeded config: %s.' "${BOX_CONFIG[$box]}")"
+        "$(printf ' Settings: %s.' "${BOX_CFG[$box]}")$([[ -n ${BOX_CFG_EXTRA[$box]} ]] \
+           && printf ' Also seeded: %s.' "${BOX_CFG_EXTRA[$box]}")"
     done
     printf '\nEscape hatch: `-e ALLOW_EPHEMERAL=1` downgrades missing-critical-\n'
     printf 'bind errors to warnings (NOT recommended — data will not persist).\n'

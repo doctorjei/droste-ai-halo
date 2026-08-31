@@ -30,6 +30,46 @@ HEALTH_ACCEPT="ok"
 # happens, because the child is a real shell.
 ENV_FILE="/opt/data/llama.cfg"
 
+# ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
+# The five SERVE settings live in the same ENV_FILE as everything else, under the
+# prefix below: DROSTE_LLAMA_STARTUP_ENABLED / _HOST / _PORT / _TLS_CERT / _TLS_KEY.
+# serve::read_config PARSES them with droste::cfg_get and never sources the file — that
+# read also runs inside the healthcheck every 30s under --health-on-failure=restart,
+# where an abort is a restart loop that ejects every shell in the box.
+# 🚨 SERVE_CFG_PREFIX IS REQUIRED, and its absence is not a quiet degradation: a spec
+# that names ENV_FILE and no prefix makes read_config refuse to serve and report the
+# IMAGE as broken, because otherwise all five settings would read as absent and the box
+# would silently stop serving.
+SERVE_CFG_PREFIX="DROSTE_LLAMA_"
+#
+# 🚨 NO SERVE_HOST_FLAG ROW, AND THAT IS AN ANSWER RATHER THAN AN OMISSION: llama-server
+# spells it --host, which is serve::apply_host's own default. The same goes for --port.
+# ⭐ AND THIS BOX'S BEHAVIOUR CHANGES IN s60. It bound llama.cpp's own default —
+# `params.hostname = "127.0.0.1"` (common/common.h:606) — while every sibling bound
+# 0.0.0.0, and NOTHING REPORTED IT: the health probe asked 127.0.0.1, which a
+# loopback-only listener answers perfectly. llama_argv now bakes `--host 0.0.0.0` (see
+# the block above the SERVICE rebuild for the whole reason), and serve::apply_host
+# REPLACES that token with the user's address in the serving lane — the same path
+# comfyui and finetuning already take. ⚠️ BOTH HALVES ARE NEEDED: the launcher covers
+# the merged box, the baked token covers a direct `podman run`, where no launcher runs
+# at all. Neither alone delivers "all five default to 0.0.0.0".
+# 🚨 WHICH IS WHY THIS SPEC MUST NEVER ASSIGN LLAMA_ARG_HOST — see the
+# _wrong_on_clear entry in PRE_LAUNCH for the other half of that story. A variable we
+# never set cannot be blank, and `LLAMA_ARG_HOST=""` binds ::1 only and restart-loops
+# the box (s57). The template's reserved block names both spellings for the same reason.
+#
+# ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
+# and a wrong flag is not a wrong value — the server rejects the argv and never starts.
+# These are llama.cpp's own --ssl-cert-file / --ssl-key-file, the pair llama.cfg's
+# Security block already names and the pair behind the native LLAMA_ARG_SSL_*_FILE
+# variables the file still carries.
+# ⭐ THE FLAGS ARE DECLARED HERE; WHETHER THEY ARE EMITTED IS THE LAUNCHER'S CALL —
+# serve::apply_tls emits them ONLY when the user set both, because a flag we emit is
+# parsed after the environment and would silently beat a user's own LLAMA_ARG_SSL_*
+# line; a default here would destroy that choice for everyone.
+SERVE_TLS_CERT_FLAG=--ssl-cert-file
+SERVE_TLS_KEY_FLAG=--ssl-key-file
+
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). llama-server itself is a compiled
 # binary — the overlay serves the user's own pip installs (whole venv, so
@@ -351,9 +391,30 @@ llama_argv() {
     # Ordering: droste's own flags FIRST, the user's catch-all LAST, because llama
     # parses argv left to right and a later occurrence wins — so the user beats us on
     # every conflict, deliberately. --slot-save-path rides here too (no env var).
+    #
+    # 🚨 `--host 0.0.0.0` IS A DROSTE DEFAULT, NOT A CONSTANT, AND IT IS THE ONE TOKEN
+    # THAT CHANGES THIS BOX'S BEHAVIOUR (Jei, s59: "all should default to 0.0.0.0").
+    # llama-server's own default is `params.hostname = "127.0.0.1"` (common/common.h:606),
+    # so until this line existed the box bound LOOPBACK ONLY while every sibling bound all
+    # interfaces — and ⭐ NOTHING COULD REPORT IT: the health probe asks 127.0.0.1, which a
+    # loopback-only listener answers perfectly. An asymmetry that hides its own symptom is
+    # exactly why this is a baked token rather than an absent flag.
+    # ⭐ IT MAKES THIS BOX STRUCTURALLY IDENTICAL TO comfyui AND finetuning, which is the
+    # point of putting it here rather than leaving the flag to the launcher alone:
+    # serve::apply_host REPLACES the value after an existing flag and only APPENDS when
+    # there is none, so all three now take the replace path and llama stops being the one
+    # box whose address depends on an absence. The user's own value still wins — it
+    # arrives through DROSTE_LLAMA_HOST and the launcher overwrites this token with it.
+    # ⚠️ AND IT IS A FLAG, NEVER `LLAMA_ARG_HOST`. argv is parsed AFTER the environment
+    # (arg.cpp:509-530 then :539+) so the flag wins outright, and a variable we never set
+    # cannot be blank — which sidesteps the s57 box-killer (`LLAMA_ARG_HOST=""` binds ::1
+    # only and restart-loops the box) instead of having to survive it.
+    # ⚠️ It sits BEFORE the catch-all, like every other droste flag: a --host in
+    # DROSTE_LLAMA_EXTRA_ARGS still wins here, and the launcher then rewrites the value
+    # after EVERY occurrence, so the two copies cannot disagree.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_LLAMA_EXTRA_ARGS:-}")
-    SERVICE=( llama-server --slot-save-path /opt/program-cache/slots
+    SERVICE=( llama-server --slot-save-path /opt/program-cache/slots --host 0.0.0.0
               ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
 }
 
@@ -813,6 +874,12 @@ llama_pre_launch() {
         # Droste (do not set these)" prose at :17. It is guarded anyway BECAUSE it is
         # named there: "do not set this" is exactly the instruction a careful user obeys
         # by writing `LLAMA_ARG_HOST=`, and that is the one spelling that breaks the box.
+        # ⭐ SINCE s60 THE GUARD IS BELT-AND-BRACES RATHER THAN THE ONLY THING STANDING
+        # THERE, AND IT STAYS FOR EXACTLY THAT REASON. llama_argv now bakes `--host
+        # 0.0.0.0` and argv is parsed after the environment, so a blank native can no
+        # longer move the listener. Dropping this row would make the box depend on that
+        # ordering holding forever, and on nobody ever making the flag conditional —
+        # neither is a thing to bet a box on, and the failure is invisible from inside.
         LLAMA_ARG_HOST
         # ── category 2: numeric, so it has a default and must fall back to it ──
         # The mildest member of either list, and included for the rule rather than for

@@ -134,12 +134,20 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
 - `droste-serve.sh` — the shared SERVICE-launch library both doors run through:
   `serve::exec_service` (server lane: the same foreground `exec "${SERVICE[@]}"`
   as always) and `serve::maybe_launch` (distrobox lane: the "server door" of the
-  merged one-container shape). maybe_launch reads `/opt/data/server.env`
-  (`STARTUP_ENABLED=1`, `PORT=<host port>`; shell-sourceable, read in a subshell so a bad
-  file can never fail the box), rewrites the port into the SERVICE argv
-  (replace-or-append `--port` — all five services take it), and starts the service
-  in the background as the BOX USER via `setpriv --reuid/--regid` (supplementary
-  groups inherited, so the GPU device groups survive; runuser/su would not).
+  merged one-container shape). maybe_launch reads the box's OWN config surface,
+  `/opt/data/<box>.cfg` (the path is the build-spec's `ENV_FILE` row), for the five
+  serve settings: `DROSTE_<APP>_{STARTUP_ENABLED,HOST,PORT,TLS_CERT,TLS_KEY}`, the
+  prefix coming from the spec's `SERVE_CFG_PREFIX` row and naming the APPLICATION,
+  not the box (`DROSTE_JUPYTER_*` on finetuning). `STARTUP_ENABLED` takes
+  `{yes, no}`. They are PARSED, never sourced (`droste::cfg_get`), so a bad file
+  can never fail the box — the same guarantee the old subshell source bought, now
+  on a file that is several hundred lines of the user's own settings. It rewrites
+  the port AND the bind address into the SERVICE argv (replace-or-append the
+  per-box flags: `--port` on all five; `--host`, except comfyui's `--listen` and
+  finetuning's `--ip`), appends the TLS pair when BOTH halves are set, and starts
+  the service in the background as the BOX USER via `setpriv --reuid/--regid`
+  (supplementary groups inherited, so the GPU device groups survive; runuser/su
+  would not).
   Re-entrant by construction: a STATE RECORD on the data volume
   (`state/launch`, one line: `pid starttime token argv0 status`) records
   pid + process start time + a per-container-start token, so a re-run of the init
@@ -149,11 +157,24 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   what the healthcheck reads as PROOF OF OWNERSHIP; a refusal is also appended to
   `.droste-serve.log` (created at launch, so a start that never launched used to
   leave no log at all, which reads as "nothing ran").
+  **A setting can REFUSE the start outright**: no usable `PORT` on a box asked to
+  serve at startup, and — ruled s60 — a `HOST` that is not an IPv4 literal or a
+  TLS pair with only one half set. Those last two do NOT fall back: a fallback is
+  not neutral when it is WIDER than what the user asked for, and on boxes where
+  three of five have no authentication at all, silently binding every interface
+  after someone named one address is the same shape as a certificate with no key.
+  The accepted cost is that such a typo is downtime rather than a degraded start;
+  the refusal is loud and names the setting.
   **The server lane never reads server.env** — its ports are podman-published
   `HOST:CONTAINER` remaps, so rewriting the in-container bind would break them.
-  (Since the 2026-08-14 merge that lane is the direct-`podman run` route only;
-  droste-setup.sh creates no such container, so every INSTALLED box takes the
-  server.env path.)
+  (HISTORICAL as written, on both halves: `server.env` was deleted in s60, and the
+  published-port remap belonged to the compose lane, retired 2026-08-14 — see "one
+  container, two doors" below. The RULE outlived both reasons and still holds: the
+  server lane is the direct-`podman run` route only, it reads no serve setting from
+  any file, and it rewrites neither port nor bind address — the operator chose both
+  on their own command line, and droste ships no published-port definition to
+  reconcile with. droste-setup.sh creates no such container, so every INSTALLED box
+  goes through the distrobox door and its `<box>.cfg`.)
 - `droste-healthcheck.sh` — the container-side probe for
   `--health-cmd` + `--health-on-failure=restart` (wired by droste-setup.sh at create
   time; the images bake NO `HEALTHCHECK`). TWO gates, both required: (1) the state
@@ -161,7 +182,11 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   endpoint answers. Gate 1 exists because these boxes use HOST networking — when
   the door refuses a port another process already holds, that squatter's reply
   satisfies gate 2 and the box reported HEALTHY while serving nothing (live-confirmed).
-  Reads the same server.env for PORT and
+  Reads the same `<box>.cfg` for PORT and HOST, probing the address the server
+  BINDS (`serve::probe_addr`: the configured HOST, or `127.0.0.1` when that is the
+  `0.0.0.0` wildcard) — a probe still asking `127.0.0.1` after a user picks a
+  specific address gets nothing, reports UNHEALTHY forever and is restarted by a
+  supervisor doing exactly what it was told. Plus
   the build-spec's `HEALTH_PATH`/`HEALTH_ACCEPT` rows: comfyui `/`, llama `/health`,
   vllm `/health`, finetuning `/` with `accept=any` (jupyter only ever answers 302/403
   unauthenticated), ds4 `/v1/models` (source-verified: ds4-server has no `/health`
@@ -174,7 +199,14 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
 - **`ENV_FILE` is sourced under `set -a`** so plain `VAR=` lines are exported and
   survive the exec into the service (llama-server reads `LLAMA_ARG_*` from its
   environment). llama/ds4 keep belt-and-braces export loops in PRE_LAUNCH so their
-  specs stay self-sufficient under other callers.
+  specs stay self-sufficient under other callers. That source is for the box's
+  APPLICATION settings: the five serve settings live in the same file, and the
+  serve wiring reads them with `droste::cfg_get` (above) rather than off the
+  environment copy the source leaves behind — taking `$DROSTE_<APP>_PORT` from the
+  environment would quietly put shell semantics back in front of a config file.
+  Where a spec's own translation emits one of them from the environment anyway
+  (ds4's flag table), `serve::apply_port`/`apply_host` overwrite it afterwards, so
+  the parsed value is still the one that ships.
 - **The SERVICE-rebuild pattern:** build-spec is sourced bash, so `SERVICE=( … )`
   expands BEFORE ENV_FILE is sourced. Ports whose argv depends on env-file values
   (llama `$DROSTE_LLAMA_EXTRA_ARGS`, ds4's flag translation) declare a placeholder argv
@@ -358,8 +390,8 @@ prefix rules.
   report that cannot write the YAML (no output path exists). The config carries no
   `port:` key, deliberately (2026-08-14): the launcher owns the
   listen port (`droste-serve.sh::serve::apply_port` appends `--port $PORT` from
-  server.env), and setting it in both places made vLLM log `Found duplicate keys
-  --port` at every start. `VLLM_NO_USAGE_STATS=1` is baked
+  `vllm.cfg`'s `DROSTE_VLLM_PORT`), and setting it in both places made vLLM log
+  `Found duplicate keys --port` at every start. `VLLM_NO_USAGE_STATS=1` is baked
   instead of persisting `~/.config/vllm` (do-not-track > carrying state). The
   `cache/vllm` bind IS present (owner decision 2026-07-09, resolving the old
   VERIFY-at-test note that had it omitted): `~/.cache/vllm` — vLLM's
@@ -375,8 +407,9 @@ prefix rules.
   binary for the literals, which needs no GPU.
   `LLAMA_ARG_PORT` is emitted COMMENTED, not active (2026-08-14, same rule as
   vllm's missing `port:` key): the launcher appends `--port $PORT` from
-  server.env and llama.cpp silently resolves the CLI flag over the env var, so
-  an active line here would look authoritative and do nothing. It stays in the
+  `llama.cfg`'s own `DROSTE_LLAMA_PORT` and llama.cpp silently resolves the CLI
+  flag over the env var, so an active line here would look authoritative and do
+  nothing. It stays in the
   generator's `REQUIRED_VARS` drift gate regardless — that gate checks the
   PINNED BINARY's arg table, not what the template emits active.
   `LLAMA_CACHE` is deliberately UNSET — it is first in llama.cpp's
@@ -390,10 +423,17 @@ prefix rules.
 - **ds4** — ds4 has no native per-flag env vars, so PRE_LAUNCH translates
   `DROSTE_DS4_*` → argv (arity source-verified against pinned kyuz0/ds4
   `@00e64ea`); NATIVE `DS4_*` vars (DS4_THREADS, …) pass through untouched — the
-  binary reads them itself. `DROSTE_DS4_PORT` is deliberately NOT among the
-  seeded active lines (2026-08-14, same rule as vllm/llama): `apply_port` would
-  overwrite the `--port` it produces with server.env's `PORT` anyway, so the
-  template carries only a comment pointing at server.env. Backend shorthands
+  binary reads them itself. `DROSTE_DS4_PORT` and `DROSTE_DS4_HOST` sit in that
+  translation table AND are two of the five SERVE settings, so both paths reach the
+  argv: PRE_LAUNCH emits a flag from the ENVIRONMENT copy of the value, and
+  `serve::apply_port` / `serve::apply_host` — which run after it — overwrite that
+  flag with what `serve::read_config` PARSED out of `ds4.cfg`. The parsed value is
+  the authoritative one; the translation is what makes the spec self-sufficient
+  under other callers. (Until s60 the authority was a separate droste-owned
+  `server.env` and this template carried only a comment pointing at it, per the
+  2026-08-14 rule that kept an active port line out of every per-port config file.
+  That rule ended with the second file: there is one surface now, so the setting
+  is documented where the user already looks.) Backend shorthands
   (`--rocm`/`--cpu`/…) and the distributed/multi-node flags are left to
   `DROSTE_DS4_EXTRA_ARGS`. The whole `~/.ds4` (kvcache sessions + browser
   profile) is surfaced from `/opt/data/internal` — renamed from `/opt/data/ds4`
@@ -534,10 +574,11 @@ assumed.
   offers to clear BY LOCATION, and the hand-kept pair retired with it —
   `venv_upper_review`, `serve_env_keep_venv` and the `KEEP_OLD_VENV` key are
   all gone (a `KEEP_OLD_VENV=1` line left behind in an old `server.env` is
-  simply ignored: the box reads `STARTUP_ENABLED` (or legacy `SERVE`) and `PORT` from that file and nothing
-  else). What survives in the box is `resolve::_upper_is_env`, reduced to one
-  ungated WARN when an overlay upper turns out to be a whole environment, and
-  mirrored nowhere.
+  simply ignored — and since s60 nothing reads that file at all: the serve
+  settings moved onto the box's own `<box>.cfg` and `server.env` was deleted,
+  its legacy `SERVE=` arm with it). What survives in the box is
+  `resolve::_upper_is_env`, reduced to one ungated WARN when an overlay upper
+  turns out to be a whole environment, and mirrored nowhere.
 
 ### 2026-07-09 — shared compute-cache volume (`/opt/caches`, folded into v0.2.0)
 
@@ -603,21 +644,31 @@ by `distrobox assemble` from ONE record, `<box>-halo.ini`, with two doors.
 
 - **Serve door** — `podman start droste-<box>-halo` replays the ini's
   `init_hooks` line; the hook ends in `serve::maybe_launch`, which reads
-  `<data dir>/server.env` and launches the build-spec's SERVICE as the box
-  user on the recorded `PORT`. It is deliberately `|| true`: a serve problem
-  must never fail the hook, because distrobox reports a failed hook as a
+  `<data dir>/<box>.cfg` and launches the build-spec's SERVICE as the box
+  user on the recorded `PORT` and `HOST`. It is deliberately `|| true`: a serve
+  problem must never fail the hook, because distrobox reports a failed hook as a
   generic error and the box would become hard to ENTER — the opposite of what
   you want when the service is the broken part.
 - **Enter door** — `distrobox enter droste-<box>-halo`. Same container, so the
   environment a user pip-installs into is the one the service runs. Entering a
-  stopped box starts it, which opens the serve door with it when `STARTUP_ENABLED=1`.
-- **server.env is the single authority** for both STARTUP_ENABLED and PORT. It lives on
+  stopped box starts it, which opens the serve door with it when
+  `DROSTE_<APP>_STARTUP_ENABLED=yes`.
+- **The box's own `<box>.cfg` is the single authority** for all five serve settings
+  (`DROSTE_<APP>_{STARTUP_ENABLED,HOST,PORT,TLS_CERT,TLS_KEY}`). It lives on
   the per-box data volume, so it survives image updates and box recreation,
   and it is re-read at EVERY start (edit + `podman restart`, no recreate).
-  That authority is why the seeded per-port config files carry no active port
-  line — `serve::apply_port` would overwrite it anyway; see the vllm
-  (`port:` key), llama (`LLAMA_ARG_PORT`) and ds4 (`DROSTE_DS4_PORT`) notes
-  above, all dated 2026-08-14 for this reason.
+  That authority is why the NATIVE port spellings stay inert wherever else they
+  could reach the server: `serve::apply_port` puts our value on the COMMAND LINE,
+  and a CLI flag outranks a YAML key and an environment variable, so an active
+  native line would look authoritative and do nothing. See the vllm (`port:` key)
+  and llama (`LLAMA_ARG_PORT`) notes above, both dated 2026-08-14 for this reason.
+  **Superseded s60:** the authority was `server.env`, a
+  droste-owned SECOND file on the same volume holding only STARTUP_ENABLED and
+  PORT. It was deleted — a user should not have to learn that the port lives
+  somewhere other than every other setting the box has — and its two settings
+  moved onto the surface that already existed, joined by HOST and the TLS pair.
+  `STARTUP_ENABLED` reads `{yes, no}` there, the vocabulary of the menu it sits
+  under; the legacy `SERVE=1` spelling went with the file.
 - **Ports are BOUND, not published.** distrobox containers use HOST
   networking, so there is no `HOST:CONTAINER` remap to make: `PORT` is the
   host port. ds4's installer default is nudged to 8001 because vllm owns 8000.
@@ -644,9 +695,12 @@ image run directly", never "the box's other container".
 Migration: a pre-merge install's `-srv.cmp.yaml` / `-dbox.ini` pair and the
 containers made from them are superseded, and the installer neither reads nor
 removes them — it looks only for `<box>-halo.ini`. Re-running droste-setup.sh
-writes the single ini + server.env and reuses the data dir as-is; delete the
-old files and containers by hand. The one data-dir hazard is the pre-merge
-venv upper — see the poisoned-upper bullet in the lane-unification entry above.
+writes the single ini, merges the port and startup answers it just asked for into
+the box's `<box>.cfg` (`cfg_set`, one line at a time — every other byte of that
+file is the user's and comes out as it went in), and reuses the data dir as-is;
+delete the old files and containers by hand. The one data-dir hazard is the
+pre-merge venv upper — see the poisoned-upper bullet in the lane-unification
+entry above.
 
 ### 2026-08-15 — storage taxonomy (three roots, classification by LOCATION)
 
@@ -661,7 +715,8 @@ what a thing IS decides where it lives, and no consumer has to infer it again.
 Three roots, container-side (host defaults in parentheses):
 
 - **`/opt/data`** (`~/droste/data/<box>/program`) — per-box PERSISTENT. Configs
-  (`server.env`, `*.env`, `vllm_config.yaml`), comfyui `user/` + the
+  (the box's `<box>.cfg`, plus vllm's `vllm_config.yaml` and finetuning's
+  `jupyter_server_config.py`), comfyui `user/` + the
   custom_nodes upper + the model tree, ds4 `sessions/` + `cockpit/`, the
   finetuning workspace, the `.droste-*.log` files.
 - **`/opt/program-cache`** (`~/droste/caches/<box>`) — per-box PROGRAM CACHE,

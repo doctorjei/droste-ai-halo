@@ -31,19 +31,24 @@ the machine. The last question is how far to go:
   [A] All of the above, and start enabled server(s)
 ```
 
-What you are left with, all written from your answers — two records per box,
-and one guide for the install:
+What you are left with, all written from your answers — a definition and a
+config file per box, and one guide for the install:
 
 | File | What it is |
 |---|---|
 | `~/droste/<box>-halo.ini` | that box's whole definition — `distrobox assemble create --file` it to rebuild |
-| `server.env` (in the box's data dir) | that box's `STARTUP_ENABLED` and `PORT`, re-read at every start |
+| `<box>.cfg` (in the box's data dir) | the box's own settings file; your startup and port answers are merged into it a line at a time, and it is re-read at every start |
 | `~/droste/NOTES.md` | one guide for the whole install, with your own paths in it |
 
 Re-run the installer whenever you like — it reads back what you chose last
 time, so you only answer what you want to change. Full documentation of it,
 including the storage questions and what it will and will not delete, is under
 [droste-setup.sh — interactive installer](#droste-setupsh--interactive-installer).
+
+**Before you start one on a shared network:** every box binds every interface
+by default, and four of the five answer without asking who you are. What that
+means per box, and how to make one loopback-only, is under
+[Running](#running).
 
 Everything below is reference: what the images are, the mount contract behind
 them, and the two tools that import models into the shared stores.
@@ -148,8 +153,8 @@ either way.
 | Image | Service | Port | Config file (seeded if missing, on `/opt/data`) |
 |---|---|---|---|
 | comfyui | ComfyUI web UI | 8188 | `comfyui.cfg` |
-| finetuning | JupyterLab | 8888 | — (token auth; token is in `/opt/data/.droste-serve.log`) |
-| vllm | `vllm serve --config` | 8000 | `vllm_config.yaml` — set `model:`\* |
+| finetuning | JupyterLab | 8888 | `finetuning.cfg` (token auth; token is in `/opt/data/.droste-serve.log`) |
+| vllm | `vllm serve --config` | 8000 | `vllm.cfg` + `vllm_config.yaml` — set `model:`\* |
 | llama | `llama-server` | 8080 | `llama.cfg` — set `LLAMA_ARG_MODEL` |
 | ds4 | `ds4-server` | 8001 | `ds4.cfg` — set `DROSTE_DS4_MODEL` |
 
@@ -160,17 +165,66 @@ The box reads healthy either way, so set `model:` before first use unless
 that tiny model is genuinely what you wanted.
 
 Those ports are each service's own default. A box made by `droste-setup.sh`
-runs on host networking and binds the port recorded in its `server.env`
-directly — nothing the installer writes publishes or remaps a port. It
-offers these values, nudging ds4 to 8001 so it and vllm run side by side;
-publishing (`-p HOST:CONTAINER`) is the direct-`podman run` alternative.
+runs on host networking and binds the address and port recorded in its
+`<box>.cfg` directly — nothing the installer writes publishes or remaps a
+port. It offers these values, nudging ds4 to 8001 so it and vllm run side by
+side; publishing (`-p HOST:CONTAINER`) is the direct-`podman run` alternative.
+
+Serving is configured in that same file, alongside the service's own settings,
+under the name of the **application** rather than the box — `DROSTE_COMFYUI_`,
+`DROSTE_LLAMA_`, `DROSTE_VLLM_`, `DROSTE_DS4_`, and on the finetuning box
+`DROSTE_JUPYTER_`:
+
+| Setting | Takes | Absent or blank means |
+|---|---|---|
+| `DROSTE_<APP>_STARTUP_ENABLED` | `yes` / `no` | `no` — the box comes up, the server does not |
+| `DROSTE_<APP>_HOST` | an IPv4 literal | `0.0.0.0` — every interface |
+| `DROSTE_<APP>_PORT` | a port number | the service's own, from the table above |
+| `DROSTE_<APP>_TLS_CERT`, `_TLS_KEY` | paths to a PEM pair | no TLS — plain HTTP |
+
+Only the first two are ever written for you; the rest are yours. Because
+droste has to address the box to know whether it is healthy, the address and
+port are droste's to pass: it hands both to the service on the command line,
+which is why `host`/`port` in `vllm_config.yaml` and `LLAMA_ARG_HOST`/
+`LLAMA_ARG_PORT` in `llama.cfg` are marked reserved. TLS is not reserved —
+the health probe detects the scheme rather than being told it — so on vllm
+the `ssl-certfile`/`ssl-keyfile` YAML keys stay yours to use instead. ds4
+ships no TLS settings at all. These five belong to the box lane: a direct
+`podman run` picks its address and port on its own command line and never
+reads them, though the rest of the file still applies to it.
+
+**A value the box cannot honour stops it serving; it is never approximated.**
+Only IPv4 literals are accepted for now, so a hostname or an IPv6 address in
+`DROSTE_<APP>_HOST` refuses the launch and names the line to fix, rather than
+falling back — a user who typed an address was narrowing what the box listens
+on, and binding every interface instead is the opposite of what they asked
+for. Half a TLS pair refuses the same way, for the same reason: serving
+plaintext on a port you believe is encrypted is worse than not serving — so
+keep the pair in one file, because a certificate on vllm's cfg side and its
+key on the YAML side reads as half a pair too. A blank or missing setting is
+not a bad value — it is the default in the table above.
+
+**Every box is reachable from the LAN by default, and four of the five answer
+without asking who you are.** That is what `0.0.0.0` means, and it is worth
+knowing before a box is started on a network you share:
+
+| Box | Authentication |
+|---|---|
+| comfyui, ds4 | none — the servers have no such mechanism to turn on |
+| llama, vllm | an API key each (`LLAMA_API_KEY`, `VLLM_API_KEY`), unset by default |
+| finetuning | JupyterLab's token, generated at every start and required |
+
+To keep a box to the machine it runs on, set `DROSTE_<APP>_HOST=127.0.0.1` in
+its `<box>.cfg` and restart the container. Four of these five were already in
+this position before the address became a setting; what is new is that you can
+now change it.
 
 Mount contract (all ports):
 
 - **`/opt/data`** — the box's PERSISTENT volume: the seeded config file you
   edit, comfyui's model tree + `user/` + its custom-node overlay upper, ds4's
-  saved sessions, the finetuning workspace, `server.env`. Nothing on it is ever
-  deleted by anything we ship. Unbound → anonymous volume + a warning. Because
+  saved sessions, the finetuning workspace. Nothing on it is ever deleted by
+  anything we ship. Unbound → anonymous volume + a warning. Because
   overlay uppers live here — and on `/opt/program-cache` below — the backing
   filesystem must be ext4/btrfs/xfs-class (tmpfs also works) — **not** ecryptfs
   (encrypted homes), NFS, or virtiofs, which kernel overlayfs rejects as an
@@ -314,14 +368,14 @@ toolboxes, and that is not a second container. Each app is ONE container,
 `targets/<port>/distrobox.ini` — with two ways in:
 
 - **the serve door** — `podman start droste-<port>-halo`. Starting the
-  container replays its init hook, which applies the mounts and then reads
-  `server.env` from the box's data dir: `STARTUP_ENABLED=1` launches the
-  service on `PORT` (bound directly — boxes use host networking),
-  `STARTUP_ENABLED=0` brings up the box and nothing else. Edit that file and
-  `podman restart` the box; no recreate, and it survives image updates. (That
-  key used to be called `SERVE`; old files still work.) To start or stop the
-  server WITHOUT editing anything, run `server_start` / `server_stop` /
-  `server_restart` / `server_status` inside the box — a stop that way lasts
+  container replays its init hook, which applies the mounts and then reads the
+  five serve settings out of the box's `<box>.cfg` in its data dir:
+  `DROSTE_<APP>_STARTUP_ENABLED=yes` launches the service on `_HOST` and
+  `_PORT` (bound directly — boxes use host networking), `no` brings up the box
+  and nothing else. Edit that file and `podman restart` the box; no recreate,
+  and it survives image updates. To start or stop the server WITHOUT editing
+  anything, run `server_start` / `server_stop` / `server_restart` /
+  `server_status` inside the box — a stop that way lasts
   until the box next starts, which is the point: you cannot leave a box
   quietly dead and forget why. The boxes are created with a
   podman healthcheck (flags in the ini's `additional_flags`,
@@ -336,7 +390,7 @@ toolboxes, and that is not a second container. Each app is ONE container,
   (and that unit asks the server to exit before stopping the container);
 - **the enter door** — `distrobox enter droste-<port>-halo`, a shell in your
   own `$HOME` with the box's toolchain. Entering a stopped box starts it, so
-  the serve door opens with it when `STARTUP_ENABLED=1`.
+  the serve door opens with it when `DROSTE_<APP>_STARTUP_ENABLED=yes`.
 
 Both doors are the SAME environment: a `pip install` you do interactively is
 what the served process runs. The init hook performs the **same resolver
@@ -404,11 +458,15 @@ box user.
   because after first start they are yours to edit. Nothing tells you when the
   baked original moves on, so after an image update compare yours against it
   inside the box: `/opt/resources/templates/`. Two known cases. An old
-  `vllm_config.yaml` carries a `port:` key: delete the line — the container
-  owns the listen port (`server.env`), and the same goes for `LLAMA_ARG_PORT`
-  in `llama.cfg` or `DROSTE_DS4_PORT` in `ds4.cfg` if you re-add them. And a
-  `ds4.cfg` seeded before the storage split still points
-  `DS4_DROSTE_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
+  `vllm_config.yaml` carries a `port:` key: delete the line — `host` and
+  `port` are reserved in that file, because droste passes both on the command
+  line so that it can address the box to health-check it, and a command-line
+  flag outranks a YAML key. The same reservation covers `LLAMA_ARG_HOST` and
+  `LLAMA_ARG_PORT` in `llama.cfg`. A leftover key therefore changes nothing;
+  it is only what makes vLLM log the duplicate. Set the port you want in
+  `DROSTE_VLLM_PORT` (or `DROSTE_LLAMA_PORT`, `DROSTE_DS4_PORT`, …) instead.
+  And a `ds4.cfg` seeded before the storage split still points
+  `DROSTE_DS4_KV_DISK_DIR` at `/opt/data/kv-disk`, writing KV cache into the
   persistent volume: repoint it to `/opt/program-cache/kv-disk`.
 - **A config file you cannot edit at all** — `vllm_config.yaml`, `ds4.cfg`,
   `llama.cfg` under `~/droste/data/<box>/` owned by `100000`, unwritable from
@@ -450,10 +508,14 @@ whether each box serves when it starts and whether it starts at host boot. It
 (ecryptfs/NFS/…, see Troubleshooting), offers another location, the
 fuse-overlayfs fallback, or copy-mode. It then emits per-box **recreation
 records** into `~/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
-definition for that box, healthcheck flags and all), `server.env` in the box's
-own data dir (`STARTUP_ENABLED` + `PORT`, re-read at every start), and a `NOTES.md` guide
+definition for that box, healthcheck flags and all) and a `NOTES.md` guide
 with your real paths baked in — and can pull images, create boxes, and start
-servers. Boxes asked to start at host boot also get a systemd **user** unit
+servers. Your startup and port answers do not go into a file of droste's; they
+go into the box's own `<box>.cfg`, which the box seeds at its first start and
+which is yours from then on. So the order is create, start, merge the two
+lines, and restart only if a value actually changed — the installer edits the
+two settings it asked about and reproduces every other byte of your file
+exactly. Boxes asked to start at host boot also get a systemd **user** unit
 (`~/.config/systemd/user/droste-<box>.service`) doing `podman start`, and the
 installer enables lingering for you (printing the `sudo` form if the session
 will not let it).

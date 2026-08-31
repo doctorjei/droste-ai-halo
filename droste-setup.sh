@@ -1583,11 +1583,19 @@ probe_linger() {
 # comments and the user's edits. So the installer may only MERGE one line at a
 # time, and every other byte must come out exactly as it went in.
 #
-# 🚨 PARSE, NEVER SOURCE — AND THE PARSER MUST AGREE WITH THE SHELL. The same
-# file IS sourced (under `set -a`) a few milliseconds later for the app
-# settings, so shell semantics decide what the file means. That is why the LAST
-# active assignment wins: a first-match parser would silently disagree with the
-# very file it is reading.
+# 🚨 PARSE, NEVER SOURCE — AND THE SHELL IS NOT THE AUTHORITY. Ruled s60 (Jei:
+# "i do not want to mimic sourcing. this is a config file"). The same file IS
+# sourced (under `set -a`) a few milliseconds later for the app settings, so
+# bash is EVIDENCE about what a shape probably means — never the rule that
+# decides. The LAST active assignment wins because later-overrides-earlier is
+# what a config file MEANS, not because a sourcing shell happens to agree.
+# ⚠️ Two answers here look like they are chosen against bash and are simply the
+# rule: an unquoted value's interior spaces are kept whole (a config file does
+# not word-split — the value is the text), and text after a closing quote is
+# dropped (the value is the quoted span, full stop). A third one IS a chosen
+# difference: `NAME= 8188` reads as `8188` where bash would leave the variable
+# unset, because that line is an error in the sourcing path and there is no
+# reading of a config file under which the user meant anything else.
 #
 # 🚨 THIS RULE EXISTS TWICE ON PURPOSE, AND THE TWO COPIES MUST NOT DRIFT.
 # droste-setup.sh is a standalone `curl | bash` script running on the HOST; it
@@ -1612,6 +1620,20 @@ probe_linger() {
 # the kernel needs it spelled; the caller runs fs_path (the path spelling
 # contract: fs_path resolves only at the filesystem boundary, and its result is
 # never stored, compared or printed).
+#
+# ⚠️ THREE ANSWERS THAT LOOK LIKE OVERSIGHTS AND ARE NOT (s60 contract §5). Both
+# implementations already agreed on all three, which is exactly WHY they are
+# written down — an agreement nobody recorded is the next reader's "fix":
+#   1. A BINARY file holding one well-formed line yields that line's value.
+#      There is no sniffing and no rejection; the parser reads lines, and a file
+#      full of NULs simply has no line that matches.
+#   2. A LAST LINE WITH NO TRAILING NEWLINE IS A LINE and is read. ⚠️ cfg_set
+#      must not GROW one: a file whose last line lacked a newline still lacks
+#      one after some OTHER line of it is rewritten.
+#   3. NEITHER cfg_get PRINTS A TRAILING NEWLINE. Callers use `$( )`, where the
+#      two would be indistinguishable, so this is stated rather than measured —
+#      a later "tidy-up" that added one would be invisible here and visible to
+#      the differential harness.
 
 # One human message per distinct problem, at most once per run: cfg_get is
 # called once per NAME, so a naive warn gives five identical lines for one
@@ -1637,6 +1659,8 @@ CFG_LINE_PREFIX=""   # a leading `export` and the whitespace after it, "" if non
 CFG_LINE_VALUE=""    # the parsed value: quotes stripped, inline comment removed
 CFG_LINE_TAIL=""     # everything the value was followed by, its whitespace included
 CFG_LINE_QUOTE=""    # the quote character the value was written with, "" if bare
+CFG_LINE_OPEN=0      # 1 when the text ended INSIDE a quote that never closed
+CFG_LINE_OPENQ=""    # the quote character that was left open, "" when none was
 
 # 🚨 `export NAME=value` IS AN ASSIGNMENT AND IS ACCEPTED (ruled s59, after the
 # in-box twin first excluded it on a strict reading of parse rule 2). Bash sets
@@ -1675,20 +1699,40 @@ cfg_take_export() {  # body → CFG_LINE_PREFIX + CFG_LINE_BODY
 # `8188` and a take-the-rest-of-the-line parser reads as `8188        # port it
 # binds`. The cut is at the first `#` that begins the value or follows
 # whitespace.
-# ⚠️ Text after a CLOSING quote is dropped (the contract says "strip ONE
-# matching outer quote pair", and the only shape that occurs in the wild there
-# is a trailing comment). An UNTERMINATED quote is returned verbatim, quote
-# character included, because handing back what the user actually typed is what
-# lets an error name the typo.
+# ⚠️ Text after a CLOSING quote is dropped: the value IS the quoted span, full
+# stop (the only shape that occurs in the wild there is a trailing comment). An
+# UNTERMINATED quote keeps its opening quote character, because handing back
+# what the user actually typed is what lets an error name the typo.
+# ⚠️ IT IS NOT LITERALLY VERBATIM, AND THE MESSAGE MUST NOT CLAIM IT IS (§2c):
+# the unterminated text falls through to the UNQUOTED path below, so the inline
+# comment cut and the trailing strip both still apply to it. The wording
+# "returning the value verbatim" was deleted from the warning for that reason.
 # NO ESCAPE PROCESSING AND NO EXPANSION in either form: a `$` comes back
 # verbatim and is the caller's problem, never the parser's.
-cfg_split_rhs() {  # text-after-the-= → sets CFG_LINE_VALUE/TAIL/QUOTE
-  local raw=${1-} q rest v trail
-  CFG_LINE_VALUE="" CFG_LINE_TAIL="" CFG_LINE_QUOTE=""
-  case $raw in
+#
+# 🚨 THE ORDER OF THE FIRST TWO STEPS IS LOAD-BEARING (contract §1), and the two
+# implementations diverge here if it is not followed exactly:
+#   1. strip leading whitespace FIRST,
+#   2. THEN ask whether the value is quoted.
+# `NAME= "a b"` is a QUOTED value. Testing for the quote first classifies it as
+# unquoted and hands back the literal text `"a b"` with the quote marks in it.
+# ⚠️ The stripped leading whitespace is NOT kept for the rewrite: a value cfg_set
+# replaces is re-spelled flush against the `=`. Trailing whitespace IS kept (in
+# the TAIL), because that is the alignment between a value and its comment.
+#
+# ⚠️ THIS FUNCTION NEVER WARNS, and that is deliberate: an unclosed quote may be
+# a line continuation (§2), which only the READER can tell, since only the
+# reader knows whether another physical line follows. It reports the fact in
+# CFG_LINE_OPEN and cfg_note_line turns the final verdict into the message.
+cfg_split_rhs() {  # text-after-the-= → sets CFG_LINE_VALUE/TAIL/QUOTE/OPEN
+  local raw=${1-} q rest v trail lead
+  CFG_LINE_VALUE="" CFG_LINE_TAIL="" CFG_LINE_QUOTE="" CFG_LINE_OPEN=0 CFG_LINE_OPENQ=""
+  lead=${raw%%[![:space:]]*}          # step 1; the whole text when it is blank
+  case ${raw#"$lead"} in
     '"'*|"'"*)
-      q=${raw:0:1}
-      rest=${raw:1}
+      rest=${raw#"$lead"}             # step 2, on the STRIPPED text
+      q=${rest:0:1}
+      rest=${rest:1}
       case $rest in
         *"$q"*)
           # `%%` removes the LONGEST matching suffix, i.e. it cuts at the FIRST
@@ -1699,11 +1743,15 @@ cfg_split_rhs() {  # text-after-the-= → sets CFG_LINE_VALUE/TAIL/QUOTE
           return 0
           ;;
       esac
-      cfg_note "unterminated:${q}" \
-        "unterminated $q quote in a config value $EMD returning the text verbatim"
+      CFG_LINE_OPEN=1 CFG_LINE_OPENQ=$q
       ;;
   esac
   # Unquoted (or an unterminated quote, which falls through to here on purpose).
+  # The comment cut and the trailing strip run on the RAW text rather than the
+  # stripped one so that a TAIL still carries the user's own alignment
+  # (`NAME=   # note` puts all three spaces back in front of the `#`); the
+  # leading whitespace is then taken off the VALUE at the end, which reaches the
+  # same answer step 1 would have.
   v=$raw
   case $v in
     # `NAME=#x` is an empty value followed by a comment. The space put in front
@@ -1722,9 +1770,58 @@ cfg_split_rhs() {  # text-after-the-= → sets CFG_LINE_VALUE/TAIL/QUOTE
     trail=${v: -1}$trail
     v=${v%[[:space:]]}
   done
-  CFG_LINE_VALUE=$v
+  # Step 1's leading strip, applied last (see the note above) and DISCARDED: a
+  # rewritten value goes back flush against the `=`.
+  CFG_LINE_VALUE=${v#"${v%%[![:space:]]*}"}
   CFG_LINE_TAIL=$trail$CFG_LINE_TAIL
   return 0
+}
+
+# ── §2: `\`-NEWLINE CONTINUATION, INSIDE QUOTES ONLY ─────────────────────────
+# 🚨 THE BACKSLASH IS THE ONLY CONTINUATION SIGNAL, AND THAT IS WHAT KEEPS THE
+# SCAN BOUNDED. Continuation runs only WHILE each physical line ends with `\`
+# and the quote is still open; it never reads ahead speculatively looking for a
+# closing quote. So a BLANK line stops it (`NAME="a\` ⏎ ⏎ `b"` is an
+# unterminated quote, not `ab`), and an unterminated quote stays exactly the
+# error it is instead of swallowing the rest of the file. An unbounded forward
+# scan in the healthcheck path is the failure this design refuses.
+# ⚠️ The trailing `\` is consumed as the SIGNAL, so it is gone whether or not a
+# line follows: `NAME="a\` at EOF reads as `"a`, never `"a\`.
+# ⚠️ ANY trailing `\` continues, and EXACTLY ONE character is removed — the last
+# one. Anything in front of it is DATA, so `NAME="a\\` ⏎ `b"` is `a\b` and not
+# `ab`. No odd/even counting: counting would import the escape semantics this
+# contract does not have, where a backslash is a plain character.
+# ⚠️ Consequence: A CONTINUED LINE CANNOT END IN A LITERAL BACKSLASH. Put the
+# backslash anywhere but the line's last character.
+# ⚠️ OUTSIDE a quote there is no continuation at all: `NAME=a\` keeps the
+# backslash as part of the value, and cfg_note_line says so.
+#
+# 🚨 THE TEST IS NAME-BLIND ON PURPOSE. A continued value belonging to some
+# OTHER setting swallows its own continuation lines, and one of those lines can
+# look exactly like an assignment of the name we are after:
+#     DROSTE_APP_NOTE="see \
+#     DROSTE_SERVE_PORT=9000"
+# Reading that second line as an assignment would invent a setting out of
+# another one's value, so the scan joins logical lines for EVERY name and only
+# then asks whether the result is ours.
+cfg_line_open() {  # LINE → 0 when the line ends inside a quote that never closed
+  local line=$1 body nm
+  body=${line#"${line%%[![:space:]]*}"}
+  case $body in
+    '#'*|'') return 1 ;;                 # a comment is one physical line, always
+  esac
+  cfg_take_export "$body"; body=$CFG_LINE_BODY
+  case $body in
+    *=*) ;;
+    *)   return 1 ;;
+  esac
+  nm=${body%%=*}
+  [[ $nm =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  # The quote rule lives in ONE place: ask the splitter rather than repeating it.
+  # ⚠️ This clobbers the CFG_LINE_* globals, so every caller re-splits the joined
+  # line afterwards.
+  cfg_split_rhs "${body#*=}"
+  [[ $CFG_LINE_OPEN -eq 1 ]]
 }
 
 cfg_split_active() {  # NAME LINE → 0 when LINE is an ACTIVE assignment of NAME
@@ -1773,6 +1870,75 @@ cfg_split_commented() {  # NAME LINE → 0 when LINE is a commented assignment o
   return 0
 }
 
+# ── The line reader, shared by cfg_get and cfg_set ───────────────────────────
+# The whole file is slurped rather than streamed because BOTH callers need it:
+# cfg_set has always needed the array to rebuild the file, and since §2 a
+# LOGICAL line can span several physical ones, so the reader has to be able to
+# look at the next line. One reader, one grouping rule, no parallel path — the
+# two functions cannot disagree about where an assignment ends.
+CFG_LINES=()         # the file's physical lines, in order
+CFG_NONL=0           # 1 when the last physical line had no newline after it
+cfg_read_lines() {   # FILE → CFG_LINES + CFG_NONL
+  local file=$1 line rc
+  CFG_LINES=(); CFG_NONL=0
+  while :; do
+    rc=0; IFS= read -r line || rc=$?
+    if [[ $rc -ne 0 && -z $line ]]; then break; fi
+    CFG_LINES+=("$line")
+    # A final line with no newline after it: it is a line, and it must not GROW
+    # one just because we touched a different line of the file.
+    [[ $rc -eq 0 ]] || { CFG_NONL=1; break; }
+  done < "$file"
+  return 0
+}
+
+# One LOGICAL line, starting at physical index i. CFG_LOGICAL_END is the index
+# of the LAST physical line it consumed — which is what lets cfg_set replace all
+# N of them together instead of leaving orphaned continuation lines behind as
+# live junk (the C `//`-comment-ending-in-`\` failure: a writer that cannot tell
+# where an assignment ends).
+CFG_LOGICAL=""
+CFG_LOGICAL_END=0
+cfg_join_at() {  # index → CFG_LOGICAL + CFG_LOGICAL_END
+  local i=$1 n=${#CFG_LINES[@]} text
+  text=${CFG_LINES[i]}
+  while cfg_line_open "$text"; do
+    case $text in
+      *\\) ;;                        # ends with `\` ⇒ the line asks to continue
+      *)   break ;;                  # anything else ends the scan, blank included
+    esac
+    text=${text%\\}                 # the signal is consumed either way (§2b)
+    [[ $((i + 1)) -lt $n ]] || break   # EOF: the quote stays unterminated
+    text=$text${CFG_LINES[i + 1]}   # the next line RAW: no strip, no comment cut
+    i=$((i + 1))
+  done
+  CFG_LOGICAL=$text
+  CFG_LOGICAL_END=$i
+  return 0
+}
+
+# The diagnostics a line owes once its LOGICAL form is final. Called only by
+# cfg_get and only for a line that actually assigns NAME: a message about a line
+# that turned out to be a continuation, or about some other setting entirely,
+# would be noise about text we were not asked to read.
+# ⚠️ cfg_set does NOT call this. Its own first act is a cfg_get over the same
+# file for the same name, so everything here has already been said.
+cfg_note_line() {  # NAME → 0, having said whatever this line earns
+  local name=$1
+  if [[ $CFG_LINE_OPEN -eq 1 ]]; then
+    cfg_note "unterminated:$name" \
+      "unterminated $CFG_LINE_OPENQ quote in $name $EMD check the quoting in your config file"
+    return 0
+  fi
+  # Only an UNQUOTED value can be caught out by this: inside quotes the
+  # backslash would have continued the line.
+  if [[ -z $CFG_LINE_QUOTE && $CFG_LINE_VALUE == *\\ ]]; then
+    cfg_note "backslash:$name" \
+      "$name ends with a backslash $EMD line continuation only works inside quotes, so the backslash is part of the value"
+  fi
+  return 0
+}
+
 # ── cfg_get — THE READ ENTRY POINT (installer half of the shared contract) ───
 # Usage:  value=$(cfg_get DROSTE_SERVE_PORT "$file")
 #
@@ -1789,14 +1955,13 @@ cfg_split_commented() {  # NAME LINE → 0 when LINE is a commented assignment o
 # is a NORMAL state and is silent; only a file that exists and cannot be read
 # earns a message.
 cfg_get() {  # NAME FILE → the value on stdout, always 0
-  local name=${1-} file=${2-} line out="" rc
+  local name=${1-} file=${2-} out="" i n
   if [[ -z $name || -z $file ]]; then printf '%s' ''; return 0; fi
   # NAME is used inside a glob pattern below, so a metacharacter in it would
-  # match lines it has no business matching — and a name that is not a shell
-  # identifier cannot be an assignment in the sourced file either, so the honest
-  # answer is "absent".
+  # match lines it has no business matching — and a name that is not a variable
+  # name cannot be an assignment of anything, so the honest answer is "absent".
   if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    cfg_note "badname:$name" "config lookup for '$name' is not a valid variable name"
+    cfg_note "badname:$name" "'$name' is not a valid variable name $EMD treating it as unset"
     printf '%s' ''; return 0
   fi
   # -f excludes a directory (whose redirect would fail) and a FIFO (whose
@@ -1804,15 +1969,22 @@ cfg_get() {  # NAME FILE → the value on stdout, always 0
   if [[ ! -f $file ]]; then printf '%s' ''; return 0; fi
   if [[ ! -r $file ]]; then
     cfg_note "unreadable:$file" \
-      "cannot read $file $EMD every setting in it reads as unset (check its permissions)"
+      "cannot read $file $EMD every setting in it reads as unset; check its permissions"
     printf '%s' ''; return 0
   fi
-  while :; do
-    rc=0; IFS= read -r line || rc=$?
-    if [[ $rc -ne 0 && -z $line ]]; then break; fi
-    if cfg_split_active "$name" "$line"; then out=$CFG_LINE_VALUE; fi
-    [[ $rc -eq 0 ]] || break
-  done < "$file"
+  cfg_read_lines "$file"
+  n=${#CFG_LINES[@]}
+  # The walk steps over LOGICAL lines: `i` advances past every physical line a
+  # continued assignment consumed, so a continuation line can never be read as
+  # an assignment of its own.
+  for (( i = 0; i < n; )); do
+    cfg_join_at "$i"
+    if cfg_split_active "$name" "$CFG_LOGICAL"; then
+      out=$CFG_LINE_VALUE
+      cfg_note_line "$name"
+    fi
+    i=$((CFG_LOGICAL_END + 1))
+  done
   printf '%s' "$out"
   return 0
 }
@@ -1834,10 +2006,26 @@ cfg_get() {  # NAME FILE → the value on stdout, always 0
 # modify run that does not change the port does not touch the user's file.
 # 🚨 TEMP FILE + RENAME, NEVER IN PLACE, AND NEVER A TRUNCATE (s57: a guard can
 # corrupt what it guards). Everything the user wrote survives.
+#
+# 🚨 DUPLICATE ACTIVE ASSIGNMENTS: WRITE THE LAST, TOUCH NEITHER (contract §4).
+# The earlier lines are left EXACTLY as the user wrote them — commenting them
+# out was proposed and rejected, because that edits a line the user wrote and
+# the file is theirs. We warn and stay consistent with our own parse rule; we do
+# not tidy. ⚠️ The file then keeps showing two live lines for one setting. The
+# user created that state and can see it; it is not a defect to re-raise.
+#
+# 🚨 A CONTINUED ASSIGNMENT IS ONE LOGICAL ASSIGNMENT SPANNING N PHYSICAL LINES,
+# AND ALL N ARE CONSUMED. Replacing only the first would leave the rest of the
+# value behind as live junk — the C `//`-comment-ending-in-`\` failure.
+# ⚠️ A genuine value change therefore REFLOWS the assignment onto one line. That
+# is an accepted loss, recorded so it is not rediscovered as a bug: continuation
+# exists for the look, but preserving a wrap around a value the user just
+# changed is worse guesswork. Idempotence protects the common case — an
+# unchanged value writes nothing at all, so the user's wrapping survives
+# byte-identical.
 cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
+  local cur i n target=-1 tend=-1 mode="" dups=0 nonl=0 tmp dir text last new
   local name=${1-} value=${2-} file=${3-}
-  local line cur i n rc target=-1 mode="" nonl=0 tmp dir text new
-  local -a lines=()
 
   if [[ -z $file ]]; then
     warn "cfg_set: no config file given for $name"; return 1
@@ -1868,33 +2056,59 @@ cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
   fi
 
   cur=$(cfg_get "$name" "$file")
+
+  cfg_read_lines "$file"
+  n=${#CFG_LINES[@]} nonl=$CFG_NONL
+
+  # Both scans walk LOGICAL lines (see cfg_join_at): `target` is where the
+  # assignment starts and `tend` the last physical line it owns, so a continued
+  # assignment is replaced whole. A commented line is never open, so a template
+  # line is always exactly one physical line.
+  # ⚠️ THE SPAN IS EXACTLY WHAT THE PARSER CONSUMED, and the edge case is ruled
+  # (§2d): a blank line that STOPPED a continuation was still consumed by the
+  # join, so it belongs to the assignment and goes with it. The alternative —
+  # a writer whose idea of the span differs from the parser's by one line — is
+  # the orphaned-junk failure by another route. Do not "fix" this.
+  for (( i = 0; i < n; )); do
+    cfg_join_at "$i"
+    if cfg_split_active "$name" "$CFG_LOGICAL"; then
+      target=$i; tend=$CFG_LOGICAL_END; mode=active; dups=$((dups + 1))
+    fi
+    i=$((CFG_LOGICAL_END + 1))
+  done
+
+  # §4: the user's file contradicts itself. Say so, write the last assignment,
+  # and leave the earlier lines exactly as they are.
+  # 🚨 THIS SITS ABOVE THE NO-OP SHORT-CIRCUIT ON PURPOSE (§4a): a duplicate is a
+  # property of the USER'S FILE, not of our write, so whether we ended up
+  # changing anything has no bearing on whether they should be told. Reporting a
+  # condition and modifying a file are different acts, and the no-op promises
+  # only the second — byte-identical file, unchanged mtime, message still said.
+  # ⚠️ STDOUT, via the installer's own warn(): cfg_set's stdout is UI. Only
+  # cfg_get owes its diagnostics to stderr, and only because ITS stdout is the
+  # value being returned.
+  if [[ $dups -gt 1 ]]; then
+    warn "$name is assigned more than once in $file $EMD the last assignment wins; the earlier one was left as you wrote it"
+  fi
+
   if [[ $cur == "$value" ]]; then return 0; fi
 
-  while :; do
-    rc=0; IFS= read -r line || rc=$?
-    if [[ $rc -ne 0 && -z $line ]]; then break; fi
-    lines+=("$line")
-    # A final line with no newline after it: it is a line, and it must not GROW
-    # one just because we touched a different line of the file.
-    [[ $rc -eq 0 ]] || { nonl=1; break; }
-  done < "$file"
-  n=${#lines[@]}
-
-  for (( i = 0; i < n; i = i + 1 )); do
-    if cfg_split_active "$name" "${lines[i]}"; then target=$i; mode=active; fi
-  done
   if [[ $target -lt 0 ]]; then
-    for (( i = 0; i < n; i = i + 1 )); do
-      if cfg_split_commented "$name" "${lines[i]}"; then target=$i; mode=commented; fi
+    for (( i = 0; i < n; )); do
+      cfg_join_at "$i"
+      if cfg_split_commented "$name" "$CFG_LOGICAL"; then
+        target=$i; tend=$CFG_LOGICAL_END; mode=commented
+      fi
+      i=$((CFG_LOGICAL_END + 1))
     done
   fi
 
   # Re-split the CHOSEN line: the loops above ran past it, so the globals hold
   # the last line they looked at rather than the last line that matched.
   if [[ $mode == active ]]; then
-    cfg_split_active "$name" "${lines[target]}" || :
+    cfg_join_at "$target"; cfg_split_active "$name" "$CFG_LOGICAL" || :
   elif [[ $mode == commented ]]; then
-    cfg_split_commented "$name" "${lines[target]}" || :
+    cfg_join_at "$target"; cfg_split_commented "$name" "$CFG_LOGICAL" || :
   else
     CFG_LINE_INDENT="" CFG_LINE_PREFIX="" CFG_LINE_TAIL="" CFG_LINE_QUOTE=""
   fi
@@ -1907,13 +2121,17 @@ cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
   tmp=$(mktemp "$dir/.droste-cfg.XXXXXX" 2>/dev/null) || {
     warn "could not write in $dir $EMD $name was not recorded in $file"; return 1; }
   {
-    for (( i = 0; i < n; i = i + 1 )); do
-      if [[ $i -eq $target ]]; then text=$new; else text=${lines[i]}; fi
-      if [[ $nonl -eq 1 && $i -eq $((n - 1)) && $target -ge 0 ]]; then
+    for (( i = 0; i < n; )); do
+      # `last` is the physical line this iteration emits THROUGH: for the target
+      # that is the end of its continuation span, and the N lines it covered
+      # collapse into the one rebuilt line.
+      if [[ $i -eq $target ]]; then text=$new; last=$tend; else text=${CFG_LINES[i]}; last=$i; fi
+      if [[ $nonl -eq 1 && $last -eq $((n - 1)) && $target -ge 0 ]]; then
         printf '%s' "$text"
       else
         printf '%s\n' "$text"
       fi
+      i=$((last + 1))
     done
     # Appending terminates a final unterminated line first — the alternative is
     # gluing our assignment onto the end of the user's last one.

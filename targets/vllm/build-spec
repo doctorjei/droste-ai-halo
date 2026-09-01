@@ -18,12 +18,36 @@
 # ⚠️ Substring noise — VLLM_CONFIG_ROOT and VLLM_CONFIGURE_LOGGING are real and
 # UNRELATED upstream variables. A bare grep for VLLM_CONFIG is untrustworthy.
 #
-# 🚨 A CONFIG WITH NO MODEL DOES NOT FAIL. This comment used to say vLLM exits with
-# "model is required"; it does not. ModelConfig.model defaults to Qwen/Qwen3-0.6B
-# (config/model.py:103), `model_tag` is nargs="?", and validate_parsed_serve_args
-# never checks — so an unedited box DOWNLOADS AND SERVES Qwen3-0.6B and reads
-# HEALTHY. What to do about that is a ruling, not a wiring decision (board N21);
-# recorded here so the next reader does not inherit the false version.
+# 🚨 A CONFIG WITH NO MODEL FAILS — AND THIS COMMENT HAS NOW BEEN WRONG BOTH WAYS.
+# It first said vLLM exits with "model is required". `dc11e7d` replaced that with the
+# opposite: that an unedited box DOWNLOADS AND SERVES Qwen3-0.6B and reads HEALTHY,
+# reasoning from ModelConfig.model's default (config/model.py:103), `model_tag` being
+# nargs="?", and validate_parsed_serve_args never checking. Those three facts are real
+# and they are never reached, so the second version was false too.
+# ✅ EXECUTED, NOT READ (s61 part 2). The pinned vllm/utils/argparse_utils.py was imported as
+# itself (only vllm.logger stubbed) and DRIVEN through the real parse_args with the
+# SERVICE argv above and the shipped templates/vllm_config.yaml. It raises
+#   ValueError: No model specified! Please specify model either as a positional
+#               argument or in a config file.
+# in _pull_args_from_config, before argparse runs and long before anything binds.
+# ⭐ THE GATE IS `model_in_cli or model_in_config`, and we fail both: our argv puts
+# --host at args[1], so the positional test is false, and EVERY `model:` line in the
+# shipped yaml is commented, so no --model is synthesised from the config. Controls in
+# the same run: uncommenting `model:` starts, passing the model positionally starts,
+# and dropping --config never reaches the gate at all.
+# ⭐ SO AN UNEDITED BOX DOES NOT SERVE THE WRONG MODEL — IT DOES NOT START. That is the
+# louder and safer of the two failures, which is exactly why they are worth keeping
+# apart. What to do about it is still a ruling, not a wiring decision: board N24, which
+# supersedes the closed-and-archived N21 this line used to cite.
+# ⭐ AND IT IS PINNED, NOT JUST WRITTEN DOWN. g1lab/vllmwire.sh asserts that the shipped
+# templates/vllm_config.yaml carries NO live `model:` key at any indent — the half of
+# the gate this repo controls. Re-run the executed check above rather than re-reasoning
+# from ModelConfig.model's default; re-reasoning is how this comment got flipped the
+# wrong way in the first place, by someone correcting its previous error.
+# ⚠️ THREE USER-FACING PLACES DESCRIBED THE FALLBACK THAT DOES NOT HAPPEN, all written
+# in s57 to match the version above and all wrong for the same reason. droste-setup.sh's
+# post-install vllm note and this box's profile.d banner are FIXED (s61 part 2). README.md's
+# box table is NOT — it is owned elsewhere; do not fix it from here.
 # ⭐ THE DEFAULT IS A NAMED CONSTANT because it has TWO users: the `:=` here, and the
 # blank guard in PRE_LAUNCH that catches the same setting arriving from the user's file
 # AFTER this line has already run. Two spellings of one path is how they drift apart.
@@ -77,6 +101,15 @@ HEALTH_ACCEPT="ok"
 # file existed to hold them, which made the catch-all itself unreachable in the
 # lane that serves. server.env cannot stand in: it is read in a subshell whose
 # output is discarded except for three keys.
+# ⚠️ BUT ONLY ONE OF THE TWO IS OFFERED AS A LINE, AND "can be set" IS NOT "is on the
+# surface". vllm.cfg ships a commented DROSTE_VLLM_EXTRA_ARGS= example, so that one is
+# reachable by the file's own "remove the #" gesture. DROSTE_VLLM_CONFIG appears in
+# vllm.cfg ONLY as a name in the Reserved block — there is no assignment line for it —
+# so a user reaching it has to author the line from nothing. That is a statement of
+# what the file does today, not a verdict: see the OPEN QUESTION below, which is where
+# the reserved-versus-honoured disagreement is queued for a ruling.
+# ⚠️ Substring noise again: `grep DROSTE_VLLM_CONFIG vllm.cfg` also matches the
+# unrelated DROSTE_VLLM_CONFIGURE_LOGGING line. Anchor the search on the `=`.
 #
 # ⭐ ORDERING IS LOAD-BEARING AND ALREADY CORRECT: the resolver sources this file
 # AFTER the build-spec and BEFORE PRE_LAUNCH, and PRE_LAUNCH re-reads
@@ -420,8 +453,8 @@ vllm_env() {
     local entry suffix rest var on off val
 
     # ── a blank NATIVE line has to mean what the file says: nothing ────────────
-    # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (vllm.cfg:220) AND UNCOMMENTING IT AS
-    # PRINTED TAKES EVERY GPU AWAY. Both resolvers source the file under `set -a`, so
+    # 🚨 CUDA_VISIBLE_DEVICES IS SHOWN BLANK (its own vllm.cfg line) AND UNCOMMENTING IT
+    # AS PRINTED TAKES EVERY GPU AWAY. Both resolvers source the file under `set -a`, so
     # the line arrives as CUDA_VISIBLE_DEVICES="" and reaches the server:
     # droste-cfgapply.sh:365 exports it, and the name is in none of the three `loud`
     # lists at :192-194, so it does not even warn on the way past.
@@ -802,9 +835,10 @@ vllm_env() {
 
     # ── the XDG bases vllm.cfg QUOTES but does not EXPOSE (s58) ───────────────
     # 🚨 FOUR OF THE FILE'S LINES DOCUMENT THEIR DEFAULT AS `${XDG_CACHE_HOME:-~/.cache}/
-    # vllm…` — vllm.cfg:75-77 (VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT, VLLM_CONFIG_ROOT) and
-    # :418 (VLLM_XLA_CACHE_PATH); THREE cache lines and ONE config line, not four of the
-    # former. Those four sentences are TRUE for an absent base and FALSE for a blank one.
+    # vllm…` — vllm.cfg's VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT and VLLM_CONFIG_ROOT lines,
+    # and its VLLM_XLA_CACHE_PATH line; THREE cache lines and ONE config line, not four
+    # of the former. Those four sentences are TRUE for an absent base and FALSE for a
+    # blank one.
     # envs.py:236-247 resolves both bases with `os.getenv(NAME, <default>)`, an
     # ABSENT-ONLY default, and every route into this box's environment delivers a
     # cleared line as "" (both resolvers source the file under `set -a`). MEASURED at the
@@ -870,9 +904,15 @@ vllm_env() {
     # environment the server is about to get rather than the file.
     # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default,
     # and delivering it is not ignoring the user. When the value did come from the box's
-    # file, cfg_apply has already said the line was seen (XDG_CACHE_HOME is in its
-    # loud_dirs) — though its sentence describes a MOVED directory, so for a CLEARED one
-    # it warns about a hazard this guard has just removed. Worth fixing there, not here.
+    # file, cfg_apply has already said the line was seen — every one of the seven is in
+    # its loud_dirs or its loud_conf.
+    # ✅ AND IT SAYS THE RIGHT THING FOR A CLEARED LINE. Both classes carry a two-arm
+    # split now, because clearing one of these and moving it have OPPOSITE outcomes and
+    # no single sentence is true of both. ⚠️ THE CLEARED ARM AND THIS GUARD ARE COUPLED:
+    # that message is only correct because this loop restores the default one step later
+    # (cfg_apply is apply_spec step 6, PRE_LAUNCH is step 7). Change one without the
+    # other and one of them lies. The wording is droste-cfgapply.sh's — read it there,
+    # do not paraphrase it here, and do not stack a warning of our own on top of it.
     local _xdg
     for _xdg in XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME \
                 XDG_RUNTIME_DIR XDG_DATA_DIRS XDG_CONFIG_DIRS; do
@@ -1013,14 +1053,14 @@ vllm_env() {
     # ⭐ A GENUINE MENU OF ONE, AND IT IS STILL WORTH OBSERVING. `http` is the only
     # connector vLLM registers at this pin, so ANY other value is either a plugin or a
     # typo — the same two possibilities as the video loader, with the same rule. It is
-    # NATIVE-named on the surface (vllm.cfg:212) because we observe it without owning
-    # it; do not give it a DROSTE_ name to "fix" the fatality, because the open registry
-    # is the reason a whitelist cannot be the answer here.
+    # NATIVE-named on the surface (vllm.cfg's VLLM_MEDIA_CONNECTOR line) because we
+    # observe it without owning it; do not give it a DROSTE_ name to "fix" the fatality,
+    # because the open registry is the reason a whitelist cannot be the answer here.
     vllm_open_registry VLLM_MEDIA_CONNECTOR VLLM_MEDIA_CONNECTOR \
         "media connectors" "${VLLM_MEDIA_CONNECTOR_BUILTINS[@]}"
 
-    # A PATH, not a switch — vllm.cfg:320 shows it BLANK and offers no menu, so the
-    # value goes through verbatim and blank is the off-state.
+    # A PATH, not a switch — vllm.cfg's DROSTE_VLLM_DEBUG_DUMP_PATH line shows it BLANK
+    # and offers no menu, so the value goes through verbatim and blank is the off-state.
     # 🚨 AND THE OFF-STATE HAS TO BE AN ABSENCE, NOT AN EMPTY STRING. envs.py:573
     # reads `os.environ.get("VLLM_DEBUG_DUMP_PATH", None)` and the default is
     # `str | None = None` (envs.py:218), so a blank is NOT None and every
@@ -1040,13 +1080,14 @@ vllm_env() {
         esac
     fi
 
-    # ⭐ AN "ADD TO", NOT A "REPLACE" (vllm.cfg:221). The native LD_LIBRARY_PATH used to
-    # be on the config surface, shown blank — a default the box does not deliver, since
-    # base/Container.runtime:125 bakes /opt/rocm/lib:/opt/rocm/lib64 — and its semantics
-    # are REPLACE, so uncommenting it as printed threw the ROCm library paths away. The
-    # setting is now additive, and the addition goes AFTER the baked value: a user
-    # directory searched first could shadow a ROCm library, and that reads as a hardware
-    # fault rather than as a config mistake. Blank (the shipped default) does nothing.
+    # ⭐ AN "ADD TO", NOT A "REPLACE" (vllm.cfg's DROSTE_VLLM_LD_LIBRARY_PATH_ADD line).
+    # The native LD_LIBRARY_PATH used to be on the config surface, shown blank — a
+    # default the box does not deliver, since base/Container.runtime:125 bakes
+    # /opt/rocm/lib:/opt/rocm/lib64 — and its semantics are REPLACE, so uncommenting it
+    # as printed threw the ROCm library paths away. The setting is now additive, and the
+    # addition goes AFTER the baked value: a user directory searched first could shadow
+    # a ROCm library, and that reads as a hardware fault rather than as a config
+    # mistake. Blank (the shipped default) does nothing.
     droste::ld_library_path_add "${DROSTE_VLLM_LD_LIBRARY_PATH_ADD:-}"
 
     # 🚨 THE VALUE IS THE NAME OF AN fx GRAPH NODE, AND THE GATE IS `is not None`.
@@ -1055,8 +1096,9 @@ vllm_env() {
     # (_inductor/pattern_matcher.py:1979). envs.py:573-574 reads
     # `os.environ.get("VLLM_PATTERN_MATCH_DEBUG", None)` against a `str | None = None`
     # default (envs.py:217), so an EMPTY value is NOT None: it switches the mechanism
-    # on and then matches no node. **The blank vllm.cfg:321 shows must reach the wire
-    # as an ABSENCE**, which is exactly what the `-n` guard does.
+    # on and then matches no node. **The blank vllm.cfg's DROSTE_VLLM_PATTERN_MATCH_DEBUG
+    # line shows must reach the wire as an ABSENCE**, which is exactly what the `-n`
+    # guard does.
     # ⭐ A PLAIN VALUE SETTING, NOT A BOOLEAN (vllm.cfg, s56 — Jei moved this line and
     # DEBUG_DUMP_PATH OUT of the `{on, off*}` block above them). It therefore has no
     # menu, takes no on/off, and MUST NOT warn about one: `on` is simply a node name

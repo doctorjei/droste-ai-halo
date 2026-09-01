@@ -6209,8 +6209,8 @@ write_notes() {
         vllm)
           printf -- '- BEFORE first use: edit `%s/vllm_config.yaml` and set\n' "$data"
           printf '  `model:` (HF repo id or /opt/models path). Seeded at first start.\n'
-          printf '  Left unset the box still starts, but serves vLLM'"'"'s own default\n'
-          printf '  model, `Qwen/Qwen3-0.6B`, downloading it first.\n'
+          printf '  REQUIRED: left unset, vLLM exits with `No model specified!`\n'
+          printf '  and the server never starts.\n'
           printf -- '- OpenAI-compatible API: http://localhost:%s/v1.\n' "$port"
           ;;
         ds4)

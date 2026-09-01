@@ -386,7 +386,7 @@ jupyter_env() {
     # …), which are not directory settings at all and belong to a display stack this
     # image does not run.
     # ⚠️ THIS IS THE ONE BOX WHERE THE WIDENING TOUCHES A NAME ON THE SURFACE.
-    # finetuning.cfg:94 shows `# XDG_DATA_HOME=   # base for user data; unset:
+    # finetuning.cfg shows `# XDG_DATA_HOME=   # base for user data; unset:
     # ~/.local/share`, and jupyter_core already reads it as `env.get(...)` then
     # `if not xdg` (paths.py:191-192) — so blank and absent ALREADY agreed there and the
     # loop changes no behaviour, only the variable's presence. The file's sentence stays
@@ -435,7 +435,7 @@ jupyter_env() {
     : "${JUPYTER_CONFIG_DIR=/opt/data}"
     export JUPYTER_CONFIG_DIR
     # ⚠️ SECOND DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
-    # finetuning.cfg:62-63 documents `{yes, no}` and SHOWS
+    # finetuning.cfg documents `{yes, no}` and SHOWS
     # DROSTE_JUPYTER_ALLOW_UNAUTH_ACCESS=yes, so droste's default is YES and the
     # wiring's job is to deliver exactly that (the config file is the
     # specification). jupyter_server's own default agrees today —
@@ -503,11 +503,12 @@ jupyter_env() {
     # opt-out. Jei's rule for an empty value is that A BLANK MUST BEHAVE EXACTLY AS IF THE
     # SETTING WERE ABSENT, with ONE exception: an unbounded string whose blank cancels a
     # file or directory that would otherwise load ("no config file", "no KV disk cache").
-    # This setting is a BOOLEAN — finetuning.cfg:69-70 documents it as `{yes, no*}` — so
-    # the exception cannot apply, and its blank was producing a THIRD behaviour that is in
-    # neither the file's vocabulary nor the wiring's default: Jupyter's ownership test on
-    # /opt/venv (paths.py:83-107, :117). A user clearing a `no` line got neither `no` nor
-    # nothing; they got a coin toss decided by the permissions of an overlay merge.
+    # This setting is a BOOLEAN — finetuning.cfg's DROSTE_JUPYTER_SEARCH_VENV_FIRST line
+    # documents it as `{yes, no*}` — so the exception cannot apply, and its blank was
+    # producing a THIRD behaviour that is in neither the file's vocabulary nor the
+    # wiring's default: Jupyter's ownership test on /opt/venv (paths.py:83-107, :117). A
+    # user clearing a `no` line got neither `no` nor nothing; they got a coin toss
+    # decided by the permissions of an overlay merge.
     # ⚠️ THE s57 PROTECTION IS NOT LOST WITH IT. What s57 established is that a blank must
     # never be left ON THE WIRE, because envset() reads "" as TRUE. Both answers satisfy
     # that; this one also satisfies the newer rule. The native spelling's own blank is

@@ -43,8 +43,73 @@ RUN git init -q . \
     && git checkout -q FETCH_HEAD \
     && git submodule update --init --recursive
 
-# Apply the turboquant grammar patch.
-RUN patch -p1 < /tmp/llama-grammar.patch
+# ── The grammar repetition-threshold raise ───────────────────────────────────
+#
+# WHAT IT FIXES: src/llama-grammar.cpp caps grammar repetition expansion at a
+# compile-time MAX_REPETITION_THRESHOLD of 2000, and both gates that read it
+# THROW. At 2000 that rejects the GBNF json-schema-to-grammar emits for any
+# realistic OpenAI-style tool list -- a single 47-parameter tool already expands
+# to ~500 rules. The failure lands at REQUEST time, not at startup: the image
+# builds, the server starts, /health answers 200, our healthcheck is green, and
+# every tool-calling request comes back "failed to parse grammar". Full
+# rationale and the measured facts live in llama-grammar.patch.
+#
+# 🚨 PERMANENT, NOT A STOPGAP. This was never filed with llama.cpp at all --
+# kyuz0/amd-strix-halo-toolboxes#70 asked a THIRD-PARTY IMAGE PROJECT to raise
+# the constant, and its `completed` status means he rebuilt his images, not that
+# upstream changed anything. ggml-org master and this fork's own default branch
+# both still say 2000 (verified 2026-09-01), the two upstream PRs that would make
+# the constant configurable are open and unmerged, and we are not pursuing it.
+# NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY, so the guard below is the
+# ONLY thing that will ever tell us the patch stopped applying.
+#
+# 🚨 WHY A GUARD AND NOT A BARE `patch`, cf. the api-prefix guard below. This
+# region has ALREADY drifted on the fork's own default branch -- the second gate
+# is one `if` at our pin and two on its current head -- and the branch itself has
+# been rewritten once (see the fetch note above). Default fuzz would let the hunk
+# land somewhere plausible, and a rename of the macro would let it apply and mean
+# nothing. Every one of those failure modes looks identical from outside: the
+# image builds, the server starts, and tool calling is still broken. So: exact
+# WHOLE-LINE counts before AND after, `-F0` so patch may not improvise, and a
+# refusal to patch twice.
+#
+# ⚠️ ONE COUNT IS A FLOOR, DELIBERATELY. How many LINES use the macro is a
+# refactoring detail (2 at our pin, 3 on the fork's head), so pinning it exactly
+# would go red on a bump that changes nothing this patch depends on. What is
+# load-bearing is that the macro is read AT ALL -- a constant nobody reads is the
+# silent no-op this guard exists to catch. Every other count here is exact and IS
+# the contract; if one of those moves, re-derive rather than adjust it.
+RUN set -e; \
+    f=src/llama-grammar.cpp; \
+    die() { echo "llama-grammar: FATAL: $*" >&2; \
+            echo "llama-grammar: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-grammar: READ ${f} at the CURRENT LLAMA_REF before touching anything." >&2; \
+            echo "llama-grammar: Either upstream raised, removed or renamed the threshold (delete" >&2; \
+            echo "llama-grammar: the patch and this guard), or the fork moved and the hunk must be" >&2; \
+            echo "llama-grammar: RE-DERIVED at the new sha, with the counts here updated to match" >&2; \
+            echo "llama-grammar: what you actually found in the new source." >&2; \
+            echo "llama-grammar: Do NOT drop -F0 or raise the fuzz to make this pass. A hunk that" >&2; \
+            echo "llama-grammar: lands with fuzz can raise a constant nothing reads, and THAT failure" >&2; \
+            echo "llama-grammar: is invisible: the image builds, the server starts, /health answers" >&2; \
+            echo "llama-grammar: 200, and every tool-calling request still fails to parse its grammar." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    ns() { grep -Fc  -- "$1" "$f" || true; }; \
+    [ -f "$f" ] \
+      || die "$f does not exist at this LLAMA_REF -- the grammar parser has moved or been renamed"; \
+    [ "$(nx '#define MAX_REPETITION_THRESHOLD 100000')" = 0 ] \
+      || die "$f already carries the RAISED threshold -- refusing to patch twice"; \
+    [ "$(nx '#define MAX_REPETITION_THRESHOLD 2000')" = 1 ] \
+      || die "expected exactly 1 stock threshold definition (2000) in $f"; \
+    [ "$(ns 'MAX_REPETITION_THRESHOLD')" -ge 2 ] \
+      || die "the threshold is DEFINED but never READ in $f -- raising it would be a silent no-op"; \
+    patch -p1 -F0 < /tmp/llama-grammar.patch \
+      || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
+    [ "$(nx '#define MAX_REPETITION_THRESHOLD 2000')" = 0 ] \
+      || die "the stock 2000 definition SURVIVED the patch"; \
+    [ "$(nx '#define MAX_REPETITION_THRESHOLD 100000')" = 1 ] \
+      || die "expected exactly 1 raised threshold definition after applying"; \
+    echo "llama-grammar: applied; MAX_REPETITION_THRESHOLD raised 2000 -> 100000"
 
 # ── The --api-prefix x --api-key auth fix (upstream #22474) ──────────────────
 #
@@ -97,7 +162,8 @@ RUN set -e; \
       || die "routes are no longer registered as path_prefix + path (expected 2 sites: ::get and ::post)"; \
     [ "$(ns 'path_prefix + "/')" = 0 ] \
       || die "$f already prefixes public endpoints -- upstream may have fixed this; read the source and consider dropping the patch"; \
-    patch -p1 -F0 < /tmp/llama-api-prefix-auth.patch; \
+    patch -p1 -F0 < /tmp/llama-api-prefix-auth.patch \
+      || die "the hunks did not apply at fuzz 0 -- see the .rej above; re-derive them at the new sha rather than relaxing -F0, since a fuzzed hunk can put the api-key exemption somewhere plausible and WRONG"; \
     [ "$(nx '    static const std::unordered_set<std::string> get_public_endpoints = []() {')" = 0 ] \
       || die "the bare-literal declaration SURVIVED the patch"; \
     [ "$(nx '            endpoints.insert("/" + a.name);')" = 0 ] \

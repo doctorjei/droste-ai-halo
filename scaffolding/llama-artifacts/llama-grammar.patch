@@ -1,6 +1,81 @@
-From: KYmidnight
-Issue: https://github.com/kyuz0/amd-strix-halo-toolboxes/issues/70
-Subject: Increase MAX_REPETITION_THRESHOLD to 100000 for complex tool schemas
+From:         KYmidnight
+Requested in: https://github.com/kyuz0/amd-strix-halo-toolboxes/issues/70
+              "Increase MAX_REPETITION_THRESHOLD for complex tool schemas (OpenAI
+              function calling)" — opened 2026-03-24, closed `completed`
+              2026-04-03. ⚠️ READ THAT STATUS CAREFULLY: the issue was filed
+              against kyuz0's TOOLBOX IMAGES, not against llama.cpp, and
+              "completed" means he rebuilt his images carrying this same one-line
+              raise. NOTHING WAS EVER CHANGED IN llama.cpp.
+Subject:      Raise MAX_REPETITION_THRESHOLD from 2000 to 100000 for complex tool schemas
+Applies to:   TheTom/llama-cpp-turboquant @ 337f08e82a861194fd5fc93121205c7c6bc81ddf
+              (src/llama-grammar.cpp)
+
+WHAT IT FIXES
+=============
+`MAX_REPETITION_THRESHOLD` is a compile-time cap on grammar repetition expansion,
+and both gates that read it THROW:
+
+  * :494  `n_prev_rules * total_rules >= MAX_REPETITION_THRESHOLD`
+          → "number of rules that are going to be repeated multiplied by the new
+          repetition exceeds sane defaults, please reduce the number of
+          repetitions or rule complexity"
+  * :652  `min_times > MAX_REPETITION_THRESHOLD || (has_max && max_times > ...)`
+          → "number of repetitions exceeds sane defaults, please reduce the number
+          of repetitions"
+
+At 2000 that rejects the GBNF `json-schema-to-grammar` emits for a realistic
+OpenAI-style tool list: one 47-parameter tool with nested objects already expands
+to ~500 rules, and the first gate compares with `>=`, so a schema that merely
+REACHES the cap is refused too.
+
+⇒ THE FAILURE IS AT REQUEST TIME, NOT AT STARTUP, which is exactly what makes it
+worth an anchor guard. The image builds, llama-server starts, `/health` returns 200
+and droste's healthcheck is green — and every tool-calling request comes back
+"failed to parse grammar". There is no symptom anywhere a build or a probe looks.
+
+Raising the constant costs nothing at runtime: both gates run only while PARSING a
+grammar, never during inference, and 100000 is still finite, so runaway expansion
+is still refused.
+
+WHY WE CARRY IT
+===============
+🚨 THIS PATCH IS PERMANENT, NOT A STOPGAP, and its provenance is easy to misread.
+The issue above is against kyuz0's amd-strix-halo-toolboxes — a third-party image
+project in the same niche as ours — not against llama.cpp. Its `completed`
+resolution is kyuz0 rebuilding his own images with the same raise ("Thank you,
+rebuilding now"). No change was ever proposed to, or made in, llama.cpp.
+
+Verified 2026-09-01: ggml-org/llama.cpp master still says
+`#define MAX_REPETITION_THRESHOLD 2000`, and so does TheTom/llama-cpp-turboquant's
+own default branch. Upstream PRs 21003 and 21139, which would make the constant
+configurable at runtime and retire the need for any patch, are both OPEN and
+unmerged.
+
+We are not filing and not chasing it (standing project ruling: "Someone else might
+refile, but not us."). NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY. Treat it
+as load-bearing indefinitely and expect it to survive every pin bump.
+
+WHAT WOULD MAKE IT REMOVABLE (a condition to NOTICE, not an outcome to expect)
+=============================================================================
+If a future pin raises the constant itself, removes it, renames it, or makes it
+configurable, this patch stops applying cleanly and the anchor guard in
+scaffolding/Container.llama-build goes red. THAT GUARD IS THE ONLY THING THAT WILL
+EVER TELL US. When it fires, read the new source before assuming anything: it may
+mean upstream fixed it (delete this file and the guard), or merely that the fork
+moved and the hunk needs re-deriving at the new SHA.
+
+⚠️ AND IT CAN STOP MATTERING WITHOUT FAILING TO APPLY. If the macro survives but
+nothing reads it any more, this patch applies perfectly and changes nothing. That
+is why the guard also asserts the macro is still READ, not merely still defined.
+
+THE BLANK CONTEXT LINE IS A SINGLE SPACE — DO NOT LET AN EDITOR STRIP IT
+=======================================================================
+The hunk's third context line is the empty line above the `#define`, and a
+canonical unified diff spells it as one space. Tools that trim trailing whitespace
+turn it into a truly empty line, which makes GNU patch 2.8 apply this with fuzz 1
+— and the guard runs `patch -F0`, so it would then fail outright. That is the
+strictness working as intended; the fix is to restore the space, never to relax
+the fuzz.
 
 --- a/src/llama-grammar.cpp
 +++ b/src/llama-grammar.cpp

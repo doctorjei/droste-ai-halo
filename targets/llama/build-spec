@@ -308,7 +308,8 @@ llama_argv() {
     # BACK. It was `=` so that a blank meant "don't", on the N1a reading that a blank is
     # always the user's opt-out. Jei's three-category rule narrows that: a blank is the
     # opt-out only for an UNBOUNDED string whose blank is a meaningful answer. This
-    # setting is a two-member menu — llama.cfg:147-148 prints `{on*, off}` above it —
+    # setting is a two-member menu — llama.cfg prints `{on*, off}` above
+    # `DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT` in its Speculative Decoding block —
     # so it is CATEGORY 2, a finite set, and a finite set has default behaviour that a
     # blank must fall back to. What the user would reasonably expect from an emptied
     # line is our default, not a third state the file never offers.
@@ -492,8 +493,14 @@ llama_argv() {
 # (turbo-quant.cuh:265-268). With our own LLAMA_ARG_CACHE_TYPE_K/V=turbo3 default the
 # code runs on every K and V cache write. So this is a Feature Exposure decision under
 # the rule that hiding needs a STATED reason, not a report that the feature is absent.
-# ⚠️ THE SURFACE HALF OF THIS REASON IS IN llama.cfg's Misc BLOCK, which is where a
-# user would look for the feature. Do not delete one half and leave the other.
+# 🚨 THE REASON LIVES HERE ONLY, AND THAT IS JEI'S RULING (s61), NOT AN OMISSION.
+# llama.cfg carried a prose half of this in its Misc block until s60's `129499f` removed
+# it. Asked whether that deletion was intended, he ruled: "all correct and intended. All
+# of them. And we should fix the buildspec to match." ⇒ THE SURFACE STAYS SILENT ABOUT
+# THESE TWO NAMES. ❌ Do NOT "restore the other half" — the config file is his, the
+# deletion was deliberate, and re-adding it would reverse a ruling on the strength of a
+# comment. ⭐ Feature Exposure asks for a reason to be WRITTEN DOWN; it does not entitle
+# an agent to put it back on a surface the owner cleared.
 #
 # 🚨 THE REASON IS THAT WE CANNOT DOCUMENT IT HONESTLY — NOT THAT IT DOES NOTHING:
 #   · THE UNIT IS UNUSABLE, AND UPSTREAM'S OWN LOG LINE IS WRONG ABOUT IT.
@@ -603,8 +610,8 @@ llama_env() {
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
     # ── a NATIVE line whose PRINTED value does not do what it is annotated to ──
-    # 🚨 llama.cfg:262 prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
-    # machine's math cores)` and :3 promises the values shown ARE the defaults — but
+    # 🚨 llama.cfg prints `LLAMA_ARG_THREADS=-1   # -t, --threads (-1: count
+    # machine's math cores)` and its header promises the values shown ARE the defaults — but
     # uncommenting that line ROUGHLY DOUBLES the thread count on an SMT machine, the
     # classic llama.cpp oversubscription regression.
     # The handler normalises before the auto-detect can ever run: arg.cpp:1159-1163
@@ -854,10 +861,11 @@ llama_pre_launch() {
     # TURBO_FORCE_NONVEC in ggml/src/ggml-metal/ggml-metal-ops.cpp (:2744, :2711), and
     # TURBO_FORCE_4MAG, TURBO_SPARSE_V and TURBO_PROFILE_MODE in
     # ggml/src/ggml-metal/ggml-metal-device.m (:232, :245, :258).
-    # ⚠️ This entry named ggml-metal-ops.cpp for all five until s59, and said "the five
-    # names the Misc block lists" until s60 — that block now also NAMES TURBO_INNERQ and
-    # TURBO_INNERQ_STRENGTH, in prose and without an assignment line, precisely because
-    # they are live and deliberately not offered. Five is the count of the ASSIGNMENTS.
+    # ⚠️ This entry named ggml-metal-ops.cpp for all five until s59. It then said the Misc
+    # block ALSO names TURBO_INNERQ and TURBO_INNERQ_STRENGTH in prose — TRUE when written,
+    # FALSE since `129499f` removed that paragraph. ✅ Jei ruled that removal INTENDED
+    # (s61), so the block lists exactly the five ASSIGNMENT LINES and says nothing about
+    # the InnerQ pair; their reason lives in this file alone (see the ❌ block above).
     # ⚠️ AND "TURBO_* IS METAL-ONLY" IS NOT A RULE — TURBO_AUTO_ASYMMETRIC and
     # TURBO_LAYER_ADAPTIVE live in src/llama-kv-cache.cpp, are backend-independent, and
     # are settings on this box (see the ENVIRONMENT tables above).
@@ -877,8 +885,8 @@ llama_pre_launch() {
         # bind_to_port with NO socket flags, so AI_PASSIVE is not set. MEASURED HERE:
         # getaddrinfo(NULL, port, AF_UNSPEC, flags=0) returns ::1 FIRST and 127.0.0.1
         # second, and httplib binds the first that succeeds. So the server comes up on
-        # IPv6 loopback ONLY, droste-healthcheck.sh:129 probes
-        # http://127.0.0.1:$PORT/health, gets no response at all, and the box
+        # IPv6 loopback ONLY, the health probe asks `serve::probe_addr` (which resolves
+        # to 127.0.0.1 for a 0.0.0.0 bind), gets no response at all, and the box
         # restart-loops while looking, from inside, like a perfectly healthy server.
         # ⚠️ IT IS NOT A SETTABLE LINE — llama.cfg names it only in the "Reserved by
         # Droste (do not set these)" prose at :17. It is guarded anyway BECAUSE it is
@@ -998,9 +1006,12 @@ llama_pre_launch() {
     done
 
     # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
-    # llama.cfg:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred
-    # f16 and :3 promises the shown value IS the default — the file contradicting
-    # itself, so no rule could settle it. Jei ruled: "our default should be turbo3."
+    # llama.cfg shows LLAMA_ARG_CACHE_TYPE_K/V=turbo3. When this was written its menu
+    # starred f16 while the shown value said turbo3, and the file header promises the
+    # shown value IS the default — the file contradicting ITSELF, which no rule could
+    # settle. Jei ruled: "our default should be turbo3." ✅ HE THEN MADE THE FILE AGREE:
+    # the menu now reads `{f32, f16, …, turbo3*, turbo4}`. The contradiction is gone, so
+    # do not go looking for it; this comment records why the default is ours to set.
     # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
     # values, not a value the parser would reject.
     # ⚠️ REAL BEHAVIOUR CHANGE, and unmeasured on hardware: KV quantisation buys

@@ -4,6 +4,11 @@
 # Load ROCm env quietly if present
 [[ -f /etc/profile.d/01-rocm-envs.sh ]] && . /etc/profile.d/01-rocm-envs.sh
 
+# Only show for interactive shells. It sits AFTER the env load above, not before:
+# the guard is about the BANNER, and a non-interactive login shell
+# (`distrobox enter comfyui -- cmd`) must still get the ROCm environment.
+case $- in *i*) ;; *) return 0 ;; esac
+
 oem_info() {
   local v="" m="" d lv lm
   for d in /sys/class/dmi/id /sys/devices/virtual/dmi/id; do

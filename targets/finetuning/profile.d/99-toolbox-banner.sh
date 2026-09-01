@@ -4,6 +4,11 @@
 # Load ROCm env quietly if present
 [[ -f /etc/profile.d/01-rocm-env-for-triton.sh ]] && . /etc/profile.d/01-rocm-env-for-triton.sh
 
+# Only show for interactive shells. It sits AFTER the env load above, not before:
+# the guard is about the BANNER, and a non-interactive login shell
+# (`distrobox enter finetuning -- cmd`) must still get the Triton/ROCm environment.
+case $- in *i*) ;; *) return 0 ;; esac
+
 oem_info() {
   local v="" m="" d lv lm
   for d in /sys/class/dmi/id /sys/devices/virtual/dmi/id; do
@@ -317,11 +322,29 @@ printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 # printing `--ip 0.0.0.0` regardless is how a user who deliberately narrowed the
 # bind ends up on every interface, with a Jupyter whose token is the only thing in
 # front of it.
+#
+# 🚨 AND IT NO LONGER PRINTS `set -a; . /opt/data/finetuning.cfg; set +a`. That line
+# was captioned "your settings, this shell" and was not that: sourcing the file by
+# hand is precisely the raw read the resolver stopped doing. It skips
+# droste::blank_is_unset (IPYTHONDIR, QT_API, JUPYTER_DEFAULT_PROVISIONER_NAME,
+# NBFORMAT_VALIDATOR, JUPYTER_PREFER_ENV_PATH) and the XDG blank guards, so a CLEARED
+# line arrives as "" rather than as an absence. MEASURED, one line, two answers:
+# jupyter_core's envset() (paths.py:47-58) is TRUE for every value outside
+# {no,n,false,off,0,0.0}, so `JUPYTER_PREFER_ENV_PATH=` reads TRUE in this ad-hoc
+# shell and FALSE under server_start. It also exports the nine DROSTE_JUPYTER_* names,
+# which `jupyter lab` has never heard of — PRE_LAUNCH is what translates them — so in
+# this shell they are silently inert, which is a fall-through value and this project
+# does not ship those.
+# ⭐ SO THE RECIPE IS NARROW AND HONEST RATHER THAN BROAD AND HALF-TRUE: plain jupyter
+# on the address and port you configured, with server_start named as the lane that
+# applies the rest. Same shape as the ruled distrobox.ini fixes — point at the lane
+# that honours the config instead of printing one that only half-honours it.
 if [[ -n "$SERVE_BIND" ]]; then
   printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
-  printf '  set -a; . /opt/data/finetuning.cfg; set +a   # your settings, this shell\n'
-  printf '  jupyter lab --ip %s --port %s --notebook-dir=/opt/workspace\n\n' \
+  printf '  jupyter lab --ip %s --port %s --notebook-dir=/opt/workspace\n' \
     "$SERVE_BIND" "$SERVE_PORT"
+  printf '  (plain jupyter — the rest of finetuning.cfg is NOT applied here; that is\n'
+  printf '   what server_start does. Edit the file, then server_restart.)\n\n'
 else
   printf 'No ad-hoc jupyter command is shown here: DROSTE_JUPYTER_HOST in\n'
   printf '/opt/data/finetuning.cfg cannot be used as a bind address, and a recipe that\n'

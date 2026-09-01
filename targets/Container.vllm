@@ -65,6 +65,19 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 #     importing aiter here would fire the very JIT this copy exists to avoid. The `test -f`
 #     then proves module_aiter_enum.so actually landed, so a silent misplacement cannot go
 #     green (same idiom as the build stage's staging check).
+#  2a. AND THE HEADER REWRITE ITSELF IS GUARDED, because patch_aiter_headers.py CANNOT FAIL.
+#     It OVERWRITES two upstream aiter headers wholesale and returns 0 whether or not it
+#     wrote anything: a missing include dir prints a note and returns, and a renamed header
+#     is skipped with NO MESSAGE AT ALL. Measured: with the include dir moved, the bare
+#     invocation exits 0 and rewrites nothing. Since it is a whole-file overwrite there is
+#     no context for patch(1) to fail against, so the checks have to be ours — the include
+#     dir and both headers must EXIST before, and both must carry their droste marker
+#     after. The two grep-for-includers checks are the REACHABILITY half: a header nothing
+#     includes could be rewritten perfectly and still mean nothing, which is the same
+#     failure the llama guards call "raising a constant nobody reads".
+#     ⚠️ The failure is invisible here by construction: without the RDNA3 fallbacks gfx1151
+#     has no scalar substitute for the CDNA-only packed ISA, and that surfaces in a
+#     JIT-compiled kernel at RUN time, long after this build is green.
 #  2b. UNSET THE CONSTRAINT for this RUN ONLY, and rely on the assertion at the end. Since
 #     s46 moved this RUN to uv that is all THREE variables — `PIP_CONSTRAINT UV_CONSTRAINT
 #     UV_BUILD_CONSTRAINT` — because uv does not read pip's variable and applies a separate
@@ -173,7 +186,33 @@ COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.p
 RUN . /etc/droste/rocm-version.env \
     && unset PIP_CONSTRAINT UV_CONSTRAINT UV_BUILD_CONSTRAINT \
     && uv pip install --no-deps /tmp/wheels/amd_aiter*.whl /tmp/wheels/flash_attn*.whl \
-    && python /opt/resources/scripts/patch_aiter_headers.py \
+    && AITER_INC="$(python -c 'import sysconfig,os; print(os.path.join(sysconfig.get_path("purelib"),"aiter_meta","csrc","include"))')" \
+    && sh -c ' \
+        die() { echo "aiter-headers: FATAL: $*" >&2; \
+                echo "aiter-headers: patch_aiter_headers.py OVERWRITES two upstream aiter headers" >&2; \
+                echo "aiter-headers: WHOLESALE and RETURNS 0 WHETHER OR NOT IT WROTE ANYTHING -- a" >&2; \
+                echo "aiter-headers: missing include dir or a renamed header makes it a silent no-op." >&2; \
+                echo "aiter-headers: Without those RDNA3 fallbacks, gfx1151 has no scalar substitutes" >&2; \
+                echo "aiter-headers: for the CDNA-only packed ISA aiter emits, and the failure appears" >&2; \
+                echo "aiter-headers: at RUNTIME in a JIT-compiled kernel, not in this build." >&2; \
+                echo "aiter-headers: READ the aiter tree at the pinned flash-attention submodule and" >&2; \
+                echo "aiter-headers: re-derive the paths/markers in patch_aiter_headers.py. Do NOT" >&2; \
+                echo "aiter-headers: delete this check to go green." >&2; \
+                exit 1; }; \
+        [ -d "$1" ] || die "$1 is not a directory -- aiter did not install, or its wheel layout moved"; \
+        [ -f "$1/ck_tile/vec_convert.h" ] || die "$1/ck_tile/vec_convert.h is gone -- the header was renamed or moved"; \
+        [ -f "$1/hip_reduce.h" ] || die "$1/hip_reduce.h is gone -- the header was renamed or moved"; \
+        n=$(grep -rlF "vec_convert.h" "$1" | wc -l); \
+        [ "$n" -ge 1 ] || die "nothing under $1 includes vec_convert.h -- rewriting it would be a silent no-op"; \
+        n=$(grep -rlF "hip_reduce.h" "$1" | wc -l); \
+        [ "$n" -ge 1 ] || die "nothing under $1 includes hip_reduce.h -- rewriting it would be a silent no-op"; \
+        python /opt/resources/scripts/patch_aiter_headers.py || die "patch_aiter_headers.py exited nonzero"; \
+        grep -qF "CK_TILE_RDNA3_NO_PK_FP8" "$1/ck_tile/vec_convert.h" \
+          || die "vec_convert.h carries no CK_TILE_RDNA3_NO_PK_FP8 after patching -- it was NOT rewritten"; \
+        grep -qF "AITER_RDNA_NO_DPP_BCAST" "$1/hip_reduce.h" \
+          || die "hip_reduce.h carries no AITER_RDNA_NO_DPP_BCAST after patching -- it was NOT rewritten"; \
+        echo "aiter-headers: both RDNA3 fallback headers rewritten and verified"; \
+       ' _ "${AITER_INC}" \
     && AITER_JIT_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/aiter/jit" \
     && cp /tmp/aiter-jit/*.so "${AITER_JIT_DIR}/" \
     && test -f "${AITER_JIT_DIR}/module_aiter_enum.so" \

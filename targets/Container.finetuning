@@ -41,11 +41,48 @@ RUN uv pip install --no-deps /artifacts/wheels/bitsandbytes-*.whl \
     && ln -sf "$BNB_SO" "$BNB_DIR/libbitsandbytes_rocm82.so"
 
 # Custom RCCL: overwrite the SDK's stock librccl
-RUN if [ -e "${ROCM_PATH}/lib/librccl.so.1.0" ]; then \
+#
+# 🚨 BOTH HALVES OF THIS OVERWRITE CAN SILENTLY DO NOTHING, which is why the counting
+# below exists. `if [ -e ... ]` skips with exit 0 when the SDK moves librccl (RCCL is
+# shipped by rocm-sdk-libraries-gfx1151, NOT by _rocm_sdk_core which /opt/rocm points at,
+# so that arm may already be inert — see the accounting line this prints). `find ... -exec
+# cp +` with ZERO matches also exits 0 and copies nothing. Either way the image ships the
+# STOCK RCCL, the build is green, and the defect the custom RCCL exists to fix is back
+# with nothing to say so.
+#
+# ⚠️ THE ORIGINAL TWO STATEMENTS ARE UNCHANGED AND STILL DO THE COPYING. What is added is
+# a count taken BEFORE (so "nothing matched" is distinguishable from "nothing to do") and
+# a `cmp` AFTER proving each replacement actually landed. The floor is ONE replacement in
+# TOTAL, not one per arm, deliberately: which of the two arms matches is an SDK layout
+# detail that may legitimately change, but ZERO matches across both means the custom RCCL
+# is not in this image at all.
+RUN set -e; \
+    src=/artifacts/lib64/librccl.so.1; \
+    die() { echo "custom-rccl: FATAL: $*" >&2; \
+            echo "custom-rccl: NO stock librccl was replaced, so this image would ship the" >&2; \
+            echo "custom-rccl: SDK's own RCCL and the custom build would be silently absent." >&2; \
+            echo "custom-rccl: The ROCm SDK layout has moved. Find where librccl now lives" >&2; \
+            echo "custom-rccl: (\`find /opt/venv \${ROCM_PATH} -name 'librccl.so*'\`) and update the" >&2; \
+            echo "custom-rccl: paths in this RUN to match. Do NOT delete this check to go green." >&2; \
+            exit 1; }; \
+    [ -s "$src" ] || die "the custom RCCL artifact is missing or empty at $src"; \
+    if [ -e "${ROCM_PATH}/lib/librccl.so.1.0" ]; then n_sdk=1; else n_sdk=0; fi; \
+    n_venv=$(find /opt/venv -name "librccl.so.1" | wc -l); \
+    echo "custom-rccl: targets found -- sdk=${n_sdk} venv=${n_venv}"; \
+    [ "$((n_sdk + n_venv))" -gt 0 ] \
+      || die "neither \${ROCM_PATH}/lib/librccl.so.1.0 nor any /opt/venv librccl.so.1 exists"; \
+    if [ -e "${ROCM_PATH}/lib/librccl.so.1.0" ]; then \
         cp -fv /artifacts/lib64/librccl.so.1 "${ROCM_PATH}/lib/librccl.so.1.0"; \
-    fi \
-    && find /opt/venv -name "librccl.so.1" -exec cp -fv /artifacts/lib64/librccl.so.1 {} + \
-    && ldconfig
+    fi; \
+    find /opt/venv -name "librccl.so.1" -exec cp -fv /artifacts/lib64/librccl.so.1 {} +; \
+    if [ "$n_sdk" = 1 ]; then \
+        cmp -s "$src" "${ROCM_PATH}/lib/librccl.so.1.0" \
+          || die "the SDK librccl.so.1.0 is not byte-identical to the artifact after copying"; \
+    fi; \
+    bad=$(find /opt/venv -name "librccl.so.1" -exec sh -c 'cmp -s "$1" "$2" || echo "$2"' _ "$src" {} \;); \
+    [ -z "$bad" ] || die "these venv copies did not take: $bad"; \
+    echo "custom-rccl: replaced $((n_sdk + n_venv)) stock librccl file(s), all verified byte-identical"; \
+    ldconfig
 
 # HF finetuning stack (upstream pins)
 # jupyterlab is PINNED although the libraries above are not: it is this box's SERVED
@@ -74,13 +111,74 @@ RUN git clone "${FLASH_ATTENTION_REPO}" /tmp/flash-attention \
     && rm -rf /tmp/flash-attention
 
 # Unsloth (pinned commit + PR 4109 RDNA fixes)
-RUN git clone "${UNSLOTH_REPO}" /tmp/unsloth \
-    && cd /tmp/unsloth \
-    && git checkout "${UNSLOTH_REF}" \
-    && curl -sL https://github.com/unslothai/unsloth/pull/4109.diff | patch -p1 \
-    && uv pip install --no-cache-dir . \
-    && rm -rf /tmp/unsloth \
-    && /opt/resources/resolve/assert-rocm-pins.sh torch
+#
+# WHAT IT FIXES: unslothai/unsloth#4109 adds `is_rdna()` and makes the Gemma3 loader set
+# UNSLOTH_COMPILE_DISABLE=partial on RDNA cards, because the compiled forward produces NaN
+# there (upstream issue #3385). gfx1151 IS RDNA. Without it a user finetunes Gemma3 and
+# gets NaN loss — the image builds, Jupyter starts, the notebook runs, and only the numbers
+# are wrong, which is the quietest failure in this port.
+#
+# ✅ NOT PERMANENT, AND THAT IS THE FIRST THING TO KNOW: PR 4109 was MERGED upstream on
+# 2026-03-01. Our UNSLOTH_REF (07a7ff47, 2026-01-31) simply predates the merge. So the
+# correct resolution at the next pin bump is to move UNSLOTH_REF PAST the merge and DELETE
+# this patch and its guard outright — not to re-derive anything.
+#
+# 🚨 WHY A GUARD. Two failure modes here were MEASURED against GNU patch 2.8, and both are
+# silent:
+#   * `patch` on EMPTY input exits 0 and patches nothing. `curl -sL` (no `-f`) exits 0 on
+#     an HTTP error and can hand over an empty body, so a transport hiccup silently
+#     produced an image with no RDNA fix and a green build. Hence `-f`, a file rather than
+#     a pipe, and a non-empty test.
+#   * A drifted hunk applies AT FUZZ 2 and exits 0. That is not theoretical here: the
+#     loader.py context line `os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"` occurs
+#     FOUR TIMES in this file, so a hunk allowed to improvise can land the RDNA branch on
+#     the wrong model's arm and nothing would say so. Hence `-F0`.
+# ⚠️ THE DIFF IS FETCHED UNPINNED from a live GitHub URL, which is why the counts below
+# check the FETCHED DIFF too, not only the tree. A force-push to a merged PR is unlikely;
+# a silently different diff is not something a build should be able to install regardless.
+# ⭐ THE LAST AFTER-CHECK IS THE REACHABILITY ONE: `if is_rdna():` must be present in the
+# LOADER. A patch that defined the helper but failed to wire the call would apply cleanly,
+# count correctly, and be a function nobody ever reads — the exact silent no-op this guard
+# exists to catch.
+RUN set -e; \
+    git clone "${UNSLOTH_REPO}" /tmp/unsloth; \
+    cd /tmp/unsloth; \
+    git checkout "${UNSLOTH_REF}"; \
+    d=/tmp/unsloth-4109.diff; u=unsloth/kernels/utils.py; l=unsloth/models/loader.py; \
+    die() { echo "unsloth-4109: FATAL: $*" >&2; \
+            echo "unsloth-4109: the pinned tree or the fetched diff no longer matches what this" >&2; \
+            echo "unsloth-4109: patch assumes. PR 4109 is ALREADY MERGED UPSTREAM (2026-03-01)," >&2; \
+            echo "unsloth-4109: so the fix here is almost certainly to move UNSLOTH_REF past the" >&2; \
+            echo "unsloth-4109: merge and DELETE this patch and this guard -- not to re-derive it." >&2; \
+            echo "unsloth-4109: If you keep the patch, re-derive the counts from the new source." >&2; \
+            echo "unsloth-4109: Do NOT drop -F0 to make this pass: the loader context line occurs" >&2; \
+            echo "unsloth-4109: FOUR times, so a fuzzed hunk can attach the RDNA branch to the" >&2; \
+            echo "unsloth-4109: wrong model and the only symptom is NaN loss at finetune time." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$2" || true; }; \
+    ns() { grep -Fc  -- "$1" "$2" || true; }; \
+    curl -fsSL -o "$d" https://github.com/unslothai/unsloth/pull/4109.diff \
+      || die "could not FETCH the PR diff (curl -f: HTTP error or transport failure)"; \
+    [ -s "$d" ] || die "the fetched diff is EMPTY -- measured: patch(1) exits 0 on empty input and applies NOTHING"; \
+    [ "$(ns 'diff --git' "$d")" = 2 ] || die "expected exactly 2 files in the fetched diff -- the PR content has changed"; \
+    [ -f "$u" ] || die "$u does not exist at this UNSLOTH_REF"; \
+    [ -f "$l" ] || die "$l does not exist at this UNSLOTH_REF"; \
+    [ "$(ns 'is_rdna' "$u")" = 0 ] || die "$u already mentions is_rdna -- refusing to patch twice (bump UNSLOTH_REF and delete this)"; \
+    [ "$(ns 'is_rdna' "$l")" = 0 ] || die "$l already mentions is_rdna -- refusing to patch twice (bump UNSLOTH_REF and delete this)"; \
+    [ "$(nx 'def is_cdna():' "$u")" = 1 ] || die "is_cdna() is not defined in $u -- the added is_rdna() would reference an undefined name"; \
+    [ "$(nx '    is_hip,' "$u")" = 1 ] || die "is_hip is no longer imported in $u -- the added is_rdna() would reference an undefined name"; \
+    [ "$(ns 'UNSLOTH_COMPILE_DISABLE' "$l")" = 2 ] || die "expected exactly 2 pre-existing UNSLOTH_COMPILE_DISABLE sites in $l"; \
+    patch -p1 -F0 < "$d" \
+      || die "the hunks did not apply at fuzz 0 -- see the .rej above"; \
+    [ "$(nx 'def is_rdna():' "$u")" = 1 ] || die "expected exactly 1 is_rdna definition in $u after applying"; \
+    [ "$(nx '            from unsloth.kernels.utils import is_rdna' "$l")" = 1 ] || die "the loader does not IMPORT is_rdna after applying"; \
+    [ "$(nx '            if is_rdna():' "$l")" = 1 ] || die "the loader does not CALL is_rdna() after applying -- the helper would be a function nobody reads, and Gemma3 would still NaN on gfx1151"; \
+    [ "$(ns 'UNSLOTH_COMPILE_DISABLE' "$l")" = 3 ] || die "expected exactly 3 UNSLOTH_COMPILE_DISABLE sites in $l after applying"; \
+    echo "unsloth-4109: applied; is_rdna() defined AND called, UNSLOTH_COMPILE_DISABLE 2 -> 3"; \
+    rm -f "$d"; \
+    uv pip install --no-cache-dir .; \
+    rm -rf /tmp/unsloth; \
+    /opt/resources/resolve/assert-rocm-pins.sh torch
 # ⚠️ MUST STAY IN THE LAST PACKAGE-INSTALLING LAYER OF THIS FILE (see the same note in
 # Container.comfyui). This port had NO assertion at all until s45, and it is the one
 # with the most package resolution over the top of the torch base: the HF stack, then

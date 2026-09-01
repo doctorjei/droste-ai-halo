@@ -74,12 +74,20 @@ and referenced from the per-image sections below.
   from any carrier. Ports therefore re-add NO ROCm/`-dev` packages.
 - `FROM scratch` has no shell, so the carrier stages have no `CMD`.
 
-### Reproducibility FLAG (recurring known issue)
-- Several source clones default to a moving upstream branch HEAD. Each carries a
-  `*_REF` ARG so a fixed sha/tag can be pinned at build time. These were pinned
-  `2026-07-05`, but the notes repeatedly FLAG that they must be sha-pinned
-  on-host for a truly reproducible release — the provenance sha in a header pins
-  only the toolbox repo, not the upstream app/library repos.
+### Reproducibility FLAG (recurring known issue) — CLOSED at `c756385`
+- Several source clones defaulted to a moving upstream branch HEAD. Each carries a
+  `*_REF` ARG so a fixed sha/tag can be pinned at build time, and `c756385` ("Pin
+  all float-HEAD upstream refs to SHAs", 2026-07-05) filled every one of them with
+  the upstream head that had just built green. Nothing in the tree floats now:
+  every `*_REF` is a sha, except `VLLM_REF`, which is the tag `v0.16.0`.
+  ⚠️ Several sections below still carry per-ref "must get a sha pin" FLAGs. Those
+  describe the state BEFORE that commit; each is annotated at its own site now, and
+  each names the branch its sha came off, which is the provenance the comment above
+  each ARG records. No date is given here on purpose — the refs move independently,
+  so a single cross-cutting date cannot say how stale any one of them is; the dates
+  live per ref, at the ref.
+- Unchanged by any of that: the provenance sha in a header pins only the toolbox
+  repo, not the upstream app/library repos.
 
 ### profile.d login-shell wiring (interactive toolboxes)
 - The runtime base already writes `/etc/profile.d/rocm.sh` (activates the venv +
@@ -160,9 +168,10 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   **A setting can REFUSE the start outright**: no usable `PORT` on a box asked to
   serve at startup, and — ruled s60 — a `HOST` that is not an IPv4 literal or a
   TLS pair with only one half set. Those last two do NOT fall back: a fallback is
-  not neutral when it is WIDER than what the user asked for, and on boxes where
-  three of five have no authentication at all, silently binding every interface
-  after someone named one address is the same shape as a certificate with no key.
+  not neutral when it is WIDER than what the user asked for, and on boxes where four
+  of five answer without asking who you are — two of them with no auth mechanism to
+  turn on at all — silently binding every interface after someone named one address
+  is the same shape as a certificate with no key.
   The accepted cost is that such a typo is downtime rather than a degraded start;
   the refusal is loud and names the setting.
   **The server lane never reads server.env** — its ports are podman-published
@@ -198,15 +207,36 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   an exact match would false-error every critical living under it.
 - **`CFG_FILE` is sourced under `set -a`** so plain `VAR=` lines are exported and
   survive the exec into the service (llama-server reads `LLAMA_ARG_*` from its
-  environment). llama/ds4 keep belt-and-braces export loops in PRE_LAUNCH so their
-  specs stay self-sufficient under other callers. That source is for the box's
-  APPLICATION settings: the five serve settings live in the same file, and the
-  serve wiring reads them with `droste::cfg_get` (above) rather than off the
-  environment copy the source leaves behind — taking `$DROSTE_<APP>_PORT` from the
-  environment would quietly put shell semantics back in front of a config file.
+  environment) — since s60 in a CHILD shell, with the result applied as an `env -0`
+  diff (`droste::cfg_apply`, `base/resolve/droste-cfgapply.sh`); the resolver's own
+  process never sources it. llama/ds4 keep belt-and-braces export loops in
+  PRE_LAUNCH so their specs stay self-sufficient under other callers. That source
+  is for the box's APPLICATION settings: the five serve settings live in the same
+  file, and the serve wiring reads them with `droste::cfg_get` (above) rather than
+  off the environment copy the source leaves behind — taking `$DROSTE_<APP>_PORT`
+  from the environment would quietly put shell semantics back in front of a config
+  file.
   Where a spec's own translation emits one of them from the environment anyway
   (ds4's flag table), `serve::apply_port`/`apply_host` overwrite it afterwards, so
   the parsed value is still the one that ships.
+  🚨 **THE CHILD IS THE GUARANTEE, AND ITS BLAST RADIUS IS THE WHOLE FILE —
+  MEASURED.** A malformed line can no longer take the box down: all three failure
+  arms — a `bash -n` syntax failure, a missing sentinel, an unreadable baseline —
+  say so and `return 0`. But that child runs under `set -euo pipefail`, so one
+  unguarded `$` aborts it BEFORE `env -0` ever runs: there is no diff to apply, the
+  sentinel check fails, and a file of 200 good lines applies **NONE** of them — the
+  settings ABOVE the offending line included. The box comes up on stock defaults and
+  the warning is the only thing that says so: *"$file stopped part-way through, so
+  NONE of its settings were applied and this box is running on defaults."*
+  ⚠️ **NOT "everything after the bad line" — everything, full stop.** That older
+  description is true of the pre-s60 in-process `set -a; source`, where assignments
+  made before the abort had already landed in the resolver's own environment. It is
+  not true of this one.
+  ⭐ **What makes the failure diagnosable:** the baseline child's stderr is discarded
+  and the applying child's is not, so bash's own line-numbered message (`<file>:
+  line 3: NOT_SET_ANYWHERE: unbound variable`) prints immediately above ours — which
+  is what the warning means by "the message just above (if any) is bash's own and
+  names the line".
 - **The SERVICE-rebuild pattern:** build-spec is sourced bash, so `SERVICE=( … )`
   expands BEFORE CFG_FILE is sourced. Ports whose argv depends on env-file values
   (llama `$DROSTE_LLAMA_EXTRA_ARGS`, ds4's flag translation) declare a placeholder argv
@@ -769,7 +799,9 @@ Resolver contract delta (`base/resolve/droste-resolve.sh`):
 - Installer side, for the record: the per-box program-cache clear (offered once
   install-wide, then per box for whatever a global "no" left) is now the ONLY
   deletion droste-setup.sh can perform, and it never reaches outside a box's
-  program-cache dir.
+  program-cache dir. (**Amended 2026-08-20:** the move work below adds two more —
+  the vacated cache dir after a re-point, and the `remove data at new path` answer
+  to a collision. Both are consent-gated and name the directory first.)
 
 Migration: NONE, deliberately. The old paths — `~/droste/<box>/data`,
 `~/droste/finetuning/workspace` and the old shared `~/droste/caches` — are
@@ -1271,7 +1303,7 @@ compiled here ABI-matches the runtime libs it ships against.
 
 ### base/Container.torch
 Shared torch layer. `FROM` the runtime base + one
-`. /etc/droste/rocm-version.env && pip install torch==$TORCH_VERSION`
+`. /etc/droste/rocm-version.env && uv pip install torch==$TORCH_VERSION`
 from the gfx1151 index, plus the one apt layer torch's own triton demands at GPU
 init (`gcc` + `python3.13-dev`, last bullet) — nothing else. The three Python
 targets (comfyui, vllm,
@@ -1353,15 +1385,17 @@ consumes this via `COPY --from`.
   already provided by the build base's pip `rocm-sdk-devel`, so — unlike the
   Fedora source — this port apt-installs NO ROCm/`-dev` packages (`libomp-dev`/
   `libomp1`, the only genuine Debian-main build dep, already ships in the base).
-- Pinned refs (never float HEAD): `DS4_REF` default = branch `rocm-multi-node`
-  (matches upstream — the Fedora source built kyuz0/ds4's rocm-multi-node
-  branch). NOTE: the earlier `84a580d8…` default was the
+- Pinned refs (never float HEAD): `DS4_REF` is `00e64ea8…` — the head of kyuz0/ds4's
+  `rocm-multi-node` branch when `c756385` (2026-07-05) resolved it, and that branch
+  is the one the Fedora source built. It was the bare branch name until then.
+  NOTE: the earlier `84a580d8…` default was the
   strix-halo-ds4-toolbox HEAD — a DIFFERENT repo, wrong for the ds4 app; it
   remains correct as `COCKPIT_REF` in ds4-runtime, which is the toolbox repo.
-- `ROCWMMA_REF`: upstream used branch `release/rocm-rel-7.2`, kept as default,
-  but our SDK is now `7.13.0a` (TheRock nightly) — rocWMMA-vs-SDK version
-  alignment needs an on-host build test. Pin to a SHA once a known-good commit is
-  confirmed on-host.
+- `ROCWMMA_REF`: upstream used branch `release/rocm-rel-7.2`; `c756385`
+  (2026-07-05) pinned it to `48b7db12…`, that branch's head at the time, so the
+  "pin to a SHA" half of this FLAG is closed. The other half stands: our SDK is
+  `7.13.0a` (TheRock nightly), and rocWMMA-vs-SDK version alignment still wants an
+  on-host build test.
 - rocWMMA (build-only) is installed from source into `$ROCM_PATH`: its version
   header is generated by cmake, so a raw header copy won't work — it must be
   `cmake --install`ed. Compiled with the SDK's amdclang/amdclang++
@@ -1399,10 +1433,11 @@ Deliberate upstream deltas:
 - bitsandbytes is packaged as a WHEEL (not `pip install`ed) so the runtime stage
   installs it into its own venv. The runtime version-parse symlink fixup happens
   in the runtime Containerfile (after install), not here.
-- Clone-pin FLAG (on-host): `BITSANDBYTES_REF` (bitsandbytes-foundation/
-  bitsandbytes @ `main`, ROCm v0.46.1+) and `RCCL_REPO`/`RCCL_REF`
-  (kyuz0/rocm-systems @ branch `gfx1151-rccl`, a moving branch head) float
-  upstream and must get immutable sha pins before a reproducible release.
+- Clone pins (this FLAG closed at `c756385`, 2026-07-05): `BITSANDBYTES_REF` is
+  `8ab26f75…` off bitsandbytes-foundation/bitsandbytes `main` (ROCm v0.46.1+), and
+  `RCCL_REF` is `a2686c9f…` off kyuz0/rocm-systems `gfx1151-rccl`. Both were moving
+  branch heads until that commit resolved them to the shas that had just built
+  green; neither floats now.
 - Pinned torch into the build venv: bitsandbytes' hip build/packaging detects the
   installed ROCm (and, for the runtime lib name, the torch/ROCm version) via the
   same interpreter it ships for. Thrown away with the builder stage — only the
@@ -1452,14 +1487,103 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
 - `hip-rocm7rc.patch` was DROPPED as non-upstream (no upstream Dockerfile applies
   it; the turboquant build succeeds on ROCm 7.x / HIP 7 without it). Re-add it
   (and its COPY) only if an on-host HIP7 build failure shows it's needed.
-- The consumed asset (`llama-grammar.patch`) lives alongside the Containerfile
-  (copied from the upstream toolbox submodule so the build context is
-  self-contained). It patches relative to the repo root (`-p1`).
+- The consumed patches (`llama-grammar.patch`, `llama-api-prefix-auth.patch`) live
+  in `scaffolding/llama-artifacts/` — this stage's build CONTEXT (`art_ctx` in
+  `build-halo.yml`), not the directory the Containerfile itself sits in.
+  `llama-grammar.patch` was copied from the upstream toolbox submodule so the
+  context is self-contained; `llama-api-prefix-auth.patch` is ours. Both patch
+  relative to the repo root (`-p1`).
 - The shallow fetch brings no submodules, so materialize them after the
   checkout (`git submodule update --init --recursive`).
 - Apply the turboquant grammar patch: `llama-grammar.patch` raises
-  `MAX_REPETITION_THRESHOLD` for complex tool schemas. This is the ONLY patch
-  upstream's turboquant Dockerfile applies.
+  `MAX_REPETITION_THRESHOLD` from 2000 to 100000 for complex tool schemas. This is
+  the ONLY patch upstream's turboquant Dockerfile applies.
+  🚨 **PERMANENT, NOT A STOPGAP, and ANCHOR-GUARDED.** It was never filed with
+  llama.cpp — `kyuz0/amd-strix-halo-toolboxes#70` asked a third-party image project
+  to raise the constant, and its `completed` status means *he rebuilt his images*,
+  not that upstream changed anything. ggml-org master and the turboquant fork's own
+  default branch both still say 2000 (verified 2026-09-01), the two upstream PRs
+  that would make the constant configurable (#21003, #21139) are open and unmerged,
+  and we are not pursuing it.
+  ⭐ **The failure this guards is INVISIBLE from outside**: both gates that read the
+  macro throw at *grammar-parse* time, so a patch that silently applied nothing
+  still builds, still starts, still answers `/health` 200 and still passes the
+  healthcheck — and returns "failed to parse grammar" to every tool-calling request.
+  So the `RUN` does exact whole-line counts before AND after, `patch -F0` (a drifted
+  hunk lands at fuzz 2 with default settings — measured), and a refusal to patch
+  twice. ⚠️ **One count is a FLOOR on purpose**: the number of lines that READ the
+  macro is 2 at our pin and 3 on the fork's head, so pinning it exactly would go red
+  on a bump that changes nothing. Every other count is exact and IS the contract —
+  when one moves, re-derive the hunk at the new SHA rather than adjusting the count.
+- ⚠️ **`scaffolding/_fedora-src/llama.Containerfile` applies the same patch UNGUARDED
+  and stays that way, deliberately.** It is a frozen translation reference ("DO NOT
+  BUILD", CI-excluded), it is not buildable from its own directory (the patch it
+  `COPY`s is not there), and it clones the fork's default branch with **no ref** — so
+  a counts contract against it would pin a moving head and rot silently. A guard
+  nobody runs reads as coverage and is not.
+- Apply the api-prefix auth patch: `llama-api-prefix-auth.patch` builds
+  llama-server's api-key-exempt endpoint set from the configured `--api-prefix`
+  instead of from bare literals.
+  ⭐ **WHAT BREAKS WITHOUT IT, and it is bigger than our probe.** Each flag is fine
+  alone; the PAIR fails. Every route is registered as `path_prefix + path`
+  (`server_http_context::get`/`::post`, and the Web UI block registers
+  `params.api_prefix + "/"`, `+ "/index.html"` and `+ "/" + a.name` per asset), but
+  the exempt set is built from BARE literals — `/health`, `/v1/health`, `/models`,
+  `/v1/models`, `/`, plus each UI asset — and the middleware tests
+  `get_public_endpoints.count(req.path)`: an EXACT match on the RAW WIRE PATH from a
+  `set_pre_routing_handler`, so it runs BEFORE routing and nothing has stripped the
+  prefix. With both flags set, `/<prefix>/health` 401s — **and so do `/<prefix>/` and
+  `/<prefix>/index.html`, i.e. the user's Web UI is unusable.** The healthcheck half
+  is the loud one: `HEALTH_ACCEPT="ok"` passes only 2xx/3xx, so 401 reads UNHEALTHY
+  and `--health-on-failure=restart` bounces the container, ejecting every interactive
+  shell.
+  ⚠️ **This is NOT a probe bug and cannot be fixed in the probe.** `read_health_spec`
+  already prepends the configured prefix to `HEALTH_PATH`, so the probe asks the
+  CORRECT URL and gets 401 anyway. Teaching the probe more about prefixes buys
+  nothing; the exempt set is the defect.
+  ✅ **IT WIDENS NOTHING — it restores parity.** Verified in the pinned source: with a
+  key set and NO prefix, `/health` is already in the exempt set and the middleware
+  returns early, so those endpoints are public by upstream's design. `api_prefix`
+  defaults to `""` (`common/common.h:608`), so `path_prefix + "/health"` is
+  byte-identical to `"/health"` on an unprefixed server. The LIST is untouched: same
+  five paths, same UI assets, relocated to where they are actually served.
+  🚨 **PERMANENT, NOT A STOPGAP, AND A PIN BUMP WILL NOT FIX IT.** Upstream
+  `ggml-org/llama.cpp` #22474 was labelled `stale` and then closed `not_planned` **by
+  `github-actions[bot]`** — the only comment on the issue is the bot's own, and no
+  maintainer ever responded. We do not file upstream. Verified 2026-09-01: master
+  still declares the set `static const` from bare literals and still exact-matches
+  `req.path`, so the defect is present there today.
+  ⚠️ **DO NOT RE-DERIVE FROM ggml-org MASTER.** Master has DROPPED `/models`,
+  `/v1/models` and `/` from the exempt set and replaced the asset loop with a
+  `frontend_paths` set; copying its list would silently change WHICH endpoints are
+  public on our pin. Derive from the pinned fork's own source.
+- **Its anchor guard: 7 exact counts before, 5 after, `-F0`, and a refusal to patch
+  twice** (`scaffolding/Container.llama-build`). Five of the seven pin lines the patch
+  itself rewrites; **two are assumption pins** — that `path_prefix` is still assigned
+  from `params.api_prefix`, and that routes are still registered as `path_prefix +
+  path` (2 sites at our pin) — because without them a drifted source would fail
+  confusingly rather than loudly. ⭐ **Unlike the grammar guard, every count here is
+  EXACT; there are no floors.** A moved count means **re-derive the hunks at the new
+  SHA**, never adjust the count. Concretely, that will happen: master registers three
+  route sites now (`Get`/`Post`/`Delete`) against our pin's two.
+  🚨 **`-F0` IS DOING WORK THE TWELVE COUNTS CANNOT DO, and this is the non-obvious
+  part.** Measured host-side against the real pinned `tools/server/server-http.cpp` at
+  `337f08e8`: drift ONE trailing context line of hunk 1 and the unguarded `patch`
+  applies it **at fuzz 1, exits 0, and lands all 6 prefixed paths** — so every one of
+  the twelve counts still passes and the build goes green on a hunk placed by fuzz.
+  A reader who sees twelve checks will assume the counts are the protection. They are
+  not, on their own. (Drifting a LEADING context line instead is rejected until fuzz
+  3 — the ends are not symmetric, which is why the strictness is set at the patch call
+  and not inferred from the counts.)
+  ⚠️ The `patch -F0` call carries its own `|| die`, so a hunk that stops applying
+  reports what to DO — re-derive at the new SHA, do not relax `-F0` — instead of
+  dying on GNU patch's bare `Hunk #1 FAILED`. **Nobody is watching for this patch to
+  become unnecessary, so this guard is the only mechanism that will ever report it
+  stopping.**
+  ✅ The same host-side harness runs the guard body extracted verbatim from the
+  Containerfile against a pristine tree fetched by SHA: all 7 before-checks, both
+  hunks and all 5 after-checks pass at `337f08e8`, which is the only verification of
+  those counts that exists outside a CI run.
 - ⭐ **TURBOQUANT IS OPT-IN — the kernels are compiled in, nothing selects them.**
   Measured at the pin (`common/arg.cpp:390`): the fork's contribution here is three KV
   CACHE quant types, `GGML_TYPE_TURBO2_0/3_0/4_0`, added to `kv_cache_types` — the list
@@ -1511,11 +1635,13 @@ Toolbox submodule provenance (droste-ai-halo):
   targets torch 2.9.1 (its `requirements/cuda.txt`: `torch==2.9.1`). v0.16.1rc0+
   bump to torch 2.10.0 and add the `csrc/libtorch_stable` extension, which needs
   `torch/csrc/stable/device.h` (torch-2.10 ABI) and fails to compile against our
-  pinned 2.9.1. flash-attention still floats `main_perf` — FLAG: pin
-  `FLASH_ATTENTION_REF` to a ~Feb-2026 (v0.16.0-era) sha on-host for
-  reproducibility (a flash-attn sha transitively pins its aiter +
-  composable_kernel submodules via the gitlink). FP8 kernels are pinned to
-  upstream's default.
+  pinned 2.9.1. flash-attention no longer floats `main_perf`: `c756385`
+  (2026-07-05) pinned `FLASH_ATTENTION_REF` to `3f94643f…` off that branch, an
+  upstream commit of 2026-03-12 — the v0.16.0 era the FLAG here asked for, that
+  tag having been published 2026-02-25 (and a flash-attn sha transitively pins its
+  aiter + composable_kernel submodules via the gitlink).
+  `FLASH_ATTENTION_BRANCH=main_perf` survives beside it only as the fallback for
+  an empty REF. FP8 kernels are pinned to upstream's default.
 - Torch (pinned TheRock nightly) into the base venv: vLLM + flash-attn + aiter all
   compile their C++/HIP extensions against this torch's headers/ABI. ✅ **The old
   FLAG here — "`TORCHVISION_VERSION`/`TORCHAUDIO_VERSION` are unset" — is STALE and
@@ -1626,8 +1752,10 @@ contract (bucket B).
   `python3.13-devel`->`python3-dev`; `python3.13(-venv)` dropped (interpreter +
   venv already in the base).
 - ComfyUI + 3 custom nodes (essentials, AMDGPUMonitor, GGUF): sha-pinned clones
-  (`--depth=1` + fetch of the pinned ref), ARG `*_REF` overrideable (pinned
-  2026-07-05). The wan/qwen AMD "studios" (`QWEN_STUDIO_REF`/`WAN_STUDIO_REF`
+  (`--depth=1` + fetch of the pinned ref), ARG `*_REF` overrideable. The three node
+  pins are still the ones `c756385` set on 2026-07-05; `COMFYUI_REF` is the only
+  one of the four that has moved since, to v0.33.3 at `5f73f76` (2026-08-22).
+  The wan/qwen AMD "studios" (`QWEN_STUDIO_REF`/`WAN_STUDIO_REF`
   clones + their pip stacks) were DROPPED with the bucket-B rework — rationale
   in "Per-port notes (bucket-B rework rationale)" above.
 - The 11 baked SD/SD2 config yamls are moved OUT of `models/` to
@@ -1701,8 +1829,9 @@ Deliberate upstream deltas:
   `profile.d/rocm.sh` + the triton env script provide the runtime env).
 - bitsandbytes + RCCL are COPY'd from finetuning-artifacts instead of built
   inline.
-- Clone-pin FLAG (on-host): `FLASH_ATTENTION_REPO`/`REF` (ROCm/flash-attention @
-  `main_perf`, a moving branch head) floats and must get a sha pin.
+- Clone pins (this FLAG closed at `c756385`, 2026-07-05): `FLASH_ATTENTION_REF` is
+  `3f94643f…` off ROCm/flash-attention `main_perf` — the same sha the vllm carrier
+  pins — and is no longer a moving branch head.
   `UNSLOTH_REF` is a fixed commit (upstream-chosen, Jan 31) + PR 4109 (RDNA
   fixes) applied on top; `unsloth_zoo` is version-pinned to match it. Do NOT bump
   unsloth without re-checking the `unsloth_zoo` pin (newer zoo drops
@@ -1779,11 +1908,13 @@ Toolbox submodule provenance (droste-ai-halo):
   torch requirement is already satisfied and pip does NOT pull a PyPI/CUDA torch
   over it. FLAG: if current vLLM main pins an exact torch that 2.9.1 doesn't
   satisfy, pip will try to replace it — reconcile on-host.
-- Legacy resolver + `pip check`: the vLLM wheel is installed under
-  `PIP_USE_DEPRECATED=legacy-resolver` (the new resolvelib backtracker dies with
-  RecursionError over the `torch==2.9.1` vs `2.9.1+rocm…` pin). The legacy
-  resolver takes the first satisfying candidate and never backtracks, so an
-  upper bound owned by an EARLIER-resolved package is dropped silently. That
+- Legacy resolver + `pip check`: the vLLM wheel was installed under
+  `PIP_USE_DEPRECATED=legacy-resolver` until s46 (pip's resolvelib backtracker dies
+  with RecursionError over the `torch==2.9.1` vs `2.9.1+rocm…` pin; uv resolves the
+  same graph in seconds, which is what retired the flag — see the uv-migration entry
+  above. The wheel installs with `uv pip install` now). The legacy
+  resolver took the first satisfying candidate and never backtracked, so an
+  upper bound owned by an EARLIER-resolved package was dropped silently. That
   shipped a broken image once: transformers requires
   `tokenizers>=0.22.0,<=0.23.0`, the build took PyPI's newer 0.23.1, pip
   reported success, and `vllm` then failed at IMPORT — the server could not

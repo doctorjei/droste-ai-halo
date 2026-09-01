@@ -158,17 +158,18 @@ either way.
 | llama | `llama-server` | 8080 | `llama.cfg` — set `LLAMA_ARG_MODEL` |
 | ds4 | `ds4-server` | 8001 | `ds4.cfg` — set `DROSTE_DS4_MODEL` |
 
-\* vllm is the one box that starts without being told which model to serve:
-leave `model:` commented and vLLM falls back to its own default,
-`Qwen/Qwen3-0.6B`, which it downloads on the first start and then serves.
-The box reads healthy either way, so set `model:` before first use unless
-that tiny model is genuinely what you wanted.
+\* vllm is the one box that will not start until you tell it which model to
+serve: with `model:` left commented, `vllm serve` exits immediately with
+`No model specified!` and the box never binds a port. Set `model:` before
+first use. It does not fall back to a default model, and there is no
+partly-working state to mistake for success.
 
-Those ports are each service's own default. A box made by `droste-setup.sh`
-runs on host networking and binds the address and port recorded in its
-`<box>.cfg` directly — nothing the installer writes publishes or remaps a
-port. It offers these values, nudging ds4 to 8001 so it and vllm run side by
-side; publishing (`-p HOST:CONTAINER`) is the direct-`podman run` alternative.
+Those ports are each service's own default, except ds4's: ds4-server defaults
+to 8000, which is vllm's too, so droste nudges ds4 to 8001 and the two run
+side by side. A box made by `droste-setup.sh` runs on host networking and
+binds the address and port recorded in its `<box>.cfg` directly — nothing the
+installer writes publishes or remaps a port. It offers these values;
+publishing (`-p HOST:CONTAINER`) is the direct-`podman run` alternative.
 
 Serving is configured in that same file, alongside the service's own settings,
 under the name of the **application** rather than the box — `DROSTE_COMFYUI_`,
@@ -182,16 +183,18 @@ under the name of the **application** rather than the box — `DROSTE_COMFYUI_`,
 | `DROSTE_<APP>_PORT` | a port number | the service's own, from the table above |
 | `DROSTE_<APP>_TLS_CERT`, `_TLS_KEY` | paths to a PEM pair | no TLS — plain HTTP |
 
-Only the first two are ever written for you; the rest are yours. Because
-droste has to address the box to know whether it is healthy, the address and
-port are droste's to pass: it hands both to the service on the command line,
-which is why `host`/`port` in `vllm_config.yaml` and `LLAMA_ARG_HOST`/
-`LLAMA_ARG_PORT` in `llama.cfg` are marked reserved. TLS is not reserved —
-the health probe detects the scheme rather than being told it — so on vllm
-the `ssl-certfile`/`ssl-keyfile` YAML keys stay yours to use instead. ds4
-ships no TLS settings at all. These five belong to the box lane: a direct
-`podman run` picks its address and port on its own command line and never
-reads them, though the rest of the file still applies to it.
+Only `STARTUP_ENABLED` and `PORT` are ever written for you; the rest are
+yours. Because droste has to address the box to know whether it is healthy,
+the address and port are droste's to pass: it hands both to the service on the
+command line, which is why `host`/`port` in `vllm_config.yaml` and
+`LLAMA_ARG_HOST`/`LLAMA_ARG_PORT` in `llama.cfg` are marked reserved. TLS is
+not reserved — the health probe detects the scheme rather than being told it —
+so on vllm the `ssl-certfile`/`ssl-keyfile` YAML keys stay yours to use
+instead. ds4 ships no TLS settings at all. These five belong to the box lane:
+a direct `podman run` picks its address and port on its own command line,
+though the rest of the file still applies to it. ds4 is the one exception — it
+turns every `DROSTE_DS4_*` setting into a flag, so `DROSTE_DS4_HOST` and
+`DROSTE_DS4_PORT` reach a directly-run container too.
 
 **A value the box cannot honour stops it serving; it is never approximated.**
 Only IPv4 literals are accepted for now, so a hostname or an IPv6 address in

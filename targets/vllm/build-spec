@@ -267,7 +267,23 @@ VLLM_BOOL_VARS=(
     # length gives nan (RoPE) or a device-side out-of-bounds error. It only downgrades
     # a startup ValueError to a warning.
     "LONG_MAX_MODEL_LEN_OK:VLLM_ALLOW_LONG_MAX_MODEL_LEN:1:0"
-    # ours, read by this image's patched FP8 kernels — not in vllm/envs.py
+    # ours, read by this image's patched FP8 kernels — not in vllm/envs.py.
+    # 🚨 WIRED AND GUARDED SINCE s61 part 2, AND STILL NEVER RUN ON HARDWARE. Two things a
+    # user turning this on is entitled to know, and neither is visible from the flag:
+    #   1. It did NOTHING AT ALL before s61 part 2. patch_fp8_kernels.py targeted a vLLM path
+    #      that only exists AFTER our pin (the kernel-directory reorg landed one day
+    #      after the v0.16.0 branch was cut), so it applied in zero builds this repo
+    #      ever produced: on and off ran the same stock torch._scaled_mm. Any earlier
+    #      measurement comparing the two arms compared identical code.
+    #   2. EXPECT NO SPEEDUP YET, even now. vLLM pads the quantized activation to 17
+    #      rows whenever compilation mode < VLLM_COMPILE — i.e. always under the
+    #      --enforce-eager these kernels require — so decode reaches the Triton kernel
+    #      at M=17 and the rows-mapped M==1 GEMV that carries the upstream win is
+    #      unreachable. Lifting that means overriding get_output_padding, which is a
+    #      change to vLLM's kernel-selection contract and is HELD as a separate,
+    #      hardware-gated item. Do not add it here to make a benchmark look better.
+    # ⇒ Treat this as EXPERIMENTAL and unvalidated. It is exposed because hiding it
+    # would need a reason, not because we can vouch for it.
     "STRIX_FP8_TRITON:VLLM_STRIX_FP8_TRITON:1:0"
     # ── ROCm per-kernel toggles ── bool(int) ×2, .lower() in ("true","1") ×1
     "ROCM_FP8_PADDING:VLLM_ROCM_FP8_PADDING:1:0"

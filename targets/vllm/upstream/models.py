@@ -9,6 +9,28 @@
 # To refresh: re-fetch scripts/models.py at the new toolbox pin, replace below, then run
 # `scripts/vllm-models.py` — it reports which stanzas in that hand-authored YAML the new
 # table disagrees with. The report never writes the YAML; the edits are yours to make.
+#
+# 🚨 ONE UPSTREAM CLAIM BELOW IS NOT TRUE OF *OUR* IMAGES, and it is not ours to edit.
+# The FP8 stanza (RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic) says
+# "Correctness-verified on gfx1151". That is kyuz0's sentence, verbatim, and it is true
+# of HIS images — they run a vLLM whose layout patch_fp8_kernels.py actually matches.
+# It was NEVER true here: at VLLM_REF=v0.16.0 that patch targeted a path vLLM only
+# adopted AFTER our pin, so it applied in ZERO builds this repo has produced and
+# VLLM_STRIX_FP8_TRITON did nothing at all. What ran on gfx1151 in this image was stock
+# torch._scaled_mm — the same code with the flag on or off — so nothing about the Triton
+# kernels was verified here, correctness included.
+# ✅ The patch is re-pointed and guarded as of s61 part 2; the flag is now WIRED. It is still
+# UNVALIDATED on hardware, and a second gate (vLLM pads decode to 17 rows, so the
+# rows-mapped M==1 GEMV that carries the speedup is unreachable) means no performance
+# win is expected yet. See scaffolding/vllm-artifacts/patch_fp8_kernels.py.
+# ⚠️ DO NOT "FIX" THE SENTENCE IN THE STANZA. Everything below this header is verbatim
+# upstream, which is the only thing that makes drift visible in git; an edit there would
+# show up as upstream drift at the next refresh and would put OUR claim inside THEIR
+# text. Corrections belong in this header.
+# ⚠️ And keep this header free of the table's opening literal: a naive text check that
+# anchors on it would land in this comment instead of the definition. (Harmless to
+# scripts/vllm-models.py, which EXECUTES this file and reads the dict — but not to a
+# reader doing the obvious thing. It caught me once already.)
 
 MODEL_TABLE = {
     # 1. Llama 3.1 8B Instruct

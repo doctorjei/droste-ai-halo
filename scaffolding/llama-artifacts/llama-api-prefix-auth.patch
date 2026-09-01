@@ -1,0 +1,129 @@
+Subject: server: build the api-key-exempt endpoint set from --api-prefix
+Upstream issue: https://github.com/ggml-org/llama.cpp/issues/22474
+                "server: --api-key doesn't recognize public endpoints when
+                --api-prefix is set" — opened 2026-04-28, closed 2026-06-12 as
+                `not_planned` by a STALE BOT with no maintainer response. Never
+                triaged, and STILL PRESENT ON MASTER (verified 2026-09-01:
+                tools/server/server-http.cpp:197 is still a `static const` set of
+                BARE literals, and :213 still exact-matches `req.path`).
+Applies to:     TheTom/llama-cpp-turboquant @ 337f08e82a861194fd5fc93121205c7c6bc81ddf
+                (tools/server/server-http.cpp)
+
+WHAT IT FIXES
+=============
+`--api-prefix` and `--api-key` are each fine alone and BROKEN TOGETHER.
+
+  * Every route is registered as `path_prefix + path` — see
+    server_http_context::get()/::post() (:526, :545) and the Web UI block (:376-395),
+    where `path_prefix = params.api_prefix` (:80). With `--api-prefix /llama` the
+    health route lives at `/llama/health`.
+  * The api-key-exempt set (:177) is built from BARE literals — "/health",
+    "/v1/health", "/models", "/v1/models", "/", plus each embedded UI asset at
+    "/" + name — and the middleware (:198) tests
+    `get_public_endpoints.count(req.path)`: an EXACT match against the RAW WIRE PATH.
+  * That middleware is installed with `set_pre_routing_handler` (:274), so it runs
+    BEFORE routing. Nothing has stripped the prefix by then, and nothing will.
+
+⇒ With both flags set, `/llama/health` is not in the set and returns 401. That is not
+merely cosmetic here: droste's healthcheck reads 401 as unhealthy, podman restarts the
+container, and the box enters a restart loop that ejects every interactive shell. It
+also 401s `/llama/` and `/llama/index.html`, i.e. the user's Web UI is unusable.
+
+WHY WE CARRY IT
+===============
+Jei's ruling: "if someone turns on the api-prefix, I don't want it to fail purely based
+on that." Both settings are exposed on llama's config surface, so the pair is reachable
+by a user who did nothing wrong.
+
+🚨 THIS PATCH IS PERMANENT, NOT A STOPGAP. Upstream's own rules do not permit us to
+re-file #22474 and we are not pursuing it by any other route ("Someone else might refile,
+but not us."). NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY. Treat it as load-bearing
+indefinitely and expect it to survive every pin bump.
+
+NOT A WIDENING. With a key set and no prefix, `GET /health` already returns 200 — these
+endpoints are public by upstream's design. Prefixing restores parity with the no-prefix
+case; it makes nothing public that was not already public. The LIST is untouched: same
+five paths and the same UI assets, only relocated to where they are actually served.
+
+`params.api_prefix` defaults to "" (common/common.h:608), so `path_prefix + "/health"`
+is byte-identical to "/health" on an unprefixed server. Fully backward compatible.
+
+WHAT WOULD MAKE IT REMOVABLE (a condition to NOTICE, not an outcome to expect)
+==============================================================================
+If a future pin ever builds this set from the configured prefix itself, this patch stops
+applying and the anchor guard in scaffolding/Container.llama-build goes red. THAT GUARD IS
+THE ONLY THING THAT WILL EVER TELL US. When it fires, read the new source before assuming
+anything: it may mean upstream fixed it (drop this file), or merely that the fork moved
+and the hunks need re-deriving at the new SHA.
+
+⚠️ DO NOT RE-DERIVE THIS FROM ggml-org MASTER. Master has since DROPPED "/models",
+"/v1/models" and "/" from the set and replaced the asset loop with a `frontend_paths` set.
+Copying master's list would silently change WHICH endpoints are public on our pin. Derive
+from the pinned fork's own source.
+
+WHY THESE MECHANISMS
+====================
+* `static` REMOVED. A function-local static initialises once per PROCESS, so it would
+  freeze whichever prefix it saw first — the value would still not track its input, which
+  is the same class of bug. server_http_context is a per-instance type; the set belongs to
+  the instance. Cost is one small set built at init.
+* Captured BY VALUE into `middleware_validate_api_key`. That lambda is stored in the
+  httplib server via set_pre_routing_handler and outlives init()'s stack frame, so a
+  reference capture of the (now non-static) local would dangle. `[api_keys = params.api_keys]`
+  right beside it is the same by-value init-capture idiom.
+* `[this]` on the builder lambda to reach the `path_prefix` member, matching
+  `middleware_server_state = [this](...)` two blocks down.
+
+TWO HUNKS, AND NEITHER USES A BLANK CONTEXT LINE
+================================================
+A canonical unified diff spells a blank context line as a single space, and our editing
+tools strip trailing whitespace — an empty context line makes GNU patch 2.8 apply this
+with fuzz 1 and fail outright under -F0, which is exactly the strictness the anchor guard
+wants. Splitting at the blank line between `}();` and the middleware avoids the question.
+The second hunk therefore has trailing context only; its deleted line is unique in the
+file, so it still anchors exactly.
+
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -176,14 +176,25 @@
+     // Public endpoints - API routes plus all embedded UI assets
+-    static const std::unordered_set<std::string> get_public_endpoints = []() {
++    //
++    // droste patch (llama-api-prefix-auth.patch): BUILT FROM THE CONFIGURED PREFIX.
++    // Every route is registered as `path_prefix + path` (server_http_context::get/
++    // ::post and the Web UI block below), but this set is matched against the RAW
++    // wire path from a pre-routing handler, before any routing has happened. Bare
++    // literals therefore 401 every public endpoint -- /health and the whole Web UI
++    // included -- the moment --api-prefix is set. See upstream ggml-org/llama.cpp
++    // issue 22474 (closed not_planned by a bot; still present on master).
++    // path_prefix defaults to "", so an unprefixed server is byte-identical.
++    // NOT `static`: a function-local static initialises once per process and would
++    // freeze whichever prefix it saw first, which is the same class of bug.
++    const std::unordered_set<std::string> get_public_endpoints = [this]() {
+         std::unordered_set<std::string> endpoints {
+-            "/health",
+-            "/v1/health",
+-            "/models",
+-            "/v1/models",
+-            "/",
++            path_prefix + "/health",
++            path_prefix + "/v1/health",
++            path_prefix + "/models",
++            path_prefix + "/v1/models",
++            path_prefix + "/",
+         };
+         for (const llama_ui_asset & a : llama_ui_get_assets()) {
+-            endpoints.insert("/" + a.name);
++            endpoints.insert(path_prefix + "/" + a.name);
+         }
+         return endpoints;
+     }();
+@@ -191,4 +191,7 @@
+-    auto middleware_validate_api_key = [api_keys = params.api_keys](const httplib::Request & req, httplib::Response & res) {
++    // The set is captured BY VALUE: this lambda is stored in the server via
++    // set_pre_routing_handler and outlives init()'s stack frame, so capturing the
++    // local above by reference would dangle. Same init-capture idiom as api_keys.
++    auto middleware_validate_api_key = [api_keys = params.api_keys, get_public_endpoints](const httplib::Request & req, httplib::Response & res) {
+         // If API key is not set, skip validation
+         if (api_keys.empty()) {
+             return true;

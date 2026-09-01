@@ -24,6 +24,7 @@ ARG LLAMA_REF=337f08e82a861194fd5fc93121205c7c6bc81ddf
 
 # Re-add if needed
 COPY llama-grammar.patch /tmp/
+COPY llama-api-prefix-auth.patch /tmp/
 
 # Fetch the pinned commit by sha, then materialize submodules.
 # NOT a clone: `git clone --single-branch` retrieves only the fork's default
@@ -44,6 +45,70 @@ RUN git init -q . \
 
 # Apply the turboquant grammar patch.
 RUN patch -p1 < /tmp/llama-grammar.patch
+
+# ── The --api-prefix x --api-key auth fix (upstream #22474) ──────────────────
+#
+# WHAT IT FIXES: llama-server exempts /health, /v1/health, /models, /v1/models, /
+# and every embedded UI asset from --api-key, but builds that exempt set from BARE
+# literals while registering the routes at `path_prefix + path`. The check is an
+# exact match on the raw wire path in a PRE-ROUTING handler, so with --api-prefix
+# set every one of them 401s: our healthcheck reads that as unhealthy, podman
+# restarts the container, and the box restart-loops out of every interactive shell.
+# The user's Web UI is dead in the same stroke. Full rationale, the measured facts
+# and the hunks live in llama-api-prefix-auth.patch.
+#
+# 🚨 PERMANENT, NOT A STOPGAP. Upstream #22474 was closed `not_planned` by a stale
+# bot with no maintainer response and is still present on master; we are not
+# pursuing it. NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY, so the guard
+# below is the ONLY thing that will ever tell us the patch stopped applying.
+#
+# 🚨 WHY A GUARD AND NOT A BARE `patch`, cf. patch-jupyter-no-config.sh. This fork's
+# branch has already been rewritten once (see the fetch note above). A rebase that
+# reflows this region would let `patch` land it with fuzz somewhere plausible, or a
+# rename would let it become a silent no-op — and every failure mode here is "the
+# image builds, the server starts, and auth is wrong". So: exact WHOLE-LINE counts
+# before AND after, `-F0` so patch may not improvise, and a refusal to patch twice.
+# The counts are the contract; if one moves, re-derive rather than adjust it.
+RUN set -e; \
+    f=tools/server/server-http.cpp; \
+    die() { echo "llama-api-prefix-auth: FATAL: $*" >&2; \
+            echo "llama-api-prefix-auth: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-api-prefix-auth: READ ${f} at the CURRENT LLAMA_REF before touching anything." >&2; \
+            echo "llama-api-prefix-auth: Either upstream fixed this (delete the patch and this guard), or" >&2; \
+            echo "llama-api-prefix-auth: the fork moved and the hunks must be RE-DERIVED at the new sha," >&2; \
+            echo "llama-api-prefix-auth: with the counts in this guard updated to match what you found." >&2; \
+            echo "llama-api-prefix-auth: Do NOT copy ggml-org master's list -- master has dropped /models," >&2; \
+            echo "llama-api-prefix-auth: /v1/models and / from the exempt set, which would silently change" >&2; \
+            echo "llama-api-prefix-auth: WHICH endpoints are public on our pin." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    ns() { grep -Fc  -- "$1" "$f" || true; }; \
+    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this]() {')" = 0 ] \
+      || die "$f already carries the PATCHED declaration -- refusing to patch twice"; \
+    [ "$(nx '    static const std::unordered_set<std::string> get_public_endpoints = []() {')" = 1 ] \
+      || die "expected exactly 1 bare-literal public-endpoint declaration in $f"; \
+    [ "$(nx '            endpoints.insert("/" + a.name);')" = 1 ] \
+      || die "expected exactly 1 unprefixed UI-asset insert in $f"; \
+    [ "$(nx '    auto middleware_validate_api_key = [api_keys = params.api_keys](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
+      || die "expected exactly 1 api-key middleware declaration in $f"; \
+    [ "$(nx '    path_prefix = params.api_prefix;')" = 1 ] \
+      || die "path_prefix is no longer assigned from params.api_prefix -- the patch would prefix with the wrong value"; \
+    [ "$(ns 'path_prefix + path')" = 2 ] \
+      || die "routes are no longer registered as path_prefix + path (expected 2 sites: ::get and ::post)"; \
+    [ "$(ns 'path_prefix + "/')" = 0 ] \
+      || die "$f already prefixes public endpoints -- upstream may have fixed this; read the source and consider dropping the patch"; \
+    patch -p1 -F0 < /tmp/llama-api-prefix-auth.patch; \
+    [ "$(nx '    static const std::unordered_set<std::string> get_public_endpoints = []() {')" = 0 ] \
+      || die "the bare-literal declaration SURVIVED the patch"; \
+    [ "$(nx '            endpoints.insert("/" + a.name);')" = 0 ] \
+      || die "the unprefixed UI-asset insert SURVIVED the patch"; \
+    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this]() {')" = 1 ] \
+      || die "expected exactly 1 patched declaration after applying"; \
+    [ "$(nx '    auto middleware_validate_api_key = [api_keys = params.api_keys, get_public_endpoints](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
+      || die "the middleware does not capture the endpoint set BY VALUE after applying -- it would reference a dangling local"; \
+    [ "$(ns 'path_prefix + "/')" = 6 ] \
+      || die "expected exactly 6 prefixed public paths after applying (5 API routes + the UI asset loop)"; \
+    echo "llama-api-prefix-auth: applied; 6 public paths now built from path_prefix"
 
 # Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
 # COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is

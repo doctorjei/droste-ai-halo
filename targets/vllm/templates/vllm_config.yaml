@@ -8,14 +8,11 @@
 #
 # Reserved by Droste — do not set
 # -------------------------------
-# --config is how the box hands vLLM this very file. --port is appended to
-# the serve command line from PORT in /opt/data/server.env; setting it here
-# is overridden anyway and makes vLLM log 'Found duplicate keys --port'.
-#
-#  ~ port                               [this build] set PORT in /opt/data/server.env instead
-#  ~ config                             [this build] Droste passes this; a config naming another is not supported
-# port is Droste's — see NOT USEFUL HERE.
-#host: "0.0.0.0"                              # bind address
+# DO NOT SET THESE; they are overridden by Droste anyway, but if somehow they
+# became active, they would cause the box to malfunction.
+# ~~ config ~~   [this build] how the box hands vLLM this file
+# ~~~ host ~~~   [this build] sets the bind address for the server
+# ~~~ port ~~~   [this build] sets the port for the server
 #
 # Config Information
 # ------------------

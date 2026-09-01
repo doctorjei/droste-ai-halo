@@ -247,6 +247,73 @@ ds4_pre_launch() {
                            DS4_MTP_SPEC_DISABLE \
                            DS4_METAL_GRAPH_DUMP_PREFIX
 
+    # ── the XDG bases ds4.cfg never names, whose blank strands the model cache ─
+    # 🚨 A BLANK XDG_CACHE_HOME MOVES THE HF CACHE OUT FROM BEHIND THE CRITICAL BIND,
+    # SILENTLY. huggingface_hub resolves its home as
+    #   os.getenv("HF_HOME", os.path.join(os.getenv("XDG_CACHE_HOME", "~/.cache"),
+    #             "huggingface"))                              (constants.py, ~:158-166)
+    # — an ABSENT-ONLY default, so a blank base yields a RELATIVE path. MEASURED at hub
+    # 1.29.0 in an isolated interpreter, HOME=/home/boxuser, HF_HOME unset:
+    #                     absent                                 ""
+    #   HF_HOME           /home/boxuser/.cache/huggingface       huggingface
+    #   HF_HUB_CACHE      /home/boxuser/.cache/huggingface/hub   huggingface/hub
+    # ⇒ resolved against the process's CWD instead of $HOME/.cache/huggingface, which is
+    # this box's ONLY CRITICAL row. The bind still mounts and still passes its own check
+    # — that check tests the PATH, not where the library later decided to write — so the
+    # box starts, serves and reports itself HEALTHY while a multi-GB download lands
+    # inside the container and dies at the next recreate. Same shape as the loud_dirs
+    # symptom (droste-cfgapply.sh), except that here the user asked for the DEFAULT.
+    # ⚠️ huggingface_hub is UNPINNED in this image (Container.ds4 installs
+    # `huggingface_hub[hf_xet]` unversioned), and the reader was measured identical
+    # across 0.35.3 → 1.1.0 and again at 1.29.0 — a property of the library, not of one
+    # release, so a bump cannot quietly retire this guard.
+    # ⚠️ `${XDG_CACHE_HOME-~/.cache}` IS NOT THE SAME FIX — a shell with an empty base
+    # yields `/huggingface` where python yields `huggingface`. A third wrong answer, not
+    # a cheaper right one.
+    # ⚠️ NOT IN droste::blank_is_unset AND IT MUST NOT BE ADDED TO ONE: that helper is
+    # reserved for natives the box's config file EXPOSES (droste-common.sh:85-90), and
+    # XDG_CACHE_HOME is on nobody's surface here — it appears in no template on this box.
+    # Placed beside the consumer instead, in the shape approved for vllm in `e4028f2`.
+    # One mechanism, not two.
+    # ⭐ AND THIS COVERS ROUTES droste::cfg_apply CANNOT SEE — a create-time `--env`, or
+    # an `export XDG_CACHE_HOME=` typed inside `distrobox enter` before a download —
+    # because it reads the environment the server is about to get, not the file.
+    # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default,
+    # and delivering it is not ignoring the user.
+    #
+    # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAME WITH A
+    # MEASURED CONSUMER — RULED BY JEI: "overruled. All XDG variables should be treated
+    # the same; it's too confusing to have varying implementation." That DELIBERATELY
+    # OVERRIDES "each entry earns its place by a MEASURED difference" FOR THIS FAMILY,
+    # and it is "One Surface, Five Servers" pointed inward: a user must not have to
+    # learn which box guards which XDG name. It is the second application of the same
+    # instinct — s58 ruled the identical widening for the `loud` treatment.
+    # ⭐ THE FAMILY IS THE FREEDESKTOP BASE DIRECTORY SPECIFICATION'S SEVEN VARIABLES,
+    # IN SPEC ORDER: the four user directories, the runtime directory, and the two
+    # search LISTS. The boundary is a document rather than a judgement, which is what
+    # makes "all of them" an answerable claim. XDG_BIN_HOME is NOT in the spec (which
+    # defines only the ~/.local/bin convention, with no variable) and is excluded; so
+    # are the session names (XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP, XDG_SEAT, XDG_VTNR,
+    # …), which are not directory settings at all and belong to a display stack this
+    # image does not run.
+    # ⚠️ SIX OF THE SEVEN HAVE NO MEASURED CONSUMER ON THIS BOX, AND THAT IS THE POINT
+    # RATHER THAN A DEFECT — uniformity is the requirement here, coverage-per-name is
+    # not. A no-op rung costs nothing and removes a question.
+    # ⚠️ THE LOOP BELOW IS BYTE-IDENTICAL IN ALL FIVE BUILD-SPECS. If the list changes,
+    # it changes in all five in the same commit: a family that differs by box is the
+    # exact confusion this ruling removed.
+    # ⚠️ AND IT STILL MAY NOT BE FOLDED INTO droste::blank_is_unset — that helper's
+    # callers are audited against what each box's .cfg EXPOSES, and vllm's suite asserts
+    # exactly that ("every guarded name is exposed by vllm.cfg"). A separate loop is how
+    # the family stays identical on all five without making that check false on one.
+    local _xdg
+    for _xdg in XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME \
+                XDG_RUNTIME_DIR XDG_DATA_DIRS XDG_CONFIG_DIRS; do
+        if [ -n "${!_xdg+set}" ] && [ -z "${!_xdg}" ]; then
+            unset "$_xdg"
+        fi
+    done
+
     # ── the positive wrappers over those presence-tested negative natives ────
     # 🚨 IT MUST RUN *AFTER* droste::blank_is_unset ABOVE, and the order is the
     # whole point: that call deletes an EMPTY native, this one states the user's

@@ -131,51 +131,64 @@ droste::cfg_apply() {
     #
     # ⭐ MOVING A NAME BETWEEN THEM IS A ONE-LINE EDIT, deliberately: which hazard a
     # variable carries is a FINDING, not a constant — and s58's survey moved three of
-    # them within a day of the split being written. Two of these lists hold one name.
-    # That is correct: a list is padded by adding a name that strands nothing, not by
-    # having few.
+    # them within a day of the split being written.
     #
-    # ⚠️ WHY THESE XDG NAMES AND NOT THE FAMILY. Each earns its place by a MEASURED
-    # consequence in THESE images; the rest are left out with a reason, because a list
-    # padded for family symmetry trains the reader to skip the channel — the same
-    # cry-wolf argument the stale-name rule below turns on.
-    #   XDG_CACHE_HOME  (loud_dirs) — the only XDG name that strands anything droste
-    #                     keeps. llama's own HF cache chain (common/hf-cache.cpp, rung 5
-    #                     of 6, and this image sets none of the four rungs above it);
-    #                     vLLM's get_default_cache_root() behind the ~/.cache/vllm bind;
+    # 🚨 THE WHOLE XDG FAMILY, BY RULING, NOT BY MEASUREMENT (Jei, s61): "overruled. All
+    # XDG variables should be treated the same; it's too confusing to have varying
+    # implementation." That deliberately OVERRIDES this file's earlier standard — each
+    # name earning its place by a measured consequence in THESE images — for the XDG
+    # family and nothing else. ⭐ UNIFORMITY OUTRANKS MINIMALITY HERE, and the price is
+    # written down rather than hidden: on a name with nothing behind a bind, the
+    # moved-value sentence warns about a loss that cannot happen. That is what was
+    # bought, on purpose — a family a user can reason about without a table. Same
+    # instinct as s58's "let's apply the same standard to XDG_*", applied a second time.
+    # ⚠️ IT IS THE SEVEN THE SPECIFICATION DEFINES, checked both ways: the freedesktop
+    # basedir spec's list and every XDG name this tree references are the SAME SET, so
+    # there is no eighth name to forget and no name here that nothing reads.
+    #
+    # 🚨 XDG_CONFIG_DIRS IS THE ONE NAME NOT IN loud_dirs, AND THAT IS NOT AN EXEMPTION
+    # FROM THE RULING. It is warned about like every other member; only the SENTENCE
+    # differs, because its measured consequence is READ-side and loud_dirs' is
+    # WRITE-side. With DROSTE_JUPYTER_PLATFORM_DIRS on, finetuning's SYSTEM_CONFIG_PATH
+    # becomes platformdirs.site_config_dir, i.e. $XDG_CONFIG_DIRS/jupyter
+    # (jupyter_core/paths.py); the image covers the DEFAULT with the /etc/xdg/jupyter
+    # symlink in targets/Container.finetuning. Cost of setting it: all 39 baked trait
+    # defaults silently dropped — nothing written outside a bind, nothing lost at
+    # recreate. Sending that user to change their data mapping would point them at a
+    # failure that will never arrive, which is the exact defect the class split was
+    # written to fix. ❓ NOT DECIDED HERE, FLAGGED: if the sentence is to be uniform too,
+    # this is the single line to move, and it costs the accuracy above.
+    #
+    # ⭐ WHAT EACH NAME ACTUALLY COSTS. Kept, because a ruling on POLICY does not erase
+    # the measurements — and the next reader deciding a related question will want them.
+    #   XDG_CACHE_HOME  — the only XDG name that strands anything droste keeps. llama's
+    #                     own HF cache chain (common/hf-cache.cpp, rung 5 of 6, and this
+    #                     image sets none of the four rungs above it); vLLM's
+    #                     get_default_cache_root() behind the ~/.cache/vllm bind;
     #                     huggingface_hub's HF_HOME default behind the ~/.cache/huggingface
     #                     CRITICAL bind on ALL FIVE boxes; torch's _get_torch_home() behind
     #                     the ~/.cache/torch bind on comfyui and finetuning. vllm.cfg names
     #                     it on four lines of its own.
-    #   XDG_CONFIG_DIRS (loud_conf) — finetuning, with DROSTE_JUPYTER_PLATFORM_DIRS on:
-    #                     SYSTEM_CONFIG_PATH becomes platformdirs.site_config_dir, i.e.
-    #                     $XDG_CONFIG_DIRS/jupyter (jupyter_core/paths.py). The image
-    #                     covers the DEFAULT with the /etc/xdg/jupyter symlink in
-    #                     targets/Container.finetuning, whose own comment already says a
-    #                     user who re-points the variable is past what an image can
-    #                     anticipate. Cost of setting it: all 39 baked trait defaults
-    #                     silently dropped. It is also the only XDG name with no narrower
-    #                     native override to reach for instead.
-    # LEFT OUT, each for a stated reason:
-    #   XDG_CONFIG_HOME — ⚠️ WAS IN loud_dirs AND CAME BACK OUT (s58 survey). No
-    #                     bind-backed consequence on any box: its only consumer is
+    #   XDG_CONFIG_HOME — no bind-backed consequence on any box: its only consumer is
     #                     VLLM_CONFIG_ROOT, and ~/.config/vllm is not a bind. ⚠️ The
     #                     ~/.config/miopen bind LOOKS like a second hit and is not one —
     #                     MIOpen resolves ~ from $HOME with no XDG rung at all
     #                     (src/expanduser.cpp), and Triton is the same (knobs.py).
-    #   XDG_DATA_HOME   — ⚠️ ALSO CAME BACK OUT. Its only consumer is jupyter_core's
-    #                     jupyter_data_dir() (kernelspecs, Lab extensions, runtime files)
-    #                     and droste binds NOTHING under ~/.local/share on any box, so
-    #                     nothing droste persists moves. ⭐ It is the one genuinely
-    #                     safe-to-offer XDG name — consistent with finetuning.cfg already
-    #                     offering it, which is a fact that reads as evidence FOR
-    #                     including it and is evidence for the opposite.
+    #   XDG_DATA_HOME   — its only consumer is jupyter_core's jupyter_data_dir()
+    #                     (kernelspecs, Lab extensions, runtime files) and droste binds
+    #                     NOTHING under ~/.local/share on any box, so nothing droste
+    #                     persists moves. ⚠️ finetuning.cfg OFFERS it as a setting, so a
+    #                     user setting it now gets warned about their own documented knob.
+    #                     That reads as an argument against including it and is the
+    #                     clearest case of what the ruling chose: predictability over a
+    #                     per-name verdict the user cannot see.
     #   XDG_STATE_HOME  — no reader in these five images and droste keeps nothing under
     #                     ~/.local/state.
     #   XDG_RUNTIME_DIR — per-session and non-persistent BY SPECIFICATION, so there is
     #                     nothing here to lose at recreate. It is also the one XDG name
-    #                     droste itself READS (droste-setup.sh, with a fallback), and
-    #                     warning about our own idiom is not a service to anyone.
+    #                     droste itself READS (droste-setup.sh, with a fallback) — but
+    #                     that read is on the HOST, and this list is about what a box's
+    #                     config file sets, so the two do not meet.
     #   XDG_DATA_DIRS   — a search LIST like XDG_CONFIG_DIRS, but no measured shadowing
     #                     case: the parallel site_data_dir path holds kernelspecs and
     #                     extensions, none of which droste bakes.
@@ -191,7 +204,7 @@ droste::cfg_apply() {
     # fourth route and it fires with no user opt-in at all. Nobody has read it.
     local loud_code="PATH LD_PRELOAD LD_LIBRARY_PATH BASH_ENV"
     local loud_conf="XDG_CONFIG_DIRS"
-    local loud_dirs="XDG_CACHE_HOME"
+    local loud_dirs="XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_RUNTIME_DIR XDG_DATA_DIRS"
     # ── STALE DROSTE NAMES — the one thing this file CAN honestly call wrong ────
     # 🚨 THE FAILURE, MEASURED FROM THE TREE, NOT THEORISED. Every box's config file
     # is seeded `if_missing` (apply_templates.py, the `if os.path.exists(dest)`
@@ -357,9 +370,32 @@ droste::cfg_apply() {
                 serve::warn "$file changes $name, which decides where this box looks for the system-wide configuration its programs read at startup. Applying it as asked, and the box will start normally — but the settings this image bakes in sit at the standard location this points away from, so a program that can no longer find them falls back to its own upstream defaults instead. Nothing announces that. If this box has quietly stopped behaving the way the image set it up to, this line is the first thing to remove."
                 ;;
         esac
+        # 🚨 TWO SENTENCES, BECAUSE CLEARING ONE OF THESE AND MOVING IT HAVE OPPOSITE
+        # OUTCOMES, AND NO ONE MESSAGE IS TRUE OF BOTH. MEASURED, not reasoned: a cfg line
+        # `XDG_CACHE_HOME=` leaves the name set-and-empty when this function returns
+        # (resolve step 6), and the per-box blank guard inside PRE_LAUNCH (step 7 —
+        # droste-resolve.sh calls cfg_apply then PRE_LAUNCH, in that order) unsets it, so a
+        # program resolving ${XDG_CACHE_HOME:-~/.cache} lands back on the bound ~/.cache.
+        # Nothing is redirected, nothing leaves a bind, nothing is gone at the next
+        # recreate — EVERY clause of the moved-value sentence is false for that case, and a
+        # warning naming the wrong symptom is precisely what this class split exists to
+        # prevent.
+        # ⚠️ THE CLEARED ARM IS COUPLED TO THAT GUARD EXISTING, on every box and for every
+        # name in this list. The guard is a per-box PRE_LAUNCH concern and cannot be seen
+        # from here, so this arm states droste's contract (a blank is an absence, Jei s57)
+        # rather than a fact about the box. The two changes ship together or this sentence
+        # is false in the other direction.
+        # ⚠️ AND IT WARNS RATHER THAN GOING SILENT. A line droste turns into an absence is
+        # still a line the user wrote and did not get ([[never-silently-ignore-user-input]]);
+        # silence would leave them believing it took effect, which is the failure mode the
+        # no-fall-through rule is about. The warning is what makes the no-op audible.
         case " $loud_dirs " in
             *" $name "*)
-                serve::warn "$file changes $name, which decides where programs in this box write their caches and data. Applying it as asked, and the box will start normally — but droste binds your host's storage at the standard locations, and this points programs somewhere else. Whatever follows it out of a bind — the model cache above all — is written inside the container instead: it looks fine for as long as this box runs, and it is gone the next time the box is recreated. To move that data on your host, change the box's data mapping in the installer rather than redirecting it from here."
+                if [ -z "${now[$name]}" ]; then
+                    serve::warn "$file has a line that clears $name — the name with nothing after it. Droste reads a blank as the setting being absent, so nothing is redirected: programs in this box go on writing to the standard location, which is where your host's storage is bound, and nothing is lost. The box will start normally. But the line is having no effect at all, so if it was meant to move something, it has not — give it a value, or remove it."
+                else
+                    serve::warn "$file changes $name, which decides where programs in this box write their caches and data. Applying it as asked, and the box will start normally — but droste binds your host's storage at the standard locations, and this points programs somewhere else. Whatever follows it out of a bind — the model cache above all — is written inside the container instead: it looks fine for as long as this box runs, and it is gone the next time the box is recreated. To move that data on your host, change the box's data mapping in the installer rather than redirecting it from here."
+                fi
                 ;;
         esac
         export "$name=${now[$name]}"

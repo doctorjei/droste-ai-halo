@@ -390,6 +390,93 @@ PRE_LAUNCH="comfyui_pre_launch"
 comfyui_pre_launch() {
     # shellcheck source=/dev/null
     source /etc/profile.d/01-rocm-envs.sh
+
+    # ── the XDG bases comfyui.cfg never names, whose blank strands the caches ───
+    # 🚨 A BLANK XDG_CACHE_HOME MOVES THE HF CACHE OUT FROM BEHIND THE CRITICAL BIND,
+    # SILENTLY, AND TAKES THE TORCH CACHE WITH IT. Two readers on this box, both with an
+    # ABSENT-ONLY default, so a blank base yields a RELATIVE path from each:
+    #   huggingface_hub  os.getenv("HF_HOME", os.path.join(
+    #                      os.getenv("XDG_CACHE_HOME", "~/.cache"), "huggingface"))
+    #                                                        (constants.py, ~:158-166)
+    #   torch            os.getenv(ENV_TORCH_HOME, os.path.join(
+    #                      os.getenv(ENV_XDG_CACHE_HOME, "~/.cache"), "torch"))
+    #                                            (torch/hub.py:139-146, READ AT THE PIN
+    #                                             v2.9.1 — base/rocm-version.env)
+    # MEASURED at hub 1.29.0 in an isolated interpreter, HOME=/home/boxuser, HF_HOME
+    # unset:
+    #                     absent                                 ""
+    #   HF_HOME           /home/boxuser/.cache/huggingface       huggingface
+    #   HF_HUB_CACHE      /home/boxuser/.cache/huggingface/hub   huggingface/hub
+    # ⇒ both resolve against the process's CWD — and this function cd's to /opt/ComfyUI
+    # at its end, so the write lands in the CONTAINER LAYER — instead of
+    # $HOME/.cache/huggingface (the hf-cache CRITICAL row) and $HOME/.cache/torch (a
+    # CACHES row). The binds still mount and still pass their own checks, which test the
+    # PATH and not where a library later decided to write, so the box starts, serves and
+    # reports itself HEALTHY while a multi-GB download dies at the next recreate.
+    # ⚠️ THE NODE INSTALLER IS THE LIVE ROUTE, not just a hand-run download:
+    # ComfyUI-Manager pulls model and node payloads through huggingface_hub, which is
+    # UNPINNED here (Container.comfyui installs `huggingface_hub[hf_transfer]`, and
+    # Manager's own dependency on it is unpinned too). The reader was measured identical
+    # across 0.35.3 → 1.1.0 and again at 1.29.0 — a property of the library, not of one
+    # release, so a bump cannot quietly retire this guard.
+    # ⚠️ model_scanner.py is NOT the reason this is here and is NOT affected: its
+    # resolve_cache_dir() honours HF_HUB_CACHE and HF_HOME and deliberately does not read
+    # XDG_CACHE_HOME (see its docstring), so it would keep reporting the bind while the
+    # library wrote elsewhere — which is precisely how this stays invisible.
+    # ⚠️ FIRST IN THE FUNCTION, BEFORE THE SCANNER SYNC AND BEFORE THE `cd`, so every
+    # child this hook spawns already sees the corrected environment.
+    # ⚠️ `${XDG_CACHE_HOME-~/.cache}` IS NOT THE SAME FIX — a shell with an empty base
+    # yields `/huggingface` where python yields `huggingface`. A third wrong answer.
+    # ⚠️ NOT IN droste::blank_is_unset AND IT MUST NOT BE ADDED TO ONE. That helper is a
+    # NAMED LIST of natives a box's config file EXPOSES (droste-common.sh:85-90), and
+    # this box exposes NO natives at all — there is no such list here to join, which is
+    # exactly why the guard sits beside its consumers. Same placement, same mechanism and
+    # the same shape approved for vllm in `e4028f2`; one mechanism, not two.
+    # ⭐ THE SHAPE OF THIS HOOK DIFFERS FROM ds4's AND finetuning's — comfyui has no
+    # `*_env()` companion, because its entire surface is droste-owned and is translated
+    # into an argv by comfyui_argv rather than exported. The guard is unaffected: it acts
+    # on the ENVIRONMENT the server inherits, which exists either way.
+    # ⭐ AND THIS COVERS ROUTES droste::cfg_apply CANNOT SEE — a create-time `--env`, or
+    # an `export XDG_CACHE_HOME=` typed inside `distrobox enter` before a download —
+    # because it reads the environment the server is about to get, not the file.
+    # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default.
+    #
+    # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAME WITH A
+    # MEASURED CONSUMER — RULED BY JEI: "overruled. All XDG variables should be treated
+    # the same; it's too confusing to have varying implementation." That DELIBERATELY
+    # OVERRIDES "each entry earns its place by a MEASURED difference" FOR THIS FAMILY,
+    # and it is "One Surface, Five Servers" pointed inward: a user must not have to
+    # learn which box guards which XDG name. It is the second application of the same
+    # instinct — s58 ruled the identical widening for the `loud` treatment.
+    # ⭐ THE FAMILY IS THE FREEDESKTOP BASE DIRECTORY SPECIFICATION'S SEVEN VARIABLES,
+    # IN SPEC ORDER: the four user directories, the runtime directory, and the two
+    # search LISTS. The boundary is a document rather than a judgement, which is what
+    # makes "all of them" an answerable claim. XDG_BIN_HOME is NOT in the spec (which
+    # defines only the ~/.local/bin convention, with no variable) and is excluded; so
+    # are the session names (XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP, XDG_SEAT, XDG_VTNR,
+    # …), which are not directory settings at all and belong to a display stack this
+    # image does not run.
+    # ⚠️ SIX OF THE SEVEN HAVE NO MEASURED CONSUMER ON THIS BOX, AND THAT IS THE POINT
+    # RATHER THAN A DEFECT — uniformity is the requirement here, coverage-per-name is
+    # not. XDG_CONFIG_HOME is the one that used to be argued OUT by name: the
+    # ~/.config/miopen CACHES row LOOKS like a consumer and is not (MIOpen expands `~`
+    # from $HOME with no XDG rung at all, src/expanduser.cpp, and Triton is the same,
+    # knobs.py). That reading was correct and is no longer the question being asked.
+    # ⚠️ THE LOOP BELOW IS BYTE-IDENTICAL IN ALL FIVE BUILD-SPECS. If the list changes,
+    # it changes in all five in the same commit: a family that differs by box is the
+    # exact confusion this ruling removed.
+    # ⚠️ AND IT STILL MAY NOT BE FOLDED INTO droste::blank_is_unset — that helper's
+    # callers are audited against what each box's .cfg EXPOSES, and vllm's suite asserts
+    # exactly that ("every guarded name is exposed by vllm.cfg"). A separate loop is how
+    # the family stays identical on all five without making that check false on one.
+    local _xdg
+    for _xdg in XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME \
+                XDG_RUNTIME_DIR XDG_DATA_DIRS XDG_CONFIG_DIRS; do
+        if [ -n "${!_xdg+set}" ] && [ -z "${!_xdg}" ]; then
+            unset "$_xdg"
+        fi
+    done
+
     # ComfyUI writes preview/scratch files under <base>/temp, which the SURFACES
     # row above binds from /opt/program-cache/tmp. Neither the baked dir nor a
     # freshly created src is user-writable in the distrobox lane, so make it

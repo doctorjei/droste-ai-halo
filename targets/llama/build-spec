@@ -922,8 +922,80 @@ llama_pre_launch() {
     local -a _turbo_blank_is_unset=(
         TURBO_LAYER_ADAPTIVE                # atoi("") == 0 ⇒ suppresses the auto mode
     )
+
+    # ── a third separate claim: the cache-directory chain's own native ─────────
+    # 🚨 A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM, exactly as above. LLAMA_CACHE
+    # is read by neither the argument parser nor llama_kv_cache, so it belongs to none
+    # of the three audits and must not silently inflate any of their counts.
+    # 🚨 AND IT IS FATAL, MEASURED FROM THE PINNED SOURCE (337f08e8). There are TWO
+    # cache-directory chains in this tree and they do NOT agree about blanks:
+    #   common/hf-cache.cpp:51   `if (auto * p = std::getenv(entry.var); p && *p)` over
+    #                            six rungs (LLAMA_CACHE, HF_HUB_CACHE,
+    #                            HUGGINGFACE_HUB_CACHE, HF_HOME, XDG_CACHE_HOME, HOME)
+    #                            ⇒ blank IS absent there. Nothing to fix.
+    #   common/common.cpp:995    `if (getenv("LLAMA_CACHE"))`  — a BARE presence test
+    #   common/common.cpp:1000   `if (std::getenv("XDG_CACHE_HOME"))` — likewise
+    # In fs_get_cache_directory a blank is non-NULL, so cache_directory becomes "" and
+    # reaches ensure_trailing_slash (:988-994), whose `p.back()` on an EMPTY std::string
+    # is undefined behaviour. What it reads decides between two failures: "/llama.cpp/",
+    # a path at the filesystem ROOT the box user cannot create — fs_get_cache_file
+    # (:1032-1039) then throws "failed to create cache directory" and startup dies — or
+    # "llama.cpp/", relative to the server's CWD, i.e. inside the container. Neither is
+    # a cache behind a bind, and the blank LLAMA_CACHE arm skips the `+= "llama.cpp"`
+    # line entirely, so it is worse still.
+    # ⭐ THAT IS WHY THE XDG RULING BELOW IS THE RIGHT SHAPE AND A PER-VARIABLE SURVEY
+    # WAS NOT: llama was previously excluded from the XDG guard on the ground that "the
+    # C++ guards every rung with `p && *p`" — TRUE of chain A and FALSE of chain B, in
+    # the same repository, for the same variable.
+    # ⚠️ LLAMA_CACHE IS NOT AN XDG NAME, so it is fixed HERE, by this box's own
+    # convention, rather than being smuggled into a family the ruling defined.
+    local -a _cache_blank_is_unset=(
+        LLAMA_CACHE                         # common.cpp:995 is a bare getenv() test
+    )
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
-                           "${_turbo_blank_is_unset[@]}"
+                           "${_turbo_blank_is_unset[@]}" \
+                           "${_cache_blank_is_unset[@]}"
+
+    # ── the XDG bases llama.cfg never names, whose blank breaks the cache dir ──
+    # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAME WITH A
+    # MEASURED CONSUMER — RULED BY JEI: "overruled. All XDG variables should be treated
+    # the same; it's too confusing to have varying implementation." That DELIBERATELY
+    # OVERRIDES "each entry earns its place by a MEASURED difference" FOR THIS FAMILY,
+    # and it is "One Surface, Five Servers" pointed inward: a user must not have to
+    # learn which box guards which XDG name. It is the second application of the same
+    # instinct — s58 ruled the identical widening for the `loud` treatment.
+    # ⭐ ON THIS BOX ONE RUNG IS A REAL FIX AND THE REST ARE NO-OPS, WHICH IS THE
+    # RULING'S POINT RATHER THAN AN ARGUMENT AGAINST IT. XDG_CACHE_HOME is the fix —
+    # common.cpp:1000, the bare presence test described above. In hf-cache.cpp's chain
+    # the same name already skips blanks, so there the loop changes nothing.
+    # ⭐ THE FAMILY IS THE FREEDESKTOP BASE DIRECTORY SPECIFICATION'S SEVEN VARIABLES,
+    # IN SPEC ORDER: the four user directories, the runtime directory, and the two
+    # search LISTS. The boundary is a document rather than a judgement, which is what
+    # makes "all of them" an answerable claim. XDG_BIN_HOME is NOT in the spec (which
+    # defines only the ~/.local/bin convention, with no variable) and is excluded; so
+    # are the session names (XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP, XDG_SEAT, XDG_VTNR,
+    # …), which are not directory settings at all and belong to a display stack this
+    # image does not run.
+    # ⚠️ THE LOOP BELOW IS BYTE-IDENTICAL IN ALL FIVE BUILD-SPECS. If the list changes,
+    # it changes in all five in the same commit: a family that differs by box is the
+    # exact confusion this ruling removed.
+    # ⚠️ AND IT IS NOT FOLDED INTO THE CALL ABOVE — that helper's callers are audited
+    # against what each box's .cfg EXPOSES, and vllm's suite asserts exactly that
+    # ("every guarded name is exposed by vllm.cfg"). A separate loop is how the family
+    # stays identical on all five without making that check false on one. LLAMA_CACHE
+    # goes through the call because it is llama's own native and has no such family.
+    # ⚠️ IT SITS AFTER droste::blank_is_unset AND BEFORE THE DEFAULTS BELOW, for the
+    # same reason every other normalisation here does: blanks become absences FIRST,
+    # our defaults apply SECOND. Nothing below reads an XDG name today, so this is
+    # placement for uniformity with the other four boxes, not for correctness.
+    # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default.
+    local _xdg
+    for _xdg in XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME \
+                XDG_RUNTIME_DIR XDG_DATA_DIRS XDG_CONFIG_DIRS; do
+        if [ -n "${!_xdg+set}" ] && [ -z "${!_xdg}" ]; then
+            unset "$_xdg"
+        fi
+    done
 
     # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
     # llama.cfg:95-96 show LLAMA_ARG_CACHE_TYPE_K/V=turbo3 while :94's menu starred

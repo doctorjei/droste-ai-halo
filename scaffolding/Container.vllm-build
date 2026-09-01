@@ -78,6 +78,44 @@ COPY patch_aiter_headers.py /opt/patch_aiter_headers.py
 # Harmless at THIS site — aiter is not installed before this line, so the wheel installs
 # as a direct requirement either way — but never trust the flag to police its own name.
 # `--no-deps` has no counterpart and needs none: `uv build` builds this project only.
+#
+# ── TWO MUTATIONS OF UPSTREAM SOURCE IN THIS CHAIN, BOTH GUARDED ──────────────
+#
+# 1. patch_aiter_headers.py — the SAME script the runtime stage runs, against the
+#    aiter installed into THIS venv. The guard is a VERBATIM copy of the one in
+#    targets/Container.vllm (only the script path differs: /opt here, parked under
+#    /opt/resources/scripts/ there). Verbatim is the point — a header rewrite that
+#    is policed in one stage and unpoliced in the other is the same silent no-op
+#    wearing a different hat. Rationale for every line of it lives beside the
+#    runtime copy; read that block, not a paraphrase here.
+#    ⚠️ Why it matters HERE and not only there: this venv's headers are what
+#    aiter's JIT compiles against for the module_aiter_enum.so staged into
+#    /artifacts, which the runtime image drops in verbatim.
+#
+# 2. THE flash-attention setup.py EDIT, which deletes the block that pip-installs
+#    third_party/aiter from source during the wheel build. We built and
+#    header-patched aiter above; letting setup.py rebuild it would discard both.
+#    🚨 A BARE re.sub CANNOT FAIL: it returns its input unchanged on no match and
+#    exits 0. And the pattern is unusually fragile — two lazy [\s\S]*? runs
+#    spanning ~9 lines, an else: branch and an assert — so it has THREE distinct
+#    ways to go wrong, and the counts alone catch only one:
+#      * no match at all            -> re.subn n == 0 (the `n == 1` check);
+#      * match stops SHORT (e.g. a reflow puts `check=True,` on the git-submodule
+#        call) -> n is still 1, but the pip install SURVIVES. Caught by the
+#        after-count of `third_party/aiter` being 0, not by n;
+#      * match runs PAST the block -> also n == 1, also 0 mentions left. Caught by
+#        requiring the ck-backend branch to survive.
+#    The REACHABILITY half is the FLASH_ATTENTION_TRITON_AMD_ENABLE line: that env
+#    var (exported above) is the only thing selecting ROCM_BACKEND == "triton", and
+#    the block being removed lives under that gate. If upstream renames it, our
+#    export stops selecting the branch, the deletion becomes unread, and the build
+#    quietly switches to the ck backend.
+#    ⚠️ PERMANENT, NOT A STOPGAP: this is a local build decision, not a defect
+#    anyone upstream would take a patch for. Nobody is watching for it to become
+#    unnecessary, so this guard is the only thing that will ever report the drift.
+#    ⚠️ Continuation lines are at column 0 on purpose — same idiom as
+#    targets/Container.finetuning's multi-line `python -c`. The Dockerfile parser
+#    joins them; leading indentation would be an IndentationError if it ever did not.
 RUN mkdir -p /artifacts/wheels \
     && git clone "${FLASH_ATTENTION_REPO}" /opt/flash-attention \
     && cd /opt/flash-attention \
@@ -89,9 +127,52 @@ RUN mkdir -p /artifacts/wheels \
     && export CK_DIR="$(pwd)/3rdparty/composable_kernel" \
     && uv build --wheel --no-build-isolation -o /artifacts/wheels . \
     && uv pip install --reinstall-package amd-aiter /artifacts/wheels/amd_aiter*.whl \
-    && python /opt/patch_aiter_headers.py \
+    && AITER_INC="$(python -c 'import sysconfig,os; print(os.path.join(sysconfig.get_path("purelib"),"aiter_meta","csrc","include"))')" \
+    && sh -c ' \
+        die() { echo "aiter-headers: FATAL: $*" >&2; \
+                echo "aiter-headers: patch_aiter_headers.py OVERWRITES two upstream aiter headers" >&2; \
+                echo "aiter-headers: WHOLESALE and RETURNS 0 WHETHER OR NOT IT WROTE ANYTHING -- a" >&2; \
+                echo "aiter-headers: missing include dir or a renamed header makes it a silent no-op." >&2; \
+                echo "aiter-headers: Without those RDNA3 fallbacks, gfx1151 has no scalar substitutes" >&2; \
+                echo "aiter-headers: for the CDNA-only packed ISA aiter emits, and the failure appears" >&2; \
+                echo "aiter-headers: at RUNTIME in a JIT-compiled kernel, not in this build." >&2; \
+                echo "aiter-headers: READ the aiter tree at the pinned flash-attention submodule and" >&2; \
+                echo "aiter-headers: re-derive the paths/markers in patch_aiter_headers.py. Do NOT" >&2; \
+                echo "aiter-headers: delete this check to go green." >&2; \
+                exit 1; }; \
+        [ -d "$1" ] || die "$1 is not a directory -- aiter did not install, or its wheel layout moved"; \
+        [ -f "$1/ck_tile/vec_convert.h" ] || die "$1/ck_tile/vec_convert.h is gone -- the header was renamed or moved"; \
+        [ -f "$1/hip_reduce.h" ] || die "$1/hip_reduce.h is gone -- the header was renamed or moved"; \
+        n=$(grep -rlF "vec_convert.h" "$1" | wc -l); \
+        [ "$n" -ge 1 ] || die "nothing under $1 includes vec_convert.h -- rewriting it would be a silent no-op"; \
+        n=$(grep -rlF "hip_reduce.h" "$1" | wc -l); \
+        [ "$n" -ge 1 ] || die "nothing under $1 includes hip_reduce.h -- rewriting it would be a silent no-op"; \
+        python /opt/patch_aiter_headers.py || die "patch_aiter_headers.py exited nonzero"; \
+        grep -qF "CK_TILE_RDNA3_NO_PK_FP8" "$1/ck_tile/vec_convert.h" \
+          || die "vec_convert.h carries no CK_TILE_RDNA3_NO_PK_FP8 after patching -- it was NOT rewritten"; \
+        grep -qF "AITER_RDNA_NO_DPP_BCAST" "$1/hip_reduce.h" \
+          || die "hip_reduce.h carries no AITER_RDNA_NO_DPP_BCAST after patching -- it was NOT rewritten"; \
+        echo "aiter-headers: both RDNA3 fallback headers rewritten and verified"; \
+       ' _ "${AITER_INC}" \
     && cd /opt/flash-attention \
-    && python -c "import re; f=open('setup.py','r'); t=f.read(); f.close(); t=re.sub(r'subprocess\.run\([\s\S]*?third_party/aiter[\s\S]*?check=True,\s*\)', 'pass # patched', t); f=open('setup.py','w'); f.write(t)" \
+    && python -c "\
+import re, sys, os; \
+f = 'setup.py'; \
+T = '\nflash-attn-aiter: The pinned ROCm/flash-attention no longer matches what this edit\nflash-attn-aiter: assumes. READ setup.py at the CURRENT FLASH_ATTENTION_REF and RE-DERIVE the\nflash-attn-aiter: pattern AND the counts here against what you actually find there. Do NOT\nflash-attn-aiter: delete this check to go green, and do NOT go back to a bare re.sub: re.sub\nflash-attn-aiter: returns its input UNCHANGED on no match and exits 0, so the wheel build\nflash-attn-aiter: would then pip-install third_party/aiter FROM SOURCE, silently discarding\nflash-attn-aiter: the aiter wheel built and header-patched above -- i.e. shipping the stock\nflash-attn-aiter: CDNA-only kernels that gfx1151 cannot run.'; \
+os.path.isfile(f) or sys.exit('flash-attn-aiter: FATAL: ' + f + ' does not exist -- the project layout moved.' + T); \
+t = open(f).read(); \
+'pass # patched' not in t or sys.exit('flash-attn-aiter: FATAL: ' + f + ' already carries the replacement -- refusing to patch twice.' + T); \
+t.count('ROCM_BACKEND = \"triton\" if os.getenv(\"FLASH_ATTENTION_TRITON_AMD_ENABLE\", \"FALSE\") == \"TRUE\" else \"ck\"') == 1 or sys.exit('flash-attn-aiter: FATAL: setup.py no longer selects the triton backend from FLASH_ATTENTION_TRITON_AMD_ENABLE, which this image exports -- the block being removed would never RUN, so removing it is a silent no-op.' + T); \
+t.count('    if ROCM_BACKEND == \"triton\":\n        if os.path.isdir(\".git\"):\n') == 1 or sys.exit('flash-attn-aiter: FATAL: the aiter block no longer sits directly under the triton-backend gate in setup.py -- it may have moved out from under the gate our env var selects.' + T); \
+t.count('third_party/aiter') == 4 or sys.exit('flash-attn-aiter: FATAL: expected exactly 4 third_party/aiter mentions in setup.py before patching, found ' + str(t.count('third_party/aiter')) + '.' + T); \
+r = re.subn(r'subprocess\.run\([\s\S]*?third_party/aiter[\s\S]*?check=True,\s*\)', 'pass # patched', t); \
+r[1] == 1 or sys.exit('flash-attn-aiter: FATAL: the aiter-build pattern matched ' + str(r[1]) + ' spans, expected exactly 1.' + T); \
+r[0].count('third_party/aiter') == 0 or sys.exit('flash-attn-aiter: FATAL: ' + str(r[0].count('third_party/aiter')) + ' third_party/aiter mention(s) SURVIVED -- the lazy match stopped SHORT of the pip install, so setup.py still builds aiter from source.' + T); \
+r[0].count('pass # patched') == 1 or sys.exit('flash-attn-aiter: FATAL: expected exactly 1 replacement marker after patching.' + T); \
+'\n            pass # patched\n' in r[0] or sys.exit('flash-attn-aiter: FATAL: the replacement did not land as a whole statement at the original 12-space indentation -- the match began mid-line.' + T); \
+r[0].count('elif ROCM_BACKEND == \"ck\":') == 1 or sys.exit('flash-attn-aiter: FATAL: the ck-backend branch did not survive -- the lazy match ran PAST the aiter block and swallowed code this edit must not touch.' + T); \
+open(f, 'w').write(r[0]); \
+print('flash-attn-aiter: setup.py no longer builds third_party/aiter (1 span replaced, 0 mentions left)')" \
     && uv build --wheel --no-build-isolation -o /artifacts/wheels .
 
 # vLLM

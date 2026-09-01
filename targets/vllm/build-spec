@@ -30,7 +30,34 @@
 VLLM_CONFIG_DEFAULT=/opt/data/vllm_config.yaml
 : "${DROSTE_VLLM_CONFIG:=$VLLM_CONFIG_DEFAULT}"
 export DROSTE_VLLM_CONFIG
-SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" )
+# 🚨 `--host 0.0.0.0` IS A DROSTE DEFAULT, NOT A CONSTANT, AND IT WAS THE ONE TOKEN THIS
+# BOX DID NOT HAVE. serve::apply_host REWRITES the value after this flag before the
+# service is launched, so what stands here is the answer a box gets when its user set
+# nothing — and the argv a direct `podman run` of this image gets, where no launcher runs
+# at all.
+# ⭐ IT WAS THE ONLY BOX OF FIVE WITHOUT ONE, AND IT AGREED WITH THEM BY ACCIDENT.
+# comfyui bakes `--listen 0.0.0.0`, finetuning `--ip 0.0.0.0`, llama `--host 0.0.0.0` and
+# ds4 derives its argv from `: "${DROSTE_DS4_HOST=0.0.0.0}"`. vLLM landed on the same
+# address only because UPSTREAM'S default is an ABSENCE: FrontendArgs.host is
+# `str | None = None` (entrypoints/openai/cli_args.py:73, and add_cli_args special-cases
+# every field except this one) and api_server.py:427 binds `(args.host or "", args.port)`
+# — an empty string, i.e. INADDR_ANY. Right answer, nothing of OURS stating it, so an
+# upstream default change would have moved this box's bind and said nothing.
+# ⭐ AND IT IS WHAT MAKES vllm_config.yaml's RESERVATION TRUE IN BOTH LANES. That file's
+# Reserved block says `host` is "overridden by Droste anyway"; until this token existed
+# that held only where serve::apply_host runs, which is never in a direct `podman run`.
+# ⚠️ POSITION IS DELIBERATE, AND IT IS NOT WHAT THE PRE_LAUNCH COMMENT'S "after --config"
+# WOULD SUGGEST. _pull_args_from_config REMOVES `--config <path>` from the argv and
+# splices the file's keys in immediately after the `serve` sub-command
+# (argparse_utils.py:439), so EVERY surviving CLI token — whether it sat before or after
+# --config — outranks the YAML. Placing ours FIRST keeps droste's flags ahead of the
+# user's catch-all, the ordering every other box uses, and leaves the config path as the
+# last element of the shipped argv.
+# ⚠️ DO NOT TRANSLATE DROSTE_VLLM_HOST HERE. serve::apply_host reads that same cfg key
+# through droste::cfg_get and is the only place that validates it (an IPv4 literal, one
+# message on all five boxes); a second reader here would be a second mechanism that
+# agrees with it only until one of the two changes.
+SERVICE=( vllm serve --host 0.0.0.0 --config "$DROSTE_VLLM_CONFIG" )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
 # vLLM's OpenAI server exposes /health (200 when the engine is ready). Weight
@@ -91,6 +118,8 @@ SERVE_CFG_PREFIX="DROSTE_VLLM_"
 # precedence — argparse_utils turns --config into arguments the real command line then
 # overrides — so a `host:` key can only be reserved for droste if something outranks it.
 # serve::apply_host puts --host on the command line; a comment in the yaml could not.
+# ⭐ AND THE FLAG apply_host REWRITES IS BAKED INTO SERVICE ABOVE, which is what carries
+# the reservation into the DIRECT `podman run` lane — apply_host never runs there.
 #
 # The port a user gets when they set none — vLLM's own, and the value vllm.cfg already
 # shows on its commented DROSTE_VLLM_PORT line. 🚨 THE ROW IS WHAT MAKES THAT LINE TRUE
@@ -771,7 +800,7 @@ vllm_env() {
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
                            "${_class2_on_clear[@]}"
 
-    # ── the two XDG bases vllm.cfg QUOTES but does not EXPOSE (s58) ───────────
+    # ── the XDG bases vllm.cfg QUOTES but does not EXPOSE (s58) ───────────────
     # 🚨 FOUR OF THE FILE'S LINES DOCUMENT THEIR DEFAULT AS `${XDG_CACHE_HOME:-~/.cache}/
     # vllm…` — vllm.cfg:75-77 (VLLM_ASSETS_CACHE, VLLM_CACHE_ROOT, VLLM_CONFIG_ROOT) and
     # :418 (VLLM_XLA_CACHE_PATH); THREE cache lines and ONE config line, not four of the
@@ -805,10 +834,37 @@ vllm_env() {
     # by vllm.cfg") and its envs.py key cross-check (neither name is a key) false, and a
     # check with an exemption in it stops holding the list honest. The guard belongs
     # beside the consumers, exactly as for VLLM_KV_CACHE_LAYOUT above.
-    # ⭐ EACH NAME EARNS ITS OWN PLACE. XDG_CONFIG_HOME has exactly one consumer in this
-    # image (VLLM_CONFIG_ROOT) and it differs, measured — it is guarded on that evidence,
-    # not for family symmetry with the cache line. Nothing else in the XDG family is
-    # touched: droste sets none of them and the rest have no measured consequence here.
+    # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAMES WITH A
+    # MEASURED CONSUMER — RULED BY JEI: "overruled. All XDG variables should be treated
+    # the same; it's too confusing to have varying implementation." That DELIBERATELY
+    # OVERRIDES "each entry earns its place by a MEASURED difference" FOR THIS FAMILY,
+    # and it is "One Surface, Five Servers" pointed inward: a user must not have to
+    # learn which box guards which XDG name. It is the second application of the same
+    # instinct — s58 ruled the identical widening for the `loud` treatment.
+    # ⭐ THE FAMILY IS THE FREEDESKTOP BASE DIRECTORY SPECIFICATION'S SEVEN VARIABLES,
+    # IN SPEC ORDER: the four user directories, the runtime directory, and the two
+    # search LISTS. The boundary is a document rather than a judgement, which is what
+    # makes "all of them" an answerable claim. XDG_BIN_HOME is NOT in the spec (which
+    # defines only the ~/.local/bin convention, with no variable) and is excluded; so
+    # are the session names (XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP, XDG_SEAT, XDG_VTNR,
+    # …), which are not directory settings at all and belong to a display stack this
+    # image does not run.
+    # ⭐ THIS IS THE BOX THE OVERRULED PARAGRAPH USED TO STAND ON, and what it argued is
+    # recorded here rather than deleted, because it was not wrong on its own terms: this
+    # was the only box with TWO measured names, XDG_CONFIG_HOME earned its place by the
+    # VLLM_CONFIG_ROOT row of the table above, and the other five were argued OUT by name
+    # on the ground that droste sets none of them and none has a measured consequence in
+    # this image. All of that is still TRUE and none of it is still the question. Two of
+    # the seven rungs below carry a measurement and five are no-ops; uniformity is the
+    # requirement, coverage-per-name is not.
+    # ⚠️ THE LOOP BELOW IS BYTE-IDENTICAL IN ALL FIVE BUILD-SPECS. If the list changes,
+    # it changes in all five in the same commit: a family that differs by box is the
+    # exact confusion this ruling removed.
+    # ⚠️ AND IT STILL MAY NOT BE FOLDED INTO droste::blank_is_unset — for the reason two
+    # paragraphs up, which this box is the one that can actually prove: vllmwire.sh's
+    # phantom row asserts that every guarded name is exposed by vllm.cfg, and not one of
+    # these seven is. A separate loop is how the family stays identical on all five
+    # without making that check false here.
     # ⭐ AND THIS COVERS ROUTES droste-cfgapply.sh CANNOT SEE — a create-time `--env`, or an
     # `export XDG_CACHE_HOME=` typed inside `distrobox enter` — because it reads the
     # environment the server is about to get rather than the file.
@@ -817,12 +873,13 @@ vllm_env() {
     # file, cfg_apply has already said the line was seen (XDG_CACHE_HOME is in its
     # loud_dirs) — though its sentence describes a MOVED directory, so for a CLEARED one
     # it warns about a hazard this guard has just removed. Worth fixing there, not here.
-    if [ -n "${XDG_CACHE_HOME+set}" ] && [ -z "$XDG_CACHE_HOME" ]; then
-        unset XDG_CACHE_HOME
-    fi
-    if [ -n "${XDG_CONFIG_HOME+set}" ] && [ -z "$XDG_CONFIG_HOME" ]; then
-        unset XDG_CONFIG_HOME
-    fi
+    local _xdg
+    for _xdg in XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME \
+                XDG_RUNTIME_DIR XDG_DATA_DIRS XDG_CONFIG_DIRS; do
+        if [ -n "${!_xdg+set}" ] && [ -z "${!_xdg}" ]; then
+            unset "$_xdg"
+        fi
+    done
 
     # ── the booleans ──
     for entry in "${VLLM_BOOL_VARS[@]}"; do
@@ -1142,8 +1199,17 @@ vllm_pre_launch() {
     # anchored copy, and the argv has to carry the path we actually intend to serve.
     vllm_config_guard "$DROSTE_VLLM_CONFIG"
 
+    # ⚠️ THE `--host 0.0.0.0` BELOW IS THE SAME DROSTE DEFAULT AS THE ONE AT THE TOP OF
+    # THIS FILE, AND IT HAS TO BE REPEATED BECAUSE THIS LINE REBUILDS THE ARRAY RATHER
+    # THAN APPENDING TO IT. Dropping it here would leave the token in the shipped argv
+    # and out of the launched one — a box whose bind depended on whether PRE_LAUNCH ran.
+    # It sits BEFORE the catch-all like every other droste flag, so a --host in
+    # DROSTE_VLLM_EXTRA_ARGS still wins, and serve::apply_host then rewrites the value
+    # after EVERY occurrence so the two copies cannot disagree.
+    #
     # Quote-aware split (droste::split_args): a value may contain spaces.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_VLLM_EXTRA_ARGS:-}")
-    SERVICE=( vllm serve --config "$DROSTE_VLLM_CONFIG" ${_extra[@]+"${_extra[@]}"} )
+    SERVICE=( vllm serve --host 0.0.0.0 --config "$DROSTE_VLLM_CONFIG"
+              ${_extra[@]+"${_extra[@]}"} )
 }

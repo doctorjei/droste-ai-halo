@@ -519,10 +519,14 @@ serve::read_config() {
     # This arm used to warn and bind $SERVE_HOST_DEFAULT. That is not a neutral
     # fallback: a user who typed a hostname was plausibly trying to NARROW what the
     # box listens on, and the fallback handed them EVERY interface instead — on boxes
-    # where three of five have no authentication at all. It is the same shape as a
-    # certificate without a key (below): the user believes the port is protected and
-    # it is not. So it gets the same answer, through the same channel — refuse to
-    # serve, and say why.
+    # where four of five answer without asking who you are, and two of those four have
+    # no authentication mechanism to turn on. It is the same shape as a certificate
+    # without a key (below): the user believes the port is protected and it is not. So
+    # it gets the same answer, through the same channel — refuse to serve, and say why.
+    # ⚠️ TWO COUNTS, TWO QUESTIONS, AND THEY ARE NOT THE SAME NUMBER: comfyui and ds4
+    # have no auth mechanism at all (verified at the pins), while llama and vllm have
+    # one that ships OFF. Only finetuning is authenticated as shipped. This comment
+    # said "three of five have no authentication at all", which is neither count.
     # ⚠️ THE ACCEPTED COST, ON THE RECORD: a typo here is now DOWNTIME rather than a
     # degraded start. Jei weighed that against silent over-exposure and chose downtime;
     # the refusal is loud and names the exact line.

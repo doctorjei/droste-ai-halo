@@ -157,7 +157,9 @@ droste::cfg_apply() {
     # recreate. Sending that user to change their data mapping would point them at a
     # failure that will never arrive, which is the exact defect the class split was
     # written to fix. ❓ NOT DECIDED HERE, FLAGGED: if the sentence is to be uniform too,
-    # this is the single line to move, and it costs the accuracy above.
+    # this is the single line to move, and it costs the accuracy above. ⚠️ IT IS TWO
+    # SENTENCES TO MOVE NOW, NOT ONE — this class grew a CLEARED arm of its own (s61,
+    # below), for the same reason and on the same coupling as loud_dirs'.
     #
     # ⭐ WHAT EACH NAME ACTUALLY COSTS. Kept, because a ruling on POLICY does not erase
     # the measurements — and the next reader deciding a related question will want them.
@@ -365,9 +367,35 @@ droste::cfg_apply() {
         # it under loud_code would have reproduced the exact defect the split was written
         # to fix, one class along. Same mechanism as loud_code, different symptom, and
         # the symptom is what the message has to be true about.
+        #
+        # 🚨 AND IT NEEDS THE SAME TWO ARMS AS loud_dirs BELOW, ON THE SAME COUPLING —
+        # THIS IS WHERE THE CLEARED-VALUE DEFECT SURVIVED AFTER loud_dirs WAS SPLIT.
+        # XDG_CONFIG_DIRS is a member of the XDG family, so the per-box blank guard in
+        # PRE_LAUNCH unsets it one step after this function runs (resolve::apply_spec
+        # calls cfg_apply at step 6 and PRE_LAUNCH at step 7, and the guard is ONE loop
+        # over all seven names — it does not stop at loud_dirs' six). A cfg line
+        # `XDG_CONFIG_DIRS=` therefore leaves the box looking exactly where it always
+        # looked: /etc/xdg, where targets/Container.finetuning puts its jupyter symlink.
+        # ⭐ EVERY CLAUSE OF THE MOVED-VALUE SENTENCE IS FALSE FOR THAT FILE — nothing
+        # points away from the standard location, nothing falls back to an upstream
+        # default, and all 39 baked traits are found. A message naming the wrong symptom
+        # is the exact defect the class split exists to prevent, so it is no more
+        # acceptable here than it was one class along.
+        # ⚠️ THE CLEARED SENTENCE IS THIS CLASS'S OWN AND NOT A COPY OF loud_dirs'. What
+        # the user goes on getting here is the image's BAKED SETTINGS; there it is their
+        # BOUND STORAGE. Borrowing the other arm's words would re-merge the two classes
+        # in the one place the reader can actually see them — the wording.
+        # ⚠️ AND LIKE loud_dirs' CLEARED ARM IT STATES DROSTE'S CONTRACT (a blank is an
+        # absence, Jei s57) rather than a fact about the box, because the guard is a
+        # per-box PRE_LAUNCH concern and cannot be seen from here. The two ship together
+        # or this sentence is false in the other direction.
         case " $loud_conf " in
             *" $name "*)
-                serve::warn "$file changes $name, which decides where this box looks for the system-wide configuration its programs read at startup. Applying it as asked, and the box will start normally — but the settings this image bakes in sit at the standard location this points away from, so a program that can no longer find them falls back to its own upstream defaults instead. Nothing announces that. If this box has quietly stopped behaving the way the image set it up to, this line is the first thing to remove."
+                if [ -z "${now[$name]}" ]; then
+                    serve::warn "$file has a line that clears $name — the name with nothing after it. Droste reads a blank as the setting being absent, so nothing is pointed away: programs in this box go on finding the settings this image bakes in at the standard location, and none of them is dropped. The box will start normally. But the line is having no effect at all, so if it was meant to send programs somewhere else, it has not — give it a value, or remove it."
+                else
+                    serve::warn "$file changes $name, which decides where this box looks for the system-wide configuration its programs read at startup. Applying it as asked, and the box will start normally — but the settings this image bakes in sit at the standard location this points away from, so a program that can no longer find them falls back to its own upstream defaults instead. Nothing announces that. If this box has quietly stopped behaving the way the image set it up to, this line is the first thing to remove."
+                fi
                 ;;
         esac
         # 🚨 TWO SENTENCES, BECAUSE CLEARING ONE OF THESE AND MOVING IT HAVE OPPOSITE
@@ -385,6 +413,10 @@ droste::cfg_apply() {
         # from here, so this arm states droste's contract (a blank is an absence, Jei s57)
         # rather than a fact about the box. The two changes ship together or this sentence
         # is false in the other direction.
+        # 🚨 AND THE COUPLING HAS TWO DEPENDANTS HERE, NOT ONE. loud_conf's cleared arm
+        # above rests on the SAME guard, because that guard is one loop over all seven
+        # XDG names while this list holds six. Whoever removes or narrows it has to fix
+        # BOTH arms; finding only this one leaves the other lying.
         # ⚠️ AND IT WARNS RATHER THAN GOING SILENT. A line droste turns into an absence is
         # still a line the user wrote and did not get ([[never-silently-ignore-user-input]]);
         # silence would leave them believing it took effect, which is the failure mode the

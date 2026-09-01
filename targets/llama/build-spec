@@ -606,6 +606,127 @@ llama_env() {
     done
 }
 
+# ── WHERE A `-hf` DOWNLOAD LANDS, AND THE FIVE NAMES THAT MOVE IT (N27, chain A)
+#
+# 🚨 THE CRITICAL ROW ABOVE IS STRUCTURALLY BLIND TO THIS, WHICH IS WHY THE CHECK IS
+# HERE AND NOT THERE. resolve::apply_spec evaluates CRITICAL at STEP 3 and applies
+# CFG_FILE at STEP 6 — the row is checked before the config that moves the path even
+# exists. A "smarter CRITICAL" cannot see a user's HF_HOME, ever. PRE_LAUNCH is step 7,
+# after the config is in effect, so it is the first place the question is answerable.
+#
+# THE CHAIN, read from the pinned fork (TheTom/llama-cpp-turboquant @ 337f08e8),
+# common/hf-cache.cpp:41-55 — `get_cache_directory()`, a function-local static, so the
+# FIRST rung that is set-and-non-empty decides and nothing later re-reads it:
+#
+#   :43  LLAMA_CACHE            <value>
+#   :44  HF_HUB_CACHE           <value>
+#   :45  HUGGINGFACE_HUB_CACHE  <value>
+#   :46  HF_HOME                <value>/hub
+#   :47  XDG_CACHE_HOME         <value>/huggingface/hub
+#   :48  HOME                   <value>/.cache/huggingface/hub
+#
+# and it IS the `-hf` lane: common/download.cpp:786-848 (common_download_model) builds
+# every task from hf_cache::* when `model.hf_repo` is non-empty, and hf_cache paths all
+# come from get_repo_path() → get_cache_directory(). The `-mr`/docker lane goes through
+# fs_get_cache_file (common/common.cpp) instead — a DIFFERENT chain, guarded separately
+# above (see _cache_blank_is_unset), and NOT what this function is about.
+#
+# ⭐ ONLY THE FIRST FIVE ARE LISTED, AND THE OMISSION OF HOME IS THE DESIGN.
+# HOME is the rung the CRITICAL row is WRITTEN against: `$HOME/.cache/huggingface`
+# contains `$HOME/.cache/huggingface/hub` by construction, so reaching that rung is the
+# supported path and has nothing to report. (Both lanes agree on which home that is —
+# droste-init-hook.sh:53-54 exports HOME=$DROSTE_USER_HOME before the spec is sourced,
+# and serve::launch:1321 hands the service the same value.) A user who re-points HOME
+# itself moves far more than a model cache and is not what this guard is for.
+#
+# ⚠️ A BLANK RUNG NEEDS NO GUARD HERE — verified at the pin. hf-cache.cpp:51 is
+# `if (auto * p = std::getenv(entry.var); p && *p)`, so an empty string is skipped and
+# the chain falls through exactly as if the name were absent. The `[ -n … ] || continue`
+# below is that same test, deliberately, and not a droste policy laid on top of it.
+# (Its twin in chain B is a BARE `getenv()` with no `*p` — that asymmetry is why
+# LLAMA_CACHE still needs the blank guard above. Same variable, same repository, two
+# different answers; do not generalise one to the other.)
+#
+# ⭐ IT WARNS, IT DOES NOT REFUSE. Putting the cache somewhere else is a legitimate
+# thing to want — a bigger disk, a share, a directory the user binds themselves. The
+# defect this closes is that it happened SILENTLY. "Never resolve a failure toward more
+# exposure" is about honouring a narrowing intent, and nothing here is narrowed by
+# declining to start; the box would just be down.
+#
+# "<NAME>:<subdirectory the C++ appends to it>" — hf-cache.cpp:43-47, in ITS order.
+LLAMA_HF_CACHE_RUNGS=(
+    "LLAMA_CACHE:"
+    "HF_HUB_CACHE:"
+    "HUGGINGFACE_HUB_CACHE:"
+    "HF_HOME:hub"
+    "XDG_CACHE_HOME:huggingface/hub"
+)
+
+# llama_hf_cache_bind — the hf-cache path, read back out of the CRITICAL array the
+# resolver itself checked rather than re-derived from $HOME. One source of truth: if
+# the row ever moves, the warning follows it without a second edit, and the directory
+# named in the message is provably the directory the box guaranteed. Prints nothing if
+# the row is gone, which makes the caller a silent no-op rather than a liar.
+# ⭐ CRITICAL IS POPULATED IN BOTH LANES: droste-resolve.sh sources the spec, and
+# serve::build_service declares the array and sources the spec too (droste-serve.sh:1784).
+llama_hf_cache_bind() {
+    local entry
+    for entry in ${CRITICAL[@]+"${CRITICAL[@]}"}; do
+        case "$entry" in
+            hf-cache:*) printf '%s\n' "${entry#hf-cache:}"; return 0 ;;
+        esac
+    done
+    return 0
+}
+
+# llama_hf_path_norm — ONE spelling per directory. Two spellings of one place must not
+# read as two places (the project's path rule), so `.../huggingface/hub/`,
+# `.../huggingface/./hub` and `.../cache/../cache/huggingface/hub` all collapse before
+# anything is compared. This is the in-box twin of the installer's same_dir, which is
+# host-side and unreachable from here; -m so a directory that does not exist yet still
+# normalises. A realpath we cannot run leaves the string as written — degraded to a
+# textual compare, never fatal.
+llama_hf_path_norm() {
+    local n
+    n=$(realpath -m -- "$1" 2>/dev/null) || n=""
+    [ -n "$n" ] || n=$1
+    n=${n%/}
+    [ -n "$n" ] || n=/
+    printf '%s\n' "$n"
+}
+
+# llama_hf_cache_warn — say so, once, when the winning rung lands outside the bind.
+# ⚠️ EVERY ARM RETURNS 0. The resolver calls PRE_LAUNCH BARE under `set -euo pipefail`
+# (droste-resolve.sh), so a non-zero return from a DIAGNOSTIC would take the box down —
+# the exact defect droste-common.sh's fallbacks were written to stop.
+# ⚠️ IT MUST RUN AFTER the blank normalisation above: an XDG_CACHE_HOME the user
+# cleared is unset by then, so it is correctly not treated as the winning rung.
+llama_hf_cache_warn() {
+    local bind entry name suffix base dir nbind ndir
+    bind=$(llama_hf_cache_bind)
+    [ -n "$bind" ] || return 0
+    nbind=$(llama_hf_path_norm "$bind")
+    for entry in "${LLAMA_HF_CACHE_RUNGS[@]}"; do
+        name=${entry%%:*}; suffix=${entry#*:}
+        base=${!name:-}
+        # unset OR blank — hf-cache.cpp:51's `p && *p`, not a policy of ours.
+        [ -n "$base" ] || continue
+        dir=$base
+        [ -z "$suffix" ] || dir="$base/$suffix"
+        ndir=$(llama_hf_path_norm "$dir")
+        case "$ndir" in
+            "$nbind" | "$nbind"/*) : ;;   # inside the bind — the guarantee still holds
+            *)
+                serve::warn "$name=$base moves llama-server's -hf downloads to $dir, outside the persisted hf-cache bind ($bind). Unless you have bound a host directory at $dir yourself, models downloaded there are lost when this box is recreated and llama re-downloads them. Remove $name from $CFG_FILE to download into $bind, or add a volume for $dir to this box."
+                ;;
+        esac
+        # The chain STOPS at the first rung that is set (hf-cache.cpp:49-55), so a lower
+        # rung pointing somewhere else is never read and must never be reported.
+        return 0
+    done
+    return 0
+}
+
 # ── PRE_LAUNCH ───────────────────────────────────────────────────────────────
 PRE_LAUNCH="llama_pre_launch"
 llama_pre_launch() {
@@ -683,7 +804,14 @@ llama_pre_launch() {
     # validation loop at server-tools.cpp:756-763 throws `unknown tool ""`, and
     # server.cpp:259-263 logs it and `return 1`s out of llama_server(). ⭐ On this pin
     # there is NO native line that survives a clear into a running-but-silently-wrong
-    # server: 59 of the 60 die in arg parsing and TOOLS dies at startup.
+    # server. ⚠️ BUT THE ARITHMETIC IS 58 + 1 + 1, NOT 59 + 1, AND THIS SENTENCE SAID
+    # 59 UNTIL IT WAS RE-MEASURED: 58 of the 60 die in arg parsing, TOOLS dies at
+    # startup, and LLAMA_ARG_RPC DIES NOWHERE — see its own note in the list below. It
+    # stays on the list because absent and "" still differ observably, which is the
+    # RULE; it is simply not on it for the reason the list's name implies.
+    # ⭐ WHY THE OFF-BY-ONE IS WORTH A PARAGRAPH: the list's SELECTION CRITERION and
+    # this sentence's CLAIM are not the same statement, and letting the claim stand
+    # unexamined is how "all 60 are fatal" becomes something a later reader relies on.
     #
     # ⚠️ TENSOR_SPLIT and FIT_TARGET were the one pair a read-only survey could not
     # settle, and they ARE fatal. Both split with
@@ -811,7 +939,30 @@ llama_pre_launch() {
         LLAMA_ARG_LOG_COLORS                # on/off/auto menu ⇒ else arm throws
         LLAMA_ARG_LOG_VERBOSITY             # int
         # RPC
-        LLAMA_ARG_RPC                       # add_rpc_devices("") ⇒ [""] ⇒ throw / "" endpoint
+        # 🚨 THE ONE NAME HERE THAT IS *NOT* FATAL, RE-MEASURED AT THE PIN. The note
+        # used to read `add_rpc_devices("") ⇒ [""] ⇒ throw / "" endpoint`; the first
+        # half is right and the "throw" is wrong, so the whole chain is written out:
+        #   string_split("", ',') (common.h:768-781) emplaces the remainder even when
+        #     no delimiter is found ⇒ [""], which is NON-empty ⇒ arg.cpp:860-862's
+        #     `throw std::invalid_argument("no RPC servers specified")` NEVER FIRES;
+        #   ggml_backend_load_all() (ggml-backend-reg.cpp:555) only dlopens, no throw;
+        #   ggml_backend_rpc_add_server("") ⇒ get_device_count("") ⇒ get_socket("") ⇒
+        #     parse_endpoint("") finds no ':' (ggml-rpc.cpp:276-280) ⇒ logs
+        #     "Failed to parse endpoint: " and returns nullptr ⇒ dev_count 0 ⇒
+        #     add_server RETURNS nullptr (ggml-rpc.cpp:1939-1942);
+        #   ggml_backend_register(nullptr) is a guarded no-op (`if (!reg) return;`,
+        #     ggml-backend-reg.cpp:180-182).
+        # ⇒ the server STARTS, with local devices only, plus two error lines in the log.
+        # ⭐ IT STAYS ON THE LIST ANYWAY, and by the rule rather than by the exception:
+        # absent runs none of that and prints nothing; "" runs all of it and prints two
+        # errors. They differ observably, so a blank must be made an absence. The list's
+        # NAME describes why most of its members are here, not a test any addition must
+        # pass — Jei's ruling is "anything that could take down the box", and the
+        # governing question underneath it is whether absent and "" behave identically.
+        # ⚠️ SAME SHAPE AS THE UNREACHABLE-PEER CASE, which is upstream's design and not
+        # ours to fix: a peer that does not answer also yields nullptr and is also only a
+        # log line. Do not "improve" either into a refusal from PRE_LAUNCH.
+        LLAMA_ARG_RPC                       # not fatal — see the chain above
     )
 
     # ── the blanks that do NOT throw and are still wrong (s58) ─────────────────
@@ -872,9 +1023,37 @@ llama_pre_launch() {
     # 📐 THE WHOLE FAMILY IS ELEVEN NAMES at this pin, so no partial list may imply it is
     # the family: the five Metal ones above, GGML_TURBO_MMA_FUSED (compiled, dead on
     # gfx1151), the three we expose (TURBO_AUTO_ASYMMETRIC, TURBO_LAYER_ADAPTIVE,
-    # GGML_TQ_NATIVE), and TURBO_INNERQ + TURBO_INNERQ_STRENGTH. Counted by grepping
-    # getenv() across every file this spec cites plus the InnerQ path — an earlier sweep
-    # said nine because it looked only at C/C++ extensions and missed the `.m` files.
+    # GGML_TQ_NATIVE), and TURBO_INNERQ + TURBO_INNERQ_STRENGTH.
+    #
+    # 🚨 THE METHOD IS PART OF THE CLAIM, SO IT IS STATED EXACTLY: a TREE-WIDE sweep for
+    # the `getenv("…")` LITERAL over the whole checkout, WITH NO EXTENSION FILTER, at
+    # this pin. Re-run it at the next bump; do not re-derive by any other route.
+    # ⚠️ THIS ENTRY USED TO SAY "grepping getenv() across every file this spec cites plus
+    # the InnerQ path", AND THAT INSTRUMENT CANNOT SUPPORT THIS CLAIM. A sweep bounded by
+    # the files we already cite can never find a name in a file we do not cite, which is
+    # precisely what "the WHOLE family" asserts. The count it produced was right; the
+    # method named beside it could not have produced it, and a method is what the next
+    # person re-runs.
+    # 🚨 AND THE STATED CAUSE OF THE OLD NINE WAS WRONG — MEASURED AT THIS PIN, IT DOES
+    # NOT REPRODUCE. It read "an earlier sweep said nine because it looked only at C/C++
+    # extensions and missed the `.m` files". Every arm of that was checked:
+    #     .c/.cpp/.h/.hpp only .............................. 4
+    #     + .cu/.cuh ........................................ 8
+    #     everything EXCEPT the .m/.mm files ................ 8   ← not 9
+    #     tree-wide, whole family ........................... 11
+    # The `.m` files contribute exactly TURBO_FORCE_4MAG, TURBO_SPARSE_V and
+    # TURBO_PROFILE_MODE, so dropping them costs three, not two. TWO reconstructions do
+    # land on nine and either could be the real one:
+    #   (i)  tree-wide but MISSING ggml/src/ggml-cuda/turbo-quant.cuh — the InnerQ pair,
+    #        and `.cuh` is absent from most --include lists. 11 - 2 = 9, verified.
+    #   (ii) counting only names literally spelled TURBO_*, i.e. the family minus
+    #        GGML_TQ_NATIVE and GGML_TURBO_MMA_FUSED. Also exactly 9, verified.
+    # ⭐ WHY THIS IS WORTH THE PARAGRAPH RATHER THAN A DELETION: a CITATION rots by
+    # pointing at a line that moved, and the next reader sees that immediately. A stated
+    # CAUSE or METHOD rots by being wrong from the start, is never re-checked because it
+    # explains rather than asserts, and propagates into whatever the next person derives
+    # from it. Every file:line in this passage was re-verified at 337f08e8 and is exact;
+    # only the explanation attached to them was false.
     local -a _wrong_on_clear=(
         # ── category 1: a blank MOVES THE LISTENER and the healthcheck cannot find it ──
         # 🚨 THIS IS THE ONE THE READ-ONLY SWEEP COULD NOT HAVE FOUND, because nothing
@@ -1004,6 +1183,14 @@ llama_pre_launch() {
             unset "$_xdg"
         fi
     done
+
+    # ── say so when a `-hf` download will land outside the CRITICAL bind ───────
+    # 🚨 PLACEMENT IS LOAD-BEARING IN ONE DIRECTION: it must sit BELOW both blank
+    # normalisations above, or a cleared LLAMA_CACHE / XDG_CACHE_HOME would still look
+    # like the winning rung and this would warn about a directory llama never uses.
+    # Below that line its position is free — nothing here writes a rung.
+    # Whole story, the pinned chain and why CRITICAL cannot do this: llama_hf_cache_warn.
+    llama_hf_cache_warn
 
     # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
     # llama.cfg shows LLAMA_ARG_CACHE_TYPE_K/V=turbo3. When this was written its menu

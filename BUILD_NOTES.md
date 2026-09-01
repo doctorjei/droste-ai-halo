@@ -1698,7 +1698,8 @@ Toolbox submodule provenance (droste-ai-halo):
   `find_package(Torch)`.
 - Clone + patch vLLM: `patch_strix.py` (amdsmi stub, forced gfx1151, aiter/MoE/
   rmsnorm gating, clang-safe spinloop include) + `patch_fp8_kernels.py` (opt-in
-  FP8 Triton dequant-GEMM shim).
+  FP8 Triton dequant-GEMM shim). ⚠️ Read the FP8 bullet below before believing
+  anything about the second one.
 - Build the vLLM wheel with the ROCm clang host compiler (ABI-aligns vLLM's C++
   extensions with torch — avoids the GCC-host segfault). NOTE the SDK layout
   difference: pip TheRock ships clang under `/opt/rocm/lib/llvm/bin` (Fedora
@@ -1707,6 +1708,32 @@ Toolbox submodule provenance (droste-ai-halo):
   `PYTHONPATH` at serve time (`patch_fp8_kernels.py`'s shim does
   `from fp8_triton import fp8_gemm`, opt-in via `VLLM_STRIX_FP8_TRITON=1`).
   Carried as a source tree; vllm-runtime `COPY`s it to `/opt/fp8`.
+  🚨 IT NEVER RAN, IN ANY BUILD THIS REPO HAS PRODUCED, UNTIL s61 part 2. The
+  script targeted `vllm/model_executor/kernels/linear/scaled_mm/pytorch.py`, the
+  layout vLLM adopted AFTER our pin — the kernel-directory reorg (upstream
+  `6af03f23`) landed on main ONE DAY after the v0.16.0 release branch was cut —
+  so at `VLLM_REF=v0.16.0` that path has never existed. The script printed
+  "skipping" and RETURNED 0 every time. Everything around it looked configured
+  (/opt/fp8 cloned, trimmed and shipped; `PYTHONPATH=/opt/fp8` baked; the setting
+  documented) and the feature was simply absent: on and off ran identical stock
+  `torch._scaled_mm`.
+  ⭐ NOT DRIFT — BORN BROKEN. The script and the pin have been byte-identical
+  since the initial import. "It has always been this way" is evidence FOR a
+  defect here, not against one.
+  ✅ s61 part 2 re-points it to `vllm/model_executor/layers/quantization/kernels/
+  scaled_mm/pytorch.py` (byte-identical to the file at the newer path, so this is
+  a path fix and not a version jump) and replaces every quiet `return` with a
+  guard: existence, refuse-twice, reachability against the sibling `__init__.py`
+  kernel registry, exact counts before and after, and a `compile()` so a rewrite
+  that does not parse cannot reach the wheel.
+  ⚠️ STILL UNVALIDATED, AND EXPECT NO SPEEDUP YET. All three
+  `output = torch._scaled_mm(` sites are routed (as leonyurko's own overlay does),
+  but `TorchFP8ScaledMMLinearKernel.get_output_padding()` returns 17 under the
+  `--enforce-eager` these kernels require, and vLLM pads the quantized activation
+  to that many rows — so decode reaches the kernel at M=17 and the rows-mapped
+  M==1 GEMV that carries the upstream win is unreachable. Overriding that is a
+  change to vLLM's kernel-selection contract and is HELD as a separate,
+  hardware-gated item.
 
 ---
 
@@ -2019,6 +2046,13 @@ Toolbox submodule provenance (droste-ai-halo):
   mirror the Triton/vLLM env into the image env (`PYTHONPATH=/opt/fp8`, etc.) so
   non-login shells (podman exec, distrobox) get it without sourcing
   `/etc/profile.d`.
+  🚨 THE CARRIER HALF WAS ALWAYS FINE AND THE SHIM HALF WAS ALWAYS ABSENT. The
+  clone, the trim, the COPY and `PYTHONPATH` all worked; the patch that puts a
+  call to `fp8_triton` into the wheel targeted a path that does not exist at our
+  pin, so no build before s61 part 2 shipped a shim at all. Re-pointed and
+  guarded in s61 part 2; still unvalidated on hardware, and no decode win is
+  expected until the output-padding gate is addressed (see the FP8 bullet in the
+  vllm-build section).
 - Startup-log noise, known and COSMETIC — `Op 'sparse_attn_indexer' not present
   in model, enabling with '+sparse_attn_indexer' has no effect` is UPSTREAM's
   own ROCm default, not ours (2026-08-14; nothing in this repo touches

@@ -31,6 +31,72 @@ if ! declare -F serve::info >/dev/null 2>&1; then
     serve::info() { printf 'droste: INFO: %s\n' "$*" >&2; }
 fi
 
+# ── the same bargain in the other direction: resolve::* in the SERVE lane ────
+# 🚨 THE MIRROR OF THE BLOCK ABOVE, AND IT IS THE HALF THAT ACTUALLY FIRES TODAY.
+# Two PRODUCTION lanes source droste-serve.sh ALONE — droste-server.sh:42 (the
+# server_start / server_restart verbs) and droste-healthcheck.sh:75 (the surgical
+# relaunch) — and BOTH reach a build-spec's PRE_LAUNCH through serve::build_service.
+# comfyui's PRE_LAUNCH calls `resolve::warn` when a model_scanner sync fails, and in
+# those two lanes that name does not exist. MEASURED, not theorised: the user loses
+# "model tree may be stale" and gets `resolve::warn: command not found` in its place —
+# a diagnostic about a degraded model tree, replaced by a message about our own wiring.
+#
+# ⚠️ NOT FATAL THERE, AND THE REASON IS AN ACCIDENT WORTH NOT RELYING ON.
+# serve::build_service calls the hook as `"$PRE_LAUNCH" || serve::warn ...`, and bash
+# suppresses errexit for the whole BODY of a function invoked on the left of `||`, so a
+# 127 in there is swallowed however the caller set its flags. The resolver lane runs the
+# same hook BARE (droste-resolve.sh:853) with errexit live, which is why the block above
+# had to exist at all. Same rule, cheaper consequence: ANYTHING A BUILD-SPEC CALLS HAS TO
+# EXIST IN BOTH LANES, whichever prefix it happens to wear.
+#
+# droste-resolve.sh sources this file at :37 and defines the real resolve::* at :86-88,
+# AFTER — so these never displace them and the resolver keeps its own `droste-resolve:`
+# prefix. The neutral `droste:` prefix here is deliberate, exactly as above: it says the
+# message came from the fallback, not from the library that owns the name.
+if ! declare -F resolve::err >/dev/null 2>&1; then
+    resolve::err()  { printf 'droste: ERROR: %s\n' "$*" >&2; }
+fi
+if ! declare -F resolve::warn >/dev/null 2>&1; then
+    resolve::warn() { printf 'droste: WARN: %s\n' "$*" >&2; }
+fi
+if ! declare -F resolve::info >/dev/null 2>&1; then
+    resolve::info() { printf 'droste: INFO: %s\n' "$*" >&2; }
+fi
+
+# ── NO FALLBACK FOR serve::_own / serve::_own_dirs — ASKED AND ANSWERED ──────
+# ⚠️ DO NOT "COMPLETE THE SET". comfyui's PRE_LAUNCH also calls serve::_own and
+# serve::_own_dirs, neither of which is defined here, so a lane that sourced
+# droste-resolve.sh WITHOUT droste-serve.sh would die on them at `"$PRE_LAUNCH"`
+# (droste-resolve.sh:853, bare under `set -euo pipefail`) and the box would not start.
+# NO SUCH LANE EXISTS, and the enumeration is the whole argument:
+#
+#   droste-init-hook.sh              resolve + serve   PRE_LAUNCH via apply_spec
+#   droste-entrypoint.sh             resolve + serve   PRE_LAUNCH via apply_spec
+#   droste-server.sh                 serve alone       PRE_LAUNCH via build_service
+#   droste-healthcheck.sh            serve alone       PRE_LAUNCH via build_service
+#   droste-dlwatch.sh                this file alone   never runs PRE_LAUNCH
+#   */profile.d/99-toolbox-banner.sh serve alone, in a subshell, no PRE_LAUNCH
+#
+# resolve::apply_spec has exactly the two callers above and both source droste-serve.sh
+# first; serve::build_service IS droste-serve.sh. So every lane that can reach PRE_LAUNCH
+# already has the real _own in scope. g1lab/commonfb.sh asserts that, so the claim is
+# re-proved rather than remembered.
+#
+# 🚨 AND A FALLBACK WOULD BE WORSE THAN THE GAP, which is the real reason and would hold
+# even if a lane did appear:
+#   - _own CHANGES OWNERSHIP ON DISK. A no-op fallback trades a LOUD failure (127, naming
+#     the missing function) for a QUIET one: /opt/data/model-registry.yaml stays owned by
+#     container root while the service runs as the box user, and the next sync fails
+#     somewhere nobody traces back to here. A helper that is present but inert looks
+#     authoritative and does nothing — the same defect as an inert config knob.
+#   - A REAL fallback cannot be had cheaply either: it would have to carry
+#     serve::_derive_identity with it — memoised lane derivation whose build-spec marker
+#     was MEASURED against /run/.containerenv and chosen over it. serve::_own_dirs' own
+#     comment says it lives beside _own so there is "ONE rule and not two"; a second copy
+#     here would make two, and the drift would be invisible until it mattered.
+# ⇒ If a third lane ever needs the resolver, give that lane droste-serve.sh as well. That
+# is one line at the new door, not a policy change in this file.
+
 # ── droste::bool — the ONE answer to "what counts as off" ────────────────────
 # Prints "on", "off", or "" (empty/unrecognised — the CALLER decides which).
 #

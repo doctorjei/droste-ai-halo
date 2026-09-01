@@ -113,8 +113,8 @@ def owner_ids(owner):
 
     Mirrors the shell's `chown "$DROSTE_USER:"` (trailing colon = "and their login
     group"), not _own_dirs' owner-only form: seeded configs carry no baked group or
-    setgid intent to preserve, and matching the installer-written server.env beside
-    them (user:user) is what makes the whole config dir read as the user's.
+    setgid intent to preserve, and a config dir that reads wholly as the user's is
+    what lets them edit it without sudo -- the point of seeding it in the first place.
     A numeric owner is accepted for the DROSTE_USER override case. Raises KeyError
     if the user does not exist here; the caller degrades to "no chown" on that.
     """

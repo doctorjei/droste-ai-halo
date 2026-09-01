@@ -150,12 +150,20 @@ COPY resolve/droste-common.sh resolve/droste-cfg.sh \
      resolve/droste-init-hook.sh resolve/droste-serve.sh \
      resolve/droste-healthcheck.sh resolve/apply_templates.py \
      resolve/assert-rocm-pins.sh resolve/droste-server.sh \
+     resolve/droste-dlwatch.sh \
      /opt/resources/resolve/
+# ⚠️ droste-dlwatch.sh IS BOTH A LIBRARY AND A PROGRAM, so it needs the +x the other
+# sourced-only libraries do not: the two doors SOURCE it for dlwatch::launch, and that
+# launcher then EXECS this same path as the background daemon. dlwatch::_spawn carries a
+# `bash <path>` fallback for a lost bit — the spawn is silent by design, so a missing +x
+# would otherwise disable the whole feature and say nothing — but the fallback is a net,
+# not a licence to drop the line.
 RUN chmod +x /opt/resources/resolve/assert-rocm-pins.sh \
              /opt/resources/resolve/droste-entrypoint.sh \
              /opt/resources/resolve/droste-init-hook.sh \
              /opt/resources/resolve/droste-healthcheck.sh \
              /opt/resources/resolve/droste-server.sh \
+             /opt/resources/resolve/droste-dlwatch.sh \
              /opt/resources/resolve/apply_templates.py
 # The SERVER VERBS, uniform across all five boxes (Jei ruled the scope: "all five,
 # uniform" — the version that is a feature rather than a patch). SYMLINKS rather than

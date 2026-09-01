@@ -51,6 +51,9 @@
 #   "off" means DO NOT RUN THE DAEMON — so the decision belongs to the launch site,
 #   which is after resolve::apply_spec, i.e. after the config file has been applied.
 #   A daemon that reads its own kill switch would have to be started to read it.
+#   ⚙️ The launcher the doors call (dlwatch::launch and friends, at the BOTTOM of
+#   this file) runs in the DOOR'S shell, not the daemon's; it lives here so the
+#   off-switch rule has one wording rather than one per door.
 # * ANY PERCENTAGE. Nothing writes the expected total to disk: hub knows it in memory
 #   only and llama's .downloadInProgress carries no sidecar. The line reports BYTES SO
 #   FAR and a RATE, which are true, instead of a percentage, which would be invented.
@@ -110,6 +113,7 @@ if ! declare -p _DLW_SIZE >/dev/null 2>&1; then
     declare -gA _DLW_G_LOSTN=()   # group -> files that vanished WITHOUT one
     declare -g  _DLW_FIRST=1      # 1 until the first tick has been taken
     declare -g  _DLW_DEAD=0       # 1 once a write to the log fd has failed
+    declare -g  _DLW_FD_VIA=""    # which arm of dlwatch::open_log_fd fired
 fi
 
 # ── dlwatch::reset — forget everything (the lab drives this between scenarios) ──
@@ -673,7 +677,13 @@ dlwatch::_arm_timer() {
     _DLW_TIMER=0
     fifo=$(mktemp -u "${TMPDIR:-/tmp}/.dlwatch.XXXXXX") || return 0
     mkfifo -m 600 "$fifo" 2>/dev/null || return 0
-    if exec 8<>"$fifo" 2>/dev/null; then _DLW_TIMER=1; fi
+    # 🚨 BRACES, FOR THE REASON SPELLED OUT AT dlwatch::open_log_fd. Without them the
+    # `2>/dev/null` is applied to THIS SHELL and the daemon spends the rest of its life
+    # with stderr on /dev/null — which is not merely untidy: it silences any bash
+    # diagnostic the watcher might ever produce, and it made two of g1lab/dlwatch.sh's
+    # live rows ("it says nothing on its own stderr", "it dies QUIETLY") VACUOUSLY
+    # green, since there was no stderr left for them to observe. Found while wiring P2.
+    if { exec 8<>"$fifo"; } 2>/dev/null; then _DLW_TIMER=1; fi
     rm -f "$fifo" 2>/dev/null
     return 0
 }
@@ -684,6 +694,182 @@ dlwatch::_wait() {
         return 0
     fi
     sleep "$1"
+    return 0
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# THE LAUNCH SITE'S HALF (N24 phase P2)
+# ═════════════════════════════════════════════════════════════════════════════
+# Everything below runs in THE DOOR'S shell, not in the daemon's. The two doors
+# (droste-init-hook.sh, droste-entrypoint.sh) source this file and call
+# dlwatch::launch; the daemon above is then a separate EXEC'd process.
+#
+# ⭐ WHY THE LAUNCHER LIVES HERE AND NOT IN THE TWO DOORS. R8's off switch is one
+# RULE — what counts as "off", what a blank means, what a typo does — and a rule
+# copied into two files is a fork that drifts. The same reasoning put droste::bool
+# in droste-common.sh and the key-signature rules in model_formats.py. The DECISION
+# still belongs to the launch site, exactly as the header above says: the call
+# happens after resolve::apply_spec, in the door's own post-config shell, so the
+# knob it reads is the one the box's <box>.cfg just set. Only the WORDING of the
+# rule is shared.
+#
+# ⚠️ SOURCING THIS FILE FROM A DOOR IS STILL INERT. `set -uo pipefail` at the top
+# only ENABLES two options; it cannot turn a door's errexit off (that needs `set
+# +e`, which appears nowhere here). Checked, because a library that silently
+# disabled errexit in the init hook would be a far worse bug than the one this
+# feature fixes.
+#
+# ⚠️ WE EXEC THE SCRIPT, WE DO NOT BACKGROUND A FUNCTION. `dlwatch::main &` would
+# be a forked copy of the DOOR — carrying its traps, its variables and its argv —
+# and dlwatch::claim_pidfile's liveness test reads /proc/<pid>/cmdline looking for
+# `droste-dlwatch`, which a forked init hook does not have. A real exec is what
+# makes the single-instance guard able to tell our watcher from anything else.
+
+# ── dlwatch::open_log_fd — fd 9, pointed at the container log ────────────────
+# Usage: dlwatch::open_log_fd [<source>]      (opens fd 9 in the CALLER's shell)
+#
+# 🚨 APPEND, AND GUARDED. Measured while designing this: a `>` reopen of a
+# REGULAR-FILE fd truncates it, which is what `--log-driver=passthrough` hands us,
+# and a SOCKET fd cannot be reopened at all (ENXIO) — hence both `>>` and the
+# fallback. Open it while still root: an open file description is not
+# re-permission-checked after a uid change, whereas a late /proc/1/fd/* open from a
+# non-root process gets EACCES.
+# ⭐ WHY /proc/1/fd/2 RATHER THAN A PLAIN `9>&2`. In the distrobox lane the two are
+# the same pipe anyway (distrobox-init does `exec 2>&1`, and it `eval`s the hook
+# with no redirection at all, so the hook's stderr IS conmon's). The /proc form
+# earns its keep for a future reattach from a `podman exec` context, where nothing
+# is inherited.
+# ⚙️ The source is a PARAMETER with a production default so the fallback arm is
+# reachable from a lab; nothing in the tree passes one. _DLW_FD_VIA records which
+# arm fired, because "it opened" and "it opened the way we intended" are different
+# facts and only one of them is worth a test row.
+# 🚨 THE BRACES ARE LOAD-BEARING AND THE OBVIOUS SPELLING IS A BOX-WIDE BUG.
+# `exec 9>>"$src" 2>/dev/null` — which is what the design sketched, and what the first
+# cut of this function did — applies BOTH redirections TO THE CURRENT SHELL, because
+# that is what `exec` with no command means. The door's stderr is then /dev/null FOR
+# THE REST OF THE CONTAINER START: every serve::warn, every resolver line, the server
+# door's own diagnostics, all gone, silently, on the success path only. MEASURED — the
+# init hook stopped producing output at this exact line, and it took a `set -x` to see
+# it, because the symptom of losing stderr is nothing at all.
+# ⚙️ A brace group's redirection is TEMPORARY (fd 2 is restored when the group ends)
+# while exec's own fd 9 persists in the shell — which is precisely the split we want.
+# ⚠️ The FAILING arm never had the bug, and that asymmetry is its own trap: bash applies
+# redirections LEFT TO RIGHT, so a bad `9>>` aborts before it reaches the `2>`. A test
+# that only exercised the failure path would have called this correct. Same left-to-right
+# rule the emit function documents, biting in the opposite direction.
+dlwatch::open_log_fd() {
+    local src=${1:-/proc/1/fd/2}
+    _DLW_FD_VIA=stderr
+    if [ -n "$src" ] && { exec 9>>"$src"; } 2>/dev/null; then
+        _DLW_FD_VIA=proc
+        return 0
+    fi
+    exec 9>&2
+    return 0
+}
+
+# ── dlwatch::_spawn — the background exec, in one overridable place ──────────
+# A named function for the same reason dlwatch::_grew is one: a lab can replace it
+# with a recorder and assert on the ARGV, which is the only way to notice that a
+# guard is still being evaluated but its result no longer reaches a command line.
+# ⚙️ `[ -x ]` with a `bash` fallback: the spawn is deliberately silent
+# (`>/dev/null 2>&1`), so a lost chmod in base/Container.runtime would disable this
+# feature permanently and say nothing. Two lines buy a loud-free failure mode.
+dlwatch::_spawn() {
+    local self=${BASH_SOURCE[0]}
+    if [ -x "$self" ]; then
+        "$self" "$@" >/dev/null 2>&1 </dev/null &
+    else
+        bash "$self" "$@" >/dev/null 2>&1 </dev/null &
+    fi
+    return 0
+}
+
+# ── dlwatch::enabled — R8's off switch, ONE reading of it ────────────────────
+# Prints nothing; returns 0 to run the daemon, 1 to not run it at all.
+#
+# 🚨 "OFF" MEANS DON'T RUN THE DAEMON (R8, Jei: *"no daemon then."*) — not "run it
+# quietly". That is why this is asked HERE and not inside the daemon: a daemon that
+# read its own kill switch would have to be started to read it.
+#
+# 🚨 THE THREE STATES, AND WHY THE N1a `: "${VAR=default}"` IDIOM IS DELIBERATELY
+# ABSENT. N1a's third state is "blank ⇒ off", and s57 NARROWED that to unbounded
+# strings whose empty value is itself a user intention. A BOOLEAN IS A FINITE SET,
+# so its blank is never that exception: a blank must behave EXACTLY as if the
+# setting were absent, and absent means our default. Measured the mechanical way
+# the rule asks for — run the reader with the name unset, run it with the name ""
+# — and the two paths below are the same path.
+#   absent            → the default: announce
+#   blank             → the default: announce      (byte-identical to absent)
+#   yes/on/1/true     → announce
+#   no/off/0/false    → NO DAEMON
+#   anything else     → WARN, then the default. No fall-through values: a word we
+#                       cannot read is never silently swallowed.
+# ⚠️ droste::bool is the ONE parser (a whitelist, case-folded, space-stripped); do
+# not add a second one here. It returns "" for blank AND for unrecognised, so the
+# raw value is what distinguishes them — that distinction is the whole rule.
+dlwatch::enabled() {
+    local raw=${DROSTE_DOWNLOAD_ANNOUNCE-} v
+    v=$(droste::bool "$raw")
+    case $v in
+        off) return 1 ;;
+        on)  return 0 ;;
+    esac
+    if [ -n "${raw// /}" ]; then
+        serve::warn "DROSTE_DOWNLOAD_ANNOUNCE='$raw' is not a yes/no value — announcing downloads anyway (the default). Use yes or no."
+    fi
+    return 0
+}
+
+# ── dlwatch::roots — which directories this box's downloads land in ──────────
+# Prints one root per line. The doors keep the LANE knowledge and the daemon keeps
+# none: $HOME is already the box user's home in the distrobox lane (the hook
+# exports it) and /root in the server lane, so one expression is correct in both.
+#   <home>/.cache/huggingface   the hub cache — a CRITICAL row in all five
+#                               build-specs, and nothing in any image sets HF_HOME
+#                               or HF_HUB_CACHE, so the hub default holds
+#   <home>/.cache/llama.cpp     llama's SECOND cache, for -mu/-dr. R10: watch it,
+#                               do not declare it. A download landing there is
+#                               announced but still not persisted — the
+#                               announcement makes the loss visible, it does not
+#                               prevent it.
+#   DOWNLOAD_WATCH[@]           extra roots a build-spec declares (ds4's flat
+#                               --local-dir target is the case this exists for).
+# ⚠️ A ROOT THAT DOES NOT EXIST COSTS ONE FAILED GLOB PER TICK AND IS SILENT, by
+# design — a box whose user never set a local-dir must not be told about it every
+# five seconds. So there is no existence test here; adding one would only make the
+# root set depend on the order a directory happens to be created in.
+dlwatch::roots() {
+    local home=${DROSTE_USER_HOME:-${HOME:-/root}} r
+    if [ -n "$home" ]; then
+        printf '%s\n' "$home/.cache/huggingface" "$home/.cache/llama.cpp"
+    fi
+    for r in ${DOWNLOAD_WATCH[@]+"${DOWNLOAD_WATCH[@]}"}; do
+        [ -n "$r" ] && printf '%s\n' "$r"
+    done
+    return 0
+}
+
+# ── dlwatch::launch — what a door calls, and it ALWAYS returns 0 ────────────
+# ⚠️ EVERY ARM EXITS 0. Both doors run under `set -euo pipefail` and the init hook
+# is `eval`ed by pid 1: a watcher that could fail a door would trade "downloads are
+# not announced" for "the box does not start", which is not a trade anyone would
+# make. Call it as `dlwatch::launch || warn` anyway — bash suppresses errexit for
+# the whole BODY of a function invoked on the left of `||`, so that one operator
+# also covers anything in here that goes wrong in a way this file did not predict.
+dlwatch::launch() {
+    local -a roots=() argv=()
+    local r
+    dlwatch::enabled || return 0
+    mapfile -t roots < <(dlwatch::roots)
+    [ ${#roots[@]} -gt 0 ] || return 0
+    for r in "${roots[@]}"; do argv+=( --root "$r" ); done
+    dlwatch::open_log_fd
+    dlwatch::_spawn --fd 9 "${argv[@]}"
+    # ⚠️ CLOSE OUR COPY. The child has its own; a door that kept fd 9 open would
+    # hand it to the SERVICE it execs next, which then holds the container-log pipe
+    # for a second reason nobody can see.
+    exec 9>&-
     return 0
 }
 

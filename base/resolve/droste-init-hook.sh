@@ -93,6 +93,7 @@ SURFACES=()
 CRITICAL=()
 OPTIONAL=()
 CACHES=()
+DOWNLOAD_WATCH=()
 PRE_LAUNCH=""
 
 # shellcheck source=/dev/null
@@ -241,6 +242,36 @@ resolve::apply_spec 2>"$RESOLVE_LOG"
 hook::stop_heartbeat
 # Success path: surface the resolver's own INFO/WARN lines (fuse fallback, etc.) too.
 cat "$RESOLVE_LOG" >&2
+
+# ── The download watcher (N24) ──────────────────────────────────────────────
+# 🚨 IT MUST COME AFTER apply_spec, AND FOR THE SAME REASON THE SERVER DOOR DOES.
+# R8 put the off switch in the box's own <box>.cfg, and that file is applied by
+# apply_spec's STEP 6 (droste::cfg_apply, which exports the diff back into THIS
+# shell) — so DROSTE_DOWNLOAD_ANNOUNCE simply does not exist above this line. The
+# design originally put the launch beside the hook::heartbeat block; there the
+# watcher would have started unconditionally and read the knob never.
+# ⚙️ And it comes BEFORE the server door on purpose: llama's router downloads on
+# demand and vLLM's loader downloads while it starts, so the watcher wants to be
+# looking before the service is launched, not after.
+# ⚠️ THE FDS ARE NOT DETACHED HERE THE WAY hook::heartbeat's ARE — that is the
+# point of the watcher, not an oversight. It gets >/dev/null 2>&1 </dev/null like
+# the heartbeat AND one private fd 9 aimed at pid 1's stderr, because a line on
+# that stream is a line in `podman logs <box>`, which is the surface Jei ruled.
+# ⚠️ `|| serve::warn`, never bare: bash suppresses errexit for the whole BODY of a
+# function invoked on the left of ||, so this one operator is what guarantees an
+# announcement feature can never cost a user their box. Same bargain as
+# serve::maybe_launch below, for the same reason.
+# ⚠️ A LOAD FAILURE WARNS RATHER THAN GOING QUIET. The spawn is deliberately silent
+# (>/dev/null 2>&1), so an image missing this file — or shipping a broken one — would
+# otherwise disable the feature permanently and say nothing, which is the exact defect
+# class ("present but inert") the announcement exists to remove. bash's own diagnostic
+# is left unsilenced beside ours: it is what names the line of a syntax error.
+# shellcheck source=/dev/null
+if source "$RESOLVE_DIR/droste-dlwatch.sh"; then
+    dlwatch::launch || serve::warn "download watcher: did not start — downloads will not be announced. The box is unaffected."
+else
+    serve::warn "download watcher: could not load $RESOLVE_DIR/droste-dlwatch.sh — downloads will not be announced. The box is unaffected."
+fi
 
 # ── Server door ─────────────────────────────────────────────────────────────
 # MUST come after apply_spec: SERVICE is only final once CFG_FILE is sourced and

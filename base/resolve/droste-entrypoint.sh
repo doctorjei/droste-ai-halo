@@ -50,6 +50,7 @@ SURFACES=()
 CRITICAL=()
 OPTIONAL=()
 CACHES=()
+DOWNLOAD_WATCH=()
 PRE_LAUNCH=""
 
 # shellcheck source=/dev/null
@@ -57,6 +58,24 @@ source "$SPEC"
 
 export DROSTE_LANE=server
 resolve::apply_spec
+
+# ── The download watcher (N24) ──────────────────────────────────────────────
+# AFTER apply_spec because R8's off switch lives in the box's <box>.cfg, which
+# apply_spec's step 6 is what applies — see the long note at the same site in
+# droste-init-hook.sh; this is the same three lines with the same guarantees.
+# ⚙️ AND BEFORE THE USER-COMMAND exec BELOW, deliberately: `podman run IMAGE bash`
+# replaces this shell, so a launch placed after it would never happen for the one
+# lane where a human is most likely to type `hf download` by hand — which is the
+# case (ds4's, §1.3) that a server-oriented design misses entirely.
+# ⚠️ Here fd 9 lands on the container log by the shortest possible route: this
+# process IS pid 1 in the server lane, so /proc/1/fd/2 and a bare 9>&2 are the same
+# file description and either arm is correct.
+# shellcheck source=/dev/null
+if source "$RESOLVE_DIR/droste-dlwatch.sh"; then
+    dlwatch::launch || serve::warn "download watcher: did not start — downloads will not be announced. The container is unaffected."
+else
+    serve::warn "download watcher: could not load $RESOLVE_DIR/droste-dlwatch.sh — downloads will not be announced. The container is unaffected."
+fi
 
 # User-supplied command wins (keeps `podman run -it IMAGE bash` working).
 if [ "$#" -gt 0 ]; then

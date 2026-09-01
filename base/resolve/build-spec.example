@@ -15,6 +15,9 @@
 #     -> templates.yaml seeding         (AFTER mounts)
 #     -> CFG_FILE source                (if declared and the file exists)
 #     -> PRE_LAUNCH function            (if declared)
+#   [apply_spec ends here; the two doors then do the same two things]
+#     -> download watcher               (dlwatch::launch — AFTER apply_spec because
+#                                        its off switch lives in CFG_FILE)
 #     -> exec SERVICE                   (or the user's `run IMAGE <cmd>`, which wins)
 #
 # The distrobox-lane init hook runs the SAME order and then hands SERVICE to
@@ -153,6 +156,28 @@ CRITICAL=(
 OPTIONAL=(
     "opt-models:/opt/models:/opt/models/mount_shared_models_here"
 )
+
+# ── DOWNLOAD_WATCH (optional) — extra directories to watch for downloads ─────
+# EXTRA roots for the download announcer (droste-dlwatch.sh, N24). Not a mount and
+# not a bind: purely a list of directories the watcher globs for partial files
+# (*.incomplete, *.downloadInProgress) so a transfer in one of them is announced in
+# `podman logs <box>`.
+#
+# TWO ROOTS ARE ALWAYS WATCHED AND NEED NO ROW: $HOME/.cache/huggingface (the hub
+# cache, a CRITICAL row on every port) and $HOME/.cache/llama.cpp (llama's second
+# cache for -mu/-dr, which has no row of its own by design — R10: watch it, do not
+# declare it). This row is for the ones only the port knows about, and today that
+# means a hub `--local-dir` target: ds4's DS4_GGUF_DIR fetches land in
+# <dir>/.cache/huggingface/download/ and are invisible to the two defaults.
+#
+# ⚠️ TIMING, AND IT IS THE SAME TRAP AS SERVICE'S. This file is sourced BEFORE
+# CFG_FILE, so a value that depends on a user setting cannot be written here — set
+# it in PRE_LAUNCH instead, which runs after. The doors read this array AFTER
+# apply_spec returns, so a PRE_LAUNCH assignment is seen.
+# ⚠️ A ROOT THAT DOES NOT EXIST IS SILENT, not an error: it costs one failed glob
+# per tick. Declaring a path a user may never create is therefore free.
+DOWNLOAD_WATCH=()
+# DOWNLOAD_WATCH=( "$HOME/ds4-gguf" )
 
 # ── PRE_LAUNCH (optional) ────────────────────────────────────────────────────
 # Name of a bash FUNCTION defined in THIS file; run after CFG_FILE, before exec.

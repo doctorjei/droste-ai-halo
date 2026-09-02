@@ -241,7 +241,12 @@ RUN /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Pyt
 # load first and /opt/data loads last.
 # 📐 /etc/jupyter, the LOWER-priority of the two Linux system dirs
 # (SYSTEM_CONFIG_PATH = ["/usr/local/etc/jupyter", "/etc/jupyter"], jupyter_core/paths.py:
-# 358-362) — /usr/local/etc/jupyter stays free for a local override that must beat droste.
+# 358-362) — /usr/local/etc/jupyter stays free for a local override that must beat droste,
+# WHILE DROSTE_JUPYTER_PLATFORM_DIRS IS OFF, WHICH IS THE DEFAULT. With it on, that
+# directory is off the search path altogether and the symlink below cannot bring it back:
+# the symlink restores DROSTE's own defaults, not the override lane. An override that must
+# beat droste then belongs in the user's JUPYTER_CONFIG_DIR file (/opt/data), which loads
+# last on either path.
 COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
 # 🚨 AND THE SECOND PATH, BECAUSE A DOCUMENTED KNOB MOVES THE FIRST ONE OUT FROM UNDER US.
 # SYSTEM_CONFIG_PATH is chosen at IMPORT by use_platform_dirs() (paths.py:342): with
@@ -250,8 +255,14 @@ COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
 # DROSTE_JUPYTER_PLATFORM_DIRS is a setting finetuning.cfg offers, turning it on would
 # silently drop every droste default below. A DIRECTORY SYMLINK covers both spellings with
 # one file, so the two can never drift apart.
-# ⚠️ It follows the DEFAULT XDG_CONFIG_DIRS (/etc/xdg). A user who re-points that variable
-# is past what an image can anticipate. Delete this one line to have /etc/jupyter only.
+# ⭐ AND IT COVERS MORE THAN THE DEFAULT XDG_CONFIG_DIRS, in our favour. site_config_dir
+# is called with multipath=True (paths.py:348-350), so jupyter_core takes EVERY entry of
+# XDG_CONFIG_DIRS with /jupyter appended — MEASURED at platformdirs 4.3.7: absent ⇒
+# '/etc/xdg/jupyter'; '/opt/mine:/etc/xdg' ⇒ '/opt/mine/jupyter:/etc/xdg/jupyter'. So any
+# list that still CONTAINS /etc/xdg is covered by this one symlink, whatever else it adds.
+# ⚠️ Only a list that drops /etc/xdg entirely goes uncovered — and that case is not silent:
+# XDG_CONFIG_DIRS is droste-cfgapply.sh's `loud_conf`, whose warning names exactly this
+# consequence. Delete this one line to have /etc/jupyter only.
 RUN chmod 0644 /etc/jupyter/jupyter_server_config.py \
     && mkdir -p /etc/xdg && ln -sfn /etc/jupyter /etc/xdg/jupyter \
     && /opt/venv/bin/python -c "\

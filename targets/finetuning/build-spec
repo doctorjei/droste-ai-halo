@@ -302,8 +302,8 @@ jupyter_env() {
     # N1a opt-out, and the loops below already treat it as "leave the native alone".
     # No DROSTE_-owned name appears here; that is a standing invariant, not an accident
     # of the current contents.
-    # ⭐ PLACEMENT IS ORDERING, NOT LOCATION, and here the two sets are DISJOINT.
-    # Everything this function assigns or unsets below names a different native —
+    # ⭐ PLACEMENT IS ORDERING, NOT LOCATION, and the two sets OVERLAP ON EXACTLY TWO
+    # NAMES. Everything this function assigns or unsets below names a native —
     # JUPYTER_CONFIG_DIR, JUPYTER_SERVER_ALLOW_UNAUTHENTICATED_ACCESS,
     # JUPYTER_ALLOW_INSECURE_WRITES, JUPYTER_PLATFORM_DIRS, TRAITLETS_ALL_DEPRECATIONS,
     # TRAITLETS_APPLICATION_RAISE_CONFIG_FILE_ERROR, JUPYTER_PREFER_ENV_PATH and
@@ -316,21 +316,42 @@ jupyter_env() {
     # AS IF THE SETTING WERE ABSENT, except for an unbounded string whose blank cancels a
     # file or directory that would otherwise load — turning a blank back into our value
     # is the CORRECT outcome for every name that is not that exception. So the call runs
-    # FIRST on purpose, and the one overlapping name is JUPYTER_PREFER_ENV_PATH, whose
-    # `${JUPYTER_PREFER_ENV_PATH=0}` further down then supplies droste's `no`.
-    # ⚠️ THAT NAME IS THE FIFTH, AND IT IS HERE RATHER THAN IN THE PREFER_ENV_PATH BLOCK
-    # BECAUSE IT IS A NATIVE. envset() (jupyter_core/paths.py:49-60) is TRUE for every
-    # value except {no,n,false,off,0,0.0}, so a bare `JUPYTER_PREFER_ENV_PATH=` reads
-    # TRUE — absent and "" are opposite answers, which is exactly this helper's criterion.
-    # It is no longer on the template's surface (s57 replaced it with the droste name), so
-    # this closes the last way to type the s57 defect by hand.
+    # FIRST on purpose. The overlapping names are JUPYTER_PREFER_ENV_PATH, whose
+    # `${JUPYTER_PREFER_ENV_PATH=0}` further down then supplies droste's `no`, and
+    # JUPYTER_PLATFORM_DIRS, which carries no wiring default at all — for it, deleting the
+    # blank IS the delivery of the default, because upstream's own default is OFF and
+    # absence is the only way to spell that.
+    # ⚠️ THOSE TWO ARE THE FIFTH AND SIXTH NAMES, AND BOTH ARE HERE RATHER THAN IN THEIR
+    # OWN BLOCKS BECAUSE THEY ARE NATIVES — read, in fact, through the SAME function.
+    # envset() (jupyter_core/paths.py:49-60) is TRUE for every value except
+    # {no,n,false,off,0,0.0}, so a bare `NAME=` reads TRUE while an absent name reads
+    # FALSE: absent and "" are OPPOSITE ANSWERS, which is exactly this helper's criterion.
+    #   JUPYTER_PREFER_ENV_PATH (s57) — no longer on the template's surface (s57 replaced
+    #     it with the droste name), so guarding it closes the way to type that defect by
+    #     hand.
+    #   JUPYTER_PLATFORM_DIRS (s62) — use_platform_dirs() (paths.py:69) is a bare
+    #     envset() call, and a TRUE answer moves SYSTEM_CONFIG_PATH to
+    #     platformdirs.site_config_dir(APPNAME, appauthor=False, multipath=True)
+    #     (paths.py:342-350). /etc/jupyter is then not on the config search path at all
+    #     and ALL 39 BAKED TRAIT DEFAULTS go silently with it. Container.finetuning's
+    #     /etc/xdg/jupyter symlink catches that, but only by accident of a feature nobody
+    #     asked to enable: the box comes up healthy either way, which is the worst shape
+    #     of this defect rather than a milder one.
+    # 🚨 NEITHER IS ON finetuning.cfg's SURFACE, AND THAT IS NOT THE CRITERION.
+    # droste-common.sh's rule is a NATIVE whose "" and absence differ at the pin, not a
+    # name the template prints — the display-based criterion is the one s57 threw out.
+    # A native reaches the wire whether the template mentions it or not, because
+    # droste::cfg_apply is NAME-BLIND: it sources the file under `set -a` and applies the
+    # diff. The template's own vocabulary is only a statement of what we EXPECT to be
+    # typed. (Contrast vllm, whose list WAS derived from its surface and whose suite
+    # therefore audits it that way — that check is local to how that list was built.)
     # ⚠️ NO DROSTE_-OWNED NAME APPEARS HERE, and that is still a standing invariant: for a
     # DROSTE_ name the equivalent guard is targeted and lives beside its own default
     # (ds4's DS4_BLANK_IS_DEFAULT, and the SEARCH_VENV_FIRST block below), because
     # droste-common.sh:85-90 reserves this helper for natives.
     droste::blank_is_unset \
         IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR \
-        JUPYTER_PREFER_ENV_PATH
+        JUPYTER_PREFER_ENV_PATH JUPYTER_PLATFORM_DIRS
 
     # ── the XDG bases, one of which finetuning.cfg offers; blanks strand caches ─
     # 🚨 A BLANK XDG_CACHE_HOME MOVES THE HF CACHE OUT FROM BEHIND THE CRITICAL BIND,

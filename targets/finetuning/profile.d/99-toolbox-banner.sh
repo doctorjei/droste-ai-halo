@@ -327,8 +327,9 @@ printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 # was captioned "your settings, this shell" and was not that: sourcing the file by
 # hand is precisely the raw read the resolver stopped doing. It skips
 # droste::blank_is_unset (IPYTHONDIR, QT_API, JUPYTER_DEFAULT_PROVISIONER_NAME,
-# NBFORMAT_VALIDATOR, JUPYTER_PREFER_ENV_PATH) and the XDG blank guards, so a CLEARED
-# line arrives as "" rather than as an absence. MEASURED, one line, two answers:
+# NBFORMAT_VALIDATOR, JUPYTER_PREFER_ENV_PATH, JUPYTER_PLATFORM_DIRS) and the XDG blank
+# guards, so a CLEARED line arrives as "" rather than as an absence. MEASURED, one line,
+# two answers:
 # jupyter_core's envset() (paths.py:47-58) is TRUE for every value outside
 # {no,n,false,off,0,0.0}, so `JUPYTER_PREFER_ENV_PATH=` reads TRUE in this ad-hoc
 # shell and FALSE under server_start. It also exports the nine DROSTE_JUPYTER_* names,

@@ -22,12 +22,19 @@
 # 📐 /etc/jupyter, NOT /usr/local/etc/jupyter. On Linux
 # SYSTEM_CONFIG_PATH = ["/usr/local/etc/jupyter", "/etc/jupyter"] (jupyter_core/paths.py:
 # 358-362) and we deliberately take the LOWER-priority of the two, leaving the other free
-# for a local override that must beat droste without touching the image.
+# for a local override that must beat droste without touching the image — WHILE
+# DROSTE_JUPYTER_PLATFORM_DIRS IS OFF, WHICH IS THE DEFAULT.
 # ⚠️ WITH DROSTE_JUPYTER_PLATFORM_DIRS ON, THAT LIST CHANGES. use_platform_dirs()
 # (paths.py:342) is read at IMPORT, and with it truthy SYSTEM_CONFIG_PATH becomes
 # platformdirs.site_config_dir(...) — measured as ['/etc/xdg/jupyter'], with /etc/jupyter
 # not on the path at all. Container.finetuning therefore symlinks /etc/xdg/jupyter to
 # /etc/jupyter, so this one file serves both spellings and neither can go stale.
+# 🚨 THE SYMLINK RESTORES OUR OWN DEFAULTS, NOT THE OVERRIDE LANE. /usr/local/etc/jupyter
+# leaves the search path entirely when platform dirs are on, and nothing in the image can
+# put it back: a local override placed there stops being read, silently. So the promise in
+# the paragraph above is CONDITIONAL on that setting being off. With it on, an override
+# that must beat droste belongs in the user's JUPYTER_CONFIG_DIR file (/opt/data), which
+# loads last on either path.
 #
 # 🚨 BAKING CONVERTS A TRACKING DEFAULT INTO A PINNED ONE. Every value below equals the
 # upstream default AT THE PINS (jupyter_server 2.21.0, jupyterlab 4.6.3, jupyterlab_server

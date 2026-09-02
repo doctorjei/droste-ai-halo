@@ -95,19 +95,26 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # the old spelling. They are read from the box's <box>.cfg, which both doors source
 # under `set -a` before launching the daemon, so the daemon inherits them.
 #
-# ⚠️ THE LAST TWO ARE DELIBERATELY *NOT* RENAMED: the launcher sets both (--fd, and the
-# prefix is never passed at all), so neither is a setting a user is invited to write.
-# 🚨 DLWATCH_PREFIX IS A LATENT HAZARD, RECORDED RATHER THAN FIXED HERE. It is read from
-# the environment, so a cfg CAN override it — and this prefix is the entire mechanism
-# that keeps our lines out of distrobox-enter's fatal grammar (see THE WORDS below). A
-# box whose cfg set DLWATCH_PREFIX=Error would abort every `distrobox enter` during a
-# download. Left alone on purpose: fixing it is a separate decision, and widening this
-# change to cover it would bury that decision inside a rename.
+# ⚠️ THE LAST TWO ARE NOT RENAMED AND ARE NOT SETTINGS: the launcher passes --fd
+# explicitly on every spawn, and the prefix is now a CONSTANT (below).
 : "${DROSTE_DOWNLOAD_INTERVAL:=5}"          # seconds between scans
 : "${DROSTE_DOWNLOAD_REPORT_INTERVAL:=60}"  # seconds between RUNNING lines, per repository
 : "${DROSTE_DOWNLOAD_STALL_WINDOW:=120}"    # seconds of no growth before STALLED, once
 : "${DLWATCH_FD:=2}"                # the fd every line goes to; the caller opens it
-: "${DLWATCH_PREFIX:=droste-download}"
+
+# 🚨 THE PREFIX IS ASSIGNED UNCONDITIONALLY — IT MUST NOT BE READABLE FROM THE
+# ENVIRONMENT (Jei ruled it s62). This one string is the entire mechanism that keeps our
+# lines out of distrobox-enter's fatal grammar (see THE WORDS below): distrobox parses the
+# container log while a box starts and aborts the user's `distrobox enter` on a line
+# opening "Error:", "Warning:", "distrobox:", "+" or "container_setup_done". While this
+# was `: "${DLWATCH_PREFIX:=…}"` the daemon inherited the box's cfg, so a box whose config
+# said DLWATCH_PREFIX=Error would have aborted every `distrobox enter` FOR AS LONG AS A
+# DOWNLOAD WAS RUNNING — intermittent, invisible between downloads, and impossible to
+# attribute. Nobody should ever want to change it, so the override is removed rather than
+# validated: a knob that can only do harm is better deleted than guarded.
+# ⚙️ dlwatch::_line still reads the variable LIVE, so a lab can set it after sourcing to
+# prove the prefix governs the line. That is in-process, not a user-reachable setting.
+DLWATCH_PREFIX=droste-download
 
 # ── Per-process state, in memory (design §3.2) ───────────────────────────────
 # One process, so no state file is needed for correctness. A container restart
@@ -182,18 +189,23 @@ dlwatch::fmt_abandoned() { dlwatch::_line ABANDONED "$(printf '%s  %s — partia
 # blank, non-numeric or zero means we do not know the denominator, and §4's rule is that
 # we report what is true instead of inventing what is not. Zero is rejected separately
 # from non-numeric because it is the one bad value that would DIVIDE, not merely parse.
-# ⚠️ A total SMALLER than the bytes already on disk is not impossible — a stale sidecar
-# from an earlier, shorter revision of the same blob would do it — so the result is
-# CLAMPED to 100 rather than printing 143%. Clamping is honest here in a way that
-# suppressing would not be: the transfer really is at or past its expected end, and a
-# vanishing percentage would read as "we lost track" instead of "nearly done".
+# 🚨 A TOTAL SMALLER THAN THE BYTES ALREADY ON DISK PRINTS NOTHING — it does not clamp.
+# That case means the sidecar is PROVABLY WRONG (a stale one from an earlier, shorter
+# revision of the same blob will do it), and a denominator we have just disproved tells us
+# nothing about the real one. Clamping to 100% was the first implementation and it was
+# WRONG: it asserts "at or past the expected end" when the true total could be anything,
+# which is precisely the invented number §4 forbids. Printing nothing degrades to the
+# llama line — honest, and already the common case.
+# ⭐ The general rule this follows: EVIDENCE THAT OUR INPUT IS WRONG IS NOT EVIDENCE ABOUT
+# THE ANSWER. Caught by a g1lab/dlwatch.sh row written against the design, which the design
+# then lost to; the row was right.
 dlwatch::pct_suffix() {
     local have=${1:-0} total=${2-} pct
     case $total in ''|*[!0-9]*) return 0 ;; esac
     [ "$total" -gt 0 ] || return 0
     case $have in ''|*[!0-9]*) have=0 ;; esac
+    [ "$have" -le "$total" ] || return 0
     pct=$(( have * 100 / total ))
-    [ "$pct" -le 100 ] || pct=100
     printf ' (%d%%)' "$pct"
 }
 
@@ -574,7 +586,15 @@ dlwatch::tick() {
             fi
             elapsed=$(( now - ${_DLW_G_LASTREP[$key]:-$now} ))
             delta=$(( ${gbytes[$key]} - ${_DLW_G_REPBYTES[$key]:-0} ))
-            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "$DROSTE_DOWNLOAD_REPORT_INTERVAL" ]; then
+            # ⚠️ THE TUNABLES ARE DEREFERENCED WITH THEIR DEFAULT INLINE, NOT BARE. The
+            # file-scope `: "${VAR:=N}"` normally guarantees they are set, but this file
+            # runs under `set -u` and the tunables are USER SETTINGS now: anything that
+            # unsets one between the source and the tick — a future droste::blank_is_unset
+            # entry, a caller that sources in an unusual order — would abort the daemon
+            # mid-loop. A watcher that dies on its own configuration goes silent exactly
+            # when it is meant to be reporting, which is the failure mode the errexit note
+            # at the top of this file exists to prevent. Found by g1lab/dlwatch.sh.
+            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "${DROSTE_DOWNLOAD_REPORT_INTERVAL:-60}" ]; then
                 rate=0
                 [ "$elapsed" -gt 0 ] && rate=$(( delta / elapsed ))
                 # The expected total is passed ONLY when every live partial supplied one;
@@ -588,7 +608,7 @@ dlwatch::tick() {
                 _DLW_G_LASTREP[$key]=$now
                 _DLW_G_REPBYTES[$key]=${gbytes[$key]}
             elif [ "${_DLW_G_STALLED[$key]:-0}" != 1 ] &&
-                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "$DROSTE_DOWNLOAD_STALL_WINDOW" ]; then
+                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "${DROSTE_DOWNLOAD_STALL_WINDOW:-120}" ]; then
                 dlwatch::emit "$(dlwatch::fmt_stalled \
                     "$(dlwatch::repo_name "$key")" "${gbytes[$key]}" \
                     "$(( now - ${_DLW_G_LASTGROW[$key]:-$now} ))")"
@@ -752,7 +772,7 @@ dlwatch::main() {
         dlwatch::tick "$(printf '%(%s)T' -1)"
         [ "$_DLW_DEAD" = 0 ] || return 0       # the log fd died: the container is going
         [ "$once" = 0 ] || return 0
-        dlwatch::_wait "$DROSTE_DOWNLOAD_INTERVAL"
+        dlwatch::_wait "${DROSTE_DOWNLOAD_INTERVAL:-5}"
     done
 }
 

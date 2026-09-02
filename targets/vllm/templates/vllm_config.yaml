@@ -191,15 +191,15 @@ enable-layerwise-nvtx-tracing: false # Inert & active -> valid YAML; DO NOT REMO
 #
 # GPU Memory & KV Cache
 # -----------------------
-# gpu-memory-utilization: 0.9        # fraction of GPU pool for model executor
-# swap-space: 4                      # GiB of CPU swap per GPU; always reserved
+# gpu-memory-utilization: 0.9        # fraction of TOTAL; also gates startup
+# swap-space: 4                      # inert in V1: num_cpu_blocks is always 0
 # cpu-offload-gb: 0                  # GiB of weights to keep in CPU memory
 # block-size: 16                     # On ROCm, (both Aiter switches ? 64 : 16)
 #
 # enable-sleep-mode: false           # engine sleep/wake (cuda & hip)
 # calculate-kv-scales: false         # k/v scales at runtime if dtype is fp8
 # ~ enable-prefix-caching            # unset ⇒ ON if supported [per model]
-# ~ kv-cache-memory-bytes            # unset: by gpu mem profiling [per device]
+# ~ kv-cache-memory-bytes            # unset: profiled; prefer this [all Halo]
 # ~ num-gpu-blocks-override          # unset: the profiled block count stands
 # ~ disable-hybrid-kv-cache-manager  # unset ⇒ vLLM decides & logs [per model]
 # ~ kv-offloading-size               # unset: no KV offloading buffer allocated

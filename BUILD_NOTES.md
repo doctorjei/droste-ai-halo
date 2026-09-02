@@ -1644,7 +1644,9 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
 
 - llama.cpp source pin: the fork carries the turboquant quant kernels; upstream
   ships no BRANCH arg (fork default branch). `LLAMA_REF` pins the source to a
-  fixed commit, defaulting to `337f08e82a861194fd5fc93121205c7c6bc81ddf`. The
+  fixed commit, defaulting to `fb2cc35ab3507a5aab56fe593620cd96d8f45384`
+  (bumped s64 from `337f08e8`, +770 commits, for Laguna/DFlash — see the bump note
+  below). The
   toolbox repo that vendors these assets was itself at submodule commit
   `6318f02422ebcc40829d222107352934a6cc2fae` — that is the provenance of the
   patches/helper, NOT a llama.cpp sha.
@@ -1737,8 +1739,10 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   path` (2 sites at our pin) — because without them a drifted source would fail
   confusingly rather than loudly. ⭐ **Unlike the grammar guard, every count here is
   EXACT; there are no floors.** A moved count means **re-derive the hunks at the new
-  SHA**, never adjust the count. Concretely, that will happen: master registers three
-  route sites now (`Get`/`Post`/`Delete`) against our pin's two.
+  SHA**, never adjust the count. ✅ **That prediction came true at the s64 bump and is
+  now history:** the note used to say *"master registers three route sites
+  (`Get`/`Post`/`Delete`) against our pin's two"* — our pin registers three as of
+  `fb2cc35a`, and the count was re-derived rather than adjusted.
   🚨 **`-F0` IS DOING WORK THE TWELVE COUNTS CANNOT DO, and this is the non-obvious
   part.** Measured host-side against the real pinned `tools/server/server-http.cpp` at
   `337f08e8`: drift ONE trailing context line of hunk 1 and the unguarded `patch`
@@ -1754,9 +1758,30 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   become unnecessary, so this guard is the only mechanism that will ever report it
   stopping.**
   ✅ The same host-side harness runs the guard body extracted verbatim from the
-  Containerfile against a pristine tree fetched by SHA: all 7 before-checks, both
-  hunks and all 5 after-checks pass at `337f08e8`, which is the only verification of
-  those counts that exists outside a CI run.
+  Containerfile against a pristine tree fetched by SHA. **Re-run at the s64 bump
+  against `fb2cc35a`: all 13 before-checks, both hunks and all 9 after-checks pass**,
+  which is the only verification of those counts that exists outside a CI run.
+  Counterfactuals, each run: the ALREADY-PATCHED tree refuses to patch twice · the
+  OLD pin's source fails (the shape moved) · **`patch` stubbed to a no-op fails**,
+  which is what proves the after-half is load-bearing · and a single-cell mutation
+  removing `frontend_paths.count(req.path)` reddens exactly its own named check.
+
+  🚨 **THE s64 BUMP RE-DERIVED THIS PATCH, AND THE REASON IS WORTH KEEPING: upstream
+  REFACTORED THIS EXACT CODE AND CARRIED THE BUG ACROSS INTACT.** The UI assets were
+  split into their own `frontend_paths` set — consumed BOTH by `get_public_endpoints`
+  (the api-key exemption) AND by `middleware_server_state` — so at the new pin there
+  are **TWO sites of the same defect, not one**. The second is milder and was
+  invisible before: while the model is loading, a prefixed UI request is not
+  recognised as a frontend asset and gets a 503 instead of the loading page.
+  Prefixing `frontend_paths` at its source fixes both consumers at once.
+  ⭐ **Hunk 1 FAILED and hunk 2 applied at offset 17 — which is the guard working.**
+  A relaxed `-F0` would have taken the offset silently.
+  ⚠️ **A defect found in our own patch by MEASURING the guard's counts rather than
+  trusting them:** the first draft's explanatory comment contained the literal string
+  `path_prefix + path`, which the guard counts as a substring — so the count went
+  3 → 4 and the "routes are still registered under the prefix" check was measuring
+  our own prose. Comment reworded so the count stays a fact about CODE. *Same family
+  as a reachability `grep -r` that matches the file it lives in.*
 - ⭐ **TURBOQUANT IS OPT-IN — the kernels are compiled in, nothing selects them.**
   Measured at the pin (`common/arg.cpp:390`): the fork's contribution here is three KV
   CACHE quant types, `GGML_TYPE_TURBO2_0/3_0/4_0`, added to `kv_cache_types` — the list

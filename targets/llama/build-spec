@@ -3,6 +3,26 @@
 # build-spec — llama port. Sourced bash consumed by the shared resolver
 # (/opt/resources/resolve/droste-resolve.sh) via the shared entrypoint.
 # Contract + row semantics: base/resolve/build-spec.example.
+#
+# 🚨 THE PIN MOVED IN s64 AND NINE MEASURED CLAIMS BELOW HAVE NOT BEEN RE-VERIFIED.
+# LLAMA_REF went 337f08e8 -> fb2cc35a (+770 commits) to pick up Laguna/DFlash. Every
+# passage in this file that says "at 337f08e8", "pinned 337f08e8" or cites an
+# arg.cpp/common.cpp line was MEASURED against the OLD source and is now an
+# UNVERIFIED claim about the new one. The churn is not cosmetic:
+#
+#   common/arg.cpp     4206 -> 4729 lines, 1131 changed lines
+#   common/common.cpp  2148 -> 2296 lines,  304 changed lines
+#   common/common.h    1101 -> 1191 lines,  186 changed lines
+#   common/hf-cache.cpp 498 ->  513 lines,   15 changed lines
+#
+# ⚠️ THE SHA STRINGS ARE DELIBERATELY LEFT SAYING 337f08e8. Rewriting them to the new
+# pin would assert a re-verification nobody performed, which is worse than a citation
+# that is visibly stale: a wrong SHA rots loudly, a silently-updated one does not.
+# These get re-measured at the new pin as their own pass, before the hardware round —
+# llama.cfg is a USER surface and "if we document it, we pin it" cuts both ways.
+# ⭐ What IS verified at fb2cc35a: both carried patches, their anchor guards (13
+# before-checks / 9 after-checks on the api-prefix one, re-derived because upstream
+# refactored the code and carried the bug across), and nothing else in this file.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; llama_pre_launch REBUILDS it after CFG_FILE is sourced so

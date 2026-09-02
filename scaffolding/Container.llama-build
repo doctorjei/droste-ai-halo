@@ -20,7 +20,7 @@ LABEL description="${SERIES_NAME}-${TARGET_NAME}-${ARCH_NAME}: ${BUILDER_DESC}"
 
 # llama pin
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
-ARG LLAMA_REF=337f08e82a861194fd5fc93121205c7c6bc81ddf
+ARG LLAMA_REF=fb2cc35ab3507a5aab56fe593620cd96d8f45384
 
 # Re-add if needed
 COPY llama-grammar.patch /tmp/
@@ -148,33 +148,55 @@ RUN set -e; \
             exit 1; }; \
     nx() { grep -Fxc -- "$1" "$f" || true; }; \
     ns() { grep -Fc  -- "$1" "$f" || true; }; \
-    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this]() {')" = 0 ] \
-      || die "$f already carries the PATCHED declaration -- refusing to patch twice"; \
+    [ "$(nx '    const std::unordered_set<std::string> frontend_paths = [this]() {')" = 0 ] \
+      || die "$f already carries the PATCHED frontend_paths declaration -- refusing to patch twice"; \
+    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this, &frontend_paths]() {')" = 0 ] \
+      || die "$f already carries the PATCHED public-endpoint declaration -- refusing to patch twice"; \
+    [ "$(nx '    static const std::unordered_set<std::string> frontend_paths = []() {')" = 1 ] \
+      || die "expected exactly 1 bare-literal frontend_paths declaration in $f"; \
     [ "$(nx '    static const std::unordered_set<std::string> get_public_endpoints = []() {')" = 1 ] \
       || die "expected exactly 1 bare-literal public-endpoint declaration in $f"; \
-    [ "$(nx '            endpoints.insert("/" + a.name);')" = 1 ] \
+    [ "$(nx '        std::unordered_set<std::string> paths { "/" };')" = 1 ] \
+      || die "expected exactly 1 unprefixed root entry in the frontend_paths seed in $f"; \
+    [ "$(nx '            paths.insert("/" + a.name);')" = 1 ] \
       || die "expected exactly 1 unprefixed UI-asset insert in $f"; \
     [ "$(nx '    auto middleware_validate_api_key = [api_keys = params.api_keys](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
       || die "expected exactly 1 api-key middleware declaration in $f"; \
+    [ "$(nx '    auto middleware_server_state = [this](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
+      || die "expected exactly 1 server-state middleware declaration in $f"; \
     [ "$(nx '    path_prefix = params.api_prefix;')" = 1 ] \
       || die "path_prefix is no longer assigned from params.api_prefix -- the patch would prefix with the wrong value"; \
-    [ "$(ns 'path_prefix + path')" = 2 ] \
-      || die "routes are no longer registered as path_prefix + path (expected 2 sites: ::get and ::post)"; \
+    [ "$(ns 'path_prefix + path')" = 3 ] \
+      || die "routes are no longer registered under path_prefix (expected 3 sites: ::get, ::post, ::del)"; \
     [ "$(ns 'path_prefix + "/')" = 0 ] \
       || die "$f already prefixes public endpoints -- upstream may have fixed this; read the source and consider dropping the patch"; \
+    [ "$(ns 'get_public_endpoints.count(req.path)')" = 1 ] \
+      || die "nothing consults get_public_endpoints against the wire path -- prefixing a set no one reads is a silent no-op"; \
+    [ "$(ns 'frontend_paths.count(req.path)')" = 1 ] \
+      || die "nothing consults frontend_paths against the wire path -- prefixing a set no one reads is a silent no-op"; \
     patch -p1 -F0 < /tmp/llama-api-prefix-auth.patch \
       || die "the hunks did not apply at fuzz 0 -- see the .rej above; re-derive them at the new sha rather than relaxing -F0, since a fuzzed hunk can put the api-key exemption somewhere plausible and WRONG"; \
+    [ "$(nx '    static const std::unordered_set<std::string> frontend_paths = []() {')" = 0 ] \
+      || die "the bare-literal frontend_paths declaration SURVIVED the patch"; \
     [ "$(nx '    static const std::unordered_set<std::string> get_public_endpoints = []() {')" = 0 ] \
-      || die "the bare-literal declaration SURVIVED the patch"; \
-    [ "$(nx '            endpoints.insert("/" + a.name);')" = 0 ] \
+      || die "the bare-literal public-endpoint declaration SURVIVED the patch"; \
+    [ "$(nx '            paths.insert("/" + a.name);')" = 0 ] \
       || die "the unprefixed UI-asset insert SURVIVED the patch"; \
-    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this]() {')" = 1 ] \
-      || die "expected exactly 1 patched declaration after applying"; \
+    [ "$(nx '    const std::unordered_set<std::string> frontend_paths = [this]() {')" = 1 ] \
+      || die "expected exactly 1 patched frontend_paths declaration after applying"; \
+    [ "$(nx '    const std::unordered_set<std::string> get_public_endpoints = [this, &frontend_paths]() {')" = 1 ] \
+      || die "expected exactly 1 patched public-endpoint declaration after applying"; \
     [ "$(nx '    auto middleware_validate_api_key = [api_keys = params.api_keys, get_public_endpoints](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
-      || die "the middleware does not capture the endpoint set BY VALUE after applying -- it would reference a dangling local"; \
+      || die "the api-key middleware does not capture the endpoint set BY VALUE after applying -- it would reference a dangling local"; \
+    [ "$(nx '    auto middleware_server_state = [this, frontend_paths](const httplib::Request & req, httplib::Response & res) {')" = 1 ] \
+      || die "the server-state middleware does not capture frontend_paths BY VALUE after applying -- it would reference a dangling local"; \
+    [ "$(ns 'get_public_endpoints.count(req.path)')" = 1 ] \
+      || die "the api-key exemption test did not survive the patch"; \
+    [ "$(ns 'frontend_paths.count(req.path)')" = 1 ] \
+      || die "the frontend-asset test did not survive the patch"; \
     [ "$(ns 'path_prefix + "/')" = 6 ] \
-      || die "expected exactly 6 prefixed public paths after applying (5 API routes + the UI asset loop)"; \
-    echo "llama-api-prefix-auth: applied; 6 public paths now built from path_prefix"
+      || die "expected exactly 6 prefixed public paths after applying (4 API routes + the UI root + the asset loop)"; \
+    echo "llama-api-prefix-auth: applied; both the api-key exemption and the frontend-asset set now built from path_prefix"
 
 # Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
 # COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is

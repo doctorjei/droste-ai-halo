@@ -220,11 +220,73 @@ serve_addr() {
   printf '%s\n' "$a"
 }
 
+# The PATH PREFIX every route on this server sits under, for the URLs printed
+# below. --api-prefix moves EVERY route (server-http.cpp:529 registers
+# `api_prefix + path` for all of them), so a box whose user set it serves
+# /v1/chat/completions at /<prefix>/v1/chat/completions and NOTHING at the old
+# path — the printed recipe would then be a command that 404s, on the first
+# thing a user reads. Same silent-lie defect as a stale port or a stale address.
+#
+# WHY THE STATE FILE AND NOT THE CONFIG FILE, which is where serve_port looks.
+# The prefix is not a single setting we could read: llama takes it from
+# LLAMA_ARG_API_PREFIX *and* from --api-prefix in DROSTE_LLAMA_EXTRA_ARGS, and
+# the command line wins. That precedence is already resolved, once, by this box's
+# own PRE_LAUNCH (targets/llama/build-spec), which hands the answer to
+# droste::set_health_prefix — and that writes it to the state file the health
+# probe reads (serve::read_health_spec). Reading it here is therefore reading the
+# ONE recorded answer, not deriving a second one: the banner and the healthcheck
+# cannot disagree about where the routes are, which is the same guarantee
+# serve_addr buys by asking serve::probe_addr instead of re-deriving an address.
+# The library is sourced only to learn WHERE that file is ($DROSTE_SERVE_PREFIX,
+# built from the state dir), so the path is not spelled a second time either —
+# and in the same discarding subshell as serve_addr, for the same reasons.
+#
+# 🚨 VERBATIM, AND NOTHING IS ADDED. droste::set_health_prefix stores and
+# prepends the value verbatim on purpose: the probe must compute the SAME string
+# the server computed, so a prefix the server mangles (a trailing slash gives
+# `/llama//health`) is mangled identically and reported unhealthy — which is
+# correct, because the routes really are at a path nothing can reach. The banner
+# is the same claim in the other lane, so it does the same concatenation and adds
+# no separator of its own. Normalising a slash in or out here would print a URL
+# that looks right and answers nothing, while the box stayed unusable — the worse
+# of the two failures, and the one this line exists to remove.
+#
+# Absent = no prefix, the overwhelmingly common case, and the output below is
+# then byte-for-byte what it has always been. A login that lands between the
+# start of apply_spec and its PRE_LAUNCH sees no file yet and degrades to exactly
+# that — which is also what the probe would compute at that instant.
+serve_prefix() {
+  local p
+  p=$(
+    set +e +u +o pipefail
+    # Same reason as serve_port's: a trailing redirect cannot reach inside a
+    # command substitution, and this library reports on stderr by design.
+    exec 2>/dev/null
+    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
+    # shellcheck disable=SC1091
+    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
+    # Belt and braces, and spelled this way because serve::read_health_spec — the
+    # other reader of this same file — spells it this way. The three lines below
+    # already answer "no prefix", silently, for a path that cannot be read.
+    [ -r "$DROSTE_SERVE_PREFIX" ] || exit 0
+    # One line, unmangled — the same read serve::read_health_spec does.
+    # ⚠️ SEEDED AND `|| :`-GUARDED, BOTH DELIBERATE: sourcing the library above
+    # turned `set -euo pipefail` back on, so a path that is readable but not a
+    # readable FILE (a directory) fails the redirect, and an unset _p would then
+    # be an unbound-variable abort rather than "no prefix".
+    _p=""
+    IFS= read -r _p <"$DROSTE_SERVE_PREFIX" || :
+    printf '%s\n' "$_p"
+  ) || p=""
+  printf '%s\n' "$p"
+}
+
 MACHINE="$(oem_info)"
 GPU="$(gpu_name)"
 ROCM_VER="$(rocm_version)"
 SERVE_PORT="$(serve_port)"
 SERVE_ADDR="$(serve_addr)"
+SERVE_PREFIX="$(serve_prefix)"
 
 echo
 printf '%s\n' \
@@ -251,7 +313,7 @@ printf '  - %-18s → %s\n' "config" "/opt/data/llama.cfg (LLAMA_ARG_* lines + D
 printf '  - %-18s → %s\n' "models" "-hf downloads land in the shared HF cache (~/.cache/huggingface)"
 printf '  - %-18s → %s\n' "local GGUFs" "bind read-only at /opt/models"
 printf '  - %-18s → %s\n' "VRAM helper" "gguf-vram-estimator.py <model>.gguf"
-printf '  - %-18s → %s\n' "API test" "curl $SERVE_ADDR:$SERVE_PORT/v1/chat/completions"
+printf '  - %-18s → %s\n' "API test" "curl $SERVE_ADDR:$SERVE_PORT$SERVE_PREFIX/v1/chat/completions"
 echo
 printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"

@@ -103,7 +103,7 @@ c = get_config()  # noqa: F821  (injected by traitlets)
 #
 # c.LabApp.news_url = "https://jupyterlab.github.io/assets/feed.xml"
 #   -> None                                 # stop fetching announcements
-# c.LabApp.check_for_updates_class = CheckForUpdate
+# c.LabApp.check_for_updates_class = "jupyterlab.CheckForUpdate"
 #   -> "jupyterlab.NeverCheckForUpdate"     # stop version checks
 # c.LabApp.extension_manager = "pypi"
 #   -> "readonly"                           # browse extensions, never install

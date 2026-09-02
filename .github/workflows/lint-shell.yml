@@ -12,6 +12,18 @@ name: lint-shell
 # deliberately tight so it fires on the shell it lints and nothing else, and its
 # concurrency group is namespaced `lint-shell-*` so it can never cancel an
 # in-flight build-halo run (`build-halo-*`) or a release (`release-*`).
+#
+# COVERAGE WIDENED TO targets/**, AND THE OVERLAP IS DELIBERATE: the `.sh` under
+# targets/** — the per-box profile.d banners and the download/patch helpers —
+# were the last hand-written shell in this repo that nothing read. They DO sit
+# inside build-halo.yml's trigger, but that workflow BUILDS IMAGES; it never
+# parses them AS SHELL. A banner with a syntax error bakes into a layer
+# perfectly happily and surfaces later as a broken login prompt inside a box,
+# which is both the worst place to find it and the hardest to bisect.
+# So a push touching targets/**/*.sh now fires BOTH workflows on purpose — they
+# ask different questions of the same file. build-halo.yml is untouched by this
+# change, and the namespaced concurrency groups mean neither run can cancel the
+# other; only a superseded run of the same workflow on the same ref is cancelled.
 
 on:
   push:
@@ -20,12 +32,14 @@ on:
       - 'droste-setup.sh'
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
+      - 'targets/**/*.sh'
       - '.github/workflows/lint-shell.yml'
   pull_request:
     paths:
       - 'droste-setup.sh'
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
+      - 'targets/**/*.sh'
       - '.github/workflows/lint-shell.yml'
   workflow_dispatch:
 
@@ -82,20 +96,49 @@ jobs:
           shellcheck --version
 
       # ── Gate 1: parse ────────────────────────────────────────────────────
-      # Hard failure, no exceptions. Every file below is `bash -n` clean today;
+      # Hard failure, no exceptions. Every file below is `bash -n` clean today
+      # (all 33, targets/ included — measured before the globs were widened);
       # a red row here is an unshippable script.
       - name: bash -n (hard gate)
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(droste-setup.sh scripts/*.sh base/resolve/*.sh)
+          # globstar so `targets/**/*.sh` reaches EVERY depth. Hand-listing the
+          # two depths that exist today (targets/*/profile.d/ and
+          # targets/*/scripts/) matches exactly the same files and then silently
+          # misses whatever a future box puts a level deeper — which is the
+          # precise failure mode this gate exists to prevent, reintroduced in
+          # the gate itself.
+          shopt -s nullglob globstar
+          installer=(droste-setup.sh)
+          helpers=(scripts/*.sh)
+          resolver=(base/resolve/*.sh)
+          boxes=(targets/**/*.sh)
           # A glob that matched nothing would make this gate silently pass on an
           # empty set — decoration, not a check.
-          if (( ${#files[@]} < 2 )); then
-            echo "::error::lint-shell matched ${#files[@]} file(s); the globs are stale."
+          #
+          # ⚠️ THE GUARD IS PER GROUP, AND WITH FOUR GROUPS THAT IS NO LONGER A
+          # REFINEMENT BUT THE WHOLE POINT. A single floor over the TOTAL cannot
+          # see one group go empty, because the other three hold the total above
+          # any floor you would pick: drop all of targets/ and a `< 2` check
+          # still reports "checked 16 files" and passes, green, having quietly
+          # stopped reading a directory. Each group answers for itself, and the
+          # error names WHICH glob rotted so the log does the diagnosis.
+          for g in helpers resolver boxes; do
+            declare -n grp="$g"
+            (( ${#grp[@]} )) || {
+              echo "::error::lint-shell: glob group '$g' matched no files; the globs are stale."
+              exit 1
+            }
+          done
+          # droste-setup.sh is a literal, not a glob, so nullglob cannot drop it
+          # and the loop above would not notice its absence — it needs its own
+          # existence test to be covered at all.
+          [[ -f ${installer[0]} ]] || {
+            echo "::error::lint-shell: ${installer[0]} is missing — this workflow's original reason for existing moved or was renamed."
             exit 1
-          fi
+          }
+          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
           rc=0
           for f in "${files[@]}"; do
             if bash -n "$f"; then
@@ -109,15 +152,39 @@ jobs:
           exit $rc
 
       # ── Gate 2: shellcheck errors ────────────────────────────────────────
-      # Hard failure. Every file is `-S error` clean today (measured), so this
-      # gate is green on arrival AND able to fail — it fires the moment someone
-      # writes an actual ShellCheck error anywhere in the linted set.
+      # Hard failure. Every file is `-S error` clean today (measured, including
+      # all 17 under targets/), so this gate is green on arrival AND able to
+      # fail — it fires the moment someone writes an actual ShellCheck error
+      # anywhere in the linted set.
+      #
+      # Same four groups and the same per-group staleness guard as gate 1; the
+      # reasoning for why the guard is per-group and not a total is written out
+      # there and not repeated here.
       - name: shellcheck -S error (hard gate)
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(droste-setup.sh scripts/*.sh base/resolve/*.sh)
+          shopt -s nullglob globstar
+          installer=(droste-setup.sh)
+          helpers=(scripts/*.sh)
+          resolver=(base/resolve/*.sh)
+          boxes=(targets/**/*.sh)
+          for g in helpers resolver boxes; do
+            declare -n grp="$g"
+            (( ${#grp[@]} )) || {
+              echo "::error::lint-shell: glob group '$g' matched no files; the globs are stale."
+              exit 1
+            }
+          done
+          [[ -f ${installer[0]} ]] || {
+            echo "::error::lint-shell: ${installer[0]} is missing — this workflow's original reason for existing moved or was renamed."
+            exit 1
+          }
+          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
+          # ShellCheck reads each file's shebang, so the one `#!/bin/sh` script
+          # in the set (targets/ds4/scripts/download_model.sh) is analysed
+          # against POSIX sh rather than bash. That is the behaviour we want and
+          # it is why no `-s` override is passed here.
           shellcheck -S error -f gcc "${files[@]}"
           echo "no shellcheck errors in ${#files[@]} files"
 
@@ -161,12 +228,73 @@ jobs:
           fi
           echo "baseline unchanged"
 
+      # ── Gate 4: targets/ is warning-clean, and stays that way ────────────
+      # WHY A HARD GATE HERE WHEN THE INSTALLER GETS A PIN AND EVERYTHING ELSE
+      # IS REPORT-ONLY: because the measurement came out differently. At the
+      # pinned 0.11.0, all 17 `.sh` under targets/** are clean at `-S warning` —
+      # ZERO findings, not "a couple of benign ones". Neither existing treatment
+      # fits, and it is their REASONS that fail to transfer, not their shape:
+      #   • the pinned fingerprint (gate 3) exists because droste-setup.sh
+      #     CANNOT be clean — two findings that cannot honestly be fixed. Pinning
+      #     targets/ would be a baseline with nothing in it, and a second
+      #     per-file pin is precisely the many-baselines maintenance that trains
+      #     people to bump a number reflexively instead of reading it.
+      #   • report-only (below) exists because scripts/ and base/resolve/ ALREADY
+      #     carry warnings, so gating them would land red on arrival.
+      # A clean set gets what gate 2 already gives a clean set: a plain hard
+      # gate, green on arrival AND able to fail. There is no number to bump and
+      # no baseline to rot, because the expected finding count is zero — the
+      # cheapest possible thing to maintain and the only one that cannot go
+      # stale. Holding a clean set clean costs a line; cleaning a set that has
+      # drifted costs what scripts/ and base/resolve/ now owe.
+      #
+      # ⚠️ IF A WARNING HERE EVER BECOMES LEGITIMATE AND UNFIXABLE, the answer is
+      # a `# shellcheck disable=SCxxxx` carrying a reason ON THE LINE, not a new
+      # baseline in this file: the exception then documents itself where the next
+      # reader is standing, instead of as a number in a workflow they will never
+      # open. If that stops being enough, the deliberate retreat is to move these
+      # globs down into the report-only step — a one-line change, and a decision
+      # someone should have to make on purpose.
+      - name: shellcheck -S warning on targets/ (hard gate, expected zero)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          boxes=(targets/**/*.sh)
+          (( ${#boxes[@]} )) || {
+            echo "::error::lint-shell: glob group 'boxes' (targets/**/*.sh) matched no files; the globs are stale."
+            exit 1
+          }
+          out="$(shellcheck -S warning -f gcc "${boxes[@]}" || true)"
+          n="$(printf '%s' "$out" | grep -c . || true)"
+
+          # Report the count in the summary whether it passes or fails. If this
+          # step only spoke up on failure, the summary would show findings for
+          # scripts/ and base/resolve/ and nothing at all for targets/, and a
+          # reader would quite reasonably conclude targets/ is still unlinted.
+          {
+            echo "### ShellCheck \`-S warning\` — targets/ (hard gate, expected 0)"
+            echo
+            echo "\`${#boxes[@]}\` file(s) checked, \`${n}\` finding(s)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$out" ]]; then
+            printf '%s\n' "$out"
+            echo "::error::lint-shell: targets/ is required to be ShellCheck -S warning clean and is not (${n} finding(s), listed above). Fix the finding; or, if it is a false positive or a deliberate construct, silence it at the line with a '# shellcheck disable=SCxxxx' comment that says why. Do not add a baseline here."
+            exit 1
+          fi
+          echo "no shellcheck warnings in ${#boxes[@]} files under targets/"
+
       # ── Report-only: warnings in the rest of the shell ───────────────────
       # NOT a gate. scripts/ and base/resolve/ carry pre-existing warnings
       # (droste-init-hook.sh, droste-entrypoint.sh, droste-common.sh and the two
       # adopt shims), so gating them would land red. They are surfaced in the job
       # summary so the count is visible and can be driven down deliberately;
       # promote a file to a pinned baseline once it is worth holding.
+      #
+      # targets/ is deliberately NOT in this list — it measured clean, so it is
+      # hard-gated by gate 4 above rather than merely counted here.
       - name: shellcheck -S warning elsewhere (report only)
         if: always()
         shell: bash
@@ -174,6 +302,14 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           files=(scripts/*.sh base/resolve/*.sh)
+          # This step cannot "fail" — but it can silently report an empty table,
+          # which is the same lie a passing gate over an empty set tells. It runs
+          # `if: always()`, so turning this into an exit would also mask whichever
+          # real gate above went red; a log-level warning says so without
+          # stealing the failure.
+          if (( ${#files[@]} == 0 )); then
+            echo "::warning::lint-shell: the report-only globs (scripts/*.sh, base/resolve/*.sh) matched no files; this table is empty because the globs are stale, not because the tree is clean."
+          fi
           {
             echo "### ShellCheck \`-S warning\` — report only (does not fail the build)"
             echo

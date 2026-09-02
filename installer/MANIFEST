@@ -1,0 +1,51 @@
+# installer/MANIFEST — the ORDER in which scripts/assemble-droste-setup.sh
+# concatenates the fragments to produce droste-setup.sh.
+#
+# One filename per line, relative to installer/. Blank lines and lines starting
+# with `#` are ignored. THIS FILE IS THE ONLY SOURCE OF ORDER: the fragments
+# carry no numeric prefixes, because a prefix and a manifest that disagree give
+# two answers to one question. The assembler checks the list against the
+# directory in BOTH directions, so a fragment that is added and not listed here
+# fails loudly instead of vanishing from the artifact.
+#
+# ── The five ordering constraints ────────────────────────────────────────────
+# Everything between the prologue and the tail is declarations and is therefore
+# order-free. These five are not, and re-ordering the list must not break them:
+#
+#   1. `set -euo pipefail` comes first                            [contract]
+#   2. the display mode settles BEFORE the option loop — usage() and the
+#      unknown-option error are themselves output, so the --ascii pre-pass and
+#      the typography atoms have to exist before the loop that consumes argv
+#                                                                 [ui]
+#   3. usage() is defined before the option loop runs             [ui]
+#   4. the palette span is one block and must not be split        [ui]
+#   5. `main` is the LAST LINE of the artifact, byte for byte — four g1lab
+#      suites do `source <(sed '$d' "$SETUP")` and the whole in-shell test
+#      idiom rests on it                                          [main]
+#
+# ── Why these fourteen ────────────────────────────────────────────────────────
+# Each fragment is one or more CONTIGUOUS `# ── ` sections of the original file,
+# grouped by what changes together. The one boundary that rests on a
+# MEASUREMENT rather than on taste is `ui`: the display/prompt layer was
+# measured at 157 inbound edges and 0 outbound, and scripts/check-installer-
+# layering.sh keeps it that way. `contract` holds the two values that layer is
+# told about us (UI_PROG, UI_INPUT_VAR), so the kit itself names nothing of ours.
+#
+# `execute`, `pull` and `ladder` are three fragments and not two because the
+# pull sits physically BETWEEN the Executing section's output helpers and the
+# ladder rungs that drive it, and a fragment is a contiguous range.
+
+contract.sh
+ui.sh
+state.sh
+preflight.sh
+cfg.sh
+existing.sh
+interview.sh
+relocate.sh
+emit.sh
+execute.sh
+pull.sh
+ladder.sh
+report.sh
+main.sh

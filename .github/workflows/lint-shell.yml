@@ -30,6 +30,7 @@ on:
     branches: [main]
     paths:
       - 'droste-setup.sh'
+      - 'installer/**'
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
       - 'targets/**/*.sh'
@@ -37,6 +38,7 @@ on:
   pull_request:
     paths:
       - 'droste-setup.sh'
+      - 'installer/**'
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
       - 'targets/**/*.sh'
@@ -321,3 +323,112 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
           shellcheck -S warning "${files[@]}" || true
+
+  # ── The installer is ASSEMBLED, and this job is what makes that true ────────
+  # droste-setup.sh is no longer authored: its sources are installer/*.sh plus
+  # installer/py/*.py, and scripts/assemble-droste-setup.sh concatenates them.
+  # During phase 2 of the amalgamation BOTH shapes are in the tree, so the
+  # assertion here is the strongest one available — the assembled stream is
+  # BYTE-IDENTICAL to the tracked file. Either the split is exactly right or it
+  # is obviously wrong; there is no partial credit to argue about.
+  #
+  # A SEPARATE JOB, DELIBERATELY. It needs no ShellCheck, so it does not wait on
+  # the pinned-analyser download, and a red here reads as "the artifact does not
+  # regenerate" rather than as a lint failure. It shares the workflow's
+  # concurrency group, so it still cannot cancel a build-halo run.
+  #
+  # ⚠️ WHEN THE ARTIFACT STOPS BEING TRACKED (phase 3) the cmp step goes and the
+  # remaining four checks become the whole contract. Do not delete the others
+  # with it — they are what the cmp is standing in front of, not duplicates of it.
+  installer:
+    name: droste-setup.sh regenerates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # SILENCE IS THE CONTRACT, so it is checked before anything else: the
+      # assembler emits the artifact on stdout and NOTHING anywhere else, which
+      # makes "anything on stderr means something went wrong" true by
+      # construction rather than by convention. A stray `echo` added later would
+      # corrupt the product at a user's terminal; this is the one line that
+      # stops it, and it has to run before a step that discards stderr.
+      - name: The assembler is silent on success
+        shell: bash
+        run: |
+          set -euo pipefail
+          err="$(scripts/assemble-droste-setup.sh 2>&1 >/dev/null)"
+          if [[ -n "$err" ]]; then
+            printf '%s\n' "$err"
+            echo "::error::lint-shell: scripts/assemble-droste-setup.sh wrote to stderr on a successful run. It must be silent on success — no progress, no summary, no diagnostics. See the header of that script."
+            exit 1
+          fi
+          echo "no output on stderr"
+
+      # THE PHASE-2 ASSERTION. Both shapes are tracked, so the sources and the
+      # artifact must agree to the byte. `cmp` names the first differing offset,
+      # which is enough to find the fragment; the manifest gives the rest.
+      - name: Assembled output is byte-identical to the tracked droste-setup.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f droste-setup.sh ]] || {
+            echo "::error::lint-shell: droste-setup.sh is not in the tree. If it was untracked deliberately (amalgamation phase 3), this step is the one to delete — the other checks in this job stand on their own."
+            exit 1
+          }
+          asm="$(mktemp)"
+          scripts/assemble-droste-setup.sh > "$asm"
+          if ! cmp "$asm" droste-setup.sh; then
+            echo "::error file=droste-setup.sh::lint-shell: the assembled installer differs from the tracked droste-setup.sh. Regenerate it with 'scripts/assemble-droste-setup.sh > droste-setup.sh' and commit both halves, or fix the fragment under installer/ that drifted. Do NOT hand-edit droste-setup.sh — it is a build product."
+            exit 1
+          fi
+          echo "byte-identical ($(wc -c < droste-setup.sh) bytes)"
+
+      # A `cat` cannot be non-deterministic, which is exactly why this is cheap
+      # insurance: it costs a second and it is what would catch a future edit
+      # that reached for a timestamp, a hostname or a directory listing order.
+      - name: Assembly is deterministic
+        shell: bash
+        run: |
+          set -euo pipefail
+          a1="$(mktemp)"; a2="$(mktemp)"
+          scripts/assemble-droste-setup.sh > "$a1"
+          scripts/assemble-droste-setup.sh > "$a2"
+          if ! cmp "$a1" "$a2"; then
+            echo "::error::lint-shell: two consecutive assemblies of the same tree differ. Something in scripts/assemble-droste-setup.sh depends on time, environment or directory order."
+            exit 1
+          fi
+          echo "two consecutive assemblies agree"
+
+      # THE POINT OF GIVING THE PYTHON ITS OWN FILES. Inside a heredoc it was a
+      # string as far as every tool was concerned: a syntax error shipped and
+      # surfaced as a failed image pull on a user's machine. Now it compiles here.
+      - name: The embedded Python compiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          py=(installer/py/*.py)
+          # An empty glob would make this step pass having compiled nothing —
+          # the silent-green shape this repo has been bitten by more than once.
+          (( ${#py[@]} )) || {
+            echo "::error::lint-shell: installer/py/*.py matched no files. Either the Python moved or the glob is stale; this step was passing without compiling anything."
+            exit 1
+          }
+          python3 -m py_compile "${py[@]}"
+          echo "compiled ${#py[@]} file(s)"
+
+      # THE UI LAYER STAYS BLIND. Its three properties — names no global of
+      # ours, calls nothing below it, and never lets the drawing stop to ask a
+      # question — were all TRUE BEFORE ANYONE STATED THEM, and all three would
+      # die quietly to one reasonable-looking edit. The subject is the ASSEMBLED
+      # artifact, not the tracked file, because that is the subject that still
+      # exists after phase 3.
+      - name: The UI layer names nothing of ours
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject="$(mktemp)"
+          scripts/assemble-droste-setup.sh > "$subject"
+          scripts/check-installer-layering.sh "$subject"

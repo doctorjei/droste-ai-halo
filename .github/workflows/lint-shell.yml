@@ -1,0 +1,159 @@
+name: lint-shell
+
+# Syntax + static analysis for the repo's hand-written shell.
+#
+# WHY THIS EXISTS: droste-setup.sh is ~6.7k lines, it is what users pipe into
+# bash, and until this workflow landed NO ci job read it at all — a syntax error
+# in it would have shipped unnoticed. build-halo.yml only fires on
+# base/** + scaffolding/** + targets/**, so the installer, scripts/ and the
+# resolver library were entirely outside CI's reach.
+#
+# THIS WORKFLOW BUILDS NO IMAGES. It only reads files. Its paths filter is
+# deliberately tight so it fires on the shell it lints and nothing else, and its
+# concurrency group is namespaced `lint-shell-*` so it can never cancel an
+# in-flight build-halo run (`build-halo-*`) or a release (`release-*`).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'droste-setup.sh'
+      - 'scripts/*.sh'
+      - 'base/resolve/*.sh'
+      - '.github/workflows/lint-shell.yml'
+  pull_request:
+    paths:
+      - 'droste-setup.sh'
+      - 'scripts/*.sh'
+      - 'base/resolve/*.sh'
+      - '.github/workflows/lint-shell.yml'
+  workflow_dispatch:
+
+# Namespaced away from `build-halo-${{ github.ref }}` and
+# `release-${{ github.ref_name }}`. A cancel here can only ever cancel a
+# superseded lint run on the same ref.
+concurrency:
+  group: lint-shell-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: bash -n + shellcheck
+    runs-on: ubuntu-latest
+    # Read-only: this job checks out the tree and runs two linters. It pushes
+    # nothing, comments nothing, and touches no package.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The warning baseline below is pinned against a specific ShellCheck
+      # release. Print the version FIRST so that when the pin trips, the log
+      # already answers "did the analyser change, or did the code?".
+      - name: ShellCheck version
+        run: shellcheck --version
+
+      # ── Gate 1: parse ────────────────────────────────────────────────────
+      # Hard failure, no exceptions. Every file below is `bash -n` clean today;
+      # a red row here is an unshippable script.
+      - name: bash -n (hard gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(droste-setup.sh scripts/*.sh base/resolve/*.sh)
+          # A glob that matched nothing would make this gate silently pass on an
+          # empty set — decoration, not a check.
+          if (( ${#files[@]} < 2 )); then
+            echo "::error::lint-shell matched ${#files[@]} file(s); the globs are stale."
+            exit 1
+          fi
+          rc=0
+          for f in "${files[@]}"; do
+            if bash -n "$f"; then
+              echo "ok    $f"
+            else
+              echo "::error file=$f::bash -n failed"
+              rc=1
+            fi
+          done
+          echo "checked ${#files[@]} files"
+          exit $rc
+
+      # ── Gate 2: shellcheck errors ────────────────────────────────────────
+      # Hard failure. Every file is `-S error` clean today (measured), so this
+      # gate is green on arrival AND able to fail — it fires the moment someone
+      # writes an actual ShellCheck error anywhere in the linted set.
+      - name: shellcheck -S error (hard gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(droste-setup.sh scripts/*.sh base/resolve/*.sh)
+          shellcheck -S error -f gcc "${files[@]}"
+          echo "no shellcheck errors in ${#files[@]} files"
+
+      # ── Gate 3: the installer's warning baseline ─────────────────────────
+      # WHY A PINNED BASELINE AND NOT A PLAIN HARD FAIL:
+      # droste-setup.sh has exactly two pre-existing `-S warning` findings, and
+      # BOTH are benign, so `-S warning` as a hard gate would be red on arrival —
+      # which trains people to ignore the job. Neither can honestly be "fixed":
+      #   SC2034 (FUSE_SPEED_NOTE unused)  — a deliberate note carrying a
+      #     TODO(Jei-tune) marker; deleting it would delete the note.
+      #   SC2324 (var+=1 will append)      — a FALSE POSITIVE. The line is
+      #     `fill+=$h`, appending a box-drawing character to build a banner
+      #     rule; it is string concatenation and is meant to be.
+      # So the baseline is pinned instead. It is a FINGERPRINT (code=count),
+      # not a bare total, so that a swap — one warning fixed and a different one
+      # introduced — still trips the gate; a bare count of 2 would not notice.
+      # It is line-number-independent, so moving code around never trips it.
+      #
+      # ⚠️ MISMATCH IN EITHER DIRECTION IS A FAILURE, ON PURPOSE. More findings
+      # is a regression. FEWER means someone improved the file and the pin is now
+      # stale — lower it in the same commit, or the baseline rots into a number
+      # nobody believes.
+      - name: shellcheck -S warning on droste-setup.sh (pinned baseline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fingerprint of the accepted pre-existing findings. Bump deliberately.
+          EXPECTED='SC2034=1,SC2324=1'
+
+          out="$(shellcheck -f gcc -S warning droste-setup.sh || true)"
+          printf '%s\n' "$out"
+          actual="$(printf '%s\n' "$out" \
+            | grep -oE '\[SC[0-9]+\]$' | tr -d '[]' \
+            | sort | uniq -c | awk '{print $2"="$1}' | paste -sd, - || true)"
+
+          echo "expected baseline: ${EXPECTED}"
+          echo "actual   baseline: ${actual}"
+          if [[ "$actual" != "$EXPECTED" ]]; then
+            echo "::error file=droste-setup.sh::ShellCheck -S warning baseline moved: expected '${EXPECTED}', got '${actual}'. Either (a) this change introduced/removed a warning — fix it, or update EXPECTED in .github/workflows/lint-shell.yml in the same commit; or (b) the runner's ShellCheck version changed (see the 'ShellCheck version' step above), in which case re-derive the baseline before trusting it."
+            exit 1
+          fi
+          echo "baseline unchanged"
+
+      # ── Report-only: warnings in the rest of the shell ───────────────────
+      # NOT a gate. scripts/ and base/resolve/ carry pre-existing warnings
+      # (droste-init-hook.sh, droste-entrypoint.sh, droste-common.sh and the two
+      # adopt shims), so gating them would land red. They are surfaced in the job
+      # summary so the count is visible and can be driven down deliberately;
+      # promote a file to a pinned baseline once it is worth holding.
+      - name: shellcheck -S warning elsewhere (report only)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(scripts/*.sh base/resolve/*.sh)
+          {
+            echo "### ShellCheck \`-S warning\` — report only (does not fail the build)"
+            echo
+            echo '| file | findings |'
+            echo '|---|---|'
+            for f in "${files[@]}"; do
+              n="$(shellcheck -S warning -f gcc "$f" 2>/dev/null | wc -l || true)"
+              [[ "$n" == "0" ]] || echo "| \`$f\` | $n |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          shellcheck -S warning "${files[@]}" || true

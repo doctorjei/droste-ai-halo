@@ -43,6 +43,12 @@ COPY --from=artifacts /artifacts/fp8       /opt/fp8
 COPY --from=artifacts /artifacts/aiter-jit /tmp/aiter-jit
 COPY scripts/patch_aiter_headers.py /opt/resources/scripts/patch_aiter_headers.py
 
+# N24 P4 download-percentage shim (R4): a .pth the venv runs at every startup. See
+# Container.ds4 for why a .pth and not sitecustomize (the SYSTEM copy shadows the venv's).
+COPY scripts/droste_dlwatch_shim.py scripts/zz_droste_dlwatch.pth /opt/resources/scripts/
+RUN set -e; sp=$(echo /opt/venv/lib/python*/site-packages) \
+    && cp /opt/resources/scripts/droste_dlwatch_shim.py /opt/resources/scripts/zz_droste_dlwatch.pth "$sp/"
+
 # Install order matters:
 #  1. aiter + flash-attn wheels (--no-deps: their deps are torch/triton, already present).
 #  2. re-apply patch_aiter_headers.py to the freshly-installed aiter — its ck_tile headers are

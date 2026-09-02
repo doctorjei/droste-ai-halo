@@ -218,6 +218,12 @@ COPY scripts/get_wan22.sh scripts/get_qwen_image.sh scripts/get_hunyuan15.sh \
      scripts/name-api-blacklist.yaml /opt/resources/scripts/
 ENV PATH=/opt/resources/scripts:$PATH PYTHONPATH=/opt/resources/scripts
 
+# N24 P4 download-percentage shim (R4): a .pth the venv runs at every startup. See
+# Container.ds4 for why a .pth and not sitecustomize (the SYSTEM copy shadows the venv's).
+COPY scripts/droste_dlwatch_shim.py scripts/zz_droste_dlwatch.pth /opt/resources/scripts/
+RUN set -e; sp=$(echo /opt/venv/lib/python*/site-packages) \
+    && cp /opt/resources/scripts/droste_dlwatch_shim.py /opt/resources/scripts/zz_droste_dlwatch.pth "$sp/"
+
 # API-format workflow definitions (baked RO reference; 1:1 with the get_*.sh models).
 COPY api_workflows /opt/resources/api_workflows
 

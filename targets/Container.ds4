@@ -42,6 +42,16 @@ COPY build-spec  /opt/resources/build-spec
 COPY templates/  /opt/resources/templates/
 COPY scripts/download_model.sh /opt/resources/scripts/download_model.sh
 
+# N24 P4 download-percentage shim (R4): a .pth the venv's interpreter runs at every
+# startup, wrapping hub's download funnel so the expected total reaches the watcher.
+# sitecustomize does NOT work here — Python resolves it to the SYSTEM /usr/lib copy
+# before the venv's site-packages is searched (measured), so a venv sitecustomize is
+# silently never imported. A .pth IS executed from the venv's site-packages. The
+# site-packages path is version-dependent, so resolve it with a glob, not a literal.
+COPY scripts/droste_dlwatch_shim.py scripts/zz_droste_dlwatch.pth /opt/resources/scripts/
+RUN set -e; sp=$(echo /opt/venv/lib/python*/site-packages) \
+    && cp /opt/resources/scripts/droste_dlwatch_shim.py /opt/resources/scripts/zz_droste_dlwatch.pth "$sp/"
+
 # Runtime shell banner (interactive/toolbox lane)
 COPY profile.d/99-toolbox-banner.sh /etc/profile.d/99-toolbox-banner.sh
 

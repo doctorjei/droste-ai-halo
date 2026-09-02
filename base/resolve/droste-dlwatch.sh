@@ -285,6 +285,25 @@ dlwatch::blob_for() {
     return 1
 }
 
+# ── dlwatch::total_for <partial-path> — the expected total, IF the shim wrote it ──
+# The P4 in-process shim (R4) drops a sidecar beside the partial it annotates:
+#   <blob-stem>.total   one ASCII integer, the expected total in bytes.
+# Prints the integer and returns 0 when a usable sidecar exists; returns 1 otherwise.
+# Absence is the NORMAL case — llama has no shim, and a hub the shim did not patch
+# writes none — so this is read as "a percentage is available", never as an error.
+# ⚠️ VALIDATE BEFORE TRUSTING. The sidecar is data a process outside our control wrote;
+# a non-numeric or empty file is ignored, not arithmeticked on.
+dlwatch::total_for() {
+    local blob t
+    blob=$(dlwatch::blob_for "$1") || return 1
+    [ -r "$blob.total" ] || return 1
+    t=$(cat "$blob.total" 2>/dev/null) || return 1
+    case $t in ''|*[!0-9]*) return 1 ;; esac
+    [ "$t" -gt 0 ] || return 1
+    printf '%s' "$t"
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SCANNING
 # ─────────────────────────────────────────────────────────────────────────────

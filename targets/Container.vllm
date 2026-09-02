@@ -81,6 +81,16 @@ RUN set -e; sp=$(echo /opt/venv/lib/python*/site-packages) \
 #     after. The two grep-for-includers checks are the REACHABILITY half: a header nothing
 #     includes could be rewritten perfectly and still mean nothing, which is the same
 #     failure the llama guards call "raising a constant nobody reads".
+#     🚨 AND A REACHABILITY GREP OVER A TREE THAT CONTAINS THE TARGET CAN MATCH THE TARGET
+#     ITSELF, which turns the check into a bare existence test that CANNOT FAIL. So each
+#     one (a) requires an actual `#include` DIRECTIVE, not a bare mention -- a comment or a
+#     doc line naming the header proves nothing about who reads it -- and (b) subtracts the
+#     header being rewritten from the match list, by the SAME path string the `-f` test
+#     above asserts. Measured at aiter 428e8e76 (the submodule of FLASH_ATTENTION_REF
+#     3f94643f): vec_convert.h is included by aiter_opus_plus.h and quant_utils.cuh,
+#     hip_reduce.h by aiter_opus_plus.h, and NEITHER header mentions its own name -- so the
+#     old bare `grep -rlF` was not vacuous YET. It would have gone vacuous the day upstream
+#     added a self-referencing header comment, silently and with the counts still green.
 #     ⚠️ The failure is invisible here by construction: without the RDNA3 fallbacks gfx1151
 #     has no scalar substitute for the CDNA-only packed ISA, and that surfaces in a
 #     JIT-compiled kernel at RUN time, long after this build is green.
@@ -208,10 +218,11 @@ RUN . /etc/droste/rocm-version.env \
         [ -d "$1" ] || die "$1 is not a directory -- aiter did not install, or its wheel layout moved"; \
         [ -f "$1/ck_tile/vec_convert.h" ] || die "$1/ck_tile/vec_convert.h is gone -- the header was renamed or moved"; \
         [ -f "$1/hip_reduce.h" ] || die "$1/hip_reduce.h is gone -- the header was renamed or moved"; \
-        n=$(grep -rlF "vec_convert.h" "$1" | wc -l); \
-        [ "$n" -ge 1 ] || die "nothing under $1 includes vec_convert.h -- rewriting it would be a silent no-op"; \
-        n=$(grep -rlF "hip_reduce.h" "$1" | wc -l); \
-        [ "$n" -ge 1 ] || die "nothing under $1 includes hip_reduce.h -- rewriting it would be a silent no-op"; \
+        nv=$(grep -rlE "^[[:space:]]*#[[:space:]]*include.*vec_convert\.h" "$1" | grep -vxF "$1/ck_tile/vec_convert.h" | wc -l); \
+        [ "$nv" -ge 1 ] || die "no file under $1 OTHER THAN $1/ck_tile/vec_convert.h itself has an #include of vec_convert.h -- nothing reads the header, so rewriting it would be a silent no-op. The pinned aiter MOVED: re-derive the include graph under csrc/include at the aiter submodule of the CURRENT FLASH_ATTENTION_REF, then update patch_aiter_headers.py AND this check together"; \
+        nh=$(grep -rlE "^[[:space:]]*#[[:space:]]*include.*hip_reduce\.h" "$1" | grep -vxF "$1/hip_reduce.h" | wc -l); \
+        [ "$nh" -ge 1 ] || die "no file under $1 OTHER THAN $1/hip_reduce.h itself has an #include of hip_reduce.h -- nothing reads the header, so rewriting it would be a silent no-op. The pinned aiter MOVED: re-derive the include graph under csrc/include at the aiter submodule of the CURRENT FLASH_ATTENTION_REF, then update patch_aiter_headers.py AND this check together"; \
+        echo "aiter-headers: reachable -- vec_convert.h #included by ${nv} other file(s), hip_reduce.h by ${nh}"; \
         python /opt/resources/scripts/patch_aiter_headers.py || die "patch_aiter_headers.py exited nonzero"; \
         grep -qF "CK_TILE_RDNA3_NO_PK_FP8" "$1/ck_tile/vec_convert.h" \
           || die "vec_convert.h carries no CK_TILE_RDNA3_NO_PK_FP8 after patching -- it was NOT rewritten"; \

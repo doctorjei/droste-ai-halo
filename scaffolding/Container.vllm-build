@@ -143,10 +143,11 @@ RUN mkdir -p /artifacts/wheels \
         [ -d "$1" ] || die "$1 is not a directory -- aiter did not install, or its wheel layout moved"; \
         [ -f "$1/ck_tile/vec_convert.h" ] || die "$1/ck_tile/vec_convert.h is gone -- the header was renamed or moved"; \
         [ -f "$1/hip_reduce.h" ] || die "$1/hip_reduce.h is gone -- the header was renamed or moved"; \
-        n=$(grep -rlF "vec_convert.h" "$1" | wc -l); \
-        [ "$n" -ge 1 ] || die "nothing under $1 includes vec_convert.h -- rewriting it would be a silent no-op"; \
-        n=$(grep -rlF "hip_reduce.h" "$1" | wc -l); \
-        [ "$n" -ge 1 ] || die "nothing under $1 includes hip_reduce.h -- rewriting it would be a silent no-op"; \
+        nv=$(grep -rlE "^[[:space:]]*#[[:space:]]*include.*vec_convert\.h" "$1" | grep -vxF "$1/ck_tile/vec_convert.h" | wc -l); \
+        [ "$nv" -ge 1 ] || die "no file under $1 OTHER THAN $1/ck_tile/vec_convert.h itself has an #include of vec_convert.h -- nothing reads the header, so rewriting it would be a silent no-op. The pinned aiter MOVED: re-derive the include graph under csrc/include at the aiter submodule of the CURRENT FLASH_ATTENTION_REF, then update patch_aiter_headers.py AND this check together"; \
+        nh=$(grep -rlE "^[[:space:]]*#[[:space:]]*include.*hip_reduce\.h" "$1" | grep -vxF "$1/hip_reduce.h" | wc -l); \
+        [ "$nh" -ge 1 ] || die "no file under $1 OTHER THAN $1/hip_reduce.h itself has an #include of hip_reduce.h -- nothing reads the header, so rewriting it would be a silent no-op. The pinned aiter MOVED: re-derive the include graph under csrc/include at the aiter submodule of the CURRENT FLASH_ATTENTION_REF, then update patch_aiter_headers.py AND this check together"; \
+        echo "aiter-headers: reachable -- vec_convert.h #included by ${nv} other file(s), hip_reduce.h by ${nh}"; \
         python /opt/patch_aiter_headers.py || die "patch_aiter_headers.py exited nonzero"; \
         grep -qF "CK_TILE_RDNA3_NO_PK_FP8" "$1/ck_tile/vec_convert.h" \
           || die "vec_convert.h carries no CK_TILE_RDNA3_NO_PK_FP8 after patching -- it was NOT rewritten"; \

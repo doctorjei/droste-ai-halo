@@ -64,8 +64,14 @@
 # ── SOURCING IS SAFE ─────────────────────────────────────────────────────────
 # Sourcing defines functions and nothing else: no scan, no daemon, no output. The
 # main loop runs only when this file is EXECUTED (the guard at the bottom). The only
-# file-scope effects are `: "${NAME:=default}"` on the five tunables and the empty
-# state arrays, both guarded so a re-source cannot clobber a running instance.
+# file-scope effects are `: "${NAME:=default}"` on the five tunables, the four
+# CONSTANTS beside them (the three defaults and the prefix, assigned unconditionally
+# because they must not be readable from the environment), and the empty state
+# arrays — the tunables and the arrays both guarded so a re-source cannot clobber a
+# running instance, the constants idempotent because they are literals.
+# ⚠️ IN PARTICULAR, VALIDATION IS NOT DONE AT SOURCE TIME. dlwatch::_seconds warns,
+# and a door that sources this file must not emit a warning merely for sourcing it;
+# the two ENTRY POINTS call it (dlwatch::main and dlwatch::launch), nothing else.
 # ⚠️ ERREXIT IS OFF ON PURPOSE — `set -uo pipefail`, matching droste-healthcheck.sh.
 # This is a long-lived watcher over files that are BEING DELETED WHILE IT LOOKS AT
 # THEM: a partial vanishing between the glob and the stat is not an error, it is the
@@ -97,9 +103,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 #
 # ⚠️ THE LAST TWO ARE NOT RENAMED AND ARE NOT SETTINGS: the launcher passes --fd
 # explicitly on every spawn, and the prefix is now a CONSTANT (below).
-: "${DROSTE_DOWNLOAD_INTERVAL:=5}"          # seconds between scans
-: "${DROSTE_DOWNLOAD_REPORT_INTERVAL:=60}"  # seconds between RUNNING lines, per repository
-: "${DROSTE_DOWNLOAD_STALL_WINDOW:=120}"    # seconds of no growth before STALLED, once
+#
+# ⚙️ EACH DEFAULT IS A LITERAL IN EXACTLY ONE PLACE, and that is not tidiness: the
+# seeded value here and the fallback dlwatch::_seconds hands back on a bad value MUST
+# agree, or the same config would resolve differently depending on which path read it.
+# The constants are assigned unconditionally — they are ours, not settings.
+DLWATCH_DEFAULT_INTERVAL=5
+DLWATCH_DEFAULT_REPORT_INTERVAL=60
+DLWATCH_DEFAULT_STALL_WINDOW=120
+: "${DROSTE_DOWNLOAD_INTERVAL:=$DLWATCH_DEFAULT_INTERVAL}"          # seconds between scans
+: "${DROSTE_DOWNLOAD_REPORT_INTERVAL:=$DLWATCH_DEFAULT_REPORT_INTERVAL}"  # seconds between RUNNING lines, per repository
+: "${DROSTE_DOWNLOAD_STALL_WINDOW:=$DLWATCH_DEFAULT_STALL_WINDOW}"  # seconds of no growth before STALLED, once
 : "${DLWATCH_FD:=2}"                # the fd every line goes to; the caller opens it
 
 # 🚨 THE PREFIX IS ASSIGNED UNCONDITIONALLY — IT MUST NOT BE READABLE FROM THE
@@ -115,6 +129,89 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # ⚙️ dlwatch::_line still reads the variable LIVE, so a lab can set it after sourcing to
 # prove the prefix governs the line. That is in-process, not a user-reachable setting.
 DLWATCH_PREFIX=droste-download
+
+# ── dlwatch::_seconds — the ONE rule for the three time tunables (s62) ───────
+# Usage:  v=$(dlwatch::_seconds DROSTE_DOWNLOAD_INTERVAL)
+# Prints the number of seconds to USE. Warns, once, when the user's value is not one.
+#
+# 🚨 WHY IT EXISTS, AND THE DEFECT WAS OURS, NOT THE USER'S. These three were internal
+# until s62; exposing them on all five <box>.cfg surfaces took ownership of every string
+# a user can now type into one, and BOTH failure modes were silent. MEASURED, not read:
+#   INTERVAL=abc         `read -t abc` fails INSTANTLY, so the daemon busy-loops —
+#                        0.23 s of CPU every 3 s over an EMPTY cache, against 0 s with
+#                        a good value, forever, saying nothing. The one diagnostic bash
+#                        prints lands on the daemon's stderr, which dlwatch::_spawn
+#                        points at /dev/null.
+#   REPORT_INTERVAL=abc  `[ 99 -ge abc ]` returns 2, and with errexit off a non-zero
+#   STALL_WINDOW=abc     test is simply FALSE — so EVERY RUNNING (or STALLED) line is
+#                        suppressed for the life of the box, with bash's complaint going
+#                        to the same /dev/null. A watcher that has gone silent looks
+#                        exactly like a box with nothing to report, which is the failure
+#                        this whole feature exists to remove.
+# Both are the shape "NO FALL-THROUGH VALUES" forbids, so they get what droste::bool
+# gives the booleans: warn, then the documented default.
+#
+# 📐 THE VOCABULARY IS UNIFORM — "a whole number of seconds" — ON ALL THREE (One
+# Surface). ⚠️ NO FRACTIONS, EVEN THOUGH `read -t 2.5` TAKES ONE: measured, `[ 99 -ge
+# 2.5 ]` cannot, so a fractional vocabulary could only ever work on ONE of the three
+# siblings and a user must not have to learn which.
+# ⚠️ NEGATIVES ARE REJECTED ON ALL THREE. `[ 99 -ge -1 ]` is TRUE, so on two of them a
+# negative would quietly behave as 0 — a value that "works" for a reason the user did
+# not mean is exactly the fall-through this rule removes — and on INTERVAL it is
+# another busy loop.
+# ⚠️ ZERO IS DECIDED PER NAME, FROM MEASUREMENT, NOT BY ONE BLANKET RULE:
+#   INTERVAL         0 REJECTED. `read -t 0` returns immediately and `sleep 0` does not
+#                    sleep, so a zero scan interval IS the busy loop above, spelled
+#                    differently. There is nothing a user could mean by it.
+#   REPORT_INTERVAL  0 ACCEPTED. `[ elapsed -ge 0 ]` is simply always true: "report on
+#                    every tick that grew". It is bounded by the SCAN interval, cannot
+#                    divide by zero (the rate is guarded by `[ elapsed -gt 0 ]`), and is
+#                    a real thing to want while watching one download.
+#   STALL_WINDOW     0 ACCEPTED, same mechanism: "say stalled the moment it is not
+#                    growing". Loud, but bounded and honest.
+# ⭐ THE RULE THE THREE FOLLOW: REFUSE WHAT BREAKS THE DAEMON, ALLOW WHAT MERELY MAKES
+# IT LOUD. Loudness is the user's to choose; a spinning CPU is not.
+#
+# ⚠️ A BLANK IS THE DEFAULT, SILENTLY — NEVER A WARNING. A number is a category-2
+# setting in the canon's terms (finite meaning, empty string not one of them), so a
+# blank must behave EXACTLY as if the line were absent. That already held via the `:=`
+# above — measured the mechanical way, the name absent and the name "" give byte-
+# identical results — and the point here is not to BREAK it by reporting a blank as a
+# typo. Whitespace is stripped first, for the same reason droste::bool strips it.
+#
+# ⚙️ NO ARITHMETIC ANYWHERE, DELIBERATELY. The shape check plus `[ -ge ]` is enough, and
+# `$(( 10#$raw ))` would be actively WORSE: measured, bash arithmetic WRAPS a 20-digit
+# value (to 7766279631452241919 — a positive, plausible-looking number) while `[`
+# REJECTS one outright as "integer expression expected". So the out-of-range case is
+# caught by the bound test itself. `[`'s stderr is silenced because we issue our own
+# message; its non-zero status is what we read.
+# ⚙️ THE STRING IS PASSED THROUGH AS TYPED. Both readers take it base 10 — measured:
+# `[ 010 -gt 9 ]` is true and `read -t 010` waits ten seconds — so a leading zero means
+# the same thing to both and there is nothing to normalise.
+dlwatch::_seconds() {
+    local name=$1 orig='' raw def min
+    case $name in
+        DROSTE_DOWNLOAD_INTERVAL)        def=$DLWATCH_DEFAULT_INTERVAL;        min=1 ;;
+        DROSTE_DOWNLOAD_REPORT_INTERVAL) def=$DLWATCH_DEFAULT_REPORT_INTERVAL; min=0 ;;
+        DROSTE_DOWNLOAD_STALL_WINDOW)    def=$DLWATCH_DEFAULT_STALL_WINDOW;    min=0 ;;
+        *) return 1 ;;
+    esac
+    # `${!name+x}` asks "does it EXIST" — the one indirect form that is safe under
+    # `set -u` for a name that is unset. A bare `${!name}` on an unset name ABORTS the
+    # shell (measured), which in the daemon would be a watcher killed by its own config.
+    [ -n "${!name+x}" ] && orig=${!name}
+    raw=${orig// /}
+    if [ -z "$raw" ]; then printf '%s' "$def"; return 0; fi
+    case $raw in
+        *[!0-9]*) ;;                                    # not a whole number at all
+        *) if [ "$raw" -ge "$min" ] 2>/dev/null; then printf '%s' "$raw"; return 0; fi ;;
+    esac
+    # ⚠️ THE MESSAGE QUOTES WHAT THEY TYPED, not the stripped form — a value that looks
+    # right in the file and is wrong on the wire is the hardest kind to find.
+    serve::warn "$name='$orig' must be a whole number of seconds, $min or more — using the default, $def. Fix the line in this box's .cfg."
+    printf '%s' "$def"
+    return 0
+}
 
 # ── Per-process state, in memory (design §3.2) ───────────────────────────────
 # One process, so no state file is needed for correctness. A container restart
@@ -594,7 +691,7 @@ dlwatch::tick() {
             # mid-loop. A watcher that dies on its own configuration goes silent exactly
             # when it is meant to be reporting, which is the failure mode the errexit note
             # at the top of this file exists to prevent. Found by g1lab/dlwatch.sh.
-            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "${DROSTE_DOWNLOAD_REPORT_INTERVAL:-60}" ]; then
+            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "${DROSTE_DOWNLOAD_REPORT_INTERVAL:-$DLWATCH_DEFAULT_REPORT_INTERVAL}" ]; then
                 rate=0
                 [ "$elapsed" -gt 0 ] && rate=$(( delta / elapsed ))
                 # The expected total is passed ONLY when every live partial supplied one;
@@ -608,7 +705,7 @@ dlwatch::tick() {
                 _DLW_G_LASTREP[$key]=$now
                 _DLW_G_REPBYTES[$key]=${gbytes[$key]}
             elif [ "${_DLW_G_STALLED[$key]:-0}" != 1 ] &&
-                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "${DROSTE_DOWNLOAD_STALL_WINDOW:-120}" ]; then
+                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "${DROSTE_DOWNLOAD_STALL_WINDOW:-$DLWATCH_DEFAULT_STALL_WINDOW}" ]; then
                 dlwatch::emit "$(dlwatch::fmt_stalled \
                     "$(dlwatch::repo_name "$key")" "${gbytes[$key]}" \
                     "$(( now - ${_DLW_G_LASTGROW[$key]:-$now} ))")"
@@ -719,12 +816,17 @@ Announces model downloads by watching for partial files. One line per repository
   --root DIR             a directory to watch. REPEATABLE. Callers resolve which
                          home applies; this script never guesses one.
   --fd N                 the already-open fd every line is written to (default 2).
-  --interval SEC         seconds between scans (default 5)
+  --interval SEC         seconds between scans (default 5, minimum 1)
   --report-interval SEC  seconds between RUNNING lines, per repository (default 60)
   --stall-window SEC     seconds of no growth before STALLED (default 120)
   --once                 take a single tick and exit (for wiring checks)
   --no-pidfile           skip the single-instance guard
   -h, --help             this text
+
+The three time options take a WHOLE NUMBER OF SECONDS and nothing else: --interval
+must be 1 or more (0 is a busy loop), the other two may be 0. Anything else is
+reported and the default is used. The same rule governs the matching
+DROSTE_DOWNLOAD_* settings in the box's .cfg, which these flags override.
 
 Typical roots:
   <home>/.cache/huggingface        the CRITICAL bind every box declares
@@ -760,6 +862,20 @@ dlwatch::main() {
         return 2
     fi
     case $DLWATCH_FD in ''|*[!0-9]*) serve::err "download watcher: --fd must be a number"; return 2 ;; esac
+
+    # ── the three time tunables, resolved ONCE, after the argv has had its say ──
+    # ⚙️ AFTER PARSING, SO ONE CHECK COVERS BOTH DOORS INTO THIS PROCESS: whatever a
+    # --interval flag set, and whatever the environment carried in from the box's
+    # <box>.cfg. The launcher resolves the same names before it spawns us and passes
+    # the RESULT on the argv, so in production these three see a good value and say
+    # nothing; this call is what protects a direct `droste-dlwatch.sh --root …`, where
+    # our stderr is the operator's terminal and the message is worth having.
+    # ⚠️ WARN-AND-FALL-BACK, NOT `return 2`, unlike --fd and --root above. A missing
+    # root means there is nothing to do; a bad interval means the user typed something
+    # wrong, and refusing to watch would trade a slow tick for no announcements at all.
+    DROSTE_DOWNLOAD_INTERVAL=$(dlwatch::_seconds DROSTE_DOWNLOAD_INTERVAL)
+    DROSTE_DOWNLOAD_REPORT_INTERVAL=$(dlwatch::_seconds DROSTE_DOWNLOAD_REPORT_INTERVAL)
+    DROSTE_DOWNLOAD_STALL_WINDOW=$(dlwatch::_seconds DROSTE_DOWNLOAD_STALL_WINDOW)
 
     if [ "$pidguard" = 1 ]; then
         dlwatch::claim_pidfile || return 0     # another live watcher owns this box
@@ -974,6 +1090,25 @@ dlwatch::launch() {
     mapfile -t roots < <(dlwatch::roots)
     [ ${#roots[@]} -gt 0 ] || return 0
     for r in "${roots[@]}"; do argv+=( --root "$r" ); done
+    # 🚨 THE TUNABLES ARE RESOLVED **HERE**, IN THE DOOR, AND PASSED ON THE ARGV — and
+    # WHERE is the whole point, not a detail. dlwatch::_seconds warns, and the child's
+    # stderr is /dev/null by dlwatch::_spawn's own design, so a warning issued inside
+    # the daemon would be MEASURABLY invisible: exactly the silence the guard exists to
+    # end. The door's stderr, by contrast, IS the container log (distrobox-init execs
+    # 2>&1 and evals the hook with no redirection), which is where every download line
+    # the user is waiting for already appears. Same site, same mechanism and same
+    # wording rule as dlwatch::enabled's warning one function up — not a second one.
+    # ⚙️ ON THE ARGV RATHER THAN THE ENVIRONMENT, for two reasons: the child then cannot
+    # be re-broken by whatever the door's environment still holds, and the resolved
+    # values are VISIBLE to a lab that records the spawn (g1lab/dlwatch.sh §L does).
+    # Assigning the corrected value to the exported variable instead would also leak it
+    # into the SERVICE the door execs next, which has no business seeing it.
+    # ⚙️ AFTER THE ROOTS, which is the shape dlwatch::usage documents (`--fd N --root DIR
+    # [--root DIR ...] [options]`) and the shape g1lab/initstamp.sh reads the real hook's
+    # command line in. Order is nothing to the parser and something to a reader.
+    argv+=( --interval        "$(dlwatch::_seconds DROSTE_DOWNLOAD_INTERVAL)"
+            --report-interval "$(dlwatch::_seconds DROSTE_DOWNLOAD_REPORT_INTERVAL)"
+            --stall-window    "$(dlwatch::_seconds DROSTE_DOWNLOAD_STALL_WINDOW)" )
     dlwatch::open_log_fd
     dlwatch::_spawn --fd 9 "${argv[@]}"
     # ⚠️ CLOSE OUR COPY. The child has its own; a door that kept fd 9 open would

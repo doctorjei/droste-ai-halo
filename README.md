@@ -413,6 +413,83 @@ auto-bound real home already provides it), destinations under `/root/` remap
 to the box user's home, and directories the hook creates are chowned to the
 box user.
 
+### Download announcements
+
+A model arrives at the moment a box can least tell you about it: the server is
+still starting, nothing is listening yet, and the healthcheck has nothing to
+report. So every box starts a small watcher at container start that announces
+downloads to the **container log** — `podman logs droste-<port>-halo` — and
+not to the service's own log (`/opt/data/.droste-serve.log`). That split is
+deliberate: the container log is the one stream that exists before the service
+does, and it is where a box that is busy rather than broken can say so.
+
+It watches the filesystem rather than any program's output, because at
+default settings there is no output to watch — llama prints nothing for an
+`-hf` fetch, vLLM disables its progress bar outright, and huggingface_hub's
+bars are TTY-gated against an fd droste redirects to a file. What every
+downloader on every box does do is write a partial file — `*.incomplete`
+(huggingface_hub) or `*.downloadInProgress` (llama.cpp) — under the shared HF
+cache or `~/.cache/llama.cpp`. One line is emitted per **repository**, not per
+file, so a sharded GGUF is one download whatever number of pieces it arrives
+in — the file count is a field on the line.
+
+```
+droste-download: STARTED   Qwen/Qwen3-30B-A3B-GGUF  1 file   (hf cache)
+droste-download: RESUMED   Qwen/Qwen3-30B-A3B-GGUF  at 12.4 GiB, 2 files
+droste-download: RUNNING   Qwen/Qwen3-30B-A3B-GGUF  18.1 GiB (55%)  (+71 MiB/s, 2 files)
+droste-download: FINISHED  Qwen/Qwen3-30B-A3B-GGUF  32.5 GiB in 7m41s
+droste-download: STALLED   Qwen/Qwen3-30B-A3B-GGUF  18.1 GiB, no growth for 2m
+droste-download: ABANDONED Qwen/Qwen3-30B-A3B-GGUF  18.1 GiB — partial file removed
+```
+
+| Word | What it means |
+|---|---|
+| `STARTED` | a partial file appeared that was not there a moment ago — a download has begun |
+| `RESUMED` | a partial that was already on disk started growing — a transfer that predates the box, or one picked up again |
+| `RUNNING` | still going; rate-limited to one line per repository per minute by default |
+| `FINISHED` | the partials became finished files; the size and the elapsed time are the real ones |
+| `STALLED` | no growth for two minutes. Said once per stall — if it stalls, recovers and stalls again, you get both |
+| `ABANDONED` | the partial disappeared without a finished file behind it |
+
+Not every download has a repository to name. llama's second cache
+(`~/.cache/llama.cpp`, where a `-mu`/`-dr` fetch lands) is a flat directory, so
+those lines print the directory in place of the repo and `(flat directory)` in
+place of `(hf cache)`. The rate is **disk growth, not wire speed** — with xet
+or `hf_transfer` the two genuinely differ, and the number is honest about which
+of them it measures.
+
+**The percentage is on four boxes of five, by design.** comfyui, ds4, vllm and
+finetuning download through huggingface_hub, which knows the expected total but
+holds it only in memory; those four images carry a small in-process shim that
+writes that total to disk beside the partial, which is what the watcher divides
+by. llama fetches with its own C++ downloader, which publishes no total
+anywhere, so its lines carry bytes and rate and stop there. The same fallback
+applies inside the other four whenever any file of a repository is missing its
+total: the line drops the percentage rather than dividing by a denominator it
+only partly knows. A number that cannot be derived is not worth inventing, and
+the line is byte-identical with or without it.
+
+Settings, in every box's `<box>.cfg` alongside the rest:
+
+| Setting | Takes | Absent or blank means |
+|---|---|---|
+| `DROSTE_DOWNLOAD_ANNOUNCE` | `yes` / `no` | `yes` — `no` means the watcher is never started at all |
+| `DROSTE_DOWNLOAD_INTERVAL` | seconds | `5` — how often the caches are scanned |
+| `DROSTE_DOWNLOAD_REPORT_INTERVAL` | seconds | `60` — spacing between `RUNNING` lines, per repository |
+| `DROSTE_DOWNLOAD_STALL_WINDOW` | seconds | `120` — how long a download goes quiet before `STALLED` |
+
+Three things it deliberately does not do. A download that starts and finishes
+inside one scan is never announced, which is what keeps `config.json` and
+tokenizer files out of the log. A partial that never grows says nothing:
+current huggingface_hub releases name every attempt uniquely, so a hard kill
+leaves an `.incomplete` behind that is never reused, a cache with any history
+holds a drawer of them, and announcing those would be a false alarm on every
+box at every start. And the watcher looks only where the boxes keep their
+caches (`~/.cache/huggingface` and `~/.cache/llama.cpp`), so a download aimed
+anywhere else is out of its sight — pointing `HF_HOME` or `HF_HUB_CACHE` at
+another directory, or fetching with `hf download --local-dir` into one.
+Everything the boxes fetch on their own lands in one of those two.
+
 ### Troubleshooting
 
 - **`mount: <path>: permission denied` at startup** → the container lacks

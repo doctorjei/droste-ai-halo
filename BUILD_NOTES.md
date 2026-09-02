@@ -201,6 +201,82 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   unauthenticated), ds4 `/v1/models` (source-verified: ds4-server has no `/health`
   and 404s `/`). A box with serving off is healthy by definition. `--health-start-period`
   MUST cover model load or the box restart-loops.
+- `droste-dlwatch.sh` — the download announcer (N24). The one file under `resolve/` that
+  is BOTH a sourced library and a program, which is why `base/Container.runtime` gives it
+  `+x`: the doors source it for `dlwatch::launch`, and that launcher then EXECs the same
+  path as a background daemon. Both doors call it **after `resolve::apply_spec` and before
+  the server door** — after, because R8's off switch `DROSTE_DOWNLOAD_ANNOUNCE` lives in
+  the box's `<box>.cfg` and does not exist until apply_spec's step 6 has applied it (a
+  daemon that read its own kill switch would have to be started to read it); before,
+  because llama's router downloads on demand and vLLM's loader downloads while it starts,
+  so the watcher wants to be looking already. The daemon holds ONE private fd (9), opened
+  `>>` on `/proc/1/fd/2` while still root — an open file description is not
+  re-permission-checked after the uid change, and that stream IS `podman logs <box>`,
+  which is the ruled output surface. **Not the service log** (`.droste-serve.log`): the
+  container log is the only stream that exists before the service does, which is the whole
+  point — the healthcheck returns early for a non-serving box, so a long first download is
+  exactly the window in which nothing else can speak.
+  Polls every `DROSTE_DOWNLOAD_INTERVAL` (5 s) over `<home>/.cache/huggingface`,
+  `<home>/.cache/llama.cpp` and any `DOWNLOAD_WATCH` extras a build-spec declares (none
+  today; the row exists for ds4's flat `--local-dir` target), globbing for the only two
+  partial suffixes any of the five downloaders writes — `*.incomplete` (huggingface_hub,
+  both majors, every backend) and `*.downloadInProgress` (llama.cpp). Six globs and one
+  `stat` per root, never a walk, so the scan cost is proportional to REPOSITORY COUNT, not
+  cache size. Lines are aggregated per repository with the file count as a field:
+  STARTED / RESUMED / RUNNING (rate-limited, `DROSTE_DOWNLOAD_REPORT_INTERVAL`) /
+  FINISHED / STALLED (`DROSTE_DOWNLOAD_STALL_WINDOW`) / ABANDONED, all six formatted in
+  one place so the wording lives in one file.
+  🚨 **A PARTIAL THAT NEVER GROWS IS SILENT, AND THAT IS THE FEATURE.** hub 1.x names each
+  attempt uniquely and unlinks in a `finally`, so every SIGKILL leaves an orphan
+  `.incomplete` that is never reused and never reaped; a cache with any history holds a
+  drawer of them, and announcing those would be a false positive on every box at every
+  start. The cost is that a genuine resume is announced on its first GROWTH, up to one tick
+  late. We do not reap them either — a reaper is a new destructive behaviour and must not
+  be smuggled in under an announcement feature. The same silence holds at the far end: a
+  group we never announced emits no terminal line.
+  ⚠️ **errexit is OFF** (`set -uo pipefail`, matching the healthcheck): a partial vanishing
+  between the glob and the `stat` is not an error, it is the FINISHED signal, and a daemon
+  that exited on the race it was written to detect would go quiet exactly when it mattered.
+  Every arm of `dlwatch::launch` returns 0 and both doors call it `|| serve::warn`, so an
+  announcement feature can never cost a user their box; a load failure warns rather than
+  going quiet, because the spawn is silent and a missing file would otherwise disable the
+  feature permanently and say nothing. Single-instance guard: a pidfile in the program
+  cache's `state/`, validated against `/proc/<pid>/cmdline` rather than the pid alone.
+  The log prefix `droste-download` is a CONSTANT, not read from the environment: distrobox
+  parses the container log while a box starts and aborts `distrobox enter` on a line
+  opening `Error:`, `Warning:`, `distrobox:`, `+` or `container_setup_done`, so a cfg able
+  to set the prefix could have broken every enter for the duration of a download.
+  ⚠️ **One accepted residual, LATENT rather than live.** `scan_root` also globs the
+  `--local-dir` shape (`<root>/.cache/huggingface/download/*.incomplete`), and for that
+  shape alone a disappearing partial is reported FINISHED rather than ABANDONED: hub names
+  it `{_short_hash(name)}.{etag}.incomplete`, and a hash is not a path, so the "the blob
+  now exists" test cannot run. Telling every ds4 user that a fetch they just watched
+  succeed had failed is the worse of the two errors. It is unreachable as shipped — that
+  glob only fires under a root, and no build-spec declares a `DOWNLOAD_WATCH` extra — so
+  declaring one is what would make the residual visible.
+- **The percentage shim (N24 P4)** — `targets/{comfyui,ds4,vllm,finetuning}/scripts/`
+  ships `droste_dlwatch_shim.py` + `zz_droste_dlwatch.pth`, copied into
+  `/opt/venv/lib/python*/site-packages/` by each of those four Containerfiles. It lazily
+  wraps huggingface_hub's single download funnel `_download_to_tmp_and_move` (the funnel
+  behind `hf_hub_download`, `snapshot_download`, `HfApi.*` and the `hf` CLI) and writes the
+  expected total — which hub holds only in memory — to a `<blob-stem>.total` sidecar beside
+  the partial. `dlwatch::total_for` reads it and the RUNNING line gains a ` (NN%)` suffix;
+  with no sidecar the line is byte-identical to the pre-P4 form, which is the One Surface
+  constraint that lets llama keep the same grammar with no shim at all.
+  🚨 **`sitecustomize.py` DOES NOT WORK FROM A VENV** — `site` imports the FIRST
+  `sitecustomize` on `sys.path`, and the system `/usr/lib/python3.13/` copy wins before the
+  venv's site-packages is searched (measured). A `.pth` IS executed, needs no `PYTHONPATH`
+  and no login shell, and a shim whose import raises prints a site warning while the server
+  still starts. And the patch is registered LAZILY on purpose: patching eagerly during
+  hub's own circular import raises, hub SWALLOWS the error, and the result is a shim that
+  never installs while every download succeeds — the silent no-op this feature exists to
+  remove. A hub that renamed the funnel warns once and no-ops.
+  Coverage is all-or-nothing per repository: if any live partial in a group has no usable
+  sidecar (llama's C++ fetcher writes none, and mixed coverage is the normal case), the
+  percentage is omitted rather than computed against an understated denominator. A total
+  smaller than the bytes already on disk — a stale sidecar from a shorter revision —
+  prints nothing rather than clamping to 100%, because evidence that our input is wrong is
+  not evidence about the answer.
 - **`is_bound` is an ancestor-walk**, not an exact mountinfo match: the longest
   component-aware mount-point prefix of the target decides (rootfs `/` → unbound;
   anything deeper → bound). Needed because distrobox binds the whole `$HOME` —

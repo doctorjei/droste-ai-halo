@@ -47,6 +47,25 @@
 #                               overlay-mitigation path without such a mount.
 set -euo pipefail
 
+# ── What the display/prompt layer is told about US ───────────────────────────
+# The two values below are the ENTIRE input side of the layer described in the
+# banner further down (display helpers → path fitting → prompt plumbing). That
+# layer draws every screen and reads every answer, and it is meant to stay
+# liftable into another program of Jei's; a hard-coded "droste-setup.sh" inside
+# it is a small tie, but it is still a tie, and the point of the exercise is
+# that there are none. So the layer says "$UI_PROG" and this line says what
+# $UI_PROG is — once, here, where a reader looks for the program's identity.
+#
+# UI_INPUT_VAR holds a NAME, not a path, on purpose: the layer both READS the
+# variable (indirectly) and NAMES it back in its error message, so a caller
+# that renames the hook keeps a message that still tells the truth. Indirect
+# expansion is safe here for one reason only — UI_INPUT_VAR is assigned right
+# here, unconditionally. `${!NAME-}` aborts under `set -u` when NAME itself is
+# unset (measured; the `-` fallback does NOT save it, because bash cannot even
+# work out which variable it was asked about), and it is fine when it is set.
+UI_PROG="droste-setup.sh"
+UI_INPUT_VAR="DROSTE_SETUP_INPUT"
+
 # ── Static per-box contract table ────────────────────────────────────────────
 # CANONICAL SOURCE: targets/<box>/build-spec and targets/<box>/distrobox.ini in
 # github.com/doctorjei/droste-ai-halo. This is a hand-synced snapshot so the
@@ -311,6 +330,58 @@ Safe to re-run: existing setups are detected and never clobbered.
 EOF
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# THE UI LAYER — everything from here down to the State section
+# ═════════════════════════════════════════════════════════════════════════════
+# Three sections stand together as ONE layer: Output / display helpers, Path
+# fitting, and Prompt plumbing. It is the drawing and the asking, and nothing
+# else. It ends where the State section begins.
+#
+# THE RULE, and it is a rule rather than a habit:
+#
+#   1. Nothing in here may name a box, a bind, an emit dir, an action, or any
+#      other global belonging to this program. The layer's inputs are its
+#      arguments plus the two UI_* values set at the top of the file; its
+#      outputs are the globals it defines itself (ASCII, the palette, ANS and
+#      its ANS_* siblings). It does not read droste's model, ever.
+#   2. Nothing in here may call a function defined below it. Calls go one way
+#      — the program calls into the layer, the layer never calls back out.
+#   3. Within the layer the same asymmetry holds one level down: the PROMPT
+#      half calls the DISPLAY half freely, and the display half never calls a
+#      prompt function. A drawing routine that stops to ask a question is a
+#      drawing routine that cannot be lifted out on its own.
+#
+# WHY IT IS WRITTEN DOWN. All three properties were already TRUE before anyone
+# stated them — measured, not designed: zero outward calls, zero project
+# globals once ask_port moved down to per-box configuration, zero calls from
+# the display half into the prompt half. That is not luck in a file this size,
+# it is someone's taste, and taste is exactly the kind of thing that erodes one
+# reasonable-looking edit at a time. Jei's ask is that this drawing stay clean
+# enough to drop into another project of his; what would cost him that option
+# is not the absence of a published interface, it is a single line reaching for
+# a box name because the box name happened to be in scope. Nobody would notice
+# the day it happened.
+#
+# So it is checked rather than trusted: ~/canon/notebook/scripts/
+# installer-layering.sh asserts all three and is meant to run in CI once this
+# file has a job to run in.
+#
+# TWO THINGS THE RULE DOES NOT COVER, named here so nobody has to discover
+# them and conclude the rule is a fiction. The layer's top-level code — the
+# --ascii pre-pass and the option loop — calls usage(), which is written ABOVE
+# the layer: rule 2 forbids reaching DOWN, and reaching up to the help text a
+# host program supplies is how the layer gets one. And ARG_BOXES, the option
+# loop's leftovers, is spelled in droste's vocabulary while being an ordinary
+# "whatever was not an option" list; it is written here and read below, which
+# is the allowed direction, so only its NAME is a wart.
+#
+# WHAT IS DELIBERATELY NOT CLAIMED. This is a LAYER, not a library. Callers
+# reach into its palette variables and format inline far more often than they
+# call its atoms, and the palette's names are semantic to droste's own screens
+# (C_SVCN, C_PORT, C_SBOX). Extracting the layer is a small job; extracting
+# something a stranger could program against is a much larger one, and is not
+# what these three rules buy. They buy the option.
+
 # ── Output / display helpers ─────────────────────────────────────────────────
 # The mode is settled BEFORE the option loop proper, because usage() and the
 # unknown-option error are themselves output: they have to be able to print
@@ -506,14 +577,14 @@ for arg in "$@"; do
   case "$arg" in
     --ascii) ;;
     -h|--help) usage; exit 0 ;;
-    -*) printf 'droste-setup.sh: unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+    -*) printf '%s: unknown option: %s\n' "$UI_PROG" "$arg" >&2; usage >&2; exit 2 ;;
     *) ARG_BOXES+=("$arg") ;;
   esac
 done
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" | fold -s -w "$(disp_width)"; }
-die()  { printf 'droste-setup.sh: %s\n' "$*" >&2; exit 1; }
+die()  { printf '%s: %s\n' "$UI_PROG" "$*" >&2; exit 1; }
 wrap() { printf '%s\n' "$*" | fold -s -w "$(disp_width)"; }
 
 section() {   # ── Name ──────... divider, 78 cols.  name [intro]
@@ -1000,9 +1071,13 @@ ASK_FD=""
 SCRIPTED=0
 READLINE=0        # 1 = prompts are read through readline (line editing works)
 init_input() {
-  if [[ -n "${DROSTE_SETUP_INPUT:-}" ]]; then
-    [[ -r "$DROSTE_SETUP_INPUT" ]] || die "cannot read DROSTE_SETUP_INPUT=$DROSTE_SETUP_INPUT"
-    exec {ASK_FD}<"$DROSTE_SETUP_INPUT"
+  # One read of the hook, through its NAME (see UI_INPUT_VAR at the top): the
+  # value is used three times and the name once, in the message, so a caller
+  # that spells the hook differently gets an error that names ITS variable.
+  local src=${!UI_INPUT_VAR-}
+  if [[ -n "$src" ]]; then
+    [[ -r "$src" ]] || die "cannot read $UI_INPUT_VAR=$src"
+    exec {ASK_FD}<"$src"
     SCRIPTED=1
   else
     if ! exec {ASK_FD}</dev/tty; then
@@ -1055,8 +1130,8 @@ rl_prompt() {   # painted prompt → the same prompt, its colours fenced
 # absolutizes (to $HOME/quit — never to the cwd) and this test never sees.
 QUIT_ARMED=0
 quit_now() {
-  printf '\n  %sExiting droste-setup.sh %s no further changes made.%s\n\n' \
-    "$C_TEXT" "$EMD" "$RESET"
+  printf '\n  %sExiting %s %s no further changes made.%s\n\n' \
+    "$C_TEXT" "$UI_PROG" "$EMD" "$RESET"
   exit 0
 }
 
@@ -1327,31 +1402,6 @@ ask_path_or_none() {  # "prompt label" default("" = none) → ANS_OPT_PATH ("" =
       ANS_OPT_PATH=$ANS_PATH
       return 0
     fi
-  done
-}
-
-ANS_PORT=""
-ask_port() {  # box default → ANS_PORT
-  local box=$1 def=$2 other
-  while :; do
-    ask_raw "Host port for ${BOX_NAME[$box]} $(dflt "$def"): "
-    [[ -z $ANS ]] && ANS=$def
-    if [[ ! $ANS =~ ^[0-9]+$ ]] || (( ANS < 1 || ANS > 65535 )); then
-      say "  Please give a port number (1-65535)."
-      continue
-    fi
-    other=""
-    local b
-    for b in "${BOXES[@]}"; do
-      [[ $b == "$box" ]] && continue
-      [[ "${CFG_PORT[$b]:-}" == "$ANS" ]] && other=$b
-    done
-    if [[ -n $other ]]; then
-      subnote "Port $ANS is already assigned to $other $EMD pick another."
-      continue
-    fi
-    ANS_PORT=$ANS
-    return 0
   done
 }
 
@@ -4430,6 +4480,39 @@ relocate_box() {  # box
 }
 
 # ── Per-box configuration ────────────────────────────────────────────────────
+# The port prompt lives HERE, not with the other ask_* atoms, and the move is
+# deliberate: it is the only prompt that has to know something about droste
+# itself. Validating a number needs nothing but the number, but refusing a port
+# ANOTHER box has already been given means reading BOX_NAME, BOXES and CFG_PORT
+# — three project globals — and those three were the whole of the prompt
+# layer's dependence on this program. So it sits beside the code that stores
+# what it produces (configure_box, immediately below), which is where a reader
+# looking for "where does the port come from" would look anyway.
+ANS_PORT=""
+ask_port() {  # box default → ANS_PORT
+  local box=$1 def=$2 other
+  while :; do
+    ask_raw "Host port for ${BOX_NAME[$box]} $(dflt "$def"): "
+    [[ -z $ANS ]] && ANS=$def
+    if [[ ! $ANS =~ ^[0-9]+$ ]] || (( ANS < 1 || ANS > 65535 )); then
+      say "  Please give a port number (1-65535)."
+      continue
+    fi
+    other=""
+    local b
+    for b in "${BOXES[@]}"; do
+      [[ $b == "$box" ]] && continue
+      [[ "${CFG_PORT[$b]:-}" == "$ANS" ]] && other=$b
+    done
+    if [[ -n $other ]]; then
+      subnote "Port $ANS is already assigned to $other $EMD pick another."
+      continue
+    fi
+    ANS_PORT=$ANS
+    return 0
+  done
+}
+
 # ONE section per box now ("Box Settings"), carrying whatever General Setup left
 # unanswered for it: a Networking subheader (its port, and the two start
 # questions when either was answered "case-by-case") and a "<Box> Paths"

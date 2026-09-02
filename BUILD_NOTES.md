@@ -1119,6 +1119,103 @@ Migration: NONE, and nothing moves that was not asked about by name.
 
 ---
 
+## The installer is ASSEMBLED — `installer/` + `scripts/assemble-droste-setup.sh`
+
+🚨 **`droste-setup.sh` IS A BUILD PRODUCT. DO NOT EDIT IT.** Its sources are
+`installer/*.sh` (fourteen fragments) plus `installer/py/*.py` (the two programs
+the image pull runs), and `scripts/assemble-droste-setup.sh` concatenates them in
+the order `installer/MANIFEST` gives. Hand-edit the artifact and `lint-shell.yml`
+goes red on the next push, telling you so — but the edit is still lost the first
+time anyone regenerates.
+
+**Why it exists at all.** The file is what a stranger pipes into bash, so it has
+to stay ONE self-contained script with no checkout behind it. Being one file is a
+distribution requirement; being one *source* file was only ever a consequence, and
+at 6.7k lines it had become the reason nothing about it was navigable. Assembly
+keeps the shipped shape and gives the sources a structure.
+
+**The assembler is deliberately boring — a `cat` with guards.** No `#include`
+resolution, no dependency graph, no conditional inclusion, no per-fragment
+banners, no synthesized shebang (it is the first line of the first fragment). A
+build step clever enough to transform things is a build step clever enough to be
+wrong, and the whole correctness argument rests on `cat` of the parts BEING the
+whole:
+
+    scripts/assemble-droste-setup.sh | cmp - droste-setup.sh
+
+⭐ **That is the acceptance test, and it admits no partial credit.** While both
+shapes are tracked, CI asserts it on every push.
+
+**STDOUT is the product.** Nothing lands anywhere unless the caller redirects —
+CI does `> droste-setup.sh`, the g1lab suites redirect into their own `mktemp -d`,
+and `--ref <branch|tag|sha> | bash` runs a ref without writing a file at all. The
+interview still works down a pipe because the prompt layer opens the terminal on
+its own fd rather than reading answers from stdin.
+
+**The assembler is SILENT ON SUCCESS** — no progress, no summary, nothing. That
+makes *"anything on stderr means something went wrong"* true by construction
+instead of by convention, and testable in one line
+(`assemble 2>&1 >/dev/null` must be empty). There is deliberately no `--verbose`
+and no `--quiet`: a verbosity knob reintroduces exactly the bug class the silence
+eliminates, and the failure it prevents — a stray `echo` corrupting the artifact —
+would otherwise surface at a user's terminal.
+
+**It BUFFERS.** A pipe means a half-finished assembly has already fed a truncated
+script to bash, so the whole artifact is built and checked before a byte reaches
+stdout. Defence in depth: the artifact's last line is a bare `main`, so a
+truncated stream would define functions and call nothing.
+
+### The Python is its own file, and that was not tidiness
+
+`installer/py/pull_manifest.py` and `installer/py/pull_progress.py` are real `.py`
+files; the assembler re-embeds them into the same `<<'PY'` heredocs the artifact
+has always carried, so the shipped bytes are unchanged. Two things this buys:
+
+1. **The Python is CHECKABLE.** Inside a heredoc it was a string as far as every
+   tool was concerned — a syntax error shipped and surfaced as a failed image pull
+   on a user's machine. `python3 -m py_compile` now runs in CI.
+2. ⭐ **It killed a split hazard outright.** A `# ── ` section divider lived
+   *inside* the progress program's heredoc and read as a bash section boundary;
+   splitting there would have cut the heredoc in half. It is now a Python comment
+   in a Python file, which is what it always was.
+
+Two assembler requirements, **both silent failures if missed**, both guarded:
+
+- **the heredoc stays QUOTED (`<<'PY'`)** — the progress program receives a
+  registry-supplied label, and an unquoted heredoc would expand `$`-bearing
+  content at assembly time;
+- **a fragment is refused if the embedded file contains a line equal to the
+  terminator** — a lone `PY` truncates the program, and the result still parses as
+  bash and still runs, so the pull breaks pointing nowhere near the cause.
+
+### The closed lists, in both directions
+
+Every guard here is the `emitguard` idiom — a list checked from both ends,
+because the failure that matters is silent: an unlisted fragment does not error,
+it **vanishes**, and the artifact still builds and still runs, missing whatever
+that file defined. So: every manifest entry exists on disk **and** every
+`installer/*.sh` is in the manifest; every `installer/py/*.py` is embedded by some
+fragment **and** every embed names a file that exists; nothing is listed or
+embedded twice; the buffer passes `bash -n`; the last line is exactly `main`.
+
+### The UI layer, and why the split has a checker
+
+One fragment boundary rests on a MEASUREMENT rather than on taste. `ui.sh` is the
+display/prompt layer — measured at 157 inbound edges and **zero** outbound — and
+Jei's ask is that the drawing stay clean enough to lift into another project. The
+three properties that make that possible (it names no global of ours, calls
+nothing defined below it, and its display half never calls its prompt half) were
+all true before anyone stated them, and all three would die quietly to one
+reasonable-looking edit. `scripts/check-installer-layering.sh` derives the
+forbidden set from the file on every run rather than carrying a list, and CI runs
+it against the **assembled** artifact. `contract.sh` holds the two values the
+layer is told about us (`UI_PROG`, `UI_INPUT_VAR`), so the kit itself names
+nothing droste-specific.
+
+⚠️ **Never cite a line number in `droste-setup.sh`.** It is generated output —
+a citation into it is a claim about a build product that regenerates on every
+change. Cite the fragment and an anchor within it.
+
 ## Host adopt tooling — scripts/droste-hf-adopt.sh / scripts/droste-civitai-adopt.sh
 
 The two adopt tools move already-downloaded model files into the shared stores

@@ -47,11 +47,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The warning baseline below is pinned against a specific ShellCheck
-      # release. Print the version FIRST so that when the pin trips, the log
-      # already answers "did the analyser change, or did the code?".
+      # The warning baseline below is a fingerprint of ShellCheck's OUTPUT, so
+      # it is only meaningful against a fixed ShellCheck. The runner image ships
+      # whatever it ships -- 0.9.0 as of this writing, which predates SC2324 --
+      # and it is bumped without notice, so relying on it makes the baseline a
+      # function of GitHub's release calendar rather than of this repo.
+      #
+      # This was not theoretical: the first run of this workflow failed exactly
+      # here, expecting SC2034=1,SC2324=1 (derived on 0.11.0) and getting
+      # SC2034=1 from the runner's 0.9.0. The gate diagnosed itself correctly --
+      # its own error text names "the runner's ShellCheck changed" as the second
+      # candidate -- and the fix is to pin the analyser, not to loosen the pin.
+      #
+      # Pinned by version AND sha256: a release asset is mutable in principle,
+      # and an analyser that silently changed would move the baseline with it.
+      - name: Install pinned ShellCheck
+        env:
+          SC_VERSION: "0.11.0"
+          SC_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+        run: |
+          set -euo pipefail
+          url="https://github.com/koalaman/shellcheck/releases/download/v${SC_VERSION}/shellcheck-v${SC_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL -o /tmp/shellcheck.tar.xz "$url"
+          echo "${SC_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-v${SC_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          hash -r
+
+      # Print the version FIRST so that when the pin trips, the log already
+      # answers "did the analyser change, or did the code?".
       - name: ShellCheck version
-        run: shellcheck --version
+        run: |
+          command -v shellcheck
+          shellcheck --version
 
       # ── Gate 1: parse ────────────────────────────────────────────────────
       # Hard failure, no exceptions. Every file below is `bash -n` clean today;

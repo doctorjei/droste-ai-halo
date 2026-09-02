@@ -86,9 +86,26 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # ⚠️ THESE NUMBERS ARE JUDGEMENT, NOT DATA. Nothing in N24 has run on hardware, and the
 # standing ruling is that it does not yet. Revisit them the first time anyone watches a
 # real download (design R2, §5.7).
-: "${DLWATCH_INTERVAL:=5}"          # seconds between scans
-: "${DLWATCH_REPORT_INTERVAL:=60}"  # seconds between RUNNING lines, per repository
-: "${DLWATCH_STALL_WINDOW:=120}"    # seconds of no growth before STALLED, once
+#
+# 🚨 THE FIRST THREE ARE USER SETTINGS AND CARRY THE DROSTE-OWNED PREFIX (s62, Jei:
+# "I'd rather document and expose, unless we have a reason to keep them hidden"). They
+# were DLWATCH_* while they were internal; exposing them made the old spelling a
+# non-conforming name on the user surface, so they match their own sibling
+# DROSTE_DOWNLOAD_ANNOUNCE. No backward compatibility is owed (s54) and no box carries
+# the old spelling. They are read from the box's <box>.cfg, which both doors source
+# under `set -a` before launching the daemon, so the daemon inherits them.
+#
+# ⚠️ THE LAST TWO ARE DELIBERATELY *NOT* RENAMED: the launcher sets both (--fd, and the
+# prefix is never passed at all), so neither is a setting a user is invited to write.
+# 🚨 DLWATCH_PREFIX IS A LATENT HAZARD, RECORDED RATHER THAN FIXED HERE. It is read from
+# the environment, so a cfg CAN override it — and this prefix is the entire mechanism
+# that keeps our lines out of distrobox-enter's fatal grammar (see THE WORDS below). A
+# box whose cfg set DLWATCH_PREFIX=Error would abort every `distrobox enter` during a
+# download. Left alone on purpose: fixing it is a separate decision, and widening this
+# change to cover it would bury that decision inside a rename.
+: "${DROSTE_DOWNLOAD_INTERVAL:=5}"          # seconds between scans
+: "${DROSTE_DOWNLOAD_REPORT_INTERVAL:=60}"  # seconds between RUNNING lines, per repository
+: "${DROSTE_DOWNLOAD_STALL_WINDOW:=120}"    # seconds of no growth before STALLED, once
 : "${DLWATCH_FD:=2}"                # the fd every line goes to; the caller opens it
 : "${DLWATCH_PREFIX:=droste-download}"
 
@@ -147,10 +164,38 @@ dlwatch::_files() { if [ "${1:-0}" = 1 ]; then printf '1 file'; else printf '%d 
 
 dlwatch::fmt_started()   { dlwatch::_line STARTED   "$(printf '%s  %-8s (%s)' "$1" "$(dlwatch::_files "$2")" "$3")"; }
 dlwatch::fmt_resumed()   { dlwatch::_line RESUMED   "$(printf '%s  at %s, %s' "$1" "$(dlwatch::human "$2")" "$(dlwatch::_files "$3")")"; }
-dlwatch::fmt_running()   { dlwatch::_line RUNNING   "$(printf '%s  %s  (+%s/s, %s)' "$1" "$(dlwatch::human "$2")" "$(dlwatch::human "$3")" "$(dlwatch::_files "$4")")"; }
+# ⚙️ fmt_running takes an OPTIONAL 5th argument: the group's expected total in bytes.
+# Supplied ⇒ a `(NN%)` suffix on the bytes field and nothing else changes; omitted or
+# empty ⇒ the line is BYTE-IDENTICAL to the pre-P4 form §4 shows. That identity is the
+# One Surface constraint on P4 — llama has no shim and must keep the original line — and
+# it is asserted directly in g1lab/dlwatch.sh rather than left to inspection.
+dlwatch::fmt_running()   { dlwatch::_line RUNNING   "$(printf '%s  %s%s  (+%s/s, %s)' "$1" "$(dlwatch::human "$2")" "$(dlwatch::pct_suffix "$2" "${5-}")" "$(dlwatch::human "$3")" "$(dlwatch::_files "$4")")"; }
 dlwatch::fmt_finished()  { dlwatch::_line FINISHED  "$(printf '%s  %s in %s' "$1" "$(dlwatch::human "$2")" "$(dlwatch::duration "$3")")"; }
 dlwatch::fmt_stalled()   { dlwatch::_line STALLED   "$(printf '%s  %s, no growth for %s' "$1" "$(dlwatch::human "$2")" "$(dlwatch::duration "$3")")"; }
 dlwatch::fmt_abandoned() { dlwatch::_line ABANDONED "$(printf '%s  %s — partial file removed' "$1" "$(dlwatch::human "$2")")"; }
+
+# ── dlwatch::pct_suffix <bytes-so-far> <expected-total> — " (NN%)" or nothing ──
+# Prints the parenthesised percentage the RUNNING line carries, or the EMPTY STRING when
+# no honest percentage exists. Integer arithmetic; this runs in bash and there is no float.
+#
+# 🚨 EVERY REJECTION PATH PRINTS NOTHING RATHER THAN A NUMBER. A total that is absent,
+# blank, non-numeric or zero means we do not know the denominator, and §4's rule is that
+# we report what is true instead of inventing what is not. Zero is rejected separately
+# from non-numeric because it is the one bad value that would DIVIDE, not merely parse.
+# ⚠️ A total SMALLER than the bytes already on disk is not impossible — a stale sidecar
+# from an earlier, shorter revision of the same blob would do it — so the result is
+# CLAMPED to 100 rather than printing 143%. Clamping is honest here in a way that
+# suppressing would not be: the transfer really is at or past its expected end, and a
+# vanishing percentage would read as "we lost track" instead of "nearly done".
+dlwatch::pct_suffix() {
+    local have=${1:-0} total=${2-} pct
+    case $total in ''|*[!0-9]*) return 0 ;; esac
+    [ "$total" -gt 0 ] || return 0
+    case $have in ''|*[!0-9]*) have=0 ;; esac
+    pct=$(( have * 100 / total ))
+    [ "$pct" -le 100 ] || pct=100
+    printf ' (%d%%)' "$pct"
+}
 
 # ── dlwatch::human — bytes a person can read ────────────────────────────────
 # ONE DECIMAL AT GiB AND ABOVE, INTEGER BELOW. That is not arbitrary: it is the rule
@@ -293,11 +338,18 @@ dlwatch::blob_for() {
 # writes none — so this is read as "a percentage is available", never as an error.
 # ⚠️ VALIDATE BEFORE TRUSTING. The sidecar is data a process outside our control wrote;
 # a non-numeric or empty file is ignored, not arithmeticked on.
+# ⚙️ `read` BUILTIN, NOT `$(cat …)`. This runs once per LIVE partial per tick, forever, so
+# a command substitution here would fork a subshell and exec cat on every partial every
+# five seconds for the life of the box. The same reasoning as the read -t timer: work
+# proportional to nothing, repeated forever, is worth one line of care.
+# ⚠️ `read` returns non-zero on a file with no trailing newline even though it HAS set the
+# variable — the shim writes a bare integer with no newline, which is exactly that case —
+# so its status is deliberately ignored and the VALUE is what gets validated.
 dlwatch::total_for() {
-    local blob t
+    local blob t=''
     blob=$(dlwatch::blob_for "$1") || return 1
     [ -r "$blob.total" ] || return 1
-    t=$(cat "$blob.total" 2>/dev/null) || return 1
+    read -r t < "$blob.total" 2>/dev/null
     case $t in ''|*[!0-9]*) return 1 ;; esac
     [ "$t" -gt 0 ] || return 1
     printf '%s' "$t"
@@ -392,7 +444,11 @@ dlwatch::tick() {
     local now=${1:-0}
     local -A cur=() gbytes=() gcount=() gnew=() ggrew=()
     local -A gdone=() gdoneb=() glost=()
-    local p sz key blob bs st delta elapsed rate
+    # P4: gtotal accumulates each group's EXPECTED total from the shim's sidecars, and
+    # gnototal marks a group in which at least one live partial had no usable sidecar.
+    # The two together implement the all-or-nothing coverage rule at the announce step.
+    local -A gtotal=() gnototal=()
+    local p sz key blob bs st delta elapsed rate tot
     local -a keys=()
 
     # ── observe ─────────────────────────────────────────────────────────────
@@ -407,6 +463,15 @@ dlwatch::tick() {
         _DLW_GROUP[$p]=$key
         gbytes[$key]=$(( ${gbytes[$key]:-0} + ${cur[$p]} ))
         gcount[$key]=$(( ${gcount[$key]:-0} + 1 ))
+        # P4 coverage: one sidecar read per LIVE partial. A group is only eligible for a
+        # percentage when EVERY one of its live partials contributed a total — see
+        # pct_suffix and the design's partial-coverage rule. Mixed coverage is the COMMON
+        # case (llama's C++ fetcher writes no sidecar at all), not an edge one.
+        if tot=$(dlwatch::total_for "$p"); then
+            gtotal[$key]=$(( ${gtotal[$key]:-0} + tot ))
+        else
+            gnototal[$key]=1
+        fi
         if [ -z "${_DLW_SIZE[$p]+x}" ]; then
             _DLW_SIZE[$p]=${cur[$p]}
             if [ "$_DLW_FIRST" = 1 ]; then
@@ -509,15 +574,21 @@ dlwatch::tick() {
             fi
             elapsed=$(( now - ${_DLW_G_LASTREP[$key]:-$now} ))
             delta=$(( ${gbytes[$key]} - ${_DLW_G_REPBYTES[$key]:-0} ))
-            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "$DLWATCH_REPORT_INTERVAL" ]; then
+            if [ "$delta" -gt 0 ] && [ "$elapsed" -ge "$DROSTE_DOWNLOAD_REPORT_INTERVAL" ]; then
                 rate=0
                 [ "$elapsed" -gt 0 ] && rate=$(( delta / elapsed ))
+                # The expected total is passed ONLY when every live partial supplied one;
+                # otherwise the empty string, which makes the line byte-identical to the
+                # pre-P4 form. A percentage of a partially-known denominator would be a
+                # number we cannot derive.
+                tot=''
+                [ -z "${gnototal[$key]:-}" ] && tot=${gtotal[$key]:-}
                 dlwatch::emit "$(dlwatch::fmt_running \
-                    "$(dlwatch::repo_name "$key")" "${gbytes[$key]}" "$rate" "${gcount[$key]}")"
+                    "$(dlwatch::repo_name "$key")" "${gbytes[$key]}" "$rate" "${gcount[$key]}" "$tot")"
                 _DLW_G_LASTREP[$key]=$now
                 _DLW_G_REPBYTES[$key]=${gbytes[$key]}
             elif [ "${_DLW_G_STALLED[$key]:-0}" != 1 ] &&
-                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "$DLWATCH_STALL_WINDOW" ]; then
+                 [ $(( now - ${_DLW_G_LASTGROW[$key]:-$now} )) -ge "$DROSTE_DOWNLOAD_STALL_WINDOW" ]; then
                 dlwatch::emit "$(dlwatch::fmt_stalled \
                     "$(dlwatch::repo_name "$key")" "${gbytes[$key]}" \
                     "$(( now - ${_DLW_G_LASTGROW[$key]:-$now} ))")"
@@ -651,12 +722,12 @@ dlwatch::main() {
             --root=*)          DLWATCH_ROOTS+=( "${1#*=}" ); shift ;;
             --fd)              DLWATCH_FD=${2-2}; shift 2 ;;
             --fd=*)            DLWATCH_FD=${1#*=}; shift ;;
-            --interval)        DLWATCH_INTERVAL=${2-5}; shift 2 ;;
-            --interval=*)      DLWATCH_INTERVAL=${1#*=}; shift ;;
-            --report-interval) DLWATCH_REPORT_INTERVAL=${2-60}; shift 2 ;;
-            --report-interval=*) DLWATCH_REPORT_INTERVAL=${1#*=}; shift ;;
-            --stall-window)    DLWATCH_STALL_WINDOW=${2-120}; shift 2 ;;
-            --stall-window=*)  DLWATCH_STALL_WINDOW=${1#*=}; shift ;;
+            --interval)        DROSTE_DOWNLOAD_INTERVAL=${2-5}; shift 2 ;;
+            --interval=*)      DROSTE_DOWNLOAD_INTERVAL=${1#*=}; shift ;;
+            --report-interval) DROSTE_DOWNLOAD_REPORT_INTERVAL=${2-60}; shift 2 ;;
+            --report-interval=*) DROSTE_DOWNLOAD_REPORT_INTERVAL=${1#*=}; shift ;;
+            --stall-window)    DROSTE_DOWNLOAD_STALL_WINDOW=${2-120}; shift 2 ;;
+            --stall-window=*)  DROSTE_DOWNLOAD_STALL_WINDOW=${1#*=}; shift ;;
             --once)            once=1; shift ;;
             --no-pidfile)      pidguard=0; shift ;;
             -h|--help)         dlwatch::usage; return 0 ;;
@@ -681,7 +752,7 @@ dlwatch::main() {
         dlwatch::tick "$(printf '%(%s)T' -1)"
         [ "$_DLW_DEAD" = 0 ] || return 0       # the log fd died: the container is going
         [ "$once" = 0 ] || return 0
-        dlwatch::_wait "$DLWATCH_INTERVAL"
+        dlwatch::_wait "$DROSTE_DOWNLOAD_INTERVAL"
     done
 }
 

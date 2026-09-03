@@ -117,6 +117,7 @@ stop_service() {
 
 # ── start ───────────────────────────────────────────────────────────────────
 start_service() {
+    local rc
     serve::read_config
     if [ -n "${SERVE_CONFIG_ERR:-}" ]; then
         serve::err "$SERVE_CONFIG_ERR"
@@ -131,7 +132,23 @@ start_service() {
     # which is the state the healthcheck's relaunch acts on. Setting it afterwards
     # would leave a failed start looking like a box that was never asked to serve.
     serve::set_active 1
-    serve::maybe_launch
+    # 🚨 THE LAUNCH IS DELEGATED — full reasoning in droste-serve.sh's supervisor
+    # section. Short form: a service forked from a TTY exec session (which every
+    # `distrobox enter` is) is KILLED when that session ends, so a verb that forked it
+    # here would report success and leave nothing serving. The supervisor has no TTY
+    # anywhere in its ancestry.
+    # ⚙️ build_service still runs ABOVE, in this process, on purpose: a broken spec is
+    # then reported to the person who typed the command instead of only to the
+    # container log. The supervisor rebuilds before launching, which is safe because
+    # PRE_LAUNCH is idempotent by contract (it rebuilds SERVICE from its base arrays
+    # rather than appending, so calling it twice cannot grow the argv).
+    rc=0
+    serve::request_launch || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        serve::warn "no launch supervisor is running — starting the service in this session instead."
+        serve::warn "⚠️ If you are inside \`distrobox enter\`, it will be killed when you leave. Restart the container to get a supervised service."
+        serve::maybe_launch
+    fi
     if serve::state_ok; then
         printf 'Server running (pid %s) on port %s.\n' "$SERVE_REC_PID" "$SERVE_PORT"
         return 0
@@ -220,6 +237,12 @@ case "$action" in
     stop)    stop_service ;;
     restart) stop_service quiet; start_service ;;
     status)  status_service ;;
+    # Hidden, and hidden ON PURPOSE: this is the daemon body, spawned by the init hook
+    # via serve::supervisor_start. It is not a verb, there is no symlink for it, and it
+    # is deliberately absent from usage() — a user who ran it by hand would get a
+    # second supervisor competing for the same fifo. Named with a `__` prefix for the
+    # same reason. See droste-serve.sh's supervisor section for why it exists at all.
+    __supervisor) serve::supervisor_loop ;;
     -h|--help|help) usage; exit 0 ;;
     *)       usage; exit 2 ;;
 esac

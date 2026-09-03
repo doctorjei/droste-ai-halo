@@ -286,4 +286,18 @@ fi
 # its pid field is "-", which _pid_is_ours rejects, so it falls straight through to the
 # port check and a fresh launch. That is the same path serve::relaunch takes, and it is
 # intended rather than incidental.
+# ⚙️ THE SUPERVISOR STARTS HERE, AND ONLY HERE. This is the one lane with no TTY in
+# its ancestry (distrobox-init evals this hook at container start), which is the whole
+# reason it can fork a service that outlives the caller — see droste-serve.sh's
+# supervisor section for the measurement. `|| true` for the same reason every other
+# step here has it: a supervisor that will not start must never fail the init hook.
+# ⚠️ NOT gated on whether this box serves. An interactive-only box can still be asked
+# to `server_start` by hand later, and that request needs somewhere to go.
+serve::supervisor_start || serve::warn "launch supervisor did not start — server_start from inside the box will not survive the session that runs it."
+
+# ⚙️ THE INIT HOOK LAUNCHES DIRECTLY RATHER THAN THROUGH THE SUPERVISOR IT JUST
+# STARTED, and that asymmetry is deliberate: this lane ALREADY produces a surviving
+# service (it is the lane the supervisor exists to imitate), so routing it through a
+# newer component would put the one path that has always worked behind the one that
+# has not. Minimum blast radius beats uniformity here.
 serve::maybe_launch || serve::warn "serve step failed (exit $?) — the box is still usable interactively."

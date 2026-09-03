@@ -173,6 +173,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${DROSTE_SERVE_ACTIVE:=$DROSTE_SERVE_STATE_DIR/.IS_ACTIVE}"  # the intent flag
 : "${DROSTE_SERVE_SCHEME:=$DROSTE_SERVE_STATE_DIR/.SCHEME}"     # http|https, LEARNED
 : "${DROSTE_SERVE_PREFIX:=$DROSTE_SERVE_STATE_DIR/.PREFIX}"     # path prefix, DECLARED
+: "${DROSTE_SERVE_REQ_FIFO:=$DROSTE_SERVE_STATE_DIR/request}"   # verb → supervisor
+: "${DROSTE_SERVE_SUP_RECORD:=$DROSTE_SERVE_STATE_DIR/supervisor}"  # its pid + start
+: "${DROSTE_SERVE_REQ_WAIT:=60}"   # seconds a verb waits for the supervisor's launch
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # ── The four flags this library puts on the command line ────────────────────
 # 🚨 EVERY BOX GETS A COMMAND-LINE FLAG, AND NO BOX GETS AN ENVIRONMENT VARIABLE OR A
@@ -1477,6 +1480,152 @@ serve::maybe_launch() {
     serve::apply_tls
     serve::launch "$token" || serve::warn "service launch failed — the box is still usable interactively; see $DROSTE_SERVE_LOG."
     return 0
+}
+
+# ── The launch supervisor ───────────────────────────────────────────────────
+# 🚨 WHY THIS EXISTS — AND IT IS NOT WHAT THE FIRST DIAGNOSIS SAID. MEASURED s65 on
+# Loaf (podman 4.9.3, rootless) and cross-checked on a second host (podman 5.4.2,
+# rootful AND rootless):
+#
+#   lane                                    TTY?   a service launched there…
+#   init hook (container start, pid 1)       -     SURVIVES
+#   podman healthcheck run → serve::relaunch no    SURVIVES
+#   podman exec <box> …                      no    SURVIVES
+#   podman exec -t … / distrobox enter       YES   IS KILLED with the session
+#
+# ⭐ THE TRIGGER IS THE TTY. `setsid` AND `nohup` BOTH FAIL TO SAVE IT — measured on a
+# HEALTHY box with the container's RestartCount recorded either side, so a healthcheck
+# bounce cannot be mistaken for the kill. Whatever podman/conmon does at TTY-exec
+# teardown finds the process by something other than its session or process group.
+# ⚠️ THE BEHAVIOUR IS MEASURED; THE CAUSE IS NOT. Do not add a comment here claiming to
+# know which mechanism it is — three plausible ones were proposed and two were refuted.
+#
+# ⇒ `server_start` from `distrobox enter` forked a service that died with the session.
+# The record said `running` because serve::launch watches its first 0.2 s and the kill
+# lands later; the box then failed its probe and podman BOUNCED THE CONTAINER, ejecting
+# every interactive shell — the precise outcome the s45 lifecycle exists to prevent.
+#
+# THE FIX: the verbs stop forking the service. A supervisor spawned by the INIT HOOK —
+# the one lane with no TTY anywhere in its ancestry — does the forking instead, so what
+# it starts has no TTY session to be torn down with.
+#
+# ⭐ IT BLOCKS ON A FIFO RATHER THAN POLLING. Blocked on `read` is genuinely asleep: no
+# CPU, no wakeups, and no interval to tune — and it responds the instant a verb writes.
+# The absence of a timer here is the design, not an omission.
+# ⭐ AND A FIFO RATHER THAN A SIGNAL (asked and answered, Jei s65). The supervisor is
+# spawned by the init hook and runs as ROOT; a verb runs as the BOX USER, because
+# serve::_privdrop_prefix opens with `[ "$(id -u)" = "0" ] || return 0` precisely so a
+# non-root caller works. `kill` across that boundary is EPERM, and leaning on
+# distrobox's passwordless sudo would make a core path depend on a convenience. A fifo
+# needs no privilege beyond file mode — and it carries a PAYLOAD, where a signal
+# carries none and `start` vs `restart` would need a second signal or a side channel.
+#
+# 🚨 PODMAN'S HEALTHCHECK IS **NOT** REPLACED, AND THAT IS DELIBERATE. It is the
+# EXTERNAL watchdog — the thing that notices a wedged box, INCLUDING A DEAD SUPERVISOR
+# — and its relaunch already runs in a lane that survives (no TTY). Folding health in
+# here would make this process a single point of failure with nothing watching it.
+#
+# ⚠️ THE FIFO IS MODE 0666 AND THAT GRANTS NOTHING. A launch request carries no
+# arguments: the argv comes from the baked build-spec and the user's own <box>.cfg, and
+# the service still drops to the box user via setpriv. Anyone who can write this fifo
+# can already run `server_start`.
+
+# supervisor_alive — is the recorded supervisor the very process we started? Same
+# pid+start-time identity the launch record uses, for the same reason: a bare pid test
+# matches an unrelated process that inherited the number (pids are the HOST's here).
+serve::supervisor_alive() {
+    local pid start
+    [ -r "$DROSTE_SERVE_SUP_RECORD" ] || return 1
+    read -r pid start < "$DROSTE_SERVE_SUP_RECORD" 2>/dev/null || return 1
+    [ -n "${pid:-}" ] && [ -n "${start:-}" ] || return 1
+    serve::_pid_is_ours "$pid" "$start"
+}
+
+# supervisor_start — spawn one if none is running. The init hook replays on EVERY
+# container start by design, so this must be safe to call against a live supervisor.
+serve::supervisor_start() {
+    local self
+    serve::supervisor_alive && return 0
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    # Recreate rather than reuse: the state dir resets per container so a leftover is
+    # already unusual, and recreating means the mode is ours rather than whatever a
+    # previous owner left. Losing the fifo is NOT fatal — the verbs fall back.
+    rm -f "$DROSTE_SERVE_REQ_FIFO" 2>/dev/null || true
+    if ! mkfifo -m 0666 "$DROSTE_SERVE_REQ_FIFO" 2>/dev/null; then
+        serve::warn "could not create $DROSTE_SERVE_REQ_FIFO — server_start inside the box will launch the service directly, and it will not outlive the session that ran it."
+        return 1
+    fi
+    serve::_own "$DROSTE_SERVE_REQ_FIFO"
+    self="$(dirname -- "${BASH_SOURCE[0]}")/droste-server.sh"
+    if [ ! -r "$self" ]; then
+        serve::warn "no $self — cannot start the launch supervisor."
+        return 1
+    fi
+    # Detached exactly as dlwatch::_spawn detaches its daemon, and for the same reason:
+    # anything this process still holds would otherwise be inherited by the SERVICE.
+    # ⚠️ RESOLVE_DIR IS PASSED, NOT LEFT TO ITS DEFAULT. droste-server.sh falls back to a
+    # HARDCODED /opt/resources/resolve, so a supervisor spawned from a library living
+    # anywhere else would load a DIFFERENT copy than the one that spawned it — silently,
+    # and only where it matters least (a lab, a mutation run, a relocated tree). Pinning
+    # the child to `dirname "${BASH_SOURCE[0]}"` makes "the daemon runs the code that
+    # started it" true by construction rather than by coincidence of paths.
+    RESOLVE_DIR="$(dirname -- "${BASH_SOURCE[0]}")" \
+        bash "$self" __supervisor >/dev/null 2>&1 </dev/null &
+    return 0
+}
+
+# supervisor_loop — the daemon body. Runs as the `__supervisor` action of
+# droste-server.sh, so it reaches the library exactly the way every verb does.
+serve::supervisor_loop() {
+    local req fields fd
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    [ -p "$DROSTE_SERVE_REQ_FIFO" ] || return 1
+    # WRITTEN BY THE CHILD, because only the child knows its own pid.
+    fields=$(serve::_proc_fields "$$") || return 1
+    printf '%s %s\n' "$$" "${fields#* }" > "$DROSTE_SERVE_SUP_RECORD" || return 1
+    serve::_own "$DROSTE_SERVE_SUP_RECORD"
+    # 🚨 READ-WRITE, NOT READ-ONLY, AND THIS IS THE WHOLE TRICK. Opening a fifo
+    # O_RDONLY blocks until a writer appears and then returns EOF as soon as the last
+    # writer closes — so the loop would exit after the FIRST request. Holding a write
+    # end ourselves means the read never sees EOF and blocks indefinitely instead,
+    # which is what "asleep with no timer" means here.
+    exec {fd}<>"$DROSTE_SERVE_REQ_FIFO" || return 1
+    while IFS= read -r req <&"$fd"; do
+        case "$req" in
+            "")     : ;;
+            launch)
+                # 🚨 IN A SUBSHELL, DELIBERATELY. This library turns errexit ON when
+                # sourced, and PRE_LAUNCH is arbitrary per-box code: an `exit` or a
+                # failing command inside it would otherwise take the supervisor down
+                # and leave every later verb falling back silently. The launched
+                # service is unaffected — it is backgrounded, so the subshell exiting
+                # merely re-parents it to pid 1.
+                ( serve::build_service && serve::maybe_launch ) || \
+                    serve::warn "supervisor: launch request failed; see $DROSTE_SERVE_LOG."
+                ;;
+            *)      serve::warn "supervisor: ignoring unrecognised request '$req'." ;;
+        esac
+    done
+    return 0
+}
+
+# request_launch — ask the supervisor to launch, then wait for the record to say it
+# did. Returns 0 launched, 1 no supervisor (caller falls back), 2 asked but not up.
+serve::request_launch() {
+    local waited=0
+    serve::supervisor_alive || return 1
+    [ -p "$DROSTE_SERVE_REQ_FIFO" ] || return 1
+    # The supervisor holds a read end open, so this write returns immediately. The
+    # timeout is not for the normal case — it is so a supervisor that died between the
+    # liveness check above and this line cannot hang a user's terminal on an open().
+    timeout 5 sh -c "printf 'launch\n' >> \"\$1\"" sh "$DROSTE_SERVE_REQ_FIFO" \
+        2>/dev/null || return 1
+    while [ "$waited" -lt "$DROSTE_SERVE_REQ_WAIT" ]; do
+        serve::state_ok && return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 2
 }
 
 # ── Socket ownership: does OUR process actually hold the port? ──────────────

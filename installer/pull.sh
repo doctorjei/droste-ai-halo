@@ -113,7 +113,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
         "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$ASCII" "$manifest" \
-        "${img%:*}..." "$STATUS_W" "$colf" \
+        "$short..." "$STATUS_W" "$colf" \
         2>>"$log" \
     || rc=$?
   # --ascii drew its own block in place of the status line the caller would have
@@ -123,7 +123,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # closed and let status_head draw the head itself.
   if [[ $ASCII -eq 1 && -s $colf ]] && read -r col < "$colf"; then
     STATUS_COL=$(( col - 2 )); [[ $STATUS_COL -lt 0 ]] && STATUS_COL=0
-    STATUS_NAME="$img..."
+    STATUS_NAME="$short..."
     STATUS_OPEN=1
   fi
   rm -f "$colf"

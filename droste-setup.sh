@@ -211,14 +211,24 @@ declare -A BOX_NOTE=(
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
 IMAGE_SUFFIX="-halo:latest"
-# The image ref AS SHOWN to the reader: the same ref without its tag. The tag
-# is hardcoded above — every pull this installer makes is :latest — so on
-# screen it is seven columns that tell nobody anything, and those seven columns
-# are the difference between the pull bar's header fitting its line and not.
-# The PULL and the ini keep the tag: one has to name a tag, the other is the
-# reference distrobox resolves.
-img_disp() {   # box → <prefix><box>-halo
-  printf '%s%s%s' "$IMAGE_PREFIX" "$1" "${IMAGE_SUFFIX%:*}"
+# The image ref AS SHOWN to the reader: the image STEM alone — no registry, no
+# owner, no tag. Every part dropped here is shared by every image this
+# installer pulls, so on screen it is 25 columns that distinguish nothing:
+# seven for the tag (hardcoded :latest above) and eighteen for the registry and
+# owner. Those columns are the difference between the pull bar's header fitting
+# its line and not, on an 80-column terminal.
+# ⭐ Stripping through the LAST SLASH keeps that true for any prefix, rather
+# than assuming this one.
+# ⚠️ The full ref is not lost — it is in the step log, which is where anyone
+# asking WHICH registry is already looking, and a failing row names that log.
+# The PULL and the ini keep the whole ref: one has to name a tag, the other is
+# the reference distrobox resolves.
+# 🔗 pull_image() labels its bar the same way and for the same reason; these
+# two must agree, or one pull prints two different names for one image.
+img_disp() {   # box → droste-<box>-halo
+  local ref
+  ref="${IMAGE_PREFIX}${1}${IMAGE_SUFFIX%:*}"
+  printf '%s' "${ref##*/}"
 }
 # ONE container per box, named exactly like the image stem: droste-<box>-halo.
 # (The old -server / -box lane suffixes are gone with the lanes; see box_ctr().)
@@ -5828,7 +5838,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
         "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$ASCII" "$manifest" \
-        "${img%:*}..." "$STATUS_W" "$colf" \
+        "$short..." "$STATUS_W" "$colf" \
         2>>"$log" \
     || rc=$?
   # --ascii drew its own block in place of the status line the caller would have
@@ -5838,7 +5848,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # closed and let status_head draw the head itself.
   if [[ $ASCII -eq 1 && -s $colf ]] && read -r col < "$colf"; then
     STATUS_COL=$(( col - 2 )); [[ $STATUS_COL -lt 0 ]] && STATUS_COL=0
-    STATUS_NAME="$img..."
+    STATUS_NAME="$short..."
     STATUS_OPEN=1
   fi
   rm -f "$colf"

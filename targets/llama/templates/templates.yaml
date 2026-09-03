@@ -1,6 +1,10 @@
 # templates.yaml — llama port seeding manifest (restricted subset, see
 # base/resolve/apply_templates.py). llama.cfg is a HAND-AUTHORED file beside this
-# one; it was generated at image build until s52. Re-check it against the pinned
-# binary with scripts/llama-options.sh when the llama pin moves.
+# one; it was generated at image build until s52. TWO dev-time checks when the
+# llama pin moves, and they answer different questions:
+#   scripts/check-llama-flags.sh   does everything we ship still EXIST? (source
+#                                  only, no GPU, no build — run it FIRST)
+#   scripts/llama-options.sh       what has CHANGED that we might want to expose?
+#                                  (runs the binary, needs a GPU)
 if_missing:
   llama.cfg: /opt/data/llama.cfg

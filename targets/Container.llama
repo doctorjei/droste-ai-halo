@@ -38,6 +38,11 @@ COPY templates/  /opt/resources/templates/
 # the rest. It used to be generated here from the pinned binary's own --help;
 # that is now a DEV-TIME step (scripts/llama-options.sh, run at a pin bump on a
 # machine with a GPU) whose output is DIFFED against the template by a human.
+# ⚠️ THE GATE BELOW IS A FLOOR, NOT A SWEEP: it checks THREE names. The s64 bump
+# removed --hf-repo-v/--hf-file-v upstream and llama.cfg went on offering their
+# env names, green, because nothing compared the full set. That is what
+# scripts/check-llama-flags.sh now does — source-only, no GPU, no build, so it can
+# run BEFORE this image is built rather than after.
 # ⭐ Two reasons, and the second is why it changed: presentation has to be ours to
 # control, and `llama-server --help` CANNOT RUN on a GPU-less CI runner — it dies
 # with SIGILL after "no ROCm-capable device", so the generated file shipped

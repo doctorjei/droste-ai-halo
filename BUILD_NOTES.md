@@ -511,6 +511,19 @@ prefix rules.
   `scripts/llama-options.sh` (run on the hardware), and the build still FAILS
   LOUDLY if `LLAMA_ARG_{HOST,PORT,MODEL}` vanish upstream — by scanning the
   binary for the literals, which needs no GPU.
+  🚨 **THAT BINARY SCAN IS A FLOOR, NOT A SWEEP — THREE NAMES OUT OF DOZENS**, and
+  s64 proved the gap: the pin bump removed `--hf-repo-v`/`--hf-file-v` upstream and
+  `llama.cfg` went on offering `LLAMA_ARG_HF_REPO_V`/`_FILE_V`, through a fully
+  green build, because nothing compared the full set. ✅ **`scripts/check-llama-flags.sh`
+  now does** — it reads `common/arg.cpp` at whatever `LLAMA_REF` the Containerfile
+  pins and cross-checks **every** flag the build-spec emits and **every** native env
+  name `llama.cfg` offers. Source-only: no GPU, no build, so it runs BEFORE the image
+  exists. ⭐ **Run it first at a pin bump; `llama-options.sh` answers the other
+  question** (what CHANGED that we might want to expose) and needs the hardware.
+  ⚠️ Two of its own failure arms exit **2, not 1**, and deliberately: "the extractor
+  is broken" is not "something we ship is gone", and a checker that cannot tell those
+  apart sends someone editing a working surface. **Found by mutating it** — an empty
+  extraction used to die silently under `pipefail` before the floor check could speak.
   `LLAMA_ARG_PORT` is emitted COMMENTED, not active (2026-08-14, same rule as
   vllm's missing `port:` key): the launcher appends `--port $PORT` from
   `llama.cfg`'s own `DROSTE_LLAMA_PORT` and llama.cpp silently resolves the CLI

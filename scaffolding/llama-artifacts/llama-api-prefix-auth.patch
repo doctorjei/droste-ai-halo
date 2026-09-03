@@ -1,4 +1,5 @@
-Subject: server: build the api-key-exempt and frontend path sets from --api-prefix
+Subject: server: make --api-prefix usable — prefix the public path sets, and
+         redirect the bare prefix to the slashed form
 Upstream issue: https://github.com/ggml-org/llama.cpp/issues/22474
                 "server: --api-key doesn't recognize public endpoints when
                 --api-prefix is set" — opened 2026-04-28, closed 2026-06-12 as
@@ -25,6 +26,28 @@ merely cosmetic here: droste's healthcheck reads 401 as unhealthy, podman restar
 container, and the box enters a restart loop that ejects every interactive shell. It
 also 401s `/llama/` and `/llama/index.html`, i.e. the user's Web UI is unusable.
 
+🚨 A THIRD SITE, FOUND ON HARDWARE (s65): THE BARE PREFIX IS A DEAD URL
+=====================================================================
+Measured on a real box: with --api-prefix /myapi, `GET /myapi/` serves the Web UI and
+`GET /myapi` returns a JSON 401 `invalid api key` and no UI at all.
+
+  * The Web UI is mounted at `params.api_prefix + "/"` and its index routes are
+    registered at `api_prefix + "/"` and `api_prefix + "/index.html"`. NOTHING is
+    registered at the bare prefix, so `GET /myapi` matches no route.
+  * The api-key middleware is a PRE-ROUTING handler, so with a key set the bare path
+    is rejected before routing would have 404'd it. The user is told their KEY is
+    wrong when the actual problem is a missing slash.
+
+⚠️ EXEMPTING THE BARE PATH IS NOT SUFFICIENT ON ITS OWN -- it would then 404 at
+routing instead of 401ing before it. Both halves are required: the path joins
+frontend_paths (so the middlewares pass it) AND a route is registered that redirects
+to the slashed form. 302 rather than 301, because the prefix is user configuration and
+a permanently cached redirect would outlive a change to it.
+
+⭐ THE CURLS COULD NOT HAVE FOUND THIS. Every probe written for this patch used the
+trailing slash; a browser found it in one click. When a feature takes a user-supplied
+path, test the spelling a USER would type, not the one the implementer had in mind.
+
 🚨 THERE ARE NOW TWO SITES, NOT ONE — THE SECOND IS NEW AT THIS PIN
 ===================================================================
 The previous pin (337f08e8) built one set inline. This pin has split the UI assets
@@ -50,7 +73,9 @@ re-file #22474 and we are not pursuing it by any other route ("Someone else migh
 but not us."). NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY. Treat it as load-bearing
 indefinitely and expect it to survive every pin bump.
 
-NOT A WIDENING. With a key set and no prefix, `GET /health` already returns 200 — these
+NOT A WIDENING. The bare prefix resolves to the UI root, which is public by upstream's
+design, and the redirect exposes no path that the slashed form did not already serve.
+With a key set and no prefix, `GET /health` already returns 200 — these
 endpoints are public by upstream's design. Prefixing restores parity with the no-prefix
 case; it makes nothing public that was not already public. The LISTS are untouched: the
 same four API paths and the same UI assets, only relocated to where they are served.
@@ -79,9 +104,9 @@ sha — which is what happened at this bump.
 350, behind 476 as of this pin) and their exempt sets differ: master has dropped
 "/models" and "/v1/models". Copying master's list would silently change WHICH endpoints
 are public on our pin.
---- a/tools/server/server-http.cpp	2026-09-02 22:03:30.479514249 +0000
-+++ b/tools/server/server-http.cpp	2026-09-02 22:04:37.958688221 +0000
-@@ -185,27 +185,43 @@
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -185,27 +185,52 @@
      //
  
      // Frontend paths - all embedded UI assets
@@ -100,6 +125,15 @@ are public on our pin.
 +    // freeze whichever prefix it saw first, which is the same class of bug.
 +    const std::unordered_set<std::string> frontend_paths = [this]() {
 +        std::unordered_set<std::string> paths { path_prefix + "/" };
++        // droste patch: the BARE prefix too. A user types host:port/prefix with no
++        // trailing slash; the api-key middleware is a PRE-ROUTING handler, so it
++        // rejects that path before the redirect registered in the Web UI block can
++        // run -- and the user sees a JSON "invalid api key" instead of the UI, which
++        // sends them hunting for the wrong problem. An empty prefix would insert "",
++        // which matches no wire path, so it is guarded.
++        if (!path_prefix.empty()) {
++            paths.insert(path_prefix);
++        }
          for (const llama_ui_asset & a : llama_ui_get_assets()) {
 -            paths.insert("/" + a.name);
 +            paths.insert(path_prefix + "/" + a.name);
@@ -134,7 +168,7 @@ are public on our pin.
          // If API key is not set, skip validation
          if (api_keys.empty()) {
              return true;
-@@ -252,7 +268,11 @@
+@@ -252,7 +277,11 @@
          return false;
      };
  
@@ -147,3 +181,23 @@ are public on our pin.
          if (!is_ready.load()) {
              if (frontend_paths.count(req.path)) {
                  return true; // frontend asset, allow it to load and show "loading"
+@@ -398,6 +427,19 @@
+             srv->Get(params.api_prefix + "/",           serve_asset_cached("index.html", true));
+             srv->Get(params.api_prefix + "/index.html", serve_asset_cached("index.html", true));
+ 
++            // droste patch: redirect the bare prefix to the slashed form. The UI is
++            // mounted at api_prefix + "/", so `GET /prefix` matches no route at all;
++            // without this it 404s, and with --api-key it 401s before routing. The
++            // bare path is added to frontend_paths above so this handler is reachable.
++            // 302, not 301: the prefix is user configuration, and a permanently cached
++            // redirect would outlive a change to it.
++            if (!params.api_prefix.empty()) {
++                srv->Get(params.api_prefix, [api_prefix = params.api_prefix](const httplib::Request &, httplib::Response & res) {
++                    res.set_redirect(api_prefix + "/", 302);
++                    return false;
++                });
++            }
++
+             // All remaining assets registered directly from the embedded asset table.
+             // PWA revalidation files (sw.js, manifest, version.json) use no-cache;
+             // everything else is immutable.

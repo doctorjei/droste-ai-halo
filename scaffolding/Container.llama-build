@@ -166,6 +166,12 @@ RUN set -e; \
       || die "expected exactly 1 server-state middleware declaration in $f"; \
     [ "$(nx '    path_prefix = params.api_prefix;')" = 1 ] \
       || die "path_prefix is no longer assigned from params.api_prefix -- the patch would prefix with the wrong value"; \
+    [ "$(nx '            srv->Get(params.api_prefix + "/index.html", serve_asset_cached("index.html", true));')" = 1 ] \
+      || die "the Web UI index route is not where the bare-prefix redirect hunk anchors in $f"; \
+    [ "$(ns 'paths.insert(path_prefix);')" = 0 ] \
+      || die "$f already inserts the BARE prefix into the frontend set -- refusing to patch twice"; \
+    [ "$(ns 'set_redirect')" = 0 ] \
+      || die "$f already registers a redirect -- upstream may have fixed the bare-prefix URL; read the source before re-applying"; \
     [ "$(ns 'path_prefix + path')" = 3 ] \
       || die "routes are no longer registered under path_prefix (expected 3 sites: ::get, ::post, ::del)"; \
     [ "$(ns 'path_prefix + "/')" = 0 ] \
@@ -196,7 +202,13 @@ RUN set -e; \
       || die "the frontend-asset test did not survive the patch"; \
     [ "$(ns 'path_prefix + "/')" = 6 ] \
       || die "expected exactly 6 prefixed public paths after applying (4 API routes + the UI root + the asset loop)"; \
-    echo "llama-api-prefix-auth: applied; both the api-key exemption and the frontend-asset set now built from path_prefix"
+    [ "$(nx '            paths.insert(path_prefix);')" = 1 ] \
+      || die "the BARE prefix was not added to the frontend set -- GET /prefix would 401 before routing (the s65 hardware finding)"; \
+    [ "$(nx '                srv->Get(params.api_prefix, [api_prefix = params.api_prefix](const httplib::Request &, httplib::Response & res) {')" = 1 ] \
+      || die "the bare-prefix redirect route was not registered -- exempting the path alone makes it 404 instead of 401, which is not a fix"; \
+    [ "$(nx '                    res.set_redirect(api_prefix + "/", 302);')" = 1 ] \
+      || die "the bare-prefix route does not redirect to the slashed form after applying"; \
+    echo "llama-api-prefix-auth: applied; the api-key exemption, the frontend-asset set and the bare-prefix redirect are all built from the configured prefix"
 
 # Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
 # COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is

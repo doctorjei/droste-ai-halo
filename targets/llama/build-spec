@@ -4,25 +4,40 @@
 # (/opt/resources/resolve/droste-resolve.sh) via the shared entrypoint.
 # Contract + row semantics: base/resolve/build-spec.example.
 #
-# 🚨 THE PIN MOVED IN s64 AND NINE MEASURED CLAIMS BELOW HAVE NOT BEEN RE-VERIFIED.
-# LLAMA_REF went 337f08e8 -> fb2cc35a (+770 commits) to pick up Laguna/DFlash. Every
-# passage in this file that says "at 337f08e8", "pinned 337f08e8" or cites an
-# arg.cpp/common.cpp line was MEASURED against the OLD source and is now an
-# UNVERIFIED claim about the new one. The churn is not cosmetic:
+# ✅ RE-VERIFIED AT THE s64 PIN BUMP (337f08e8 -> fb2cc35a, +770 commits). Every
+# claim below that was measured against the old source was re-measured against the
+# new one, from the fetched tree, not from memory. The churn made this necessary:
 #
 #   common/arg.cpp     4206 -> 4729 lines, 1131 changed lines
 #   common/common.cpp  2148 -> 2296 lines,  304 changed lines
 #   common/common.h    1101 -> 1191 lines,  186 changed lines
 #   common/hf-cache.cpp 498 ->  513 lines,   15 changed lines
 #
-# ⚠️ THE SHA STRINGS ARE DELIBERATELY LEFT SAYING 337f08e8. Rewriting them to the new
-# pin would assert a re-verification nobody performed, which is worse than a citation
-# that is visibly stale: a wrong SHA rots loudly, a silently-updated one does not.
-# These get re-measured at the new pin as their own pass, before the hardware round —
-# llama.cfg is a USER surface and "if we document it, we pin it" cuts both ways.
-# ⭐ What IS verified at fb2cc35a: both carried patches, their anchor guards (13
-# before-checks / 9 after-checks on the api-prefix one, re-derived because upstream
-# refactored the code and carried the bug across), and nothing else in this file.
+# ⭐ EVERY SEMANTIC CLAIM SURVIVED; EVERY LINE NUMBER MOVED. That asymmetry is the
+# argument for the citation rule: the claims were anchored on what the code DOES, and
+# only the coordinates rotted. Where a number was the sole handle it has been replaced
+# with the thing it pointed at; numbers that remain are navigation hints beside an
+# anchor, not the claim itself.
+#
+# WHAT WAS CHECKED, AND HOW:
+#   · all 46 flags this spec EMITS exist in arg.cpp's alias lists at the new pin
+#     (cross-checked mechanically; the first instrument was wrong -- it missed
+#     multi-alias entries like {"--typical", "--typical-p"} and reported 7 false
+#     removals, so it was fixed and re-run with a control)
+#   · 77 of the 79 native LLAMA_ARG_* names llama.cfg offers are still declared
+#   · the TURBO_* family is still 11 names / 9 spelled TURBO_*, by a TREE-WIDE
+#     getenv sweep with no extension filter
+#   · both carried patches and their anchor guards (13 before / 9 after on the
+#     api-prefix one, re-derived: upstream refactored that code and carried the
+#     bug across intact)
+#
+# 🚨 THE ONE REAL CASUALTY, AND IT IS ON THE USER SURFACE, NOT HERE:
+# --hf-repo-v / --hf-file-v (the VOCODER sub-model) WERE REMOVED UPSTREAM between the
+# two pins. The whole vocoder option is gone from arg.cpp; only three tools/*/README.md
+# files still mention the spelling. llama.cfg still offers LLAMA_ARG_HF_REPO_V and
+# LLAMA_ARG_HF_FILE_V, and since llama-server reads only the env names it declares,
+# uncommenting either is now a SILENT NO-OP -- the fall-through this project forbids.
+# ⚠️ THAT FILE IS JEI'S. Reported to him with the exact replacement; not edited here.
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; llama_pre_launch REBUILDS it after CFG_FILE is sourced so
@@ -148,8 +163,12 @@ OPTIONAL=(
 # down, in the ENVIRONMENT tables — they have no flag to emit and never touch SERVICE.
 #
 # Every row was generated from the PINNED binary's own option table (paren-balanced
-# parse of arg.cpp at 337f08e8) and not from llama.cfg's inline comments — three of
+# parse of arg.cpp at fb2cc35a) and not from llama.cfg's inline comments — three of
 # those comments name the wrong flag today.
+# ✅ RE-CHECKED at the s64 bump: all 46 flags emitted below still exist in arg.cpp's
+# alias lists. ⚠️ The build's own drift gate covers only THREE names
+# (LLAMA_ARG_HOST/PORT/MODEL, targets/Container.llama), so a green CI says nothing
+# about the other 43 — that cross-check is a dev-time step at every pin bump.
 #
 # 🚨 THE FOUR BOOLEAN KINDS ARE NOT INTERCHANGEABLE, and this is the whole reason
 # every one of them is droste-named:
@@ -322,8 +341,9 @@ llama_argv() {
     # asserting a default the box did not deliver.
     # ⚠️ IT IS A REAL BEHAVIOUR CHANGE, not a no-op: --spec-default pushes
     # COMMON_SPECULATIVE_TYPE_NGRAM_MOD and sets ngram_mod n_match/n_min/n_max to
-    # 24/48/64 (arg.cpp:4168-4181 at the pinned 337f08e8). That is what the file
-    # asks for.
+    # 24/48/64 — arg.cpp, the `{"--spec-default"}` handler (~:4691 at the pinned
+    # fb2cc35a; anchor on the option name, the number moved 500+ lines at the bump).
+    # That is what the file asks for.
     # 🚨 `:=` NOT `=`, AND THIS REVERSED IN s58 — READ THE REASON BEFORE CHANGING IT
     # BACK. It was `=` so that a blank meant "don't", on the N1a reading that a blank is
     # always the user's opt-out. Jei's three-category rule narrows that: a blank is the
@@ -458,10 +478,16 @@ llama_argv() {
 # settings rather than a line in the catch-all list.
 #
 # 🚨 WHY ALL THREE ARE DROSTE-NAMED, AND IT IS THE `off` PROBLEM AGAIN. Each native is
-# read by a hand-rolled getenv test that looks at ONE CHARACTER (pinned 337f08e8):
-#   TURBO_AUTO_ASYMMETRIC  llama-kv-cache.cpp:153-154  disabled = env && env[0]=='0'
-#   TURBO_LAYER_ADAPTIVE   llama-kv-cache.cpp:321-327  atoi(env) — a mode NUMBER
-#   GGML_TQ_NATIVE         ggml-cuda.cu:722-723        native   = env && env[0]=='1'
+# read by a hand-rolled getenv test that looks at ONE CHARACTER (pinned fb2cc35a;
+# all three bodies are BYTE-IDENTICAL to the previous pin — only their lines moved):
+#   TURBO_AUTO_ASYMMETRIC  llama-kv-cache.cpp  `const bool disabled = (env && env[0] == '0')`
+#   TURBO_LAYER_ADAPTIVE   llama-kv-cache.cpp  atoi(env) — a mode NUMBER
+#   GGML_TQ_NATIVE         ggml-cuda.cu        in `ggml_tq_convert_q8()`, native = env[0]=='1'
+# ⚠️ READ THE VARIABLE, NOT UPSTREAM'S COMMENT, ON THAT LAST ONE. The line is
+# `val = (env && env[0] == '1') ? 0 : 1;` with the comment "default ON,
+# GGML_TQ_NATIVE=1 disables" — which is about the q8 CONVERSION, not about native
+# mode. Setting it to 1 turns conversion off, i.e. turns NATIVE ON. Our phrasing is
+# the user-facing effect and is correct; the comment reads as contradicting it.
 # So a user writing the native `TURBO_AUTO_ASYMMETRIC=off` gets env[0]=='o', which is
 # not '0', and the feature stays ON: a value that reads as off, is rejected by
 # nothing, and does nothing. That is the fall-through this project forbids outright,
@@ -634,16 +660,19 @@ llama_env() {
 # exists. A "smarter CRITICAL" cannot see a user's HF_HOME, ever. PRE_LAUNCH is step 7,
 # after the config is in effect, so it is the first place the question is answerable.
 #
-# THE CHAIN, read from the pinned fork (TheTom/llama-cpp-turboquant @ 337f08e8),
-# common/hf-cache.cpp:41-55 — `get_cache_directory()`, a function-local static, so the
-# FIRST rung that is set-and-non-empty decides and nothing later re-reads it:
+# THE CHAIN, read from the pinned fork (TheTom/llama-cpp-turboquant @ fb2cc35a),
+# common/hf-cache.cpp — `get_cache_directory()`, whose body is
+# `static const fs::path cache = []() {` over an `entries[]` table, i.e. a
+# function-local static: the FIRST rung that is set-and-non-empty decides and nothing
+# later re-reads it. The rungs, IN TABLE ORDER (re-verified at the bump; the table
+# moved but neither its order nor its suffixes changed):
 #
-#   :43  LLAMA_CACHE            <value>
-#   :44  HF_HUB_CACHE           <value>
-#   :45  HUGGINGFACE_HUB_CACHE  <value>
-#   :46  HF_HOME                <value>/hub
-#   :47  XDG_CACHE_HOME         <value>/huggingface/hub
-#   :48  HOME                   <value>/.cache/huggingface/hub
+#   LLAMA_CACHE            <value>
+#   HF_HUB_CACHE           <value>
+#   HUGGINGFACE_HUB_CACHE  <value>
+#   HF_HOME                <value>/hub
+#   XDG_CACHE_HOME         <value>/huggingface/hub
+#   HOME                   <value>/.cache/huggingface/hub   (spelled HOME_DIR)
 #
 # and it IS the `-hf` lane: common/download.cpp:786-848 (common_download_model) builds
 # every task from hf_cache::* when `model.hf_repo` is non-empty, and hf_cache paths all
@@ -755,15 +784,19 @@ llama_pre_launch() {
     # machine's math cores)` and its header promises the values shown ARE the defaults — but
     # uncommenting that line ROUGHLY DOUBLES the thread count on an SMT machine, the
     # classic llama.cpp oversubscription regression.
-    # The handler normalises before the auto-detect can ever run: arg.cpp:1159-1163
-    # (pinned 337f08e8) is `n_threads = value; if (n_threads <= 0) { n_threads =
-    # std::thread::hardware_concurrency(); }` — ALL SMT THREADS — and an environment
-    # variable goes through that very lambda (arg.cpp:511-518 calls handler_int with
-    # std::stoi(value)). Leaving the variable UNSET instead leaves common.h:59's
-    # `n_threads = -1` standing for postprocess_cpu_params (common.cpp:277-281), whose
-    # `< 0` branch calls common_cpu_get_num_math() — PHYSICAL/math cores
-    # (common.cpp:195-212). Because the handler has already turned -1 positive, that
-    # branch never fires. So the file's annotation is true only while the line stays
+    # The handler normalises before the auto-detect can ever run: the
+    # `.set_env("LLAMA_ARG_THREADS")` option's own lambda (pinned fb2cc35a) is
+    # `params.cpuparams.n_threads = value; if (params.cpuparams.n_threads <= 0) {
+    # params.cpuparams.n_threads = std::thread::hardware_concurrency(); }` — ALL SMT
+    # THREADS — and an environment variable goes through that very lambda (the env
+    # loop's `opt.handler_int(params, std::stoi(value))` arm). Leaving the variable
+    # UNSET instead leaves common.h's `int n_threads = -1` standing for
+    # postprocess_cpu_params, whose `< 0` branch calls common_cpu_get_num_math() —
+    # PHYSICAL/math cores. Because the handler has already turned -1 positive, that
+    # branch never fires.
+    # ✅ Re-verified at the s64 bump: every one of these still reads exactly as
+    # described. Anchors are the option's env name and the function names, because
+    # every line number in this passage moved by 300+ lines. So the file's annotation is true only while the line stays
     # commented, and the fix is to make the documented value an ABSENCE.
     #
     # ⚠️ ONLY THE EXACT STRING `-1`, AND THE NARROWNESS IS THE POINT. `0` and other
@@ -786,17 +819,21 @@ llama_pre_launch() {
     fi
 
     # ── the NATIVE lines that KILL THE BOX when a user CLEARS them (s57) ───────
-    # 🚨 A BLANK IS NOT "NO VALUE" TO llama-server. get_value_from_env (arg.cpp:120-137,
-    # pinned 337f08e8) returns TRUE for an empty string, so a line the user uncommented
-    # and then emptied hands the handler "" — and the env loop (arg.cpp:509-530) passes
-    # it to the handler with NO guard of any kind:
-    #     handler_int      opt.handler_int(params, std::stoi(value))        :516
-    #     handler_bool     opt.handler_bool(params, parse_bool_value(value)) :519
-    #     handler_string   opt.handler_string(params, value)                :522
+    # 🚨 A BLANK IS NOT "NO VALUE" TO llama-server. `common_arg::get_value_from_env`
+    # (arg.cpp, pinned fb2cc35a) ends `char * value = std::getenv(env); if (value) {
+    # output = value; return true; }` — NON-NULL, not non-empty — so a line the user
+    # uncommented and then emptied hands the handler "", and the env loop
+    # (`if (opt.get_value_from_env(value))`) passes it on with NO guard of any kind:
+    #     handler_int      opt.handler_int(params, std::stoi(value))
+    #     handler_bool     opt.handler_bool(params, parse_bool_value(value))
+    #     handler_string   opt.handler_string(params, value)
     # `std::stoi("")` throws std::invalid_argument; `parse_bool_value("")` throws
-    # (arg.cpp:422-430, since "" is neither truthy nor falsey); and a handler_string
-    # body throws whenever it PARSES rather than assigns. Whatever is thrown is
-    # rethrown as `error while handling environment variable "…"` (arg.cpp:526-528)
+    # (it is neither truthy nor falsey); and a handler_string body throws whenever it
+    # PARSES rather than assigns. Whatever is thrown is rethrown as
+    # `error while handling environment variable "…"`
+    # ⚠️ NEW AT THE s64 PIN AND HARMLESS TO US, BUT NOTE IT: get_value_from_env now
+    # ALSO probes a `LLAMA_ARG_NO_*` twin for any option with negations, returning
+    # "0" if that is set. It reads a second variable name we do not document.
     # and llama-server never starts. Making the blank reach the wire as an ABSENCE is
     # what delivers what each line already claims, with NO template edit.
     # Same shape, and the same `unset`-not-blank reasoning, as the THREADS block above.
@@ -1072,8 +1109,13 @@ llama_pre_launch() {
     # pointing at a line that moved, and the next reader sees that immediately. A stated
     # CAUSE or METHOD rots by being wrong from the start, is never re-checked because it
     # explains rather than asserts, and propagates into whatever the next person derives
-    # from it. Every file:line in this passage was re-verified at 337f08e8 and is exact;
-    # only the explanation attached to them was false.
+    # from it. Every file:line in this passage was re-verified at 337f08e8 and was
+    # exact THERE; only the explanation attached to them was false.
+    # ⭐ AND THE s64 BUMP IS THE DEMONSTRATION THIS PARAGRAPH PREDICTED. Re-measured
+    # at fb2cc35a: the two counts (11 names, 9 spelled TURBO_*) are UNCHANGED — by a
+    # tree-wide getenv sweep, the instrument this paragraph prescribes — while every
+    # line number moved. **The stated cause held because it was re-derivable; the
+    # coordinates did not.** Numbers below are hints; the anchors are the names.
     local -a _wrong_on_clear=(
         # ── category 1: a blank MOVES THE LISTENER and the healthcheck cannot find it ──
         # 🚨 THIS IS THE ONE THE READ-ONLY SWEEP COULD NOT HAVE FOUND, because nothing
@@ -1134,14 +1176,15 @@ llama_pre_launch() {
     # 🚨 A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM, exactly as above. LLAMA_CACHE
     # is read by neither the argument parser nor llama_kv_cache, so it belongs to none
     # of the three audits and must not silently inflate any of their counts.
-    # 🚨 AND IT IS FATAL, MEASURED FROM THE PINNED SOURCE (337f08e8). There are TWO
+    # 🚨 AND IT IS FATAL, MEASURED FROM THE PINNED SOURCE (re-verified at fb2cc35a;
+    # both chains survive the bump unchanged in substance). There are TWO
     # cache-directory chains in this tree and they do NOT agree about blanks:
-    #   common/hf-cache.cpp:51   `if (auto * p = std::getenv(entry.var); p && *p)` over
-    #                            six rungs (LLAMA_CACHE, HF_HUB_CACHE,
+    #   common/hf-cache.cpp      `if (auto * p = std::getenv(entry.var); p && *p)` over
+    #     get_cache_directory()  six rungs (LLAMA_CACHE, HF_HUB_CACHE,
     #                            HUGGINGFACE_HUB_CACHE, HF_HOME, XDG_CACHE_HOME, HOME)
     #                            ⇒ blank IS absent there. Nothing to fix.
-    #   common/common.cpp:995    `if (getenv("LLAMA_CACHE"))`  — a BARE presence test
-    #   common/common.cpp:1000   `if (std::getenv("XDG_CACHE_HOME"))` — likewise
+    #   common/common.cpp        `if (getenv("LLAMA_CACHE"))`  — a BARE presence test
+    #     fs_get_cache_directory `if (std::getenv("XDG_CACHE_HOME"))` — likewise
     # In fs_get_cache_directory a blank is non-NULL, so cache_directory becomes "" and
     # reaches ensure_trailing_slash (:988-994), whose `p.back()` on an EMPTY std::string
     # is undefined behaviour. What it reads decides between two failures: "/llama.cpp/",

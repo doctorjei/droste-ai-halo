@@ -38,8 +38,23 @@
 # cfg keys through droste::cfg_get and is the only place that validates them (an IPv4
 # literal, one message on all five boxes); a second reader here would be a second
 # mechanism that agrees with it only until one of the two changes.
+# 🚨 THE INTERPRETER IS ABSOLUTE, AND THAT IS LOAD-BEARING (measured on Loaf, s65).
+# A bare `python` here resolved to /usr/bin/python in the `distrobox enter` lane and
+# the service died on the first third-party import (`No module named 'sqlalchemy'`)
+# while serving fine from the init hook.
+# ⚠️ AND THE CAUSE IS NOT THE DOCUMENTED ONE. `ENV PATH=` is not LOST to the login
+# shell here — it SURVIVES and is ordered BEHIND it:
+#   /srv/.local/bin:…:/usr/local/bin:/usr/sbin:/usr/bin:…:/opt/venv/bin:/opt/rocm/bin:…
+# so /usr/bin wins and /opt/venv/bin never gets asked. ⭐ That is nastier than the
+# vanished-PATH case, because the directory IS on the PATH: any check that asks
+# "is /opt/venv/bin present?" passes while `python` still resolves to the wrong one.
+# ⭐ WHY THIS BOX ALONE: the other four name PROGRAMS (ds4-server, llama-server,
+# vllm) that nothing in /usr/bin shadows. `python` is the one name that COLLIDES
+# with a system binary — so they are correct by luck of naming, not by construction.
+# ⇒ NEVER put a bare interpreter in an argv that a launcher may build from a login
+# shell. Name it absolutely; $VIRTUAL_ENV is /opt/venv, baked in base/Container.runtime.
 COMFYUI_ARGV_HEAD=(
-    python /opt/ComfyUI/main.py
+    /opt/venv/bin/python /opt/ComfyUI/main.py
     --listen 0.0.0.0 --port 8188
 )
 COMFYUI_ARGV_TAIL=(
@@ -484,7 +499,12 @@ comfyui_pre_launch() {
     # so this lands on the mounted dir and both lanes can write to it whatever
     # uid they run as.
     mkdir -p /opt/ComfyUI/temp && chmod 1777 /opt/ComfyUI/temp
-    python3 /opt/resources/scripts/model_scanner.py sync \
+    # Absolute for the same reason the service head is — see the COMFYUI_ARGV_HEAD
+    # comment. This one had NOT visibly failed (it ran through /usr/bin/python3 in
+    # the distrobox lane and its imports happened to resolve), but "happened to" is
+    # the whole problem: it is one system package away from silently classifying
+    # against a different library set than the build pinned.
+    /opt/venv/bin/python3 /opt/resources/scripts/model_scanner.py sync \
         || resolve::warn "model_scanner sync failed (exit $?) — model tree may be stale"
     # 🚨 PRE_LAUNCH RUNS AS ROOT FROM BOTH DOORS, so everything the scanner just wrote
     # belongs to the container's root — a host subuid under keep-id, i.e. NOT the user

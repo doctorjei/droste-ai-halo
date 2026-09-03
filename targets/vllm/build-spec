@@ -1171,6 +1171,14 @@ vllm_env() {
 vllm_config_guard() {
     local src=${1:-} derived shape
     [ -n "$src" ] && [ -r "$src" ] || return 0
+    # ⚠️ SAME CLASS AS comfyui'"'"'s bare interpreter (measured s65 — see
+    # targets/comfyui/build-spec'"'"'s COMFYUI_ARGV_HEAD comment): PRE_LAUNCH can run
+    # from a login shell, where /usr/bin precedes /opt/venv/bin, so this is the
+    # SYSTEM python3. It does not crash here, it would MIS-SHAPE — `import yaml`
+    # raises under an interpreter without it, shape comes back empty, and a valid
+    # config reads as unrecognised. NOT changed to an absolute path yet: this guard
+    # is EXECUTED by g1lab/vllmwire.sh, which has no /opt/venv, so the fix needs a
+    # prefer-venv-then-fall-back shape and that pattern wants review first.
     command -v python3 >/dev/null 2>&1 || return 0
 
     # ok | empty | notmap | unreadable — a WORD, not an exit status, so a future

@@ -156,4 +156,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${{ github.ref_name }}" droste-setup.sh --clobber
+          TAG="${{ github.ref_name }}"
+          # 🚨 CREATE-IF-MISSING, BECAUSE A TAG IS NOT A RELEASE. This workflow triggers
+          # on a TAG PUSH, and pushing a tag does NOT create a Release object — so a
+          # bare `gh release upload` fails with "release not found" and the asset never
+          # appears. That is the whole install path for anyone following the README,
+          # failing on the one step nobody would think to test.
+          # ⚙️ --verify-tag: refuse to invent a release for a tag that does not exist.
+          # ⚙️ Pre-releases (a '-' in the version, e.g. v0.4.0-rc1) are marked as such,
+          # matching the retag job above, which gives them the exact tag only and leaves
+          # the moving :X.Y / :X aliases on the last stable release.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            prerelease=""
+            case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $prerelease
+          fi
+          gh release upload "$TAG" droste-setup.sh --clobber

@@ -109,3 +109,51 @@ jobs:
               docker buildx imagetools create --tag "${dst}" "${src}"
             done
           done
+
+  # ── The installer, published as a release asset ──────────────────────────
+  # 🚨 WHY THIS EXISTS: droste-setup.sh stops being a tracked file (installer
+  # amalgamation phase 3), so the README can no longer point at
+  # raw.githubusercontent.com/.../main/droste-setup.sh. The release asset
+  # becomes the install path, which is also the honest one — a user then gets a
+  # VERSIONED installer rather than whatever main happens to hold.
+  #
+  # ⚠️ ASSEMBLED HERE, NOT COMMITTED. The artifact is a build product; the
+  # sources are installer/*.sh + installer/py/*.py in installer/MANIFEST order.
+  # scripts/assemble-droste-setup.sh writes to STDOUT and is silent on success,
+  # so a non-empty stderr or a zero-length file is a real failure, not noise.
+  #
+  # ⚙️ needs: retag — so a release whose images failed to re-tag does not still
+  # publish an installer that points at them. The asset is the LAST thing to
+  # appear, which makes its presence a signal that the release is complete.
+  # ⚙️ contents: write is scoped to THIS JOB rather than the workflow, so the
+  # retag job above keeps contents: read. Least privilege per job, not per file.
+  installer-asset:
+    name: Publish droste-setup.sh for ${{ github.ref_name }}
+    needs: retag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the installer
+        run: |
+          set -euo pipefail
+          # ⚠️ ORDER IS LOAD-BEARING: `2>&1` FIRST (stderr joins the command
+          # substitution), THEN `1>file` (stdout becomes the artifact). Written the
+          # other way round — `> file 2>&1 >/dev/null` — stderr lands IN the artifact
+          # and stdout is discarded, which produces an EMPTY installer. Caught by
+          # running it rather than reading it.
+          err=$(bash scripts/assemble-droste-setup.sh 2>&1 1>droste-setup.sh) || {
+            echo "::error::assembler failed: $err"; exit 1; }
+          [ -z "$err" ] || { echo "::error::assembler wrote to stderr: $err"; exit 1; }
+          [ -s droste-setup.sh ] || { echo "::error::assembled installer is empty"; exit 1; }
+          bash -n droste-setup.sh
+          echo "assembled $(wc -l < droste-setup.sh) lines"
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.ref_name }}" droste-setup.sh --clobber

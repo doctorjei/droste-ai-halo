@@ -170,6 +170,36 @@ for p in "$SRC"/py/*.py; do
   esac
 done
 
+# ── Provenance ───────────────────────────────────────────────────────────────
+# A user holding a downloaded droste-setup.sh has no other way to say WHICH one
+# they are running, and "the one from the website" is not an answer anyone can
+# act on. One comment line fixes that and costs nothing to carry.
+#
+# 🚨 DERIVED FROM THE TREE, NEVER FROM THE CLOCK. CI asserts two assemblies of
+# the same sources are byte-identical, precisely to catch a build step reaching
+# for a timestamp, a hostname or a directory order. A commit sha is a property
+# of the SOURCES, so it satisfies that check by construction; a date would break
+# it, and breaking it would be the check working.
+#
+# 🚨 ON LINE 2, NOT AT THE END. The shebang must stay on line 1, and the LAST
+# line must stay a bare `main` — the g1lab suites source this artifact with the
+# final line stripped, and the guarantee below enforces it. Appending the stamp
+# was the first thing I tried and it broke that check immediately.
+#
+# ⚙️ `unknown` when there is no git (a release tarball, a vendored copy), and
+# `-dirty` when the tree has uncommitted changes — an artifact built from edits
+# that exist on one machine is exactly the case worth flagging.
+STAMP=unknown
+if command -v git >/dev/null 2>&1 && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  STAMP=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf unknown)
+  git -C "$REPO" diff --quiet HEAD -- 2>/dev/null || STAMP="$STAMP-dirty"
+fi
+{ head -n 1 "$BUF"
+  printf '# assembled by scripts/assemble-droste-setup.sh from %s\n' "$STAMP"
+  tail -n +2 "$BUF"
+} > "$BUF.stamped"
+mv "$BUF.stamped" "$BUF"
+
 # ── The artifact's own guarantees ────────────────────────────────────────────
 bash -n "$BUF" || die "the assembled script does not parse"
 [[ $(tail -n 1 "$BUF") == "main" ]] \

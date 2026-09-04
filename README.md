@@ -12,9 +12,13 @@ central branch) under the kento → gemet → * umbrella; consumes the same geme
 On a Strix Halo machine with podman and distrobox installed:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/doctorjei/droste-ai-halo/main/droste-setup.sh
+curl -fsSLO https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh
 bash droste-setup.sh
 ```
+
+To pin a version instead of tracking the newest release, swap `latest/download`
+for `download/v0.4.0`. The installer is published as a release asset; `0.4.0` is
+the first release that carries one.
 
 It checks the machine before it touches anything — GPU devices, your `render`
 and `video` group membership, the subordinate id ranges podman needs, and each
@@ -573,11 +577,11 @@ commands below work from a checkout unchanged.
 ### droste-setup.sh — interactive installer
 
 One self-contained bash script with zero repo-checkout dependencies — safe to
-pipe straight from the raw URL, which is how [Quick start](#quick-start)
+pipe straight from the release asset, which is how [Quick start](#quick-start)
 installs it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/doctorjei/droste-ai-halo/main/droste-setup.sh | bash
+curl -fsSL https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh | bash
 ```
 
 It guides which boxes you want, every bind in the mount

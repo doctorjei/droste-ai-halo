@@ -11,3 +11,8 @@ share-rw/
 
 # python bytecode
 __pycache__/
+
+# droste-setup.sh is ASSEMBLED from installer/ (see scripts/assemble-droste-setup.sh)
+# and published as a release asset by release.yml. It is a build product: generate
+# it locally when you need one, never commit it.
+/droste-setup.sh

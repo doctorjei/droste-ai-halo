@@ -90,6 +90,26 @@ jobs:
           sudo install -m 0755 "/tmp/shellcheck-v${SC_VERSION}/shellcheck" /usr/local/bin/shellcheck
           hash -r
 
+      # 🚨 THE ARTIFACT IS NOT IN THE TREE ANY MORE (phase 3, v0.4.0), SO THIS JOB
+      # BUILDS IT. Gates 2 and 3 below both lint droste-setup.sh — it is ~6.7k
+      # lines of what users pipe into bash, and it is the whole reason this
+      # workflow exists — so untracking it without this step would not "skip"
+      # those gates, it would FAIL them on a missing file. Assembling here keeps
+      # them linting exactly what a release publishes, since release.yml's
+      # installer-asset job runs the same assembler on the same sources.
+      # ⚠️ The `installer` job below deliberately does NOT reuse this: it checks
+      # the assembler's own properties (silence, determinism, layering) and must
+      # run them itself rather than inherit a file this job made.
+      - name: Assemble droste-setup.sh (it is a build product now)
+        shell: bash
+        run: |
+          set -euo pipefail
+          err=$(scripts/assemble-droste-setup.sh 2>&1 1>droste-setup.sh) || {
+            echo "::error::lint-shell: the assembler failed: $err"; exit 1; }
+          [ -z "$err" ] || { echo "::error::lint-shell: assembler wrote to stderr: $err"; exit 1; }
+          [ -s droste-setup.sh ] || { echo "::error::lint-shell: assembled installer is empty"; exit 1; }
+          echo "assembled $(wc -l < droste-setup.sh) lines"
+
       # Print the version FIRST so that when the pin trips, the log already
       # answers "did the analyser change, or did the code?".
       - name: ShellCheck version
@@ -137,7 +157,7 @@ jobs:
           # and the loop above would not notice its absence — it needs its own
           # existence test to be covered at all.
           [[ -f ${installer[0]} ]] || {
-            echo "::error::lint-shell: ${installer[0]} is missing — this workflow's original reason for existing moved or was renamed."
+            echo "::error::lint-shell: ${installer[0]} is missing — the assemble step above should have created it. If the assembler moved or was renamed, fix that; this workflow's original reason for existing is linting this artifact."
             exit 1
           }
           files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
@@ -179,7 +199,7 @@ jobs:
             }
           done
           [[ -f ${installer[0]} ]] || {
-            echo "::error::lint-shell: ${installer[0]} is missing — this workflow's original reason for existing moved or was renamed."
+            echo "::error::lint-shell: ${installer[0]} is missing — the assemble step above should have created it. If the assembler moved or was renamed, fix that; this workflow's original reason for existing is linting this artifact."
             exit 1
           }
           files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
@@ -337,9 +357,12 @@ jobs:
   # regenerate" rather than as a lint failure. It shares the workflow's
   # concurrency group, so it still cannot cancel a build-halo run.
   #
-  # ⚠️ WHEN THE ARTIFACT STOPS BEING TRACKED (phase 3) the cmp step goes and the
-  # remaining four checks become the whole contract. Do not delete the others
-  # with it — they are what the cmp is standing in front of, not duplicates of it.
+  # ⚙️ THE ARTIFACT IS NO LONGER TRACKED (phase 3, v0.4.0), so the byte-identity
+  # `cmp` step is gone — there is nothing to compare against. The remaining four
+  # checks ARE the whole contract now, which is why the note above them said not
+  # to delete them alongside it: they are what the cmp was standing in front of,
+  # not duplicates of it. droste-setup.sh is published as a release asset,
+  # assembled by release.yml's installer-asset job.
   installer:
     name: droste-setup.sh regenerates
     runs-on: ubuntu-latest
@@ -365,25 +388,6 @@ jobs:
             exit 1
           fi
           echo "no output on stderr"
-
-      # THE PHASE-2 ASSERTION. Both shapes are tracked, so the sources and the
-      # artifact must agree to the byte. `cmp` names the first differing offset,
-      # which is enough to find the fragment; the manifest gives the rest.
-      - name: Assembled output is byte-identical to the tracked droste-setup.sh
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ -f droste-setup.sh ]] || {
-            echo "::error::lint-shell: droste-setup.sh is not in the tree. If it was untracked deliberately (amalgamation phase 3), this step is the one to delete — the other checks in this job stand on their own."
-            exit 1
-          }
-          asm="$(mktemp)"
-          scripts/assemble-droste-setup.sh > "$asm"
-          if ! cmp "$asm" droste-setup.sh; then
-            echo "::error file=droste-setup.sh::lint-shell: the assembled installer differs from the tracked droste-setup.sh. Regenerate it with 'scripts/assemble-droste-setup.sh > droste-setup.sh' and commit both halves, or fix the fragment under installer/ that drifted. Do NOT hand-edit droste-setup.sh — it is a build product."
-            exit 1
-          fi
-          echo "byte-identical ($(wc -c < droste-setup.sh) bytes)"
 
       # A `cat` cannot be non-deterministic, which is exactly why this is cheap
       # insurance: it costs a second and it is what would catch a future edit

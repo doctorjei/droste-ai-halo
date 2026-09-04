@@ -131,7 +131,19 @@ start_service() {
     # Intent FIRST, then the launch: if the launch fails, the box still WANTS a server,
     # which is the state the healthcheck's relaunch acts on. Setting it afterwards
     # would leave a failed start looking like a box that was never asked to serve.
-    serve::set_active 1
+    # 🚨 A FAILED INTENT WRITE IS FATAL TO THIS VERB, NOT A WARNING TO STEP PAST (s65).
+    # set_active already warns, but the old code ignored its return and launched anyway
+    # — producing a box that was serving while every reader of the flag believed it had
+    # never been asked. Measured on raiju with a full disk: `server_status` reported
+    # "should be running now: no", and the healthcheck (which gates on the same flag)
+    # declined to relaunch, so the box could not recover on its own.
+    # ⭐ Refusing here is the honest failure: nothing is started, the message names the
+    # cause, and the state on disk still matches what the box will do.
+    if ! serve::set_active 1; then
+        serve::err "could not record that this box should be serving — $DROSTE_SERVE_STATE_DIR is not writable (a full disk will do this)."
+        serve::err "NOT starting: the healthcheck reads that same flag, so it would not relaunch this service either, and server_status would report the box as deliberately idle. Free some space and try again."
+        return 1
+    fi
     # 🚨 THE LAUNCH IS DELEGATED — full reasoning in droste-serve.sh's supervisor
     # section. Short form: a service forked from a TTY exec session (which every
     # `distrobox enter` is) is KILLED when that session ends, so a verb that forked it
@@ -164,9 +176,19 @@ start_service() {
 status_service() {
     local want obs
     serve::read_config
-    if serve::is_active; then want="yes"; else want="no"; fi
+    # THREE answers, not two — see serve::intent_state for why "no" and "we could not
+    # record it" must not be the same word. Kept in the library rather than inline here
+    # so it is reachable by a test without running this whole script.
+    want=$(serve::intent_state)
     printf 'Server for this box\n'
     printf '  should be running now : %s\n' "$want"
+    if [ "$want" = unknown ]; then
+        printf '                          ⚠️ %s is not writable — a full disk will do this.\n' \
+            "$DROSTE_SERVE_STATE_DIR"
+        printf '                          This box may have been asked to serve and been unable to\n'
+        printf '                          record it. The healthcheck reads the same flag, so it will\n'
+        printf '                          not relaunch either. Free space, then server_start.\n'
+    fi
     # 🚨 NAME THE SETTING AS IT IS SPELLED IN THE USER'S FILE. The names are per box
     # (`DROSTE_<APP>_STARTUP_ENABLED`), so a bare `STARTUP_ENABLED` names a variable that
     # is not literally in the file we just told them to open. The prefix is loaded by

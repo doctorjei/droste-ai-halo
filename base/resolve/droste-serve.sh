@@ -667,6 +667,29 @@ serve::is_active() {
 # set_active — write the intent flag. Chowned like every other file this library
 # creates in the distrobox lane: it is written as root (a host subuid under keep-id)
 # onto a host dir the box user owns, and the VERBS write it as that user.
+# intent_state — yes | no | unknown. THREE answers, because "not asked to serve" and
+# "we could not record what was asked" are different facts and only one of them is the
+# user's decision.
+# 🚨 MEASURED ON RAIJU (s65): a full disk made the write of the intent flag fail, so the
+# flag was ABSENT, is_active said false, and `server_status` printed a confident `no`.
+# The box read as deliberately idle when it had been asked to serve — and the
+# healthcheck gates on the same flag, so it declined to relaunch. A box that cannot
+# self-heal AND reports itself off by choice is the worst of the two failures.
+# ⚠️ THE TEST MUST BE AN ACTUAL WRITE. `[ -w ]` answers about PERMISSION, and a full
+# filesystem is still writable by permission — it fails at ENOSPC. The probe costs one
+# create+unlink and runs ONLY in the ambiguous case (flag absent), never when the flag
+# exists and answers for itself.
+serve::intent_state() {
+    if serve::is_active; then printf 'yes'; return 0; fi
+    if [ -f "$DROSTE_SERVE_ACTIVE" ]; then printf 'no'; return 0; fi
+    if ( : > "$DROSTE_SERVE_STATE_DIR/.probe" ) 2>/dev/null; then
+        rm -f "$DROSTE_SERVE_STATE_DIR/.probe" 2>/dev/null
+        printf 'no'; return 0
+    fi
+    printf 'unknown'
+    return 0
+}
+
 serve::set_active() {  # 0|1
     local want=$1
     mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true

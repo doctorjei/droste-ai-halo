@@ -228,7 +228,27 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # the old refusal and names the IMAGE as the broken part, rather than binding a number
 # nobody chose.
 : "${SERVE_PORT_DEFAULT:=}"
-: "${DROSTE_SERVE_STOP_WAIT:=15}"   # seconds to wait for a stale instance to die
+# 🚨 A CEILING, NOT A FIXED WAIT — stop_service SIGTERMs, then polls once a second and
+# returns the instant the process is gone. A server that exits in 2 s costs 2 s. The
+# only case this number lengthens is one that genuinely will not die, which is exactly
+# the case where waiting longer is right rather than wrong.
+# ⚙️ RAISED 15 → 60 (s65). Measured on raiju: vLLM does not shut down inside 15 s, so
+# EVERY `server_restart` on that box ended in `did not exit — sending SIGKILL`. Not
+# fatal, but a SIGKILLed model server can leave GPU and shared memory unreleased, and a
+# warning printed on every single restart is one people stop reading.
+# ⚠️ WHY GLOBAL AND NOT PER-BOX: the obvious fix — set it in vllm's build-spec — CANNOT
+# WORK. stop_service calls serve::read_config, NOT serve::build_service, so no build-spec
+# is sourced on the stop path and a per-box value would never be read. Making it work
+# would mean sourcing the spec during shutdown, which puts arbitrary per-box PRE_LAUNCH
+# code on the stop path. Every box here is a model server releasing GPU memory, so the
+# value is not really per-box anyway; 15 was tuned for nothing in particular.
+# ✅ CHECKED BEFORE RAISING IT, because this number is ALSO spent inside a health probe:
+# serve::_stop_stale uses it on the relaunch path, and podman KILLS a probe that overruns
+# --health-timeout, which on-failure=restart then counts as a failure and bounces the box.
+# BOX_HEALTH_TIMEOUT is 10m comfyui · 5m llama/vllm/ds4 · 2m finetuning, so 60 s has
+# headroom even at the tightest. ⚠️ ANY FURTHER RAISE MUST RE-CHECK THAT TABLE — the two
+# numbers are coupled, and nothing enforces the relationship.
+: "${DROSTE_SERVE_STOP_WAIT:=60}"   # CEILING (see above) for a stale instance to die
 
 # ── Messaging (independent of droste-resolve.sh: droste-healthcheck.sh sources
 #    THIS file alone) ──────────────────────────────────────────────────────────

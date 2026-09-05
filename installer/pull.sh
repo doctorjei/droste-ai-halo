@@ -105,6 +105,18 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # Where the --ascii block reports the column it stopped on. Beside the step
   # log because that path is already per-box and already disposable.
   colf="$log.col"
+  # 🚨 SIMPLE TAKES THE TEXT BAR, NOT NO BAR -- the spec allows either ("better to
+  # eliminate it, but if that is gonna be a big refactor, just the text version is
+  # fine") and L4 chooses text, for the population that asks for --simple: it is
+  # the piping/logging one, and a multi-GB pull that prints NOTHING for ten minutes
+  # is the worst reading of "simple" available. The append-only drawing is already
+  # what a default simple run gets, since simple arises from --no-repaint.
+  # ⚠️ SIMPLE WINS OVER REPAINT HERE, and that is not the cascade being violated:
+  # the drawn bar is a DRAWING, which is level 3's subject, while level 2 only says
+  # whether \r MAY be used. So --repaint --simple gets the text form -- permission
+  # to redraw is not a reason to draw something simple mode has removed.
+  PULL_PLAIN=$(( 1 - REPAINT ))
+  [[ $SIMPLE -eq 1 ]] && PULL_PLAIN=1
   rm -f "$colf"
   # -N (--no-buffer): without it curl hands the JSON stream over in ~16 KB
   # blocks, so the aggregator below repaints in lurches no matter how often the
@@ -112,7 +124,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$((1-REPAINT))" "$manifest" \
+        "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$PULL_PLAIN" "$manifest" \
         "$short..." "$STATUS_W" "$colf" \
         2>>"$log" \
     || rc=$?

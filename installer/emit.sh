@@ -209,6 +209,21 @@ summary_box() {  # box banner-width
   avail=$(( $(disp_width) - 4 ))
   [[ $inner -gt $avail ]] && inner=$avail
   local fill="" v
+  # SIMPLE: the box is a LIST. No borders, so no width to pad to and no fitting
+  # to do -- a value that would have been shortened to fit inside a frame is
+  # printed whole, which is the point of the plain rendering.
+  if [[ $SIMPLE -eq 1 ]]; then
+    for (( i = 0; i < n; i = i + 1 )); do
+      case ${kind[i]} in
+        s) printf '\n' ;;
+        g) printf '  %s_%s_%s\n' "$C_SGRP" "${keys[i]}" "$RESET" ;;
+        *) printf '    %s- %s%-*s %s%s%s\n' \
+             "$C_SBUL" "$C_SHDR" "$SUM_HDR_W" "${keys[i]}" \
+             "$C_SVAL" "${vals[i]}" "$RESET" ;;
+      esac
+    done
+    return 0
+  fi
   # shellcheck disable=SC2324  # string append of the border char, not math
   for (( i = 0; i < inner; i = i + 1 )); do fill+=$BOXH; done
   printf '  %s%s%s%s%s\n' "$C_SBOX" "$BOXTL" "$fill" "$BOXTR" "$RESET"

@@ -22,6 +22,7 @@ pulls a coherent set with it. \r, \n, \t, \v and form feed are emitted in every
 mode; only \r is withheld without --repaint.
   --tty | --piped          the sink. Detected; --piped when output is redirected
   --repaint | --no-repaint may a line be redrawn in place. tty ⇒ repaint
+  --full | --simple        drawn layout, or plain markers. repaint ⇒ full
   --unicode | --ascii      charset. full ⇒ unicode
   --ansi | --no-ansi       escape sequences. unicode ⇒ ansi
 Defaults end to end: piped is --ascii --no-ansi; a terminal is --unicode --ansi.
@@ -124,6 +125,8 @@ for arg in "$@"; do case "$arg" in
   --piped)       SINK="piped" ;;
   --repaint)     REPAINT=1 ;;
   --no-repaint)  REPAINT=0 ;;
+  --full)        PRESENT="full" ;;
+  --simple)      PRESENT="simple" ;;
   --unicode)     GLYPH="unicode" ;;
   --ascii)       GLYPH="ascii" ;;
   --ansi)        ANSI=1 ;;
@@ -152,17 +155,17 @@ esac
 # The cascade itself. Each line fires only where nothing has decided yet.
 if [[ -z $SINK    ]]; then if [[ -t 1 ]];              then SINK="tty";      else SINK="piped";     fi; fi
 if [[ -z $REPAINT ]]; then if [[ $SINK == tty ]];      then REPAINT=1;     else REPAINT=0;      fi; fi
-# ⚠️ LEVEL 3 IS COMPUTED BUT HAS NO FLAGS AND NO IMPLEMENTATION YET (s66). It sits
-# here because the cascade is a SEQUENCE -- level 4's default reads it -- and
-# removing it would silently re-point charset at level 2. The simple presentation
-# (logo to "*** Droste Project ***", drawn headers to **Header Name**, boxes to
-# lists, bars dropped) is boarded, not built; nothing reads $PRESENT today.
 if [[ -z $PRESENT ]]; then if [[ $REPAINT -eq 1 ]];    then PRESENT="full";  else PRESENT="simple"; fi; fi
 if [[ -z $GLYPH   ]]; then if [[ $PRESENT == full ]];  then GLYPH="unicode"; else GLYPH="ascii";    fi; fi
 if [[ -z $ANSI    ]]; then if [[ $GLYPH == unicode ]]; then ANSI=1;        else ANSI=0;         fi; fi
 
 # Derived, not chosen: the charset flag the atom blocks below read.
 GLYPH_ASCII=0; [[ $GLYPH == ascii ]] && GLYPH_ASCII=1
+# ⭐ LEVEL 3 IS LAYOUT, NOT CHARSET OR COLOR, and the three are independent: a
+# --simple --ansi run is legal and gets the plain shapes IN COLOR, because an
+# explicit flag is honored 100%. Simple replaces the DRAWING (rules, borders,
+# bars) with plain markers; it never decides what bytes or escapes may be used.
+SIMPLE=0; [[ $PRESENT == simple ]] && SIMPLE=1
 # \r is permitted exactly when repainting is. Level 2 IS this permission.
 ALLOW_CR=$REPAINT
 
@@ -377,6 +380,7 @@ for arg in "$@"; do
     # Consumed by the cascade above; accepted here so they are not reported
     # as unknown options.
     --tty|--piped|--repaint|--no-repaint) ;;
+    --full|--simple) ;;
     --unicode|--ascii|--ansi|--no-ansi) ;;
     -h|--help) usage; exit 0 ;;
     -*) printf '%s: unknown option: %s\n' "$UI_PROG" "$arg" >&2; usage >&2; exit 2 ;;
@@ -396,6 +400,13 @@ section() {   # ── Name ──────... divider, 78 cols.  name [intro
   # rather than wrapping onto a second line of stray divider characters.
   local name=$1 style=${2:-} line fill i n w lcol=$C_LABEL
   [[ $style == intro ]] && lcol=$C_LABEL2
+  # A drawn rule IS the divider in full; in simple the markers carry it, so the
+  # rule is not shortened, it is gone. The blank line stays: it is the spacing
+  # between sections, which both presentations need.
+  if [[ $SIMPLE -eq 1 ]]; then
+    printf '\n%s**%s**%s\n' "$lcol" "$name" "$RESET"
+    return 0
+  fi
   w=$(disp_width)
   n=$(( w - ${#name} - 5 ))
   [[ $n -lt 1 ]] && n=1
@@ -519,7 +530,16 @@ banner() {   # text [bold] [min-inner-width]
   else
     tcol=$C_TITLE
   fi
+  # ⚠️ SET BEFORE THE SIMPLE RETURN, NOT AFTER IT. emit.sh's summary box reads
+  # BANNER_W to match its width to the banner above it; leaving it stale here
+  # would size a box from whatever the PREVIOUS box's title happened to be.
   BANNER_W=$(( n + 2 ))
+  # A banner is a box whose contents are its own header, so simple renders it as
+  # the header alone.
+  if [[ $SIMPLE -eq 1 ]]; then
+    printf '\n  %s_%s_%s\n' "$tcol" "$text" "$RESET"
+    return 0
+  fi
   fill=""
   for (( i = 0; i < n; i = i + 1 )); do fill+=$h; done
   top="$tl$fill$tr"
@@ -551,6 +571,12 @@ logo_header() {
   # `--unicode --no-ansi` PRINTED `^[[1;97m` at the user instead of dropping the color.
   # A gradient has no role names to atomize; selecting the string is the honest gate.
   printf '\n'
+  # LEVEL 3 IS ASKED FIRST, because it decides whether there is a drawing at all;
+  # the charset and color questions below only decide how a drawing is made.
+  if [[ $SIMPLE -eq 1 ]]; then
+    printf '  %s*** Droste Project ***%s\n' "$C_LABEL2" "$RESET"
+    return 0
+  fi
   if [[ $GLYPH_ASCII -eq 1 ]]; then
     if [[ $ANSI -eq 1 ]]; then
       # Jei's palette: box gradient per line, the . and * accents bold bright

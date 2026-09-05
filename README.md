@@ -12,8 +12,7 @@ central branch) under the kento → gemet → * umbrella; consumes the same geme
 On a Strix Halo machine with podman and distrobox installed:
 
 ```bash
-curl -fsSLO https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh
-bash droste-setup.sh
+curl -fsSLO https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh | bash
 ```
 
 To pin a version instead of tracking the newest release, swap `latest/download`

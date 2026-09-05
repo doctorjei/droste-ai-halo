@@ -120,12 +120,12 @@ EOF
 # re-decides a higher one, which is what keeps the sequence a sequence.
 SINK="" REPAINT="" PRESENT="" GLYPH="" ANSI=""
 for arg in "$@"; do case "$arg" in
-  --tty)         SINK=tty ;;
-  --piped)       SINK=piped ;;
+  --tty)         SINK="tty" ;;
+  --piped)       SINK="piped" ;;
   --repaint)     REPAINT=1 ;;
   --no-repaint)  REPAINT=0 ;;
-  --unicode)     GLYPH=unicode ;;
-  --ascii)       GLYPH=ascii ;;
+  --unicode)     GLYPH="unicode" ;;
+  --ascii)       GLYPH="ascii" ;;
   --ansi)        ANSI=1 ;;
   --no-ansi)     ANSI=0 ;;
 esac; done
@@ -141,24 +141,24 @@ GLYPH_NAMED=$GLYPH ANSI_NAMED=$ANSI
 # charset alone and leaves color be. TERM=dumb has neither.
 case "${TERM:-dumb}" in
   dumb|unknown)
-    [[ -z $GLYPH_NAMED ]] && GLYPH=ascii
+    [[ -z $GLYPH_NAMED ]] && GLYPH="ascii"
     [[ -z $ANSI_NAMED  ]] && ANSI=0 ;;
 esac
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   *[Uu][Tt][Ff]*8*|*[Uu][Tt][Ff]*) : ;;
-  *) [[ -z $GLYPH_NAMED ]] && GLYPH=ascii ;;
+  *) [[ -z $GLYPH_NAMED ]] && GLYPH="ascii" ;;
 esac
 
 # The cascade itself. Each line fires only where nothing has decided yet.
-if [[ -z $SINK    ]]; then if [[ -t 1 ]];              then SINK=tty;      else SINK=piped;     fi; fi
+if [[ -z $SINK    ]]; then if [[ -t 1 ]];              then SINK="tty";      else SINK="piped";     fi; fi
 if [[ -z $REPAINT ]]; then if [[ $SINK == tty ]];      then REPAINT=1;     else REPAINT=0;      fi; fi
 # ⚠️ LEVEL 3 IS COMPUTED BUT HAS NO FLAGS AND NO IMPLEMENTATION YET (s66). It sits
 # here because the cascade is a SEQUENCE -- level 4's default reads it -- and
 # removing it would silently re-point charset at level 2. The simple presentation
 # (logo to "*** Droste Project ***", drawn headers to **Header Name**, boxes to
 # lists, bars dropped) is boarded, not built; nothing reads $PRESENT today.
-if [[ -z $PRESENT ]]; then if [[ $REPAINT -eq 1 ]];    then PRESENT=full;  else PRESENT=simple; fi; fi
-if [[ -z $GLYPH   ]]; then if [[ $PRESENT == full ]];  then GLYPH=unicode; else GLYPH=ascii;    fi; fi
+if [[ -z $PRESENT ]]; then if [[ $REPAINT -eq 1 ]];    then PRESENT="full";  else PRESENT="simple"; fi; fi
+if [[ -z $GLYPH   ]]; then if [[ $PRESENT == full ]];  then GLYPH="unicode"; else GLYPH="ascii";    fi; fi
 if [[ -z $ANSI    ]]; then if [[ $GLYPH == unicode ]]; then ANSI=1;        else ANSI=0;         fi; fi
 
 # Derived, not chosen: the charset flag the atom blocks below read.

@@ -429,7 +429,7 @@ dash_table() {   # with-on(0|1)
   if [[ $on -eq 1 ]]; then
     # ...and per MODE for the middle column: [N] is a column wider than the
     # glyph, and at 18 it reads as crowding BoxSv's right edge.
-    if [[ $ASCII -eq 1 ]]; then gcol=(12 17 24); else gcol=(12 18 24); fi
+    if [[ $GLYPH_ASCII -eq 1 ]]; then gcol=(12 17 24); else gcol=(12 18 24); fi
     pcol=30; ncol=36
   else
     gcol=(13 20);    pcol=26; ncol=32

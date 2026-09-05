@@ -91,7 +91,17 @@ status_start() {   # name
 # tag column (or drawn whole, when nothing opened it).
 status_head() {   # name
   local n
-  if [[ -n $CR ]]; then
+  # 🚨 THE PREDICATE IS THE MODE, NOT THE CHARACTER (s66). This used to read
+  # `[[ -n $CR ]]`, which worked only while --ascii blanked CR along with the
+  # escapes. It does not any more: \r is a control character the ASCII contract
+  # explicitly permits, so it keeps its value and only the ESCAPES are dropped.
+  # Testing CR here would now take the repaint path with $EL empty -- back to
+  # column 0, overwrite, never erase -- and a shorter line would leave the tail
+  # of the longer one behind it. Ask about the capability instead.
+  # 🚨 AND THE CAPABILITY IS $REPAINT, NOT $ANSI (s66). Redrawing needs only \r,
+  # which every terminal handles -- measured on a deliberately limited xterm. What
+  # it really needs is a LIVE TERMINAL to redraw on, which is what REPAINT asks.
+  if [[ $REPAINT -eq 1 ]]; then
     printf '%s  %s%-*s%s' "$CR" "$C_TEXT" "$STATUS_W" "$1" "$RESET"
   elif [[ $STATUS_OPEN -eq 1 ]]; then
     n=$(( STATUS_W - STATUS_COL )); [[ $n -lt 1 ]] && n=1
@@ -103,12 +113,31 @@ status_head() {   # name
   return 0
 }
 
-# Both endings close with erase-to-EOL, which is what wipes the widest ticker
-# frame (the elapsed count grows a digit) or a progress bar of any width.
+# erase_tail — wipe whatever the widest earlier frame left to the right.
+# 🚨 TWO MECHANISMS, BECAUSE ONLY ONE OF THEM IS AN ESCAPE. With escapes we send
+# $EL ($'\e[K', Erase in Line). Without them we SPACE-PAD to the widest frame
+# written since this line opened, which erases exactly as well and costs only
+# printable characters -- so a non-ANSI terminal repaints properly instead of
+# falling back to append-only. ⭐ Jei's observation (s66): the erase is a
+# convenience of ANSI, not a requirement of repainting.
+# ⚠️ STATUS_MAXW IS TRACKED, NOT GUESSED. The ticker only ever grows (the elapsed
+# count gains digits) while the COMPLETED line is shorter, so the tail to wipe is
+# the difference between the two -- and nothing else knows that number.
+STATUS_MAXW=0
+erase_tail() {   # width-just-written
+  local n
+  if [[ -n $EL ]]; then printf '%s' "$EL"; return 0; fi
+  n=$(( STATUS_MAXW - $1 ))
+  [[ $n -gt 0 ]] && printf '%*s' "$n" ""
+  STATUS_MAXW=0
+  return 0
+}
 status_ok() {   # name
   status_head "$1"
-  printf '%s[%s%s%s]%s%s\n' \
-    "$C_OKB" "$C_OK" "OK" "$C_OKB" "$RESET" "$EL"
+  # 2 indent + STATUS_W name + 4 for "[OK]" is what this line occupies.
+  printf '%s[%s%s%s]%s' "$C_OKB" "$C_OK" "OK" "$C_OKB" "$RESET"
+  erase_tail $(( 2 + STATUS_W + 4 ))
+  printf '\n'
 }
 
 # Failure: the tag, then the LAST THREE captured lines (enough to name the
@@ -116,8 +145,9 @@ status_ok() {   # name
 status_err() {   # name log-path
   local name=$1 log=$2 line
   status_head "$name"
-  printf '%s[%s%s%s]%s%s\n' \
-    "$C_BADB" "$C_ERR" "ERROR" "$C_BADB" "$RESET" "$EL"
+  printf '%s[%s%s%s]%s' "$C_BADB" "$C_ERR" "ERROR" "$C_BADB" "$RESET"
+  erase_tail $(( 2 + STATUS_W + 7 ))
+  printf '\n'
   while IFS= read -r line; do
     [[ -z $line ]] && continue
     printf '    %s%s%s\n' "$C_TEXT" "$line" "$RESET"
@@ -138,10 +168,10 @@ status_err() {   # name log-path
 # finishes inside the first second never paints a frame at all — the completion
 # simply overwrites the line status_start opened.
 run_step() {   # phase log command...
-  local phase=$1 log=$2 pid rc=0 t0 el shown=-1 col
+  local phase=$1 log=$2 pid rc=0 t0 el shown=-1 col _w
   shift 2
-  if [[ -z $CR ]]; then
-    # --ascii: announce the phase on its own line, no ticker. Same column as
+  if [[ $REPAINT -eq 0 ]]; then
+    # cannot redraw in place: announce the phase on its own line, no ticker. Same column as
     # the repainting mode uses, so the two read alike.
     col=$(tick_col "$phase" "")
     if [[ $STATUS_OPEN -eq 1 ]]; then
@@ -163,6 +193,11 @@ run_step() {   # phase log command...
     if [[ $el -gt $shown ]]; then
       shown=$el
       col=$(tick_col "$phase" "$el")
+      # Record how wide this frame is BEFORE drawing it: erase_tail pads the
+      # completed line out to the widest frame, and only this loop knows it.
+      # 2 indent + padded name + a space + the phase word + " (Ns)".
+      _w=$(( 2 + col + 1 + ${#phase} + 3 + ${#el} ))
+      [[ $_w -gt $STATUS_MAXW ]] && STATUS_MAXW=$_w
       printf '%s  %s%-*s%s%s%s (%ss)%s' "$CR" "$C_TEXT" "$col" "$STATUS_NAME" \
         "$RESET" "$C_SVC" "$phase" "$el" "$EL"
     fi

@@ -228,7 +228,7 @@ execute() {
         # --ascii the aggregator opens its OWN header line (the s39 block stands
         # in for this status line), so opening one here would print the ref
         # twice; pull_image reports back where that block stopped instead.
-        [[ $ASCII -eq 1 ]] \
+        [[ $ANSI -eq 0 ]] \
           || status_start "$(img_disp "$box")..."
         pull_image "$box" || rc=$?
         if [[ $rc -eq 0 ]]; then

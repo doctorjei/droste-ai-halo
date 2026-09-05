@@ -17,10 +17,15 @@ boxes, record your port and startup answers in each box's own
 BOX      comfyui llama vllm ds4 finetuning   (default: interactive menu)
 
 Options:
-  --ascii    output limited to printable ASCII characters and tab (\t),
-             linefeed (\n), and carriage return (\r) $EMD no escape
-             sequences, no line editing. For pipes, captures, and dumb
-             terminals (TERM=dumb auto-detects).
+Rendering: five choices, each defaulting from the one above it, so naming one
+pulls a coherent set with it. \r, \n, \t, \v and form feed are emitted in every
+mode; only \r is withheld without --repaint.
+  --tty | --piped          the sink. Detected; --piped when output is redirected
+  --repaint | --no-repaint may a line be redrawn in place. tty ⇒ repaint
+  --unicode | --ascii      charset. full ⇒ unicode
+  --ansi | --no-ansi       escape sequences. unicode ⇒ ansi
+Defaults end to end: piped is --ascii --no-ansi; a terminal is --unicode --ansi.
+Any flag given is honored exactly, whatever the sink.
   -h, --help show this help
 
 Safe to re-run: existing setups are detected and never clobbered.
@@ -84,16 +89,92 @@ EOF
 # unknown-option error are themselves output: they have to be able to print
 # through the atoms below. So --ascii is read from argv in a pass of its own,
 # and the loop that consumes the arguments runs after the atoms exist.
-ASCII=0
-for arg in "$@"; do case "$arg" in --ascii) ASCII=1 ;; esac; done
-case "${TERM:-dumb}" in dumb|unknown) ASCII=1 ;; esac
+# TWO AXES, DETECTED FIRST AND THEN OVERRIDDEN BY AN EXPLICIT FLAG.
+#   GLYPH_ASCII 1 = the ASCII drawing, 0 = the unicode one
+#   ANSI        1 = escape sequences allowed (color, erase, line editing)
+# ⚠️ ESCAPES IS NOT THE SAME QUESTION AS "CAN WE REDRAW". Redrawing needs only \r,
+# which is not an escape -- see REPAINT below, which is derived rather than chosen.
+# ⭐ SPLITTING THEM FIXES A REAL LOSS: a terminal in a non-UTF-8 locale used to
+# forfeit COLOR as well, because one flag carried both. A locale says what BYTES
+# render, not whether SGR works, so it now moves the glyph axis alone. TERM=dumb
+# still drops both -- that terminal has neither.
+# ── THE RENDERING CASCADE: five choices, each defaulting from the one above ──
+# 🚨 A CASCADE, NOT FIVE INDEPENDENT SWITCHES (Jei, s66). The two populations want
+# opposite things -- "for piping, minimal text and simple parsing should be the
+# default; for the user, it is the visualization" -- so naming ONE flag should pull
+# a coherent set with it. A user only names a flag where they depart from the norm
+# at that step, and most never name one at all.
+#
+#   1 --tty / --piped        the sink
+#   2 --repaint / --no-repaint  may a line be redrawn in place (i.e. may \r appear)
+#   3 (presentation)         full / simple -- COMPUTED BUT NOT YET EXPOSED
+#   4 --unicode / --ascii    charset
+#   5 --ansi / --no-ansi     escape sequences
+#
+# ⇒ piped with no flags is  --piped --no-repaint --simple --ascii --no-ansi
+# ⇒ a TTY with no flags is  --tty --repaint --full --unicode --ansi
+#
+# 🚨 AN EXPLICIT FLAG IS HONORED 100%, WHATEVER THE SINK IS. Detection chooses the
+# default at level 1 and nothing more; --ascii means ASCII in a pipe and on a
+# terminal alike. ⚠️ DEFAULTS FLOW DOWNWARD ONLY -- naming a lower flag never
+# re-decides a higher one, which is what keeps the sequence a sequence.
+SINK="" REPAINT="" PRESENT="" GLYPH="" ANSI=""
+for arg in "$@"; do case "$arg" in
+  --tty)         SINK=tty ;;
+  --piped)       SINK=piped ;;
+  --repaint)     REPAINT=1 ;;
+  --no-repaint)  REPAINT=0 ;;
+  --unicode)     GLYPH=unicode ;;
+  --ascii)       GLYPH=ascii ;;
+  --ansi)        ANSI=1 ;;
+  --no-ansi)     ANSI=0 ;;
+esac; done
+
+# What the user actually NAMED, captured before any default fills a blank in.
+# ⭐ This is what lets TERM and the locale refine a DEFAULT without ever
+# overriding a flag: they only write where the user was silent.
+GLYPH_NAMED=$GLYPH ANSI_NAMED=$ANSI
+
+# TERM and the locale are detection, so they touch defaults only, and they run
+# BEFORE the cascade so that a charset they choose still feeds level 5.
+# ⭐ A locale says which BYTES render, not whether SGR works, so it moves the
+# charset alone and leaves color be. TERM=dumb has neither.
+case "${TERM:-dumb}" in
+  dumb|unknown)
+    [[ -z $GLYPH_NAMED ]] && GLYPH=ascii
+    [[ -z $ANSI_NAMED  ]] && ANSI=0 ;;
+esac
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   *[Uu][Tt][Ff]*8*|*[Uu][Tt][Ff]*) : ;;
-  *) ASCII=1 ;;
+  *) [[ -z $GLYPH_NAMED ]] && GLYPH=ascii ;;
 esac
 
-if [[ $ASCII -eq 1 ]]; then
-  RESET="" DIVCH="-"
+# The cascade itself. Each line fires only where nothing has decided yet.
+if [[ -z $SINK    ]]; then if [[ -t 1 ]];              then SINK=tty;      else SINK=piped;     fi; fi
+if [[ -z $REPAINT ]]; then if [[ $SINK == tty ]];      then REPAINT=1;     else REPAINT=0;      fi; fi
+# ⚠️ LEVEL 3 IS COMPUTED BUT HAS NO FLAGS AND NO IMPLEMENTATION YET (s66). It sits
+# here because the cascade is a SEQUENCE -- level 4's default reads it -- and
+# removing it would silently re-point charset at level 2. The simple presentation
+# (logo to "*** Droste Project ***", drawn headers to **Header Name**, boxes to
+# lists, bars dropped) is boarded, not built; nothing reads $PRESENT today.
+if [[ -z $PRESENT ]]; then if [[ $REPAINT -eq 1 ]];    then PRESENT=full;  else PRESENT=simple; fi; fi
+if [[ -z $GLYPH   ]]; then if [[ $PRESENT == full ]];  then GLYPH=unicode; else GLYPH=ascii;    fi; fi
+if [[ -z $ANSI    ]]; then if [[ $GLYPH == unicode ]]; then ANSI=1;        else ANSI=0;         fi; fi
+
+# Derived, not chosen: the charset flag the atom blocks below read.
+GLYPH_ASCII=0; [[ $GLYPH == ascii ]] && GLYPH_ASCII=1
+# \r is permitted exactly when repainting is. Level 2 IS this permission.
+ALLOW_CR=$REPAINT
+
+# ── GLYPH AXIS: which characters the drawing is made of ─────────────────────
+# 🚨 TWO INDEPENDENT AXES SINCE s66, WHERE THERE USED TO BE ONE FLAG. `--ascii`
+# collapsed charset and escapes together, so a terminal that could not render
+# unicode also lost every color -- and there was no way to ask for the ASCII
+# drawing WITH color. Splitting them costs one extra variable and buys the two
+# middle modes. ⚠️ THE BLANKING PASS BELOW IS WHAT KEEPS THEM INDEPENDENT: this
+# branch sets glyphs ONLY, and never touches a color atom.
+if [[ $GLYPH_ASCII -eq 1 ]]; then
+  DIVCH="-"
   # Prose typography, transliterated at the mode boundary so the sentences
   # themselves are written once: em-dash -> "--", ellipsis -> "...". ELL has no
   # caller at the moment (its last one was a preflight hint the marker rework
@@ -101,27 +182,7 @@ if [[ $ASCII -eq 1 ]]; then
   # a typed "…" and a broken --ascii byte contract, and it costs one assignment.
   # shellcheck disable=SC2034
   EMD="--" ELL="..."
-  # Foreground-only palette (see the rework spec). EVERY color rides on one of
-  # these variables so --ascii / dumb terminals stay byte-for-byte colorless.
-  C_FRAME="" C_TITLE="" C_BTITLE="" C_LABEL="" C_LABEL2="" C_SUB="" C_SUB2="" C_TEXT=""
-  C_BRK="" C_OKB="" C_OK="" C_BADB="" C_NOTB="" C_WARNI=""
-  C_TBRK="" C_TIDX="" C_ARROW="" C_SUBJ=""
-  C_HDR="" C_SVC="" C_PORT="" C_GLYPH="" C_STAR=""
-  C_EXE="" C_CMD="" C_TGT="" C_PH=""
-  C_EXH="" C_FILE="" C_ERR="" C_STOPW="" C_STOPT=""
-  C_PBRK="" C_PDEF="" C_PALT="" C_IN=""
-  C_OPTD="" C_OPTN="" C_CTR="" C_SVCN=""
-  C_SBOX="" C_SBUL="" C_SHDR="" C_SVAL="" C_SGRP="" C_MOPT="" C_MCAT=""
-  C_QTXT="" C_QEXIT="" C_QKEY="" C_DETH="" C_DETN="" C_SELP=""
-  C_PATHB="" C_PATHG=""
-  C_EMLBL="" C_EMBOX="" C_EMPTH=""
-  # Repaint plumbing for the pull progress bar. Empty here on purpose: --ascii
-  # (and any dumb terminal) gets the APPEND-ONLY bar instead — a drawing that
-  # only ever grows to the right and down, so the section stays byte-for-byte
-  # free of control sequences and reads the same in a pipe or a log. BAR_E has
-  # no caller there (an append-only bar never draws the part it has not
-  # reached), and is kept because the pair is one atom.
-  CR="" EL="" BAR_F="#" BAR_E="-"
+  BAR_F="#" BAR_E="-"
   # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
   # The ASCII glyph already carries its own brackets, so the Legend adds none
   # (GB_L/GB_R empty). Jei's rev-2 spelling is [Y]/[N]/[?] (it supersedes the
@@ -143,9 +204,38 @@ if [[ $ASCII -eq 1 ]]; then
   BANTL="." BANTR="." BANBL="'" BANBR="'" BANH="-" BANV="|"
   BANTL2="." BANTR2="." BANBL2="'" BANBR2="'" BANH2="-" BANV2="|"
 else
-  RESET=$'\e[0m' DIVCH="─"
+  DIVCH="─"
   # shellcheck disable=SC2034   # ELL: see the ASCII twin above
   EMD="—" ELL="…"
+  BAR_F="▓" BAR_E="░"
+  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
+  # ⚫ covers NA *and* unknown, so there is no separate "unknown" glyph. The
+  # Legend wraps the emoji in its own brackets (GB_L/GB_R).
+  GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
+  BULLET="·" ARROW_G=" 🭹🭹🭹⮞ " ARROW_M="🭹🭹⮞"
+  # The three status markers — ✅ ok / 🔶 something to decide about / 🚨 blocker.
+  # BORN-EMOJI ONLY (U+2705, U+1F536, U+1F6A8): each is Emoji_Presentation by
+  # default, so it is two columns wide with no VS16 promotion in sight — a
+  # VS16-promoted glyph (⚠️ and its class) is what breaks the width math. They
+  # bring their own color, so nothing is painted onto them; the row's color
+  # opens AFTER the marker.
+  MK_OK=$'\U2705' MK_CAUT=$'\U1F536' MK_BAD=$'\U1F6A8'
+  # Same arithmetic, different marker width: these are BORN-emoji and occupy exactly
+  # two display columns, so 2 + 2 + 1 = 5.
+  PF_IND="     "
+  BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
+  # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
+  # the per-box titles. The light set above is the summary box's.
+  BANTL="╔" BANTR="╗" BANBL="╚" BANBR="╝" BANH="═" BANV="║"
+  BANTL2="┏" BANTR2="┓" BANBL2="┗" BANBR2="┛" BANH2="━" BANV2="┃"
+fi
+
+# ── COLOR ATOMS: always given their real values ─────────────────────────────
+# They are charset-independent -- an SGR sequence is the same bytes whichever
+# drawing it wraps -- so they are set unconditionally and REMOVED afterwards if
+# escapes are off. Setting them here and blanking there is what lets
+# --ansi-ascii exist at all.
+  RESET=$'\e[0m'
   C_FRAME=$'\e[0;94m'   # box-drawing frames + section rules
   C_TITLE=$'\e[1;96m'   # installer title (top banner only)
   C_BTITLE=$'\e[0;96m'  # per-box banner title
@@ -242,29 +332,39 @@ else
   C_EMPTH=$'\e[0;1;3;37m'
   # Repaint plumbing for the pull progress bar: carriage return + erase-to-EOL
   # (the bar can be wider than the status line that replaces it).
-  CR=$'\r' EL=$'\e[K' BAR_F="▓" BAR_E="░"
+  CR=$'\r' EL=$'\e[K'
   # The emoji glyphs bring their own color, so the state cell resets to bare.
   C_GLYPH=$RESET
-  # Dashboard state cell — ONE glyph triplet serves all three of On/BoxSv/HostSv.
-  # ⚫ covers NA *and* unknown, so there is no separate "unknown" glyph. The
-  # Legend wraps the emoji in its own brackets (GB_L/GB_R).
-  GS_YES=$'\U1F7E2' GS_NO=$'\U1F6D1' GS_NA=$'⚫' W_STATE=2 GB_L="[" GB_R="]"
-  BULLET="·" ARROW_G=" 🭹🭹🭹⮞ " ARROW_M="🭹🭹⮞"
-  # The three status markers — ✅ ok / 🔶 something to decide about / 🚨 blocker.
-  # BORN-EMOJI ONLY (U+2705, U+1F536, U+1F6A8): each is Emoji_Presentation by
-  # default, so it is two columns wide with no VS16 promotion in sight — a
-  # VS16-promoted glyph (⚠️ and its class) is what breaks the width math. They
-  # bring their own color, so nothing is painted onto them; the row's color
-  # opens AFTER the marker.
-  MK_OK=$'\U2705' MK_CAUT=$'\U1F536' MK_BAD=$'\U1F6A8'
-  # Same arithmetic, different marker width: these are BORN-emoji and occupy exactly
-  # two display columns, so 2 + 2 + 1 = 5.
-  PF_IND="     "
-  BOXTL="┌" BOXTR="┐" BOXBL="└" BOXBR="┘" BOXH="─" BOXV="│"
-  # Banners come in two weights: DOUBLE for the one installer title, HEAVY for
-  # the per-box titles. The light set above is the summary box's.
-  BANTL="╔" BANTR="╗" BANBL="╚" BANBR="╝" BANH="═" BANV="║"
-  BANTL2="┏" BANTR2="┓" BANBL2="┗" BANBR2="┛" BANH2="━" BANV2="┃"
+
+# ── ANSI AXIS: no escape sequences at all ───────────────────────────────────
+# 🚨 DERIVED, NEVER A HAND-WRITTEN LIST. `${!C_@}` asks bash for every name that
+# begins C_, so an atom added above is blanked here without anyone remembering
+# to add it -- the failure this replaces is a new color that survives --ascii
+# and breaks the byte contract, which no test would catch until a transcript
+# moved.
+# 🚨 ONLY ESCAPE SEQUENCES ARE GATED (Jei, s66): "if you are just emitting a
+# standard \r or \r\n or whatever, emit that, as is. All terminals should handle
+# \r and \n correctly. IFF you want something that's only relevant in ANSI mode,
+# use an escape sequence."
+# ⇒ EL is $'\e[K' (Erase in Line), an escape, and is dropped. CR is a bare $'\r',
+# a control character every terminal handles and one the --ascii contract names
+# explicitly beside tab and linefeed -- SO IT KEEPS ITS VALUE IN EVERY MODE.
+# ⚠️ THAT IS WHY THE REPAINT PREDICATE MOVED. execute.sh used to ask `[[ -n $CR ]]`
+# to decide whether it could repaint, which was only ever true because --ascii
+# blanked CR too. It asks $ANSI now. Testing the CHARACTER would take the repaint
+# path with $EL empty -- back to column 0, overwrite, never erase -- and a short
+# line would leave the tail of a longer one behind it.
+if [[ $ANSI -eq 0 ]]; then
+  for _atom in ${!C_@}; do printf -v "$_atom" %s ""; done
+  unset _atom
+  RESET="" EL=""
+fi
+# 🚨 AND THE CHARACTER ITSELF GOES WHEN THE RUNG FORBIDS IT. Gating every call
+# site is what SHOULD keep \r out of a capture; blanking the atom is what keeps a
+# missed call site from putting it there anyway. Belt and braces, deliberately:
+# one stray emission is an unreadable transcript nobody notices until they read it.
+if [[ $ALLOW_CR -eq 0 ]]; then
+  CR=""
 fi
 
 # The options themselves. --ascii was already read above; it is matched again
@@ -272,7 +372,12 @@ fi
 ARG_BOXES=()
 for arg in "$@"; do
   case "$arg" in
-    --ascii) ;;
+    # Already consumed by the mode pass above; accepted here so they are not
+    # reported as unknown options.
+    # Consumed by the cascade above; accepted here so they are not reported
+    # as unknown options.
+    --tty|--piped|--repaint|--no-repaint) ;;
+    --unicode|--ascii|--ansi|--no-ansi) ;;
     -h|--help) usage; exit 0 ;;
     -*) printf '%s: unknown option: %s\n' "$UI_PROG" "$arg" >&2; usage >&2; exit 2 ;;
     *) ARG_BOXES+=("$arg") ;;
@@ -442,21 +547,21 @@ logo_header() {
   # "if ANSI is supported", which in --ascii it is not. Delivering it needs the
   # color-ASCII mode he floated and does not exist yet; the art is placed so that
   # wrapping these five lines in color atoms is the whole of that change.
-  if [[ $ASCII -eq 1 ]]; then
+  if [[ $GLYPH_ASCII -eq 1 ]]; then
     printf '\n'
     printf '%s\n' \
-      '  .--------.   __  ___________________' \
-      '  |_|^|    |  |  \  ._  _   _ _|_  _' \
-      "  |---' /\\ |  |   | | \`/ \\ /_' |  /_\\" \
-      '  |        |  |   | |  \_/ `_/ |  \_.' \
-      "  \`--------' \`|__/ -------------------"
+      '  .--------. _________________________' \
+      '  |_|.|    |  ~--.  ._  _  __ _|_  _' \
+      "  |---' *  |  |   | | \`/ \\'--. |  /_\\" \
+      '  |        | .|   | |  \_/.__/ |/ \_.' \
+      "  \`--------'  ~--' -------------------"
     return 0
   fi
   printf '\n'
   printf '%s\n' \
     $' \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
     $' \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-    $' \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+    $' \033[1;94m ╟───┘ \033[0;34m\033[1;93m🟊  \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
     $' \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
     $' \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
   return 0
@@ -558,6 +663,40 @@ disp_width() {
   [[ $w -gt $DESIGN_W ]] && w=$DESIGN_W
   printf '%s' "$w"
 }
+
+# term_cols — THE REAL USABLE WIDTH, with no design clamp and no floor.
+# 🚨 term_width() LIES ON PURPOSE, AND THAT IS FINE FOR LAYOUT BUT NOT FOR THIS.
+# It floors at 59 so a 40-column phone still gets a legible fixed layout rather
+# than a ragged one; static text drawn too wide merely wraps, and wrapping is
+# survivable when the line is drawn once. A REPAINTED line is different: \r
+# returns to the start of the current PHYSICAL row, so once a frame wraps the
+# rows above it are unreachable and every later frame smears onto them. Deciding
+# whether to repaint therefore needs the honest number, not the floored one.
+# ⚠️ KEEPS THE -1. Terminals disagree about whether writing INTO the last column
+# wraps or whether the next character does; staying one short is correct either way.
+term_cols() {
+  local w=${COLUMNS:-}
+  [[ -z $w ]] && w=$(tput cols 2>/dev/null || echo 80)
+  case "$w" in ''|*[!0-9]*) w=80 ;; esac
+  w=$(( w - 1 )); [[ $w -lt 1 ]] && w=1
+  printf '%s' "$w"
+}
+
+# 🚨 A LINE THAT CANNOT FIT ON ONE ROW MUST NOT BE REPAINTED (Jei, s66): "if the
+# progress bar can't fit, we fall back to the variant that doesn't require
+# return-to-start". That variant already exists -- the append-only drawing -- so
+# this is a fallback to something proven, not a new code path.
+# ⚠️ EVALUATED ONCE, HERE, because it is the first point where both the tty test
+# above and disp_width below are available. A terminal resized mid-run keeps the
+# decision it started with, which is the same contract every other width has.
+# 🚨 STRICTLY GREATER, NOT EQUAL, SO A COLUMN IS ALWAYS SPARE (Jei, s66): "let's
+# not get close; we should try to have a 1-character gap". term_cols already
+# reserves the last column against the wrap ambiguity, and this keeps one more
+# beyond it -- so the widest frame still lands a column short of the edge even if
+# a terminal counts differently than we do. The cost is that an exactly-fitting
+# terminal falls back to append-only, which is correct output either way; the
+# alternative is a smear on the terminal we mismeasured.
+[[ $REPAINT -eq 1 && $(term_cols) -le $(disp_width) ]] && REPAINT=0
 
 # Clip a plain (non-path) string to a column budget, marking the cut with the
 # same three literal dots fit_path uses. Paths keep their own shrinker, which
@@ -815,7 +954,7 @@ init_input() {
     # contract all by itself (bracketed-paste toggles ESC[?2004h/l around
     # every prompt). Line editing is a terminal feature; --ascii's consumers
     # are not terminals, so nothing of value is given up.
-    if [[ $ASCII -eq 0 ]] && (IFS= read -e -r _rl_probe <<<"") >/dev/null 2>&1; then
+    if [[ $ANSI -eq 1 ]] && (IFS= read -e -r _rl_probe <<<"") >/dev/null 2>&1; then
       READLINE=1
     fi
   fi

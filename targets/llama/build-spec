@@ -314,11 +314,32 @@ LLAMA_LIST_FLAGS=(
 # and kills startup, so the menu is closed.
 # LOAD_MODE replaces --mmap/--mlock/--direct-io: at this pin all three are deprecated
 # and each ASSIGNS params.load_mode, so they overwrote each other (MMAP=on + MLOCK=on
-# meant "mmap off"). First pair emits nothing — upstream's default is already mmap.
+# meant "mmap off").
+#
+# 🚨 `none` IS OURS AND IT OVERRIDES UPSTREAM (Jei, s66): "There is no way I think keeping
+# mmap is a good idea for this architecture. It directly leads to moving large models out
+# of memory and trying to read from disk." Under mmap the weights ARE the mapped file
+# pages, so the kernel may evict them under pressure and re-fault mid-inference — on a box
+# whose own --fit sizing deliberately leaves ~1 GiB of headroom, that pressure is the
+# design point, not a corner case. These images are sized for the model, so the graceful
+# degradation mmap buys is worth less here than the eviction it costs.
+# ⚠️ `none` RATHER THAN `dio`, which was the other candidate: both turn mmap off and both
+# enable the chunked pinned-staging upload path (upload_backend is null whenever mmap is
+# on), but dio's HOST path posix_memaligns a FULL-SIZE bounce buffer per tensor
+# (llama-mmap.cpp read_aligned_chunk) where none reads straight into cur->data. dio's only
+# advantage is skipping the page cache, and page cache is RECLAIMABLE; the bounce is
+# anonymous memory that has to actually be there. And on an integrated GPU the bounce is
+# MORE likely, not less: the scheduler may place tensors in pinned-host buffers, which
+# report is_host == true. dio stays on the menu for a box measured to be fully on the
+# device path, where the bounce never fires and 64 MiB chunks are free speed.
+# 🚨 THE FIRST PAIR NOW EMITS A FLAG, AND IT HAS TO. Upstream's default is MMAP, so an
+# empty right-hand side here would leave mmap standing — the opposite of the ruling. This
+# is the N1a wiring default: it reaches every box on its next start, including boxes whose
+# llama.cfg predates the setting, which a seeded line never could.
 LLAMA_CHOICE_FLAGS=(
     # `auto` is omitted: llama-model.cpp rewrites it to MMAP before any consumer reads
     # it, so it is a synonym. check-llama-collisions.sh watches for that changing.
-    "LOAD_MODE|mmap=|none=--load-mode none|mlock=--load-mode mlock|mmap+mlock=--load-mode mmap+mlock|dio=--load-mode dio"
+    "LOAD_MODE|none=--load-mode none|mmap=--load-mode mmap|mlock=--load-mode mlock|mmap+mlock=--load-mode mmap+mlock|dio=--load-mode dio"
     # Upstream's default is LLAMA_TENSOR_READ_LAZY_AUTO, so `auto` emits nothing.
     "TENSOR_READ_LAZY|auto=|on=--tensor-read-lazy on|off=--tensor-read-lazy off"
     "NUMA|off=|distribute=--numa distribute|isolate=--numa isolate|numactl=--numa numactl"
@@ -348,7 +369,7 @@ LLAMA_EXCLUSIVE_GROUPS=(
 # can run PRE_LAUNCH a second time in the same process, and a doubled argv of this
 # length would be very hard to read in a log.
 llama_argv() {
-    local dyn=() entry suffix var val flag onf offf rest pairs=() pair def flags ok list
+    local dyn=() entry suffix var val flag onf offf rest pairs=() pair def flags ok list _lm
     local -a items=()
     local g first seen
 
@@ -476,12 +497,32 @@ llama_argv() {
 
     # A gating dependency, not a last-wins race: the two write different fields and the
     # CONSUMER ANDs them, so an exclusive group's "last one wins" would be false here.
-    # Only warns when the user SET it — a default nobody chose is not worth a message.
-    case "${DROSTE_LLAMA_LOAD_MODE:-}" in
+    # Only warns when the user SET the lazy line — a default nobody chose is not worth a
+    # message, which is why the inner case matches on|auto and never the empty string.
+    #
+    # 🚨 IT READS THE *EFFECTIVE* MODE, NOT THE VARIABLE. Since LOAD_MODE's wiring default
+    # became `none`, the commonest way to reach the dead combination is to set the lazy
+    # line and never mention the load mode at all — the box then has mmap off by OUR
+    # choice, not the user's. Testing "${DROSTE_LLAMA_LOAD_MODE:-}" would see an empty
+    # string, match nothing, and say nothing: a knob that reads as authoritative and does
+    # nothing, which is the defect this project forbids outright.
+    _lm=${DROSTE_LLAMA_LOAD_MODE:-none}
+    case "$_lm" in
         none|mlock|dio)
+            # ⚠️ `on` ONLY, NEVER `auto`. auto is this setting's OWN default and its
+            # meaning is "let llama decide" — llama deciding "no lazy reads, there is no
+            # mmap" is a legitimate outcome of that, not a thwarted request. Warning on
+            # auto would also break the file's contract that uncommenting a shown line is
+            # a no-op, since llama.cfg ships `TENSOR_READ_LAZY=auto` as its shown value.
+            # `on` is the only spelling that asks for something we cannot deliver.
             case "${DROSTE_LLAMA_TENSOR_READ_LAZY:-}" in
-                on|auto)
-                    serve::err "DROSTE_LLAMA_TENSOR_READ_LAZY=$DROSTE_LLAMA_TENSOR_READ_LAZY # does nothing while DROSTE_LLAMA_LOAD_MODE=$DROSTE_LLAMA_LOAD_MODE. llama reads tensors lazily only when the load mode keeps mmap on, so use mmap or mmap+mlock, or remove the lazy line. Fix it in $CFG_FILE and restart the box." ;;
+                on)
+                    # ⚠️ TWO SENTENCES, because the remedy differs by who chose the mode.
+                    if [ -n "${DROSTE_LLAMA_LOAD_MODE:-}" ]; then
+                        serve::err "DROSTE_LLAMA_TENSOR_READ_LAZY=$DROSTE_LLAMA_TENSOR_READ_LAZY does nothing while DROSTE_LLAMA_LOAD_MODE=$_lm is set. llama reads tensors lazily only when the load mode keeps mmap on, so use mmap or mmap+mlock, or remove the lazy line. Fix it in $CFG_FILE and restart the box."
+                    else
+                        serve::err "DROSTE_LLAMA_TENSOR_READ_LAZY=$DROSTE_LLAMA_TENSOR_READ_LAZY does nothing here. This box's load mode defaults to none, which turns mmap off, and llama reads tensors lazily only with mmap on. Set DROSTE_LLAMA_LOAD_MODE=mmap (or mmap+mlock) in $CFG_FILE if you want lazy reads, or remove the lazy line. Restart the box after editing."
+                    fi ;;
             esac ;;
     esac
 

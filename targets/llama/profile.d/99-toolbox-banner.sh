@@ -151,8 +151,18 @@ PY
 # ⚠️ The path is a literal here rather than read from the baked build-spec's
 # CFG_FILE, and that is the point: the file we tell the user to edit further down
 # and the file we read here must be the same string, guaranteed by being one.
+# 🚨 THE FALLBACK IS READ FROM THE BAKED BUILD-SPEC, NEVER TYPED HERE (s66). This used
+# to be `local def=8080`, a fourth copy of the port that NOTHING cross-checked — the
+# other three (build-spec, llama.cfg, installer/contract.sh) are pinned against each
+# other by g1lab/servewire.sh, so moving the number to 9931 would have left this one
+# behind and the banner would have printed a URL to a port no box binds. Same file
+# already asks droste-serve.sh for the ADDRESS; there is no reason the port should be
+# the one thing it re-derives by hand. ⚠️ If the grep fails the value stays EMPTY and
+# the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def=8080 file="${DROSTE_SERVE_ENV:-/opt/data/llama.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/data/llama.cfg}" pv=""
+  def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
+        /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
     pv=$(
       set +e +u +o pipefail

@@ -155,8 +155,18 @@ PY
 # ⚠️ The path is a literal here rather than read from the baked build-spec's
 # CFG_FILE, and that is the point: the file we tell the user to edit further down
 # and the file we read here must be the same string, guaranteed by being one.
+# 🚨 THE FALLBACK IS READ FROM THE BAKED BUILD-SPEC, NEVER TYPED HERE (s66). This used
+# to be a literal, a fourth copy of the port that NOTHING cross-checked — the other three
+# (build-spec, <box>.cfg, installer/contract.sh) are pinned against each other by
+# g1lab/servewire.sh, so a port that moved left this one behind. ⚠️ IT HAD ALREADY GONE
+# WRONG: ds4's copy read 8000, which is VLLM's port, while its spec said 8001 — so on a
+# machine running both, an unreadable ds4.cfg printed a recipe aimed at the wrong server.
+# Deriving it means the two cannot disagree. ⚠️ If the grep fails the value stays EMPTY
+# and the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def=8188 file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}" pv=""
+  def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
+        /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
     pv=$(
       set +e +u +o pipefail

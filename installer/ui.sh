@@ -539,23 +539,34 @@ banner() {   # text [bold] [min-inner-width]
 # (droste-ai-halo commit 198f3f9), re-indented to sit above the installer title.
 # It is ANSI + private-use box glyphs by construction, so --ascii skips it.
 logo_header() {
-  # ⏳ OWED BY THE NEXT MINOR RELEASE (Jei, s66): the COLORED ASCII art. Under
-  # --ascii --ansi this still draws the plain form, so a terminal that has color
-  # but no unicode gets a monochrome mark where the unicode one is shaded. The
-  # art and its exact palette already exist -- ~/workspace/logo-3-color-ascii.txt,
-  # box gradient per line, the . and * accents bold bright yellow, the two
-  # horizontal rules deliberately NOT bold because bold breaks the glyphs -- so
-  # this is wiring a second string, not designing anything. Accepted as-is for now.
-  # 🚨 --ascii GETS A LOGO NOW, WHERE IT USED TO GET NOTHING (s66). The mark is the
-  # first thing the installer draws, and returning early meant an --ascii run opened on
-  # a bare prompt. ⚠️ NO ESCAPES HERE, DELIBERATELY: this mode's contract is printable
-  # ASCII and tab only, and every color atom is empty in this branch anyway. Jei's
-  # spec for this art — "logo portion BOLD; ^ and /\ bright yellow" — is conditioned on
-  # "if ANSI is supported", which in --ascii it is not. Delivering it needs the
-  # color-ASCII mode he floated and does not exist yet; the art is placed so that
-  # wrapping these five lines in color atoms is the whole of that change.
+  # FOUR FORMS, TWO QUESTIONS: the CHARSET level picks which art (unicode or ASCII),
+  # and the ANSI level picks whether that art carries color. Every combination is a
+  # real mode, so every combination gets its own string.
+  # ⭐ THE PLAIN FORMS ARE THE COLORED ONES WITH THE ESCAPES REMOVED, and that was
+  # verified rather than assumed: escape-stripping each colored art gives its plain
+  # twin byte for byte. Editing one art means editing its twin.
+  # 🚨 THE ESCAPES HERE ARE GATED BY THE BRANCH, NOT BY AN ATOM, and that is the whole
+  # reason a --no-ansi run is now clean. The color atoms are blanked when ANSI is off,
+  # but this art never used them -- it carried raw SGR codes unconditionally, so
+  # `--unicode --no-ansi` PRINTED `^[[1;97m` at the user instead of dropping the color.
+  # A gradient has no role names to atomize; selecting the string is the honest gate.
+  printf '\n'
   if [[ $GLYPH_ASCII -eq 1 ]]; then
-    printf '\n'
+    if [[ $ANSI -eq 1 ]]; then
+      # Jei's palette: box gradient per line, the . and * accents bold bright
+      # yellow, and the two horizontal rules deliberately NOT bold -- bold breaks
+      # those glyphs.
+      printf '%s\n' \
+        $'\033[1;0m \033[1;97m .\033[1;96m--\033[1;94m--\033[1;34m----. \033[0;90m_____\033[0;37m______\033[0;97m________\033[0;37m______\033[0m' \
+        $'\033[1;0m \033[1;96m |_|\033[1;93m.\033[1;94m|\033[1;34m    | \033[1;90m ~--\033[1;37m.  ._ \033[1;97m _  __ _\033[1;37m|_  _\033[0m' \
+        $'\033[1;0m \033[1;94m |---\' \033[1;93m*  \033[1;34m| \033[1;90m | \033[1;37m  | | \033[1;97m`/ \\\'--.\033[1;37m |  /_\033[1;90m\\\033[0m' \
+        $'\033[1;0m \033[1;34m |        | \033[1;90m.|\033[1;37m   | |\033[1;97m  \\_/.__\033[1;37m/ |/ \\\033[1;90m_.\033[0m' \
+        $'\033[1;0m \033[1;34m `--------\' \033[1;90m ~--\'\033[0;37m -\033[0;97m--------\033[0;37m------\033[0;90m----\033[0m'
+      return 0
+    fi
+    # 🚨 --ascii --no-ansi GETS A LOGO, WHERE IT USED TO GET NOTHING (s66). The mark is
+    # the first thing the installer draws, and returning early opened the run on a bare
+    # prompt. ⚠️ NO ESCAPES IN THIS BRANCH: the mode's contract is printable ASCII.
     printf '%s\n' \
       '  .--------. _________________________' \
       '  |_|.|    |  ~--.  ._  _  __ _|_  _' \
@@ -564,7 +575,15 @@ logo_header() {
       "  \`--------'  ~--' -------------------"
     return 0
   fi
-  printf '\n'
+  if [[ $ANSI -eq 0 ]]; then
+    printf '%s\n' \
+      '  ╔═╤═╤════╗ 🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺🭺' \
+      '  ╟─┘★│    ║  █🮂🮂🭕🭏            🭋' \
+      '  ╟───┘ 🟊  ║  █   █ 🭩🬂🭗🭄🮂🭏 🭄🮀🭧🭢🬨🬂🭗🭂🮀🭍' \
+      '  ║        ║  █  🭊🭠 🭞  🭕▂🭠 ▄ 🭨🭬🭦🭩🭛🭓🬭🬽' \
+      '  ╚════════╝ `🮃🮃🮃🭘🭷🭷🭷🭷🭷🭷🭷🭷🭷🭣🬂🭘🭷🭷🭷🭷🭷🭷🭷🭷'
+    return 0
+  fi
   printf '%s\n' \
     $' \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
     $' \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \

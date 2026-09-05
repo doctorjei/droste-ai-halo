@@ -539,6 +539,13 @@ banner() {   # text [bold] [min-inner-width]
 # (droste-ai-halo commit 198f3f9), re-indented to sit above the installer title.
 # It is ANSI + private-use box glyphs by construction, so --ascii skips it.
 logo_header() {
+  # ⏳ OWED BY THE NEXT MINOR RELEASE (Jei, s66): the COLORED ASCII art. Under
+  # --ascii --ansi this still draws the plain form, so a terminal that has color
+  # but no unicode gets a monochrome mark where the unicode one is shaded. The
+  # art and its exact palette already exist -- ~/workspace/logo-3-color-ascii.txt,
+  # box gradient per line, the . and * accents bold bright yellow, the two
+  # horizontal rules deliberately NOT bold because bold breaks the glyphs -- so
+  # this is wiring a second string, not designing anything. Accepted as-is for now.
   # 🚨 --ascii GETS A LOGO NOW, WHERE IT USED TO GET NOTHING (s66). The mark is the
   # first thing the installer draws, and returning early meant an --ascii run opened on
   # a bare prompt. ⚠️ NO ESCAPES HERE, DELIBERATELY: this mode's contract is printable

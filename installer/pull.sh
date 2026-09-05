@@ -112,7 +112,7 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   curl -fsS -N --unix-socket "$PULL_SOCK" -X POST \
        "http://d/v1.40/images/create?fromImage=$repo&tag=$tag" 2>>"$log" \
     | python3 -c "$(_pull_progress_py)" \
-        "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$((1-ANSI))" "$manifest" \
+        "$short..." "$(disp_width)" "$BAR_F" "$BAR_E" "$((1-REPAINT))" "$manifest" \
         "$short..." "$STATUS_W" "$colf" \
         2>>"$log" \
     || rc=$?
@@ -121,7 +121,12 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # (as a name-column offset, which is what status_head pads from) so [OK] still
   # lands in the tag column. No file means nothing was drawn — leave the line
   # closed and let status_head draw the head itself.
-  if [[ $ANSI -eq 0 && -s $colf ]] && read -r col < "$colf"; then
+  # 🚨 KEYED TO REPAINT, NOT TO ESCAPES (s66). The append-only drawing exists
+  # because the bar cannot be redrawn in place -- which is what $REPAINT answers.
+  # Asking $ANSI got the right answer only while the two moved together; a
+  # terminal with no escapes can still repaint with \r, and a pipe cannot repaint
+  # even when escapes are allowed. The no-repaint case gets the simple ASCII bar.
+  if [[ $REPAINT -eq 0 && -s $colf ]] && read -r col < "$colf"; then
     STATUS_COL=$(( col - 2 )); [[ $STATUS_COL -lt 0 ]] && STATUS_COL=0
     STATUS_NAME="$short..."
     STATUS_OPEN=1

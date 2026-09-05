@@ -174,7 +174,7 @@ start_service() {
 # (intent) and what is actually true (observation). A crashed server is "wanted, not
 # running" — and saying so is the difference between this and a bare `ps`.
 status_service() {
-    local want obs
+    local want obs died=0
     serve::read_config
     # THREE answers, not two — see serve::intent_state for why "no" and "we could not
     # record it" must not be the same word. Kept in the library rather than inline here
@@ -221,9 +221,15 @@ status_service() {
         obs="running (pid ${SERVE_REC_PID})"
     else
         obs="not running — ${SERVE_STATE_MSG}"
+        # CAPTURED HERE: this function calls state_ok a second time at the end for its
+        # exit code, and that call resets the flag.
+        died=${SERVE_STATE_DIED:-0}
     fi
     printf '  actually              : %s\n' "$obs"
     printf '  log                   : %s\n' "$DROSTE_SERVE_LOG"
+    # The person typing server_status on a box that will not stay up is exactly who
+    # needs to be told the machine ran out of memory. Silent without evidence.
+    [ "$died" -eq 1 ] && serve::mem_report
     # A serve setting we could not use is the FIRST thing a user needs here, and it is
     # the one thing the two lines above cannot express: "wanted: yes / actually: not
     # running" is true of a broken config and of a crashed server alike. read_config

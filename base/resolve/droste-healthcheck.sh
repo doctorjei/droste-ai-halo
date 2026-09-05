@@ -110,6 +110,13 @@ fi
 # broken mount, relaunching the service cannot fix it and it will correctly fail all
 # three checks. Do not remove the bounce thinking the relaunch replaces it.
 if ! serve::state_ok; then
+    # ⭐ SAY WHY, NOT JUST THAT. A service that died because the machine ran out of
+    # memory — the usual cause being another droste box holding it — otherwise leaves a
+    # container log reading only "the service we launched is gone", which sends the user
+    # looking at this box's config for a fault that is not there. Only ever fires for a
+    # launch that ran and died (SERVE_STATE_DIED), never for one still starting, refused
+    # or stopped by hand, and it prints nothing at all without evidence.
+    [ "${SERVE_STATE_DIED:-0}" -eq 1 ] && serve::mem_report
     if serve::_relaunch_due; then
         serve::warn_ttys "the server died. Relaunching it now.
         If that fails, this box will restart in ~60s and your shell will close."

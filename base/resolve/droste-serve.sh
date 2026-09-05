@@ -175,6 +175,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${DROSTE_SERVE_PREFIX:=$DROSTE_SERVE_STATE_DIR/.PREFIX}"     # path prefix, DECLARED
 : "${DROSTE_SERVE_REQ_FIFO:=$DROSTE_SERVE_STATE_DIR/request}"   # verb → supervisor
 : "${DROSTE_SERVE_SUP_RECORD:=$DROSTE_SERVE_STATE_DIR/supervisor}"  # its pid + start
+: "${DROSTE_SERVE_MEM_RECORD:=$DROSTE_SERVE_STATE_DIR/.MEM_AT_LAUNCH}"  # MemAvailable kB
 : "${DROSTE_SERVE_REQ_WAIT:=60}"   # seconds a verb waits for the supervisor's launch
 : "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
 # ── The four flags this library puts on the command line ────────────────────
@@ -1199,9 +1200,15 @@ serve::heartbeat_starting() {
 # The healthcheck's first gate (see droste-healthcheck.sh); sets SERVE_STATE_MSG
 # with the reason on failure. Deliberately says nothing about the port: the probe
 # is the second, independent gate.
-# shellcheck disable=SC2034   # SERVE_STATE_MSG is consumed by droste-healthcheck.sh
+# SERVE_STATE_DIED distinguishes the two ways this returns 1: a launch that RAN AND
+# DIED (or never got off the ground) versus one that was never made, is still in flight,
+# refused the port or was stopped by hand. Only the first is worth a memory diagnosis —
+# and this function is called once a second inside serve::request_launch's wait loop, so
+# the flag is set here and the SCAN is done by the caller that decides to report.
+# shellcheck disable=SC2034   # SERVE_STATE_MSG/_DIED are consumed by callers
 serve::state_ok() {
     SERVE_STATE_MSG=""
+    SERVE_STATE_DIED=0
     if ! serve::_read_pidfile; then
         SERVE_STATE_MSG="no launch record at $DROSTE_SERVE_RECORD — the server door has not started a service in this container. See $DROSTE_SERVE_LOG (and the container log) for what it decided instead."
         return 1
@@ -1230,11 +1237,13 @@ serve::state_ok() {
             ;;
         *)
             SERVE_STATE_MSG="the last launch attempt recorded status '$SERVE_REC_STATUS' — nothing of ours is serving. See $DROSTE_SERVE_LOG."
+            SERVE_STATE_DIED=1
             return 1
             ;;
     esac
     if ! serve::_pid_is_ours "$SERVE_REC_PID" "$SERVE_REC_START"; then
         SERVE_STATE_MSG="the service we launched (pid $SERVE_REC_PID) is gone — anything still answering port ${SERVE_PORT:-?} is not it. See $DROSTE_SERVE_LOG."
+        SERVE_STATE_DIED=1
         return 1
     fi
     return 0
@@ -1322,6 +1331,182 @@ serve::_privdrop_prefix() {
     printf 'setpriv\0--reuid=%s\0--regid=%s\0--keep-groups\0--\0' "$uid" "$gid"
 }
 
+# ── Memory diagnosis ────────────────────────────────────────────────────────
+# WHY THIS EXISTS: a box whose model will not load because a SIBLING BOX is holding
+# the machine's memory dies without anything in the container log naming memory. That
+# happened on Loaf (s66): llama would not load while ds4 was running, and the only
+# evidence was a server that started, ran for a minute and vanished. These boxes share
+# ONE pool — the GPU allocates from system memory on Halo — so "another box is up" is a
+# first-class cause of a failed start, and the box must say so itself.
+#
+# ⭐ WHAT IS REPORTED IS EVIDENCE, NOT A GUESS. Three independent facts, each printed
+# only when we actually hold it: the service's own words (a signature in its log), the
+# machine's MemAvailable now against what it was when we launched, and who is holding
+# the memory. A failure with none of them prints nothing extra.
+#
+# ⚠️ NO THRESHOLD DECIDES WHETHER A BOX IS "OUT OF MEMORY", deliberately. We cannot know
+# what this model needs, and a number invented here would be wrong on the next machine.
+# The one comparison used (below) is against THIS box's own launch-time reading, which
+# is a measurement rather than a constant.
+
+# The signatures, read off the pinned sources rather than remembered: ggml's allocator
+# ("failed to allocate", "not enough space in the buffer"), llama-model's loader
+# ("unable to allocate"), the HIP/CUDA backend ("...Malloc failed: out of memory"),
+# libstdc++ ("std::bad_alloc"), libc's ENOMEM ("Cannot allocate memory"), and the Python
+# side every other box shares ("MemoryError", torch's "OutOfMemoryError", "out of
+# memory"). Matched case-insensitively as fixed strings.
+DROSTE_SERVE_OOM_SIGNATURES=(
+    'std::bad_alloc'
+    'out of memory'
+    'failed to allocate'
+    'unable to allocate'
+    'not enough space in the buffer'
+    'Malloc failed'
+    'Cannot allocate memory'
+    'MemoryError'
+    'OutOfMemoryError'
+)
+
+# _meminfo_kb — one field of /proc/meminfo, in kB. Pure bash, no awk/sed subprocess:
+# this runs on a failure path where the shell may already be short of memory itself.
+serve::_meminfo_kb() {
+    local key=$1 name val
+    [ -r /proc/meminfo ] || return 1
+    while read -r name val _; do
+        if [ "$name" = "${key}:" ]; then
+            case "$val" in ''|*[!0-9]*) return 1 ;; esac
+            printf '%s' "$val"
+            return 0
+        fi
+    done < /proc/meminfo
+    return 1
+}
+
+# _gib — kB to one decimal place. Integer arithmetic only; a box with no `bc` is the
+# normal case and a diagnostic must not need a package to print a number.
+serve::_gib() {
+    local kb=${1:-}
+    case "$kb" in ''|*[!0-9]*) printf '?' ; return 0 ;; esac
+    printf '%s.%s GiB' "$(( kb / 1048576 ))" "$(( (kb % 1048576) * 10 / 1048576 ))"
+}
+
+# _hsize — the same number where the SCALE is not known in advance. A process list
+# rendered in GiB prints "0.0 GiB" for anything small, which reads as noise beside the
+# entry that matters; memory READINGS are always GiB-scale and keep _gib.
+serve::_hsize() {
+    local kb=${1:-}
+    case "$kb" in ''|*[!0-9]*) printf '?' ; return 0 ;; esac
+    if [ "$kb" -ge 1048576 ]; then serve::_gib "$kb"; else printf '%s MiB' "$(( kb / 1024 ))"; fi
+}
+
+# _mem_snapshot — record MemAvailable as we launch. This is the ONLY way the report can
+# later say memory was TAKEN rather than merely being low: without it, a box that was
+# always short and a box a sibling starved look identical.
+# Never fails the caller — a diagnostic that can break a launch is worse than no
+# diagnostic (see the PRE_LAUNCH rule in CONVENTIONS: every arm exits 0).
+serve::_mem_snapshot() {
+    local kb
+    kb=$(serve::_meminfo_kb MemAvailable) || return 0
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$kb" > "$DROSTE_SERVE_MEM_RECORD" 2>/dev/null || return 0
+    serve::_own "$DROSTE_SERVE_MEM_RECORD"
+    return 0
+}
+
+serve::_mem_at_launch() {
+    local kb
+    [ -r "$DROSTE_SERVE_MEM_RECORD" ] || return 1
+    read -r kb < "$DROSTE_SERVE_MEM_RECORD" 2>/dev/null || return 1
+    case "${kb:-}" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s' "$kb"
+}
+
+# _mem_evidence — the service's own last word about memory, if it left one.
+# 🚨 OUR OWN NOTES ARE EXCLUDED, and that is not tidiness: serve::_log_note writes into
+# this same file, so a report containing the words "out of memory" would be matched by
+# the NEXT scan and quoted back as if the server had said it. A diagnostic that can cite
+# itself as evidence is worse than silence.
+serve::_mem_evidence() {
+    local n=${1:-400} pat=() sig line
+    case "$DROSTE_SERVE_LOG" in /dev/*) return 1 ;; esac
+    [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 1
+    for sig in "${DROSTE_SERVE_OOM_SIGNATURES[@]}"; do pat+=(-e "$sig"); done
+    # `grep` finding nothing is the NORMAL answer here, and this library runs under
+    # `set -euo pipefail`. Guarded so the function RETURNS rather than dying; the guard
+    # that is actually observable is mem_report's own `|| ev=""` (a command substitution
+    # already contains the abort), and that one is pinned by a test.
+    line=$(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null \
+           | grep -v '^=== droste-serve:' \
+           | grep -iF "${pat[@]}" 2>/dev/null | tail -1) || line=""
+    [ -n "$line" ] || return 1
+    printf '%s' "${line:0:220}"
+}
+
+# _mem_top — the largest resident processes on the machine, biggest first, at most two.
+# Pure procfs for the same reason serve::_listen_rows is: `ps` is not installed in every
+# image and adding a package to print a diagnostic is a bad trade.
+# ⚠️ WHAT IS VISIBLE DEPENDS ON THE PID NAMESPACE. These boxes default to --pid host, so
+# a sibling box's server is visible and can be NAMED; without that we see only our own
+# and the line is merely uninformative rather than wrong. Nothing here claims a process
+# belongs to another box — it prints what holds memory and lets the reader recognize it.
+serve::_mem_top() {
+    local d rss comm page rows
+    page=$(getconf PAGESIZE 2>/dev/null) || page=4096
+    case "$page" in ''|*[!0-9]*) page=4096 ;; esac
+    rows=$(
+        for d in /proc/[0-9]*; do
+            read -r _ rss _ < "$d/statm" 2>/dev/null || continue
+            case "$rss" in ''|*[!0-9]*) continue ;; esac
+            read -r comm < "$d/comm" 2>/dev/null || continue
+            printf '%s %s\n' "$(( rss * page / 1024 ))" "${comm:0:24}"
+        done | sort -rn | head -2
+    ) || rows=""      # `head` closing the pipe early is a pipefail failure, not an error
+    [ -n "$rows" ] || return 1
+    local out="" kb name
+    while read -r kb name; do
+        [ -n "$kb" ] || continue
+        [ -z "$out" ] || out="$out, "
+        out="$out$name $(serve::_hsize "$kb")"
+    done <<< "$rows"
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
+}
+
+# mem_report — say, out loud and in the container log, whether this failure looks like a
+# memory failure. Called only where a launch has ALREADY failed or died, so it is never
+# in the way of a working box. Always returns 0.
+#
+# ⭐ THE 1 GiB FLOOR ON THE DROP is what keeps this from crying wolf: MemAvailable moves
+# by hundreds of MiB on any busy machine as the page cache breathes, and a report that
+# fires on that teaches the reader to skip it. A drop that large during one service's
+# lifetime is somebody else's allocation.
+serve::mem_report() {
+    local ev now was top said=0
+    ev=$(serve::_mem_evidence) || ev=""
+    now=$(serve::_meminfo_kb MemAvailable) || now=""
+    was=$(serve::_mem_at_launch) || was=""
+    if [ -n "$ev" ]; then
+        serve::err "this is a MEMORY failure — the service said so itself:"
+        serve::err "  | $ev"
+        said=1
+    fi
+    if [ "$said" -eq 0 ] && [ -n "$now" ] && [ -n "$was" ] \
+       && [ "$(( was - now ))" -ge 1048576 ]; then
+        serve::err "this may be a MEMORY failure: the service left no message about it, but $(serve::_gib "$(( was - now ))") less memory is available now than when it launched."
+        said=1
+    fi
+    [ "$said" -eq 1 ] || return 0
+    if [ -n "$now" ]; then
+        local total
+        total=$(serve::_meminfo_kb MemTotal) || total=""
+        serve::err "memory now: $(serve::_gib "$now") available${total:+ of $(serve::_gib "$total")}${was:+, against $(serve::_gib "$was") when this service launched}."
+    fi
+    top=$(serve::_mem_top) && serve::err "largest memory users on this machine: $top."
+    serve::err "every droste box on this machine shares that one pool, and the GPU allocates from it too, so a box that is running can leave too little for this one to load its model. Stop the other box, or lower this box's model or context size."
+    serve::_log_note "MEMORY: this launch failed with the machine short of memory (see the container log for the reading)."
+    return 0
+}
+
 # ── Launch ──────────────────────────────────────────────────────────────────
 # _log_tail — copy the last few lines of the service log to stderr, one prefixed
 # line each. WHY: the only thing a user ever sees of a failed start is `podman
@@ -1367,6 +1552,10 @@ serve::launch() {
         DROSTE_SERVE_LOG=/dev/stderr
     fi
     serve::_log_note "launching: ${SERVICE[*]}"
+    # Taken HERE, immediately before the fork, because the number is only useful as the
+    # baseline this service started from — a reading taken later would already include
+    # whatever this service allocated.
+    serve::_mem_snapshot
 
     HOME="${DROSTE_USER_HOME:-${HOME:-/root}}" \
     USER="${DROSTE_USER:-${USER:-root}}" \
@@ -1423,6 +1612,7 @@ serve::launch() {
         serve::err "the service exited immediately (pid $pid) — nothing is serving port ${SERVE_PORT:-?}. Last lines of $DROSTE_SERVE_LOG:"
         serve::_log_tail   # BEFORE the note below, so the tail shows the service's
                            # own last words rather than our summary of them.
+        serve::mem_report  # names memory when the evidence says so, silent otherwise.
         serve::_log_note "FAILED: the service exited immediately (pid $pid) — nothing is serving port ${SERVE_PORT:-?}."
         return 1
     fi

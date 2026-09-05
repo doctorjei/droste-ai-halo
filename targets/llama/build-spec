@@ -313,6 +313,8 @@ LLAMA_CHOICE_FLAGS=(
     # `auto` is omitted: llama-model.cpp rewrites it to MMAP before any consumer reads
     # it, so it is a synonym. check-llama-collisions.sh watches for that changing.
     "LOAD_MODE|mmap=|none=--load-mode none|mlock=--load-mode mlock|mmap+mlock=--load-mode mmap+mlock|dio=--load-mode dio"
+    # Upstream's default is LLAMA_TENSOR_READ_LAZY_AUTO, so `auto` emits nothing.
+    "TENSOR_READ_LAZY|auto=|on=--tensor-read-lazy on|off=--tensor-read-lazy off"
     "NUMA|off=|distribute=--numa distribute|isolate=--numa isolate|numactl=--numa numactl"
     "AUTO_MODEL|none=|embd-gemma=--embd-gemma-default|fim-qwen-1.5b=--fim-qwen-1.5b-default|fim-qwen-3b=--fim-qwen-3b-default|fim-qwen-7b=--fim-qwen-7b-default|fim-qwen-7b-spec=--fim-qwen-7b-spec|fim-qwen-14b-spec=--fim-qwen-14b-spec|fim-qwen-30b=--fim-qwen-30b-default|gpt-oss-20b=--gpt-oss-20b-default|gpt-oss-120b=--gpt-oss-120b-default|vision-gemma-4b=--vision-gemma-4b-default|vision-gemma-12b=--vision-gemma-12b-default"
 )
@@ -450,6 +452,17 @@ llama_argv() {
         [ -n "${!var:-}" ] || continue
         serve::err "$var is retired and is being ignored. llama deprecated --mmap/--mlock/--direct-io in favour of --load-mode, where all three set ONE value instead of three independent switches. Use DROSTE_LLAMA_LOAD_MODE in $CFG_FILE: none, mmap, mlock, mmap+mlock or dio."
     done
+
+    # A gating dependency, not a last-wins race: the two write different fields and the
+    # CONSUMER ANDs them, so an exclusive group's "last one wins" would be false here.
+    # Only warns when the user SET it — a default nobody chose is not worth a message.
+    case "${DROSTE_LLAMA_LOAD_MODE:-}" in
+        none|mlock|dio)
+            case "${DROSTE_LLAMA_TENSOR_READ_LAZY:-}" in
+                on|auto)
+                    serve::err "DROSTE_LLAMA_TENSOR_READ_LAZY=$DROSTE_LLAMA_TENSOR_READ_LAZY # does nothing while DROSTE_LLAMA_LOAD_MODE=$DROSTE_LLAMA_LOAD_MODE. llama reads tensors lazily only when the load mode keeps mmap on, so use mmap or mmap+mlock, or remove the lazy line. Fix it in $CFG_FILE and restart the box." ;;
+            esac ;;
+    esac
 
     # Ordering: droste's own flags FIRST, the user's catch-all LAST, because llama
     # parses argv left to right and a later occurrence wins — so the user beats us on

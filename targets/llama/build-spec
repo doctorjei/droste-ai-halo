@@ -320,9 +320,18 @@ LLAMA_CHOICE_FLAGS=(
 )
 # Settings that write the SAME field upstream, so more than one is a silent
 # last-wins race. We say so instead of letting argument order decide.
+# A shared field is not automatically a conflict — "set ONE of them" is false where one
+# option is a superset of another (EMBEDDINGS/RERANKING) or the overlap is partial
+# (CTX_SIZE/FIT_CTX). Those two are exemptions in check-llama-collisions.sh, not groups.
 LLAMA_EXCLUSIVE_GROUPS=(
     "GRAMMAR GRAMMAR_FILE JSON_SCHEMA JSON_SCHEMA_FILE"
     "SAMPLERS SAMPLING_SEQ"
+    # --reranking forces pooling_type=RANK, silently overriding a chosen pooling.
+    "LLAMA_ARG_POOLING RERANKING"
+    "LLAMA_ARG_CHAT_TEMPLATE LLAMA_ARG_CHAT_TEMPLATE_FILE"
+    "LLAMA_ARG_UI_CONFIG LLAMA_ARG_UI_CONFIG_FILE"
+    # Two upstream spellings of one field, not two knobs.
+    "LLAMA_ARG_ROPE_SCALE LLAMA_ARG_ROPE_FREQ_SCALE"
 )
 
 # llama_argv — DROSTE_LLAMA_* → SERVICE. Its own function, comfyui-style, so it can
@@ -438,7 +447,13 @@ llama_argv() {
     for g in "${LLAMA_EXCLUSIVE_GROUPS[@]}"; do
         first=""; seen=""
         for suffix in $g; do
-            var="DROSTE_LLAMA_$suffix"
+            # A member is either a droste suffix or a NATIVE name spelled in full.
+            # Four of the six pairs upstream collides are native-vs-native, and a loop
+            # that could only see DROSTE_LLAMA_* was blind to every one of them.
+            case $suffix in
+                LLAMA_*) var=$suffix ;;
+                *)       var="DROSTE_LLAMA_$suffix" ;;
+            esac
             [ -n "${!var:-}" ] || continue
             [ -n "$first" ] && seen="$seen $var" || first=$var
         done

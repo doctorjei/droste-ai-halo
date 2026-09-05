@@ -10,7 +10,7 @@
 #     blobs/<etag>.<uuid8>.incomplete    -> blobs/<etag>.total        (hub 1.x)
 # holding one ASCII integer, the expected total in bytes. The watcher reads it and
 # emits a real percentage; with no sidecar it emits its usual bytes-and-rate line
-# unchanged, so a box without the shim degrades silently to P1 behaviour.
+# unchanged, so a box without the shim degrades silently to P1 behavior.
 #
 # 🚨 THE GUARD IS THE POINT. hub's own circular import means patching *eagerly* at
 # import time raises, and hub SWALLOWS the error — the patch then never installs while

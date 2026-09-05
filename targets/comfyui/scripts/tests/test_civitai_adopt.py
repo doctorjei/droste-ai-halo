@@ -1290,7 +1290,7 @@ class CivitaiAdoptTest(unittest.TestCase):
         emptiness was then recorded as a FACT.
 
         `read_torch_container`'s `max_objects` defaults to 1, and BOTH legacy
-        behaviours in the shared reader -- skipping the preamble, stopping at the
+        behaviors in the shared reader -- skipping the preamble, stopping at the
         storage-key list -- are gated on it being > 1. So this read returned torch's
         MAGIC NUMBER, no keys, and an empty LIST rather than raising: `sniff_content`
         saw a non-None result, took it for success, and wrote `tensor_count: 0` at

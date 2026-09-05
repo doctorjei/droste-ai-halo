@@ -348,7 +348,7 @@ box_state() {  # box → ACTIVE|STOPPED|none|UNKNOWN
 #
 # A pull-and-write run drops the [On] cell (no container exists to report on).
 # Its remaining columns are NOT the full layout minus a constant: the glyph
-# columns of each layout are hand-tuned (see dash_table) because "centred under
+# columns of each layout are hand-tuned (see dash_table) because "centered under
 # that header" is an eye judgement about double-width glyphs, not arithmetic.
 # Only the Notes column is responsive; everything left of it is fixed so the
 # columns line up between runs.
@@ -423,7 +423,7 @@ dash_table() {   # with-on(0|1)
   local pcol ncol i n dw
   # HAND-TUNED GLYPH COLUMNS, one set per layout (Jei): a centering FORMULA
   # cannot be right here — the glyphs are double-width, the ASCII fallback is
-  # not, and "looks centred under that header" is an eye judgement, not an
+  # not, and "looks centered under that header" is an eye judgement, not an
   # arithmetic one. These are the columns from his two drawings; the row builder
   # below pads to them absolutely, so both cell widths land in the same place.
   if [[ $on -eq 1 ]]; then

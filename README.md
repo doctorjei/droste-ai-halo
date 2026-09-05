@@ -200,7 +200,7 @@ though the rest of the file still applies to it. ds4 is the one exception — it
 turns every `DROSTE_DS4_*` setting into a flag, so `DROSTE_DS4_HOST` and
 `DROSTE_DS4_PORT` reach a directly-run container too.
 
-**A value the box cannot honour stops it serving; it is never approximated.**
+**A value the box cannot honor stops it serving; it is never approximated.**
 Only IPv4 literals are accepted for now, so a hostname or an IPv6 address in
 `DROSTE_<APP>_HOST` refuses the launch and names the line to fix, rather than
 falling back — a user who typed an address was narrowing what the box listens
@@ -520,7 +520,7 @@ Everything the boxes fetch on their own lands in one of those two.
   carries both).
 - **`lchown …: invalid argument` part-way through a pull** (rootless podman) →
   your `/etc/subuid` and `/etc/subgid` entries were added *after* podman's
-  first run. Podman caches the id map when it initialises its storage, so a
+  first run. Podman caches the id map when it initializes its storage, so a
   grant made later never reaches it: the map still covers your own id alone,
   and the first layer carrying a foreign uid/gid fails to unpack — gigabytes
   into the download. Fix: confirm both files grant this user 65536 ids
@@ -657,7 +657,7 @@ settled, it shows where that box's data is now:
 carries to the rest of the box's paths, and to every box, if you take those
 offers; decline the first and each remaining path is asked in turn.
 
-The moving is done by `mv`, so its behaviour and its messages are the ones you
+The moving is done by `mv`, so its behavior and its messages are the ones you
 already know: a move within one filesystem is a rename, one that crosses
 filesystems copies and then removes the original, and a copy that dies partway
 leaves the source intact. Crossing a filesystem is named — both paths and the

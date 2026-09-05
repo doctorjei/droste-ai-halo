@@ -107,7 +107,7 @@ HEALTH_ACCEPT="ok"
 # vllm.cfg ONLY as a name in the Reserved block — there is no assignment line for it —
 # so a user reaching it has to author the line from nothing. That is a statement of
 # what the file does today, not a verdict: see the OPEN QUESTION below, which is where
-# the reserved-versus-honoured disagreement is queued for a ruling.
+# the reserved-versus-honored disagreement is queued for a ruling.
 # ⚠️ Substring noise again: `grep DROSTE_VLLM_CONFIG vllm.cfg` also matches the
 # unrelated DROSTE_VLLM_CONFIGURE_LOGGING line. Anchor the search on the `=`.
 #
@@ -119,7 +119,7 @@ HEALTH_ACCEPT="ok"
 # in the rebuild.
 # ▶ OPEN QUESTION, NOT RESOLVED HERE: vllm.cfg's Reserved section lists
 #   DROSTE_VLLM_CONFIG among the settings a user must NOT set, while this block says
-#   a user's value wins. Both cannot be true. TODAY'S BEHAVIOUR IS "the user's value
+#   a user's value wins. Both cannot be true. TODAY'S BEHAVIOR IS "the user's value
 #   wins" and this wiring keeps it unchanged; the disagreement is queued for a
 #   ruling, not settled by whoever edits next.
 #
@@ -289,7 +289,7 @@ VLLM_BOOL_VARS=(
     "ROCM_FP8_PADDING:VLLM_ROCM_FP8_PADDING:1:0"
     "ROCM_MOE_PADDING:VLLM_ROCM_MOE_PADDING:1:0"
     "ROCM_CUSTOM_PAGED_ATTN:VLLM_ROCM_CUSTOM_PAGED_ATTN:1:0"
-    # ── Idle behaviour ── bool(int)
+    # ── Idle behavior ── bool(int)
     "SLEEP_WHEN_IDLE:VLLM_SLEEP_WHEN_IDLE:1:0"
     # ── Security ── bool(int)   (DO_NOT_TRACK is special-cased below: two variables)
     "INSEC_SERIAL_OK:VLLM_ALLOW_INSECURE_SERIALIZATION:1:0"
@@ -309,7 +309,7 @@ VLLM_BOOL_VARS=(
     # ── Multimodal input ── bool(int)
     "MEDIA_REDIRECTS_OK:VLLM_MEDIA_URL_ALLOW_REDIRECTS:1:0"
     # ── Multi-node serving ──
-    # .lower() in ("true","1") — "1" chosen for consistency with its neighbours
+    # .lower() in ("true","1") — "1" chosen for consistency with its neighbors
     "PYNCCL:VLLM_DISABLE_PYNCCL:0:1"                                 # INVERTED (DISABLE_)
     "P2P_CHECK:VLLM_SKIP_P2P_CHECK:0:1"                              # INVERTED (SKIP_)
     "RANDOMIZE_DP_DUMMY_INPUTS:VLLM_RANDOMIZE_DP_DUMMY_INPUTS:1:0"
@@ -398,7 +398,7 @@ vllm_menu() {
 # substituting a fallback would do the same thing silently.
 # ⇒ WARN, THEN PASS THROUGH UNCHANGED. Nothing is folded, trimmed or defaulted — a
 # registry key is matched exactly (`self.name2class.get(cls_name)`), so any
-# normalisation we did would be a value the user did not write.
+# normalization we did would be a value the user did not write.
 #
 # ⭐ AND THAT IS WHY THESE OBSERVE RATHER THAN TRANSLATE. We do not own the value, and
 # observation is pass-through under the naming rule — the `--api-prefix` precedent.
@@ -585,7 +585,7 @@ vllm_env() {
         VLLM_MQ_MAX_CHUNK_BYTES_MB                      # int
         VLLM_WORKER_MULTIPROC_METHOD                    # menu {spawn, fork}
         VLLM_FLOAT32_MATMUL_PRECISION                   # menu {highest, high, medium}
-        # Idle Behaviour & Timeouts
+        # Idle Behavior & Timeouts
         VLLM_RPC_TIMEOUT                                # int
         VLLM_ENGINE_ITERATION_TIMEOUT_S                 # int
         # MoE Models
@@ -752,7 +752,7 @@ vllm_env() {
         # as the classic blank-is-not-absent defect — but here the divergence IS the
         # feature: "load no plugins" is a thing a user may legitimately want to say, and
         # an empty list is the only way to say it. It is the unbounded-string exception,
-        # and `vllm.cfg` documents the behaviour at the line. ⭐ The near-identical
+        # and `vllm.cfg` documents the behavior at the line. ⭐ The near-identical
         # mechanism next door (MEDIA_CONNECTOR) IS guarded, because "no media connector"
         # is not a coherent request — the difference is intent, not machinery.
         # `if partition_list_str is not None` (distributed/utils.py:110-116) ⇒ ""
@@ -946,7 +946,7 @@ vllm_env() {
         # Unset/blank leaves the variable alone: the image's baked value or vLLM's
         # own default stands. Setting it here would turn an opt-out into an opt-in.
         [ -n "$val" ] || continue
-        # droste::bool normalises BOTH user vocabularies to one internal answer, so
+        # droste::bool normalizes BOTH user vocabularies to one internal answer, so
         # there are two arms here and not four. yes/no and on/off are not synonyms
         # in the FILE — one answers a question ("never reach the network?"), the
         # other names a state ("padding is on") — and each setting is worded as
@@ -1018,7 +1018,7 @@ vllm_env() {
     # the whole reason this one is droste-named. `auto` is wired to the literal
     # upstream default rather than to "-" because writing it is faithful: it names
     # the isatty branch that upstream itself falls through to.
-    # (NO_COLOR is honoured by upstream ahead of all three; we do not touch it.)
+    # (NO_COLOR is honored by upstream ahead of all three; we do not touch it.)
     vllm_menu LOGGING_COLOR VLLM_LOGGING_COLOR auto=auto always=1 never=0
 
     # ⚠️ The native value is a logging-dictConfig `ext://` REFERENCE, not a word.
@@ -1176,7 +1176,7 @@ vllm_config_guard() {
     # from a login shell, where /usr/bin precedes /opt/venv/bin, so this is the
     # SYSTEM python3. It does not crash here, it would MIS-SHAPE — `import yaml`
     # raises under an interpreter without it, shape comes back empty, and a valid
-    # config reads as unrecognised. NOT changed to an absolute path yet: this guard
+    # config reads as unrecognized. NOT changed to an absolute path yet: this guard
     # is EXECUTED by g1lab/vllmwire.sh, which has no /opt/venv, so the fix needs a
     # prefer-venv-then-fall-back shape and that pattern wants review first.
     command -v python3 >/dev/null 2>&1 || return 0

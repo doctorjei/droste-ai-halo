@@ -39,7 +39,7 @@
 # possible way to make a new signal worthless. The cost is stated and accepted: a
 # genuinely resumed transfer is announced on its first GROWTH rather than on first
 # sight, i.e. up to one tick late.
-# ⚠️ AND WE DO NOT REAP THEM (also R6). A reaper is a new DESTRUCTIVE behaviour and
+# ⚠️ AND WE DO NOT REAP THEM (also R6). A reaper is a new DESTRUCTIVE behavior and
 # must never be smuggled in under an announcement feature.
 #
 # ── WHAT THIS FILE DELIBERATELY DOES NOT KNOW ────────────────────────────────
@@ -187,7 +187,7 @@ DLWATCH_PREFIX=droste-download
 # message; its non-zero status is what we read.
 # ⚙️ THE STRING IS PASSED THROUGH AS TYPED. Both readers take it base 10 — measured:
 # `[ 010 -gt 9 ]` is true and `read -t 010` waits ten seconds — so a leading zero means
-# the same thing to both and there is nothing to normalise.
+# the same thing to both and there is nothing to normalize.
 dlwatch::_seconds() {
     local name=$1 orig='' raw def min
     case $name in
@@ -544,10 +544,10 @@ dlwatch::emit() {
 dlwatch::_grew() { [ "${2:-0}" -gt "${1:-0}" ]; }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE TICK — the behavioural contract, in one function
+# THE TICK — the behavioral contract, in one function
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage: dlwatch::tick <unix-seconds>
-# The clock is an ARGUMENT so the lab can drive an hour of behaviour in a millisecond.
+# The clock is an ARGUMENT so the lab can drive an hour of behavior in a millisecond.
 # Nothing in here reads the wall clock.
 dlwatch::tick() {
     local now=${1:-0}
@@ -1032,7 +1032,7 @@ dlwatch::_spawn() {
 #   anything else     → WARN, then the default. No fall-through values: a word we
 #                       cannot read is never silently swallowed.
 # ⚠️ droste::bool is the ONE parser (a whitelist, case-folded, space-stripped); do
-# not add a second one here. It returns "" for blank AND for unrecognised, so the
+# not add a second one here. It returns "" for blank AND for unrecognized, so the
 # raw value is what distinguishes them — that distinction is the whole rule.
 dlwatch::enabled() {
     local raw=${DROSTE_DOWNLOAD_ANNOUNCE-} v

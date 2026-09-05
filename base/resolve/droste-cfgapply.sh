@@ -92,7 +92,7 @@
 # the file to fail exactly where it always failed; we just no longer die with it.
 #
 # Sourced by droste-resolve.sh and droste-serve.sh right after droste-common.sh (both
-# lanes, one behaviour — a build-spec must never have to ask which door it came in).
+# lanes, one behavior — a build-spec must never have to ask which door it came in).
 # Keep it free of side effects: definitions only.
 
 # ── droste::cfg_apply — the whole design, in one function ────────────────────
@@ -228,7 +228,7 @@ droste::cfg_apply() {
     # NEVER BE SILENT. That one satisfies the principle by still working; this one
     # has to satisfy it by saying so, because working is off the table.
     #
-    # 🚨 WHAT "UNRECOGNISED" MEANS HERE, AND WHY IT IS THE ONLY HONEST DEFINITION.
+    # 🚨 WHAT "UNRECOGNIZED" MEANS HERE, AND WHY IT IS THE ONLY HONEST DEFINITION.
     # A config file is ALLOWED to carry names no droste table lists — every box
     # passes native upstream variables straight through (LLAMA_ARG_*, DS4_*, VLLM_*,
     # JUPYTER_*, HF_TOKEN …), and several boxes advertise that as a feature. So
@@ -363,7 +363,7 @@ droste::cfg_apply() {
         # BOTH HALVES, checked rather than assumed (s58). It does not decide where code
         # comes from — it decides where system CONFIGURATION comes from; and "if the
         # server stops starting" never fires, because all 39 baked Jupyter traits are
-        # behavioural and the server starts happily without a single one of them. Filing
+        # behavioral and the server starts happily without a single one of them. Filing
         # it under loud_code would have reproduced the exact defect the split was written
         # to fix, one class along. Same mechanism as loud_code, different symptom, and
         # the symptom is what the message has to be true about.

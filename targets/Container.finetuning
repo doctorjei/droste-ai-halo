@@ -255,7 +255,7 @@ COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
 # DROSTE_JUPYTER_PLATFORM_DIRS is a setting finetuning.cfg offers, turning it on would
 # silently drop every droste default below. A DIRECTORY SYMLINK covers both spellings with
 # one file, so the two can never drift apart.
-# ⭐ AND IT COVERS MORE THAN THE DEFAULT XDG_CONFIG_DIRS, in our favour. site_config_dir
+# ⭐ AND IT COVERS MORE THAN THE DEFAULT XDG_CONFIG_DIRS, in our favor. site_config_dir
 # is called with multipath=True (paths.py:348-350), so jupyter_core takes EVERY entry of
 # XDG_CONFIG_DIRS with /jupyter appended — MEASURED at platformdirs 4.3.7: absent ⇒
 # '/etc/xdg/jupyter'; '/opt/mine:/etc/xdg' ⇒ '/opt/mine/jupyter:/etc/xdg/jupyter'. So any
@@ -285,7 +285,7 @@ raise SystemExit(0 if n == 39 else 'baked trait count changed — update this nu
 # DROSTE_JUPYTER_SKIP_CONFIG=yes would silently drop all 39 trait defaults as well. The script
 # carries the anchor guard: exactly 1 occurrence before, 1 after, and it re-measures that
 # the NORMAL search path is unchanged — a pin bump that reflows that return statement must
-# break the build rather than quietly restore all-or-nothing behaviour.
+# break the build rather than quietly restore all-or-nothing behavior.
 # ⚠️ MUST STAY AFTER THE LAST LAYER THAT INSTALLS jupyter_core (the HF/Jupyter stack
 # above); a reinstall would put a stock paths.py back and nothing later would notice.
 # ⚠️ chmod HERE: the symlink loop above only chmods `*.py` (they are user-facing

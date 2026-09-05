@@ -385,7 +385,7 @@ def patch_vllm():
 #     No on_mi3xx reference in that file. The gfx9-only gate for the AITER FA
 #     backend now lives in RocmPlatform.get_attn_backend_cls
 #     (vllm/platforms/rocm.py:329, :351, :370). Opening those to gfx11xx is a
-#     REAL behaviour change on untested hardware, so it is a deliberate decision
+#     REAL behavior change on untested hardware, so it is a deliberate decision
 #     and not something to smuggle in by re-aiming a patch at a new address.
 #
 # vllm/model_executor/layers/fused_moe/oracle/unquantized.py (block AITER MoE)

@@ -8,7 +8,7 @@
 # Underlined bright-white group header; the blank line above it is part of it.
 exec_hdr() { printf '\n  %s%s%s\n' "$C_EXH" "$1" "$RESET"; }
 
-# One emitted file name, italic light grey.
+# One emitted file name, italic light gray.
 exec_file() { printf '  %s%s%s\n' "$C_FILE" "$1" "$RESET"; }
 
 # Width of the name column in [OK]/[ERROR] status lines: the longest name of

@@ -217,7 +217,7 @@ OPTIONAL=(
 #      --normalvram) and what every "auto" means.
 #   3. The FIRST pair is the DEFAULT. It is used when the variable is unset —
 #      the shipped state, since every line in comfyui.cfg is commented out — and
-#      when it holds something we do not recognise.
+#      when it holds something we do not recognize.
 # A right-hand side is word-split, so one value can emit a flag WITH its value
 # (--preview-method taesd) or TWO flags: MANAGER=legacy must say --enable-manager
 # itself. cli_args.py implies it from --enable-manager-legacy-ui, but that was
@@ -392,7 +392,7 @@ comfyui_argv() {
     # is the later one wherever ComfyUI lets a later option win. It stays INSIDE
     # dyn on purpose: COMFYUI_ARGV_TAIL's --extra-model-paths-config is nargs='+'
     # and must remain the last thing on the line. Quoting inside the value IS
-    # honoured since s52 and it is not glob-expanded (see
+    # honored since s52 and it is not glob-expanded (see
     # comfyui.cfg), matching DROSTE_LLAMA_EXTRA_ARGS and DROSTE_DS4_EXTRA_ARGS.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_COMFYUI_EXTRA_ARGS:-}")
@@ -435,7 +435,7 @@ comfyui_pre_launch() {
     # across 0.35.3 → 1.1.0 and again at 1.29.0 — a property of the library, not of one
     # release, so a bump cannot quietly retire this guard.
     # ⚠️ model_scanner.py is NOT the reason this is here and is NOT affected: its
-    # resolve_cache_dir() honours HF_HUB_CACHE and HF_HOME and deliberately does not read
+    # resolve_cache_dir() honors HF_HUB_CACHE and HF_HOME and deliberately does not read
     # XDG_CACHE_HOME (see its docstring), so it would keep reporting the bind while the
     # library wrote elsewhere — which is precisely how this stays invisible.
     # ⚠️ FIRST IN THE FUNCTION, BEFORE THE SCANNER SYNC AND BEFORE THE `cd`, so every

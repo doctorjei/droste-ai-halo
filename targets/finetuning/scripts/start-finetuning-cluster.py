@@ -26,7 +26,7 @@ def run_dialog(args):
             tf.seek(0)
             return tf.read().strip()
         except subprocess.CalledProcessError:
-            return None # User cancelled
+            return None # User canceled
 
 def setup_ips_dialog(current_head, current_worker):
     form_args = [

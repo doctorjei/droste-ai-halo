@@ -411,7 +411,7 @@ ECOSYSTEM_MAP = (
     ("flux-text-encoders",
      re.compile(r"(?i)^(clip_l|t5xxl)([._-]|$)"),
      ("comfyanonymous/flux_text_encoders",)),
-    # IP-Adapter's CLIP-ViT-bigG/14 image encoder (SDXL flavour), lives
+    # IP-Adapter's CLIP-ViT-bigG/14 image encoder (SDXL flavor), lives
     # under sdxl_models/image_encoder. Checked before ViT-H: bigG names
     # can also carry H-ish tokens.
     ("clip-vision-bigG",

@@ -54,7 +54,7 @@ from pathlib import Path
 # So decode arrives at fp8_gemm with M=17, never M=1, and the rows-mapped GEMV that
 # is the ENTIRE decode win upstream advertises is unreachable. leonyurko's own
 # overlay overrides get_output_padding to None for exactly this reason; we
-# deliberately do NOT, because that is a behaviour change to vLLM's kernel-selection
+# deliberately do NOT, because that is a behavior change to vLLM's kernel-selection
 # contract that cannot be measured without a gfx1151 box. Expect NO speedup until
 # that separate, hardware-gated item is done. Do not quietly add the override here.
 

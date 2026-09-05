@@ -79,7 +79,7 @@ SERVE_CFG_PREFIX="DROSTE_LLAMA_"
 #
 # 🚨 NO SERVE_HOST_FLAG ROW, AND THAT IS AN ANSWER RATHER THAN AN OMISSION: llama-server
 # spells it --host, which is serve::apply_host's own default. The same goes for --port.
-# ⭐ AND THIS BOX'S BEHAVIOUR CHANGES IN s60. It bound llama.cpp's own default —
+# ⭐ AND THIS BOX'S BEHAVIOR CHANGES IN s60. It bound llama.cpp's own default —
 # `params.hostname = "127.0.0.1"` (common/common.h:606) — while every sibling bound
 # 0.0.0.0, and NOTHING REPORTED IT: the health probe asked 127.0.0.1, which a
 # loopback-only listener answers perfectly. llama_argv now bakes `--host 0.0.0.0` (see
@@ -310,7 +310,7 @@ LLAMA_LIST_FLAGS=(
 # 🚨 NUMA IS HERE AND NOT IN THE VALUE TABLE, and that is the fix for a real trap:
 # arg.cpp:2298 reads `value == "distribute" || value == ""`, so passing --numa with
 # an EMPTY argument turns NUMA **on** in distribute mode. `off` has to mean "emit no
-# flag", which a value row cannot express. Anything llama does not recognise throws
+# flag", which a value row cannot express. Anything llama does not recognize throws
 # and kills startup, so the menu is closed.
 # LOAD_MODE replaces --mmap/--mlock/--direct-io: at this pin all three are deprecated
 # and each ASSIGNS params.load_mode, so they overwrote each other (MMAP=on + MLOCK=on
@@ -381,7 +381,7 @@ llama_argv() {
     # twice. It is a SWITCH (handler_void), so an unset variable emitted nothing at
     # all and the box came up with ngram speculative decoding OFF — the file
     # asserting a default the box did not deliver.
-    # ⚠️ IT IS A REAL BEHAVIOUR CHANGE, not a no-op: --spec-default pushes
+    # ⚠️ IT IS A REAL BEHAVIOR CHANGE, not a no-op: --spec-default pushes
     # COMMON_SPECULATIVE_TYPE_NGRAM_MOD and sets ngram_mod n_match/n_min/n_max to
     # 24/48/64 — arg.cpp, the `{"--spec-default"}` handler (~:4691 at the pinned
     # fb2cc35a; anchor on the option name, the number moved 500+ lines at the bump).
@@ -392,7 +392,7 @@ llama_argv() {
     # opt-out only for an UNBOUNDED string whose blank is a meaningful answer. This
     # setting is a two-member menu — llama.cfg prints `{on*, off}` above
     # `DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT` in its Speculative Decoding block —
-    # so it is CATEGORY 2, a finite set, and a finite set has default behaviour that a
+    # so it is CATEGORY 2, a finite set, and a finite set has default behavior that a
     # blank must fall back to. What the user would reasonably expect from an emptied
     # line is our default, not a third state the file never offers.
     # ⭐ NOTHING IS LOST BY THE CHANGE: `off` is still the way to say off, it is one of
@@ -492,7 +492,7 @@ llama_argv() {
     for suffix in MMAP MLOCK DIRECT_IO; do
         var="DROSTE_LLAMA_$suffix"
         [ -n "${!var:-}" ] || continue
-        serve::err "$var is retired and is being ignored. llama deprecated --mmap/--mlock/--direct-io in favour of --load-mode, where all three set ONE value instead of three independent switches. Use DROSTE_LLAMA_LOAD_MODE in $CFG_FILE: none, mmap, mlock, mmap+mlock or dio."
+        serve::err "$var is retired and is being ignored. llama deprecated --mmap/--mlock/--direct-io in favor of --load-mode, where all three set ONE value instead of three independent switches. Use DROSTE_LLAMA_LOAD_MODE in $CFG_FILE: none, mmap, mlock, mmap+mlock or dio."
     done
 
     # A gating dependency, not a last-wins race: the two write different fields and the
@@ -531,7 +531,7 @@ llama_argv() {
     # every conflict, deliberately. --slot-save-path rides here too (no env var).
     #
     # 🚨 `--host 0.0.0.0` IS A DROSTE DEFAULT, NOT A CONSTANT, AND IT IS THE ONE TOKEN
-    # THAT CHANGES THIS BOX'S BEHAVIOUR (Jei, s59: "all should default to 0.0.0.0").
+    # THAT CHANGES THIS BOX'S BEHAVIOR (Jei, s59: "all should default to 0.0.0.0").
     # llama-server's own default is `params.hostname = "127.0.0.1"` (common/common.h:606),
     # so until this line existed the box bound LOOPBACK ONLY while every sibling bound all
     # interfaces — and ⭐ NOTHING COULD REPORT IT: the health probe asks 127.0.0.1, which a
@@ -781,12 +781,12 @@ llama_env() {
 # below is that same test, deliberately, and not a droste policy laid on top of it.
 # (Its twin in chain B is a BARE `getenv()` with no `*p` — that asymmetry is why
 # LLAMA_CACHE still needs the blank guard above. Same variable, same repository, two
-# different answers; do not generalise one to the other.)
+# different answers; do not generalize one to the other.)
 #
 # ⭐ IT WARNS, IT DOES NOT REFUSE. Putting the cache somewhere else is a legitimate
 # thing to want — a bigger disk, a share, a directory the user binds themselves. The
 # defect this closes is that it happened SILENTLY. "Never resolve a failure toward more
-# exposure" is about honouring a narrowing intent, and nothing here is narrowed by
+# exposure" is about honoring a narrowing intent, and nothing here is narrowed by
 # declining to start; the box would just be down.
 #
 # "<NAME>:<subdirectory the C++ appends to it>" — hf-cache.cpp:43-47, in ITS order.
@@ -820,7 +820,7 @@ llama_hf_cache_bind() {
 # `.../huggingface/./hub` and `.../cache/../cache/huggingface/hub` all collapse before
 # anything is compared. This is the in-box twin of the installer's same_dir, which is
 # host-side and unreachable from here; -m so a directory that does not exist yet still
-# normalises. A realpath we cannot run leaves the string as written — degraded to a
+# normalizes. A realpath we cannot run leaves the string as written — degraded to a
 # textual compare, never fatal.
 llama_hf_path_norm() {
     local n
@@ -835,7 +835,7 @@ llama_hf_path_norm() {
 # ⚠️ EVERY ARM RETURNS 0. The resolver calls PRE_LAUNCH BARE under `set -euo pipefail`
 # (droste-resolve.sh), so a non-zero return from a DIAGNOSTIC would take the box down —
 # the exact defect droste-common.sh's fallbacks were written to stop.
-# ⚠️ IT MUST RUN AFTER the blank normalisation above: an XDG_CACHE_HOME the user
+# ⚠️ IT MUST RUN AFTER the blank normalization above: an XDG_CACHE_HOME the user
 # cleared is unset by then, so it is correctly not treated as the winning rung.
 llama_hf_cache_warn() {
     local bind entry name suffix base dir nbind ndir
@@ -871,7 +871,7 @@ llama_pre_launch() {
     # machine's math cores)` and its header promises the values shown ARE the defaults — but
     # uncommenting that line ROUGHLY DOUBLES the thread count on an SMT machine, the
     # classic llama.cpp oversubscription regression.
-    # The handler normalises before the auto-detect can ever run: the
+    # The handler normalizes before the auto-detect can ever run: the
     # `.set_env("LLAMA_ARG_THREADS")` option's own lambda (pinned fb2cc35a) is
     # `params.cpuparams.n_threads = value; if (params.cpuparams.n_threads <= 0) {
     # params.cpuparams.n_threads = std::thread::hardware_concurrency(); }` — ALL SMT
@@ -889,7 +889,7 @@ llama_pre_launch() {
     # ⚠️ ONLY THE EXACT STRING `-1`, AND THE NARROWNESS IS THE POINT. `0` and other
     # negatives reach the same `<= 0` branch, but they reach it IDENTICALLY whether
     # they arrive on the command line or through the environment — there is no
-    # discrepancy there for us to fix, and swallowing them would invent a behaviour
+    # discrepancy there for us to fix, and swallowing them would invent a behavior
     # upstream does not have and this file does not document. `-1` is the one value
     # the file prints, the one it annotates, and the only one whose printed meaning
     # the wiring fails to deliver.
@@ -1118,7 +1118,7 @@ llama_pre_launch() {
     # narrow exceptions. Three categories; 1 and 2 are unset, 3 is left alone:
     #   1) a blank crashes the server or leaves it UNHEALTHY.
     #   2) the value is NUMERIC or comes from a practically FINITE set (bool, enum,
-    #      menu). Such a setting has default behaviour and must fall back to it —
+    #      menu). Such a setting has default behavior and must fall back to it —
     #      whether or not the blank crashes.
     #   3) an UNBOUNDED string whose blank is itself a MEANINGFUL answer: "no chat
     #      template", "no log file", "no TLS certificate", "no model". Erasing that
@@ -1142,7 +1142,7 @@ llama_pre_launch() {
     #                  arg.cpp:2985-2991 drops it, so a blank leaves auth OFF rather
     #                  than enabling it with an empty key.
     #   HF_TOKEN       has no parsing at all — arg.cpp:2664-2670 is `params.hf_token =
-    #                  value`, common.h:484 already initialises it to "", and every
+    #                  value`, common.h:484 already initializes it to "", and every
     #                  consumer is emptiness-gated: `if (!opts.bearer_token.empty())`
     #                  before the Authorization header (download.cpp:313-314) and
     #                  `is_valid_hf_token(token)` … `else if (!token.empty())` for the
@@ -1246,7 +1246,7 @@ llama_pre_launch() {
     # llama-kv-cache.cpp:321-327 does `if (env) { return atoi(env); }`, and atoi("")
     # is 0 — mode 0, uniform. An ABSENT variable instead falls through to :329-333,
     # which auto-enables mode 7 when V is turbo2 and the model has 8+ layers. So a
-    # blank does not mean "leave it alone", it means "suppress the auto behaviour" —
+    # blank does not mean "leave it alone", it means "suppress the auto behavior" —
     # category 2 (a finite set of modes), so the blank must give the default back.
     # ⚠️ The other two natives are deliberately absent: TURBO_AUTO_ASYMMETRIC tests
     # env[0]=='0' and GGML_TQ_NATIVE tests env[0]=='1', so "" is already identical to
@@ -1274,7 +1274,7 @@ llama_pre_launch() {
     #     fs_get_cache_directory `if (std::getenv("XDG_CACHE_HOME"))` — likewise
     # In fs_get_cache_directory a blank is non-NULL, so cache_directory becomes "" and
     # reaches ensure_trailing_slash (:988-994), whose `p.back()` on an EMPTY std::string
-    # is undefined behaviour. What it reads decides between two failures: "/llama.cpp/",
+    # is undefined behavior. What it reads decides between two failures: "/llama.cpp/",
     # a path at the filesystem ROOT the box user cannot create — fs_get_cache_file
     # (:1032-1039) then throws "failed to create cache directory" and startup dies — or
     # "llama.cpp/", relative to the server's CWD, i.e. inside the container. Neither is
@@ -1322,7 +1322,7 @@ llama_pre_launch() {
     # stays identical on all five without making that check false on one. LLAMA_CACHE
     # goes through the call because it is llama's own native and has no such family.
     # ⚠️ IT SITS AFTER droste::blank_is_unset AND BEFORE THE DEFAULTS BELOW, for the
-    # same reason every other normalisation here does: blanks become absences FIRST,
+    # same reason every other normalization here does: blanks become absences FIRST,
     # our defaults apply SECOND. Nothing below reads an XDG name today, so this is
     # placement for uniformity with the other four boxes, not for correctness.
     # ⚠️ SILENT, like every other blank guard: the blank IS the request for the default.
@@ -1336,7 +1336,7 @@ llama_pre_launch() {
 
     # ── say so when a `-hf` download will land outside the CRITICAL bind ───────
     # 🚨 PLACEMENT IS LOAD-BEARING IN ONE DIRECTION: it must sit BELOW both blank
-    # normalisations above, or a cleared LLAMA_CACHE / XDG_CACHE_HOME would still look
+    # normalizations above, or a cleared LLAMA_CACHE / XDG_CACHE_HOME would still look
     # like the winning rung and this would warn about a directory llama never uses.
     # Below that line its position is free — nothing here writes a rung.
     # Whole story, the pinned chain and why CRITICAL cannot do this: llama_hf_cache_warn.
@@ -1351,7 +1351,7 @@ llama_pre_launch() {
     # do not go looking for it; this comment records why the default is ours to set.
     # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
     # values, not a value the parser would reject.
-    # ⚠️ REAL BEHAVIOUR CHANGE, and unmeasured on hardware: KV quantisation buys
+    # ⚠️ REAL BEHAVIOR CHANGE, and unmeasured on hardware: KV quantization buys
     # cache footprint at some quality cost. Both K and V, because the file shows both.
     # ✅ `=` not `:=`, and set before the compgen loop below so it is exported with
     # every other LLAMA_*: llama-server reads these from its ENVIRONMENT, not argv,
@@ -1364,9 +1364,9 @@ llama_pre_launch() {
     # lines ABOVE the unset, a user who cleared the line got: default line declines to
     # fire (the name is set) → blank_is_unset deletes it → nothing re-applies ours →
     # llama's own f16. Blank and absent gave DIFFERENT answers, which is the one thing
-    # the rule forbids. Normalising blanks to absences FIRST and applying our defaults
+    # the rule forbids. Normalizing blanks to absences FIRST and applying our defaults
     # SECOND makes them identical by construction.
-    # ⭐ GENERALISES: any future droste default on a native name works automatically
+    # ⭐ GENERALIZES: any future droste default on a native name works automatically
     # if it sits below this line, and is silently wrong if it sits above it.
     # ⚠️ This REVERSES the s56 ordering note that put the defaults first. That note
     # was written to protect a blank as the user's opt-out; Jei's s57 rule replaced

@@ -98,7 +98,7 @@ fi
 # is one line at the new door, not a policy change in this file.
 
 # ── droste::bool — the ONE answer to "what counts as off" ────────────────────
-# Prints "on", "off", or "" (empty/unrecognised — the CALLER decides which).
+# Prints "on", "off", or "" (empty/unrecognized — the CALLER decides which).
 #
 # ⭐ WHY IT LIVES HERE AND NOT IN A BUILD-SPEC. It began as ds4_bool, and it has to
 # be shared for the same reason the key-signature rules are shared: a box where
@@ -119,7 +119,7 @@ droste::bool() {
     case "$v" in
         1|true|yes|on)  printf 'on' ;;
         0|false|no|off) printf 'off' ;;
-        "")             printf '' ;;   # unset/blank — same output as unrecognised,
+        "")             printf '' ;;   # unset/blank — same output as unrecognized,
         *)              printf '' ;;   # written apart to document the collapse
     esac
 }
@@ -144,12 +144,12 @@ droste::bool() {
 #                   ⚠️ CORRECTED s57: this cited qtpy/__init__.py, and QTPY IS NOT
 #                   IN THIS IMAGE — nothing installs it and no Jupyter/matplotlib
 #                   package pulls it in. matplotlib is the actual reader, and its
-#                   UNSET behaviour differs too: :56-57 gives None, then :117-128
+#                   UNSET behavior differs too: :56-57 gives None, then :117-128
 #                   tries PyQt6, PySide6, PyQt5, PySide2 and takes the first that
 #                   imports — NOT a hardcoded "pyqt5" default. The guard below is
 #                   right either way; only the citation was wrong.
 #                   ⭐ An audit can name a real file, a real line and a real
-#                   behaviour and still be wrong, by never asking whether that
+#                   behavior and still be wrong, by never asking whether that
 #                   package is in THIS image.
 #   DS4_SERVER_DISABLE_THINK_TOOL_RECOVERY   ds4_server.c:10372 `getenv(..)==NULL`
 #   DS4_MTP_SPEC_DISABLE                     ds4_server.c:10407 `getenv(..)==NULL`
@@ -198,7 +198,7 @@ droste::split_list() {
 
 # ── droste::arg_value — read a flag's value out of an already-split argv ─────
 # Usage:  v=$(droste::arg_value --api-prefix "${_extra[@]}")
-# Honours both spellings a user may write, `--flag value` and `--flag=value`, and
+# Honors both spellings a user may write, `--flag value` and `--flag=value`, and
 # returns the LAST occurrence because that is what an argument parser keeps.
 # Empty output means "not present" — a flag given an empty value is the same thing
 # to every caller here.
@@ -234,7 +234,7 @@ droste::arg_value() {
 # compute the SAME string the server computed. If a user writes a prefix the server
 # mangles (a trailing slash gives `/llama//health`), we mangle it identically and
 # report unhealthy — which is CORRECT, because the server's routes really are at a
-# path nothing can reach. Normalising here would make the probe pass while the box
+# path nothing can reach. Normalizing here would make the probe pass while the box
 # stayed unusable, which is the worse failure of the two.
 #
 # Lives in the state folder beside .SCHEME and .IS_ACTIVE, so it resets on every
@@ -251,7 +251,7 @@ droste::set_health_prefix() {
     serve::info "health probe will address this server under the path prefix '$prefix'."
 }
 
-# ── droste::split_args — split a catch-all setting into argv, honouring quotes ─
+# ── droste::split_args — split a catch-all setting into argv, honoring quotes ─
 #
 # Usage:  mapfile -d '' -t args < <(droste::split_args "${DROSTE_LLAMA_EXTRA_ARGS:-}")
 #         SERVICE=( the-binary "${args[@]}" )
@@ -266,7 +266,7 @@ droste::set_health_prefix() {
 #      against the current directory, so a legitimate value silently becomes a
 #      list of filenames, or silently does not.
 #
-# This walks the string once and honours the three quoting forms a user already
+# This walks the string once and honors the three quoting forms a user already
 # expects from a shell: 'single' (literal), "double" (with \" and \\ escapes),
 # and a backslash escape outside quotes. It performs NO variable expansion, NO
 # command substitution and NO globbing — the value is data, not code. (The file

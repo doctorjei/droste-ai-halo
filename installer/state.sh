@@ -66,7 +66,7 @@ pf_session() {
 # Rootless podman maps container uids/gids through the ranges /etc/subuid and
 # /etc/subgid grant this user, and it caches that map in its storage the FIRST
 # time it runs. Ranges added afterwards never reach a storage that is already
-# initialised: the pull then dies mid-download with "lchown …: invalid
+# initialized: the pull then dies mid-download with "lchown …: invalid
 # argument" (an unmapped gid), GBs in. So BOTH halves are checked, before the
 # build ladder can pull anything — the grant on paper, and the map podman
 # actually holds.
@@ -91,7 +91,7 @@ idmap_rows() {   # uid_map|gid_map → rows podman really maps (0 = no probe)
   out=$("$RUNTIME_BIN" unshare cat "/proc/self/$1" 2>/dev/null) \
     || { printf 0; return 0; }
   # One row = the user's own id and nothing else, which is exactly the state a
-  # storage initialised before the grant is stuck in.
+  # storage initialized before the grant is stuck in.
   awk 'NF {c = c + 1} END {print c + 0}' <<<"$out"
 }
 
@@ -112,8 +112,8 @@ pf_idmap() {
     pf_hint "$(emph "                        --add-subgids 100000-165535 $PF_ME")"
     pf_hint "then $(emph 'podman system migrate') $EMD podman caches the old map"
     # Returning HERE, before the unshare probe, is the point: `podman unshare`
-    # initialises the storage it is asked about, and a storage first
-    # initialised without the grant is exactly the stale map above.
+    # initializes the storage it is asked about, and a storage first
+    # initialized without the grant is exactly the stale map above.
     return 0
   fi
   ru=$(idmap_rows uid_map)

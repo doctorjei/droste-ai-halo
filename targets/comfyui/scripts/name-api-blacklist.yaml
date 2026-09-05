@@ -32,7 +32,7 @@
 #
 # THIS FILE IS DATA. Entries are appended without touching a line of Python. The loader
 # (model_scanner.load_name_api_blacklist) FAILS OPEN in every direction -- absent file,
-# unreadable file, unrecognised row -- because this table exists to WARN, and must never
+# unreadable file, unrecognized row -- because this table exists to WARN, and must never
 # be the reason a user cannot rename their own file. It accepts either shape: this
 # `files:` mapping, or a bare top-level list, so rows pasted straight out of the
 # research document parse whether or not somebody remembered to indent them.

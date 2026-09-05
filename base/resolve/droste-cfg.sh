@@ -28,7 +28,7 @@
 # So no rule below is justified by "bash does it this way". Each stands on its own, and
 # where this parser and `source` differ the difference is stated at the rule:
 #   • the LAST active assignment wins — later-overrides-earlier is what a config file means;
-#   • `export NAME=v` is honoured — users write it in files like this, and dropping it
+#   • `export NAME=v` is honored — users write it in files like this, and dropping it
 #     would discard their input;
 #   • an unquoted value's interior spaces are kept WHOLE — a config file does not
 #     word-split; the value is the text;
@@ -241,12 +241,12 @@ droste::_cfg_unquote() {
 # ── droste::_cfg_take_export — strip ONE leading `export` keyword ────────────
 # Usage: droste::_cfg_take_export LINE  → the remainder in `_droste_cfg_l`.
 #
-# 🚨 `export NAME=value` IS AN ASSIGNMENT AND IS HONOURED (ruled s59, and it overturned this
+# 🚨 `export NAME=value` IS AN ASSIGNMENT AND IS HONORED (ruled s59, and it overturned this
 # file's first reading of rule 2). The strict reading — "after leading whitespace, the line
 # matches NAME=" — excludes it, but users write `export` in files like this one, and a
 # reader that dropped the line would discard input its author plainly intended as a setting.
 # That the file is also SOURCED for the app settings is why the shape turns up here at all;
-# it is not why we honour it.
+# it is not why we honor it.
 # ⚠️ A WORD BOUNDARY IS REQUIRED: `exportNAME=v` is a command named `exportNAME`, not an
 # assignment, and must not match. The pattern demands whitespace after the keyword.
 # ⚠️ Exactly ONE `export` is consumed. Deeper stacking is not imitated: it is not a shape
@@ -495,7 +495,7 @@ droste::cfg_get() {
             # `# export NAME=v`. Deleting it changes NO answer, because the name match below
             # is ANCHORED at the start of the (whitespace-stripped) line and `#` is not part
             # of the name, and the `export` pattern is anchored the same way. It is an
-            # early-out plus an explicit statement of a contract rule — defence in depth on a
+            # early-out plus an explicit statement of a contract rule — defense in depth on a
             # class the anchoring already rejects. ⭐ A guard whose removal changes nothing is
             # worth keeping and worth LABELLING, so the next reader does not go hunting for
             # the row that covers it.
@@ -503,7 +503,7 @@ droste::cfg_get() {
                 '#'*) continue ;;
             esac
 
-            # `export NAME=value` is an assignment and is honoured — the keyword comes off
+            # `export NAME=value` is an assignment and is honored — the keyword comes off
             # here, by the same helper the fold's predicate used, so the two cannot drift.
             # The reasoning lives at `droste::_cfg_take_export`.
             droste::_cfg_take_export "$line"; line=$_droste_cfg_l

@@ -33,7 +33,7 @@
 # /etc/jupyter/jupyter_server_config.py.
 #
 # 🚨 THE ANCHOR GUARD IS THE POINT OF THIS BEING A SCRIPT. A pin bump that reflows that
-# return statement must BREAK THE BUILD, not quietly restore all-or-nothing behaviour —
+# return statement must BREAK THE BUILD, not quietly restore all-or-nothing behavior —
 # which nothing downstream would notice, because every failure mode here is "the server
 # starts and the traits are wrong".
 #
@@ -102,7 +102,7 @@ after_patched=$(grep -Fxc -- "$PATCHED" "$TARGET" || true)
 [ "$after_anchor" = "0" ] || die "the anchor survived the substitution ($after_anchor left)"
 [ "$after_patched" = "1" ] || die "expected exactly 1 patched line, found $after_patched"
 
-# ── behaviour, measured ──────────────────────────────────────────────────────
+# ── behavior, measured ──────────────────────────────────────────────────────
 # Delete any stale bytecode first: an overlay upper can hold a .pyc newer than the source
 # we just rewrote, and the import would then not see the change.
 find "$(dirname "$TARGET")" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true

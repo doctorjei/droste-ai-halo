@@ -229,7 +229,7 @@ stale_any() {
 # answers asked for). $HOME and / are refused outright.
 #
 # EVERY COMPARISON HERE IS same_dir, NOT ==: two spellings of one directory are
-# one directory, and a guard that only recognises its own spelling of a path is
+# one directory, and a guard that only recognizes its own spelling of a path is
 # a guard that can be walked around by writing ~ instead of /home/you.
 pcache_wipe_safe() {  # dir → 0 when nothing else in this install is that dir
   local dir=$1 key
@@ -312,7 +312,7 @@ stale_cache_offer() {  # box
 # ignore what the user says." — Jei. That the ANSWER WINS is s39's F8 fix; this
 # is what happens to the data once it does.
 #
-# THE MOVER IS `mv` ITSELF, AND ITS BEHAVIOUR AND ITS ERRORS ARE OURS (Jei,
+# THE MOVER IS `mv` ITSELF, AND ITS BEHAVIOR AND ITS ERRORS ARE OURS (Jei,
 # s41): "mv copies across boundaries and removes the old. We should do the same,
 # unless we know in advance that it will fail." coreutils already does
 # rename(2), falls back to copy+unlink on EXDEV, preserves mode and timestamps,
@@ -420,7 +420,7 @@ mv_said() {
 # MERGE is per-entry `mv -T`, because that is the only merge mv has. A file
 # landing on a file is overwritten silently; a directory landing on a NON-EMPTY
 # directory is REFUSED and stays where it is, named. That refusal is the
-# behaviour, not a gap in it (Jei, s41: same behaviours and errors as mv) — the
+# behavior, not a gap in it (Jei, s41: same behaviors and errors as mv) — the
 # alternative, recursing into the collision and unioning it, is a thing mv will
 # not do and is indistinguishable from "remove data at new path" for the files
 # inside.

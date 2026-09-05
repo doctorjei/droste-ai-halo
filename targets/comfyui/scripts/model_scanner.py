@@ -353,7 +353,7 @@ GGUF_LLM_ARCHS = {
     "exaone", "baichuan", "orion", "plamo", "smollm3",
 }
 
-# Recognised architectures, in one set: read_gguf_metadata stops early on a hit, and keeps
+# Recognized architectures, in one set: read_gguf_metadata stops early on a hit, and keeps
 # reading on a miss so the structural fallback has hyperparameters to work with.
 _GGUF_KNOWN_ARCHS = GGUF_DIFFUSION_ARCHS | GGUF_TEXT_ARCHS | GGUF_LLM_ARCHS
 
@@ -624,7 +624,7 @@ def read_gguf_metadata(path: Path, max_kv: int = 256) -> dict:
             val = read_value(vtype, store=True)
             if val is not None:
                 meta[key] = val
-            # Stop as soon as the architecture is one we RECOGNISE -- nothing later can
+            # Stop as soon as the architecture is one we RECOGNIZE -- nothing later can
             # change the answer. For an UNKNOWN architecture keep reading: the structural
             # fallback in classify_gguf needs the hyperparameters that follow, and those
             # sit before the tokenizer in every GGUF writer's ordering. (Breaking here
@@ -821,7 +821,7 @@ def _signals_or_raise(keys: set, modules: set, what: str) -> tuple[set, set]:
     """Nothing harvested is a RESULT that must be reported, never a silent blank.
 
     A read that succeeds and yields nothing looked identical to a file with no
-    recognisable structure -- both printed `(none)` and cast no vote -- so a 150 MB
+    recognizable structure -- both printed `(none)` and cast no vote -- so a 150 MB
     weight file could report exactly as much as an empty one. Raising puts the reason in
     front of whoever is looking (WARN on sync, `pickle read FAILED ...` in inspect);
     callers already treat a raise as warn-and-continue, so nothing becomes fatal.
@@ -1122,7 +1122,7 @@ def classify_gguf(meta: dict) -> str:
         return "llm"  # llama/ds4's models, inventory-only
     # STRUCTURAL fallback for an architecture we have never heard of. Enumerating model
     # families is a losing race -- `step35` and `minimax-m2` both landed as unclassified
-    # simply because they are new -- but a language model is recognisable from its own
+    # simply because they are new -- but a language model is recognizable from its own
     # metadata: it ships a tokenizer AND a transformer block count. Image/video GGUFs
     # carry neither, so this cannot swallow them.
     if arch and (meta.get("__tokenizer__")
@@ -1696,7 +1696,7 @@ def _inspect_evidence(src: SourceFile) -> list[tuple[str, str]]:
 
     def cap(items, n=12, width=160):
         # Cap BOTH the count and each item's length. A single __metadata__ value can be a
-        # full licence text or a per-layer quantisation map running to tens of kilobytes,
+        # full license text or a per-layer quantization map running to tens of kilobytes,
         # which buries the signal it was printed to reveal.
         items = sorted(items)
         shown = [i if len(i) <= width else i[:width] + f"… (+{len(i) - width} chars)"
@@ -1974,7 +1974,7 @@ def load_name_api_blacklist(path: Path) -> list:
 
     Fails OPEN, on purpose, in every direction: an absent file is an empty table (the
     common case for anyone who deleted it), an unreadable one warns and is treated as
-    empty, and an unrecognised row is skipped. This table exists to WARN; it must never
+    empty, and an unrecognized row is skipped. This table exists to WARN; it must never
     be the reason a user cannot rename their own file. Which is also why BOTH document
     shapes are accepted -- the `files:` mapping this repo ships, and a bare top-level
     list, which is how rows arrive when they are pasted out of the research document.
@@ -2074,7 +2074,7 @@ def cmd_categorize(args) -> int:
         for key in sorted(reg.categories):
             rec = reg.categories[key] or {}
             # Show the name the TREE shows when a rename means it differs from the key --
-            # otherwise a user who renamed a file cannot recognise their own override.
+            # otherwise a user who renamed a file cannot recognize their own override.
             seen = (reg.renames.get(key) or {}).get("to")
             shown = key if not seen or seen == key else f"{seen} (recorded as {key})"
             log(f"CATEGORY  {shown} -> {rec.get('to', '?')}")
@@ -2303,7 +2303,7 @@ def cmd_rename(args) -> int:
 def resolve_cache_dir() -> Path:
     """Where the HF hub cache is: $HF_HUB_CACHE > $HF_HOME/hub > the default.
 
-    IDENTICAL to droste-hf-adopt.py's resolve_cache(), and it has to be: honouring
+    IDENTICAL to droste-hf-adopt.py's resolve_cache(), and it has to be: honoring
     HF_HUB_CACHE alone (what this did until s48) silently misses the form HF's own
     docs lead with -- `export HF_HOME=/media/user/drive/HF_Cache` moves the cache,
     the adopt tool follows it, and this scanner reported an EMPTY cache instead of

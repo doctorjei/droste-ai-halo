@@ -22,14 +22,14 @@ down rather than rediscovered):
     the adopt tools parse them out of the bounded PREFIX already captured during their
     single streamed hash pass and return None. Same 8-byte-length-plus-JSON layout, but
     the I/O model and the error contract are genuinely different, and merging them
-    would change behaviour on one side or the other.
-  * GGUF. model_scanner reads metadata to CLASSIFY (and stops early on a recognised
+    would change behavior on one side or the other.
+  * GGUF. model_scanner reads metadata to CLASSIFY (and stops early on a recognized
     `general.architecture`); droste-hf-adopt reads it for PROVENANCE hint keys out of a
     bounded buffer. Different keys, different stopping rules, different failure policy.
 
 THE KEY-SIGNATURE RULES HAVE NOW LANDED HERE (s46). The note that used to sit in this
 spot said they were shared knowledge mapped to two different vocabularies, that sharing
-them was a real behaviour change rather than a file move, and that this module was where
+them was a real behavior change rather than a file move, and that this module was where
 they should land when the decision was taken. Jei took it ("let's unify them", s41);
 the design is `~/canon/notebook/plans/classifier-unification-s41.md`.
 
@@ -204,7 +204,7 @@ def read_torch_container(path, max_objects: int = 1) -> tuple[set, set, str]:
             if not names:
                 # RAISE, do not return empty. Silently yielding no signals made an
                 # unreadable archive indistinguishable from one that genuinely holds
-                # nothing recognisable -- both surfaced as "no measure could form a
+                # nothing recognizable -- both surfaced as "no measure could form a
                 # judgement", which hid the failure. Callers already treat a raise as
                 # warn-and-continue, so this is loud without being fatal.
                 raise ValueError(
@@ -282,7 +282,7 @@ def strip_dataparallel(keys) -> list:
 
 # REAL autoencoder anatomy, in THREE spellings: ldm (`encoder.down.` / `decoder.up.`),
 # diffusers (`encoder.down_blocks.` / `decoder.up_blocks.`) and the causal-video
-# autoencoders (`encoder.downsamples.` / `decoder.upsamples.`), plus the quantisation
+# autoencoders (`encoder.downsamples.` / `decoder.upsamples.`), plus the quantization
 # convs that only a LATENT autoencoder has (`quant_conv.` / `post_quant_conv.`).
 #
 # Required because "has an encoder and a decoder" is not "is a VAE". parsing_parsenet.pth

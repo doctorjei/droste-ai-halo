@@ -44,7 +44,7 @@ def mapped(lid):
 
     The stream shortens digests to a prefix, so the match is by prefix; a
     prefix that hits two blobs, or none, counts as no match rather than as
-    licence to charge bytes to the wrong layer."""
+    license to charge bytes to the wrong layer."""
     if lid not in state["map"]:
         key = lid.lower().split(":")[-1]
         hit = [h for h in known if h.startswith(key)]
@@ -167,7 +167,7 @@ def ascii_open():
 def ascii_marks(pct):
     """Size known: one mark per percent, 50 to a row. The manifest's total is
     the denominator for the whole pull — a mid-flight degrade() cannot be
-    honoured by ink already on the page, and the prefetched size is the true
+    honored by ink already on the page, and the prefetched size is the true
     one anyway; only the mapping of stream ids to blobs was ever in doubt."""
     while A["marks"] < pct:
         if A["row"] >= ROW_MARKS:

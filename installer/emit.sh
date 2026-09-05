@@ -221,7 +221,7 @@ summary_box() {  # box banner-width
     fi
     if [[ ${kind[i]} == g ]]; then
       # A group header: "* Name", underlined — and the underline is why the
-      # RESET lands before the padding (a coloured blank is a blank, an
+      # RESET lands before the padding (a colored blank is a blank, an
       # underlined one is a visible rule out to the border).
       printf '  %s%s%s %s*%s %s%s%s%*s%s%s%s\n' \
         "$C_SBOX" "$BOXV" "$RESET" "$C_SBUL" "$RESET" \

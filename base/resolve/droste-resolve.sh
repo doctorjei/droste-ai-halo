@@ -436,7 +436,7 @@ resolve::overlay() {
     #
     # An older kernel REJECTS the option outright, so fall back to the bare form
     # rather than letting a good kernel-overlay host drop to fuse. That fallback
-    # is today's exact behaviour, deletes-of-baked-content included, so it warns.
+    # is today's exact behavior, deletes-of-baked-content included, so it warns.
     if [ "$mode" = auto ] || [ "$mode" = kernel ]; then
         local ux_err=""
         if resolve::_try_mount mount -t overlay overlay \
@@ -594,7 +594,7 @@ resolve::_shared_caches() {
 
 # ── Primitive: cache_bind (BOTH lanes since lane unification) ───────────────
 # Structurally identical to surface plus the shared-cache src rewrite above; kept a
-# SEPARATE primitive (per design) so cache behaviour can diverge without touching
+# SEPARATE primitive (per design) so cache behavior can diverge without touching
 # surfaces (it now does — surfaces are state and never rewrite to /opt/caches).
 # DELIBERATE DEVIATION (both lanes): the HF cache is NEVER a cache_bind — it is a
 # CRITICAL user bind (server: -v flag; distrobox: the auto-bound real home already
@@ -720,7 +720,7 @@ resolve::optional() {
 }
 
 # ── /opt/data handling (both lanes) ─────────────────────────────────────────
-# The Containerfile-level `VOLUME /opt/data` gives auto-anonymous-volume behaviour; from
+# The Containerfile-level `VOLUME /opt/data` gives auto-anonymous-volume behavior; from
 # inside all we can do is warn if the user did not bind it (state won't survive recreate).
 # Because of that VOLUME directive the dir is virtually ALWAYS a mount — the real
 # forgot-to-bind signal is the ANONYMOUS-volume shape (_anon_volume), warned on below.

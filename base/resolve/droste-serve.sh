@@ -151,7 +151,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # no one path that is right for all five boxes now that the serve settings live in the
 # box's own <box>.cfg. serve::read_config fills these two in from the baked build-spec
 # (serve::_read_serve_spec) on every call. Setting either one here — or in the
-# environment before sourcing — is a TEST override, honoured only when the build-spec
+# environment before sourcing — is a TEST override, honored only when the build-spec
 # declares nothing; production always has a spec and the spec always wins.
 : "${DROSTE_SERVE_ENV:=}"          # the box's config file, from the spec's CFG_FILE
 : "${SERVE_CFG_PREFIX:=}"          # its setting prefix, from the spec's SERVE_CFG_PREFIX
@@ -205,7 +205,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${SERVE_TLS_KEY_FLAG:=}"
 # Our default bind address, and it is OURS rather than any server's (Jei, s59: "all
 # should default to 0.0.0.0"). Four boxes already forced it in their spec; llama did
-# not, so llama's behaviour CHANGES here — it bound llama.cpp's own loopback default
+# not, so llama's behavior CHANGES here — it bound llama.cpp's own loopback default
 # and nothing reported it, because the probe asked 127.0.0.1 and a loopback-only
 # listener answers that perfectly.
 : "${SERVE_HOST_DEFAULT:=0.0.0.0}"
@@ -280,7 +280,7 @@ serve::err()  { printf 'droste-serve: ERROR: %s\n' "$*" >&2; }
 # by nothing else, and it is already this file's own answer to "what is this box"
 # (see read_health_spec / build_service). A user with uid>=1000 beside it can only be
 # distrobox-init's: no image creates one (base/Container.runtime:42 adds a GROUP).
-# Absent marker ⇒ lane stays `server` ⇒ exactly today's behaviour. Fails closed.
+# Absent marker ⇒ lane stays `server` ⇒ exactly today's behavior. Fails closed.
 SERVE_IDENTITY_DERIVED=""
 serve::_derive_identity() {
     local guess=""
@@ -383,7 +383,7 @@ serve::_read_serve_spec() {
 }
 
 # 🚨 RESOLVED AT LOAD TIME, NOT ONLY INSIDE read_config, and that is a fix rather than an
-# optimisation: $DROSTE_SERVE_ENV is named in messages that are built BEFORE any config is
+# optimization: $DROSTE_SERVE_ENV is named in messages that are built BEFORE any config is
 # read — droste-server.sh's usage text is assembled as the script loads — and an empty path
 # in a sentence telling a user where to go and edit something is a value that neither works
 # nor complains. One read at load means the name is true from the first line of output.
@@ -440,7 +440,7 @@ serve::_is_ipv4() {
 # The name is Jei's, and so is the reason: "enabled" alone reads as "on right now"
 # to anyone who does not speak systemd, so STARTUP supplies the disambiguation.
 #
-# 🚨 NORMALISE BLANKS FIRST, APPLY DEFAULTS SECOND (§5). A blank is not a value: it must
+# 🚨 NORMALIZE BLANKS FIRST, APPLY DEFAULTS SECOND (§5). A blank is not a value: it must
 # behave exactly as if the setting were absent, which for HOST means our 0.0.0.0 and not
 # the empty string. Measured, and it is not academic — LLAMA_ARG_HOST="" binds ::1 only
 # and restart-loops the box, so the order of these two steps is a box-killer either way.
@@ -493,7 +493,7 @@ serve::read_config() {
     # ── STARTUP_ENABLED — {yes, no}, through the ONE boolean parser ──────────
     # droste::bool is a whitelist and case-folds, so `Yes`, `ON` and `1` all work and
     # `Off` cannot accidentally read as on (the blacklist it replaced did exactly that).
-    # An UNRECOGNISED value is not a fall-through: it takes our default AND says so.
+    # An UNRECOGNIZED value is not a fall-through: it takes our default AND says so.
     v=$(droste::cfg_get "${pfx}STARTUP_ENABLED" "$file")
     case "$(droste::bool "$v")" in
         on)  SERVE_STARTUP_ENABLED=1 ;;
@@ -512,7 +512,7 @@ serve::read_config() {
     # mean "no preference" and land on $SERVE_PORT_DEFAULT, which is what makes the
     # commented `# DROSTE_<APP>_PORT=…` line every box ships a TRUE statement of its
     # default instead of a line the box cannot start without. ONLY a value that is
-    # PRESENT and unparseable still refuses: someone typed a port and we cannot honour
+    # PRESENT and unparseable still refuses: someone typed a port and we cannot honor
     # it, and quietly binding a different one is how a user ends up looking for their
     # server on the wrong number.
     # ⚠️ THE DEFAULT IS APPLIED HERE AND NOT BEFORE THE FILE IS OPENED, which is a
@@ -619,7 +619,7 @@ serve::read_config() {
 
     # A box asked to serve AT STARTUP without a usable port must not serve, and must say
     # why: the healthcheck probe reads the same setting, so it would otherwise run
-    # unsupervised on a port nobody agreed on. (Unchanged behaviour, new placement.)
+    # unsupervised on a port nobody agreed on. (Unchanged behavior, new placement.)
     # An earlier SERVE_CONFIG_ERR is never overwritten — the first refusal is the one
     # that explains the box's state, and a second message would only compete with it.
     # ⭐ IT QUOTES SERVE_PORT_ERR RATHER THAN RESTATING IT, which is what keeps the
@@ -783,7 +783,7 @@ serve::read_health_spec() {
 # finetuning 2 Jupyter traits; ds4 none), and until now every probe here spoke
 # `http://` and nothing else. A box serving TLS therefore read as unhealthy, and
 # with --health-on-failure=restart that is a restart loop; adopt_running could not
-# recognise its own server either. That is OUR defect, not a property of TLS, and
+# recognize its own server either. That is OUR defect, not a property of TLS, and
 # the fix belongs here rather than in a caveat telling users not to enable it.
 #
 # WHY DETECT RATHER THAN DECLARE. TLS is turned on by the USER, in the per-box
@@ -872,7 +872,7 @@ serve::_remember_scheme() {
 # occupancy questions; the wrong one either misses a real conflict or invents one). A
 # comment saying "call read_config first" cannot fail loudly, so this does the call.
 # ⭐ THE TEST IS PRESENCE, NEVER VALUE — `${SERVE_HOST+set}`, not `${SERVE_HOST:-}`. An
-# empty SERVE_HOST is a state read_config never produces (it normalises blanks to the
+# empty SERVE_HOST is a state read_config never produces (it normalizes blanks to the
 # default before the file is even opened), so "set but empty" can only be a caller who
 # meant it, and a value test would throw that away and re-read over the top of them.
 # read_config always assigns SERVE_HOST, so this runs at most once per shell and never
@@ -959,7 +959,7 @@ serve::apply_port() {
 # and for exactly the same reason: ds4 and comfyui already put a host flag in their
 # argv, llama puts none at all, and both cases have to end up with OUR value.
 # ⚠️ The value is always an IPv4 literal by the time it gets here — read_config
-# normalises a blank to 0.0.0.0, and a value that is neither refuses to serve outright
+# normalizes a blank to 0.0.0.0, and a value that is neither refuses to serve outright
 # (SERVE_CONFIG_ERR), which returns maybe_launch before it reaches this line — so nothing
 # downstream has to think about bracketing an IPv6 address into a URL.
 serve::apply_host() {
@@ -1540,7 +1540,7 @@ serve::maybe_launch() {
 # HEALTHY box with the container's RestartCount recorded either side, so a healthcheck
 # bounce cannot be mistaken for the kill. Whatever podman/conmon does at TTY-exec
 # teardown finds the process by something other than its session or process group.
-# ⚠️ THE BEHAVIOUR IS MEASURED; THE CAUSE IS NOT. Do not add a comment here claiming to
+# ⚠️ THE BEHAVIOR IS MEASURED; THE CAUSE IS NOT. Do not add a comment here claiming to
 # know which mechanism it is — three plausible ones were proposed and two were refuted.
 #
 # ⇒ `server_start` from `distrobox enter` forked a service that died with the session.
@@ -1646,7 +1646,7 @@ serve::supervisor_loop() {
                 ( serve::build_service && serve::maybe_launch ) || \
                     serve::warn "supervisor: launch request failed; see $DROSTE_SERVE_LOG."
                 ;;
-            *)      serve::warn "supervisor: ignoring unrecognised request '$req'." ;;
+            *)      serve::warn "supervisor: ignoring unrecognized request '$req'." ;;
         esac
     done
     return 0
@@ -1740,7 +1740,7 @@ serve::port_owned_by_us() {  # port, pid → 0 ours | 1 not ours | 2 cannot tell
     # shares the netns, so an empty result means nothing in that namespace is serving,
     # and we know it. It returns 2 so the PROBE reports it, because "no HTTP response
     # (curl exit 7)" is the more actionable sentence than anything this gate would say.
-    # Behaviour, not ignorance.
+    # Behavior, not ignorance.
     [ -n "$rows" ] || return 2
     inodes=$(printf '%s\n' "$rows" | while read -r ino uid; do printf '%s\n' "$ino"; done)
     serve::_pid_holds_inode "$pid" "$inodes"; rc=$?
@@ -1873,7 +1873,7 @@ serve::_endpoint_ok() {
     command -v curl >/dev/null 2>&1 || return 1
     serve::read_health_spec
     # serve::probe speaks whichever scheme this box's server actually answers, so a
-    # TLS box can be recognised as our own instead of being refused forever. Its rc
+    # TLS box can be recognized as our own instead of being refused forever. Its rc
     # is deliberately ignored here: a TLS handshake can leave a non-zero exit behind
     # an HTTP code we did receive, and the code is the whole question at this gate.
     code=$(serve::probe "$port" "$HEALTH_PATH") || true
@@ -1980,7 +1980,7 @@ serve::build_service() {
     OVERLAYS=() SURFACES=() CRITICAL=() OPTIONAL=() CACHES=()
     # shellcheck source=/dev/null
     source "$spec" || { serve::err "could not read $spec"; return 1; }
-    # Child-shell apply, identical to the distrobox lane's step 6 — one behaviour, both
+    # Child-shell apply, identical to the distrobox lane's step 6 — one behavior, both
     # doors. This lane matters even more than the other: a config typo here would abort
     # serve::build_service, which the HEALTHCHECK also calls, so it would take out the
     # relaunch path as well as the launch path. See droste-cfgapply.sh.
@@ -2021,7 +2021,7 @@ serve::relaunch() {
 }
 
 # exec_service — the FOREGROUND door (server lane, pid 1). Byte-for-byte the
-# behaviour droste-entrypoint.sh had inline: exec the spec's SERVICE argv.
+# behavior droste-entrypoint.sh had inline: exec the spec's SERVICE argv.
 serve::exec_service() {
     if [ "${#SERVICE[@]}" -eq 0 ]; then
         serve::err "no SERVICE to exec"

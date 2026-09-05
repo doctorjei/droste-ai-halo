@@ -206,7 +206,7 @@ DS4_BLANK_IS_DEFAULT=(
     "HOST:a bind address has no 'none'. With no --host, ds4-server binds 127.0.0.1 (ds4_server.c:11508), so the box is silently unreachable from the LAN while the health probe, which asks 127.0.0.1, still reports it healthy."
 )
 
-# ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognised.
+# ds4_bool — parse one on/off value. Prints "on", "off", or "" for unrecognized.
 # ⚠️ Case-folded and space-stripped ON PURPOSE: ds4.cfg's documented vocabulary is
 # `on`/`off`, so `Off`, `OFF` and a stray trailing space are what a user will
 # actually type. Every boolean in this file goes through here — both tables and the
@@ -322,7 +322,7 @@ ds4_pre_launch() {
     # ⭐ AN ABSENT OR BLANK DROSTE_ SETTING LEAVES THE NATIVE EXACTLY AS IT IS, so
     # a user who exports the native by hand keeps it; an explicit on/off wins,
     # because it is the documented surface and they typed it here.
-    # An unrecognised value changes nothing and says so: turning a typo into a
+    # An unrecognized value changes nothing and says so: turning a typo into a
     # silent feature change is the failure the inverted-flag row came from.
     local entry native val
     for entry in "${DS4_BOOL_ENV_INVERTED[@]}"; do
@@ -381,7 +381,7 @@ ds4_pre_launch() {
     #   1. A blank CRASHES the server or makes it unhealthy.        ⇒ treat as unset
     #   2. The value is NUMERIC, or comes from a practically FINITE
     #      set (a boolean, an enum, a menu). Such a setting has —
-    #      and must have — default behaviour, and it does not matter
+    #      and must have — default behavior, and it does not matter
     #      whether the blank crashes; merely behaving differently
     #      from the default is enough.                              ⇒ treat as unset
     #   3. The value is NOT from a practically finite set (an unbounded
@@ -536,7 +536,7 @@ ds4_pre_launch() {
     # flag — so `Off`, `FALSE` and `disabled` all turned a setting ON, which is the
     # dangerous direction: a user trying to disable something enabled it. Measured,
     # not theorised. Now a whitelist, case-folded, matching ds4.cfg's own on/off
-    # vocabulary; an unrecognised value warns and leaves the flag off.
+    # vocabulary; an unrecognized value warns and leaves the flag off.
     for entry in "${DS4_BOOL_FLAGS[@]}"; do
         var="DROSTE_DS4_${entry%%:*}"
         flag=${entry#*:}
@@ -548,7 +548,7 @@ ds4_pre_launch() {
         esac
     done
     # Inverted bools: emit the negating flag only for an explicit `off`. An
-    # unrecognised value keeps the engine's default and says so — turning a typo
+    # unrecognized value keeps the engine's default and says so — turning a typo
     # into a silent feature change is the failure this whole row came from.
     for entry in "${DS4_BOOL_FLAGS_INVERTED[@]}"; do
         var="DROSTE_DS4_${entry%%:*}"
@@ -561,7 +561,7 @@ ds4_pre_launch() {
         esac
     done
     # Raw catch-all, appended last. Quote-aware, unset-safe; quoting
-    # inside the value IS honoured since s52 (droste::split_args).
+    # inside the value IS honored since s52 (droste::split_args).
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_DS4_EXTRA_ARGS:-}")
     argv+=( ${_extra[@]+"${_extra[@]}"} )

@@ -23,7 +23,7 @@ name: lint-shell
 # So a push touching targets/**/*.sh now fires BOTH workflows on purpose — they
 # ask different questions of the same file. build-halo.yml is untouched by this
 # change, and the namespaced concurrency groups mean neither run can cancel the
-# other; only a superseded run of the same workflow on the same ref is cancelled.
+# other; only a superseded run of the same workflow on the same ref is canceled.
 
 on:
   push:
@@ -73,10 +73,10 @@ jobs:
       # here, expecting SC2034=1,SC2324=1 (derived on 0.11.0) and getting
       # SC2034=1 from the runner's 0.9.0. The gate diagnosed itself correctly --
       # its own error text names "the runner's ShellCheck changed" as the second
-      # candidate -- and the fix is to pin the analyser, not to loosen the pin.
+      # candidate -- and the fix is to pin the analyzer, not to loosen the pin.
       #
       # Pinned by version AND sha256: a release asset is mutable in principle,
-      # and an analyser that silently changed would move the baseline with it.
+      # and an analyzer that silently changed would move the baseline with it.
       - name: Install pinned ShellCheck
         env:
           SC_VERSION: "0.11.0"
@@ -111,7 +111,7 @@ jobs:
           echo "assembled $(wc -l < droste-setup.sh) lines"
 
       # Print the version FIRST so that when the pin trips, the log already
-      # answers "did the analyser change, or did the code?".
+      # answers "did the analyzer change, or did the code?".
       - name: ShellCheck version
         run: |
           command -v shellcheck
@@ -204,8 +204,8 @@ jobs:
           }
           files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
           # ShellCheck reads each file's shebang, so the one `#!/bin/sh` script
-          # in the set (targets/ds4/scripts/download_model.sh) is analysed
-          # against POSIX sh rather than bash. That is the behaviour we want and
+          # in the set (targets/ds4/scripts/download_model.sh) is analyzed
+          # against POSIX sh rather than bash. That is the behavior we want and
           # it is why no `-s` override is passed here.
           shellcheck -S error -f gcc "${files[@]}"
           echo "no shellcheck errors in ${#files[@]} files"
@@ -353,7 +353,7 @@ jobs:
   # is obviously wrong; there is no partial credit to argue about.
   #
   # A SEPARATE JOB, DELIBERATELY. It needs no ShellCheck, so it does not wait on
-  # the pinned-analyser download, and a red here reads as "the artifact does not
+  # the pinned-analyzer download, and a red here reads as "the artifact does not
   # regenerate" rather than as a lint failure. It shares the workflow's
   # concurrency group, so it still cannot cancel a build-halo run.
   #

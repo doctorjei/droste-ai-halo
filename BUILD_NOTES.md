@@ -231,7 +231,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   `.incomplete` that is never reused and never reaped; a cache with any history holds a
   drawer of them, and announcing those would be a false positive on every box at every
   start. The cost is that a genuine resume is announced on its first GROWTH, up to one tick
-  late. We do not reap them either — a reaper is a new destructive behaviour and must not
+  late. We do not reap them either — a reaper is a new destructive behavior and must not
   be smuggled in under an announcement feature. The same silence holds at the far end: a
   group we never announced emits no terminal line.
   ⚠️ **errexit is OFF** (`set -uo pipefail`, matching the healthcheck): a partial vanishing
@@ -326,7 +326,7 @@ One sourced-bash file per port (`targets/<port>/build-spec`, baked at
 PRE_LAUNCH` — all paths explicit + absolute (`$HOME` allowed and preferred for
 home-relative paths: it is the only form correct in BOTH lanes). SURFACES and
 CACHES are structurally identical binds kept as separate rows by design (future
-cache-specific behaviour — which arrived in v0.2.0, when CACHES retargeted to
+cache-specific behavior — which arrived in v0.2.0, when CACHES retargeted to
 the shared `/opt/caches` volume; see the 2026-07-09 shared compute-cache
 entry). There is deliberately no DEFAULTS row — ALL content
 seeding is owned by templates.yaml. Contract doc: `base/resolve/build-spec.example`.
@@ -967,7 +967,7 @@ recorded path is the earlier F8 fix and is correct — this is the other half,
 what happens to the files once it does. Jei: *"Don't do what is being done and
 (somehow) ignore what the user says."*
 
-- **The mover is `mv` itself, and its behaviour and its errors are ours.** Jei:
+- **The mover is `mv` itself, and its behavior and its errors are ours.** Jei:
   *"mv copies across boundaries and removes the old. We should do the same,
   unless we know in advance that it will fail."* coreutils already does
   `rename(2)`, falls back to copy+unlink on `EXDEV`, preserves mode and
@@ -1052,7 +1052,7 @@ what happens to the files once it does. Jei: *"Don't do what is being done and
   collision menu used to be printed unconditionally while the "already answered,
   carry it" short-circuits sat in the loop below, so a box carried by the batch
   got the whole four-option menu with no prompt, no selector line and no echoed
-  answer — in colour indistinguishable from a live menu, default highlight and
+  answer — in color indistinguishable from a live menu, default highlight and
   all. Writing the rule as a property rather than patching the reported case
   also closed the same hole in the shorter form, where a box-wide answer settled
   in an earlier round was missed. A carried box now gets a receipt naming what
@@ -1175,7 +1175,7 @@ would otherwise surface at a user's terminal.
 
 **It BUFFERS.** A pipe means a half-finished assembly has already fed a truncated
 script to bash, so the whole artifact is built and checked before a byte reaches
-stdout. Defence in depth: the artifact's last line is a bare `main`, so a
+stdout. Defense in depth: the artifact's last line is a bare `main`, so a
 truncated stream would define functions and call nothing.
 
 ### The Python is its own file, and that was not tidiness
@@ -1280,7 +1280,7 @@ whole pickle-module signal set the adopt tool lacked.
   survives it.
 - **A legacy torch checkpoint was being read as empty, and the emptiness
   recorded as a fact.** The shared reader's `max_objects` defaults to 1 and both
-  of its legacy behaviours are gated on it being greater than 1, so the adopt
+  of its legacy behaviors are gated on it being greater than 1, so the adopt
   tool harvested torch's magic number, found no keys, and wrote
   `tensor_count: 0` at confidence absolute about a file it had never read — along
   with losing every routing signal the file carried.
@@ -1517,7 +1517,7 @@ stay torch-free on the runtime base and do NOT go through here.
   onion and the first one only a GPU could find). Triton's AMD backend
   (`triton/backends/amd/driver.py`, `HIPUtils`) runtime-compiles a small C
   helper module, `hip_utils`, through `compile_module_from_src` the FIRST time
-  the GPU driver is initialised. That is SERVE/run time on a GPU host — never
+  the GPU driver is initialized. That is SERVE/run time on a GPU host — never
   import time — so every gate we own runs upstream of it: the compiler-less
   `import aiter` smoke test passes, `pip check` passes, the build is green, and
   the service then dies with `RuntimeError: Failed to find C compiler` (triton
@@ -1551,7 +1551,7 @@ stay torch-free on the runtime base and do NOT go through here.
   `module_aiter_enum.so` (see the vllm section) stays load-bearing; a `g++`
   here would silently re-arm that lazy JIT path in a child image. The C++/hipcc
   toolchain still belongs to the build images.
-  The generalisation: **build != import != serve**. CI can only ever reach the
+  The generalization: **build != import != serve**. CI can only ever reach the
   first two, so anything that fires on GPU-driver init is hardware-only by
   construction — found on the box and fixed by baking, never by a gate.
 
@@ -1785,7 +1785,7 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   (the api-key exemption) AND by `middleware_server_state` — so at the new pin there
   are **TWO sites of the same defect, not one**. The second is milder and was
   invisible before: while the model is loading, a prefixed UI request is not
-  recognised as a frontend asset and gets a 503 instead of the loading page.
+  recognized as a frontend asset and gets a 503 instead of the loading page.
   Prefixing `frontend_paths` at its source fixes both consumers at once.
   ⭐ **Hunk 1 FAILED and hunk 2 applied at offset 17 — which is the guard working.**
   A relaxed `-F0` would have taken the offset silently.
@@ -2227,7 +2227,7 @@ Toolbox submodule provenance (droste-ai-halo):
   vllm-specific EXCEPT the g++ half: the base ships `gcc` and no `c++`
   precisely so the prebuilt `module_aiter_enum.so` above stays load-bearing —
   aiter's probe is `shutil.which("c++")`, and it must keep finding nothing.
-  The generalisation: **build != import != serve**, and CI can only ever reach
+  The generalization: **build != import != serve**, and CI can only ever reach
   the first two.
 - Runtime libs: `libnuma` (vLLM numa lookup on `import vllm`) + `libgomp1` —
   torch links `libgomp.so.1` (OpenMP), which the lean runtime base does NOT

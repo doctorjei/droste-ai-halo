@@ -173,7 +173,7 @@ def run_dialog(args):
             tf.seek(0)
             return tf.read().strip()
         except subprocess.CalledProcessError:
-            return None # User cancelled
+            return None # User canceled
 
 def find_available_families():
     """

@@ -217,7 +217,7 @@ execute() {
     exec_hdr "Pulling Images"
     svc_log=$(step_log pull service)
     : > "$svc_log"
-    # The API service is the pull mechanism, not an optimisation: if it will not
+    # The API service is the pull mechanism, not an optimization: if it will not
     # start, that is an error like any other (same binary, user, and storage as
     # the CLI), reported once — the per-image lines would all say the same thing.
     if pull_service_start "$svc_log"; then

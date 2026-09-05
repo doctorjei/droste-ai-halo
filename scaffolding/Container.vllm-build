@@ -54,7 +54,7 @@ COPY patch_aiter_headers.py /opt/patch_aiter_headers.py
 # THE RUN BELOW IS uv, NOT pip — migrated s46 (plan items 1 and 2). The claims that once
 # kept it on pip were BOTH FALSE, and the retraction stays here so nobody re-derives them:
 #   * "uv has NO `pip wheel` equivalent" — FALSE. I ran `uv pip --help`, saw no `wheel`
-#     subcommand, and generalised. Wheel-building lives under a DIFFERENT VERB:
+#     subcommand, and generalized. Wheel-building lives under a DIFFERENT VERB:
 #     `uv build --wheel --no-build-isolation -o <dir> <src>`. `uv pip --help` is not
 #     `uv --help`.
 #   * "`--force-reinstall` maps to uv's broader `--reinstall`" — beside the point:

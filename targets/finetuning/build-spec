@@ -79,7 +79,7 @@ HEALTH_ACCEPT="ok"
 # runs. What the wiring below adds is the droste-named surface on top of it, plus
 # the defaults that cannot live in a seeded file (jupyter_env, N1a).
 #
-# ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honoured
+# ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honored
 # in neither — a knob present but inert, which is worse than an absent one.
 CFG_FILE="/opt/data/finetuning.cfg"
 
@@ -100,7 +100,7 @@ CFG_FILE="/opt/data/finetuning.cfg"
 SERVE_CFG_PREFIX="DROSTE_JUPYTER_"
 # The flags this box spells differently from the library's defaults. serve::apply_host
 # defaults to --host; Jupyter says --ip, and without the row the launcher would APPEND
-# a --host — traitlets exits 2 on an unrecognised flag rather than ignoring it, so the
+# a --host — traitlets exits 2 on an unrecognized flag rather than ignoring it, so the
 # server would never start. --port needs no row (all five agree).
 SERVE_HOST_FLAG=--ip
 # The port a user gets when they set none — Jupyter's own, and the value finetuning.cfg
@@ -242,7 +242,7 @@ jupyter_env() {
     #     cell that reaches a Qt UI.
     #     ⚠️ CORRECTED s58: this cited qtpy/__init__.py:172, and QTPY IS NOT IN THIS
     #     IMAGE — nothing installs it and no Jupyter or matplotlib package pulls it in.
-    #     The UNSET behaviour differs too: :56-57 gives None, then :117-128 tries
+    #     The UNSET behavior differs too: :56-57 gives None, then :117-128 tries
     #     PyQt6, PySide6, PyQt5, PySide2 and takes the first that imports — NOT a
     #     hardcoded "pyqt5". The guard is right either way; only the citation was wrong.
     #     ⭐ Second site of one misattribution: droste-common.sh carried it too and was
@@ -410,7 +410,7 @@ jupyter_env() {
     # finetuning.cfg shows `# XDG_DATA_HOME=   # base for user data; unset:
     # ~/.local/share`, and jupyter_core already reads it as `env.get(...)` then
     # `if not xdg` (paths.py:191-192) — so blank and absent ALREADY agreed there and the
-    # loop changes no behaviour, only the variable's presence. The file's sentence stays
+    # loop changes no behavior, only the variable's presence. The file's sentence stays
     # true, and becomes true by construction rather than by upstream's goodwill.
     # ⚠️ IT DOES MOVE A HARNESS REQUIREMENT: XDG_DATA_HOME sits in ftguard.sh's
     # FT_HARMLESS list, whose row asserts a blank is KEPT. That row now states the
@@ -510,7 +510,7 @@ jupyter_env() {
     # returns True whenever sys.prefix is a virtualenv the process owns — and this
     # box IS one — so the order would be decided by an OWNERSHIP TEST on
     # /opt/venv (paths.py:83-107, and that directory is an overlay merge) rather
-    # than by a decision. Unsetting it is a different behaviour, not a tidier
+    # than by a decision. Unsetting it is a different behavior, not a tidier
     # spelling of the same one.
     # 🚨 A BLANK CANNOT BE PASSED THROUGH — this is the defect this row fixes.
     # envset() (paths.py:49-60) is TRUE for every value except
@@ -526,7 +526,7 @@ jupyter_env() {
     # file or directory that would otherwise load ("no config file", "no KV disk cache").
     # This setting is a BOOLEAN — finetuning.cfg's DROSTE_JUPYTER_SEARCH_VENV_FIRST line
     # documents it as `{yes, no*}` — so the exception cannot apply, and its blank was
-    # producing a THIRD behaviour that is in neither the file's vocabulary nor the
+    # producing a THIRD behavior that is in neither the file's vocabulary nor the
     # wiring's default: Jupyter's ownership test on /opt/venv (paths.py:83-107, :117). A
     # user clearing a `no` line got neither `no` nor nothing; they got a coin toss
     # decided by the permissions of an overlay merge.
@@ -684,7 +684,7 @@ jupyter_health_prefix() {
     fi
 
     # `--show-config-json` reports the value AS CONFIGURED, not as ServerApp's
-    # validator will normalise it (measured: "/deep/lab/", "deep/lab" and "/" all
+    # validator will normalize it (measured: "/deep/lab/", "deep/lab" and "/" all
     # come back verbatim), and the key is ABSENT when nothing set it. Both of those
     # are handled below, so no reader here may assume a shape.
     base=$(printf '%s' "$json" | python3 -c '
@@ -704,7 +704,7 @@ sys.stdout.write(value)
         return 0
     fi
 
-    # ── normalise EXACTLY as ServerApp does, then strip back to a prefix ────────
+    # ── normalize EXACTLY as ServerApp does, then strip back to a prefix ────────
     # ServerApp's @validate("base_url") adds a leading slash if missing and a
     # trailing one if missing (so "deep/lab" is served at "/deep/lab/"), and
     # HEALTH_PATH above is "/" — read_health_spec prepends the prefix VERBATIM, so

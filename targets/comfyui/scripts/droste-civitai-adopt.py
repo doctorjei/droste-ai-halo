@@ -646,7 +646,7 @@ def sniff_pickle_keys(path):
     have to route.
 
     ⚠️ `max_objects` IS LOAD-BEARING AND WAS WRONG UNTIL s46. The default is 1,
-    and BOTH legacy-container behaviours in the shared reader -- skipping the
+    and BOTH legacy-container behaviors in the shared reader -- skipping the
     preamble and stopping at the storage-key list -- are gated on it being
     greater than 1. So for a legacy (pre-1.6, non-zip) torch checkpoint this
     read harvested torch's MAGIC NUMBER, found no keys, and returned an EMPTY
@@ -1912,7 +1912,7 @@ def main(argv=None):
 
     # QUIET data-dump: one consolidated, filename-sorted list of unrecognized
     # fields, just before the summary. (Non-quiet already printed them inline
-    # per file; under -q the inline notes are suppressed in favour of this.)
+    # per file; under -q the inline notes are suppressed in favor of this.)
     if args.quiet and discoveries:
         log(args, 0, "unrecognized fields:")
         for fname, keys in sorted(discoveries):

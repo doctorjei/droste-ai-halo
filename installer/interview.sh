@@ -13,8 +13,8 @@ select_boxes() {
     done
   else
     say ""
-    # Columns land at 2 / 8 / 21 / 34 / 69. Each column carries its own colour
-    # THROUGH its padding, so the row reads as four coloured fields, and the
+    # Columns land at 2 / 8 / 21 / 34 / 69. Each column carries its own color
+    # THROUGH its padding, so the row reads as four colored fields, and the
     # [All] row wears the whole default-option scheme of an option list.
     # DESCRIPTION IS THE ELASTIC COLUMN: it is the only prose here, so a narrow
     # terminal takes its width out of that cell (clipped, not wrapped) and every
@@ -638,10 +638,10 @@ MIT_ASKED=0
 MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
 
 # One continuous block of prose, word-wrapped to the screen and indented two.
-# The colour is a parameter because two voices use this same block: body text
-# for the Data Mapping explainer, and the quieter question-text grey for a note
+# The color is a parameter because two voices use this same block: body text
+# for the Data Mapping explainer, and the quieter question-text gray for a note
 # that stands immediately above a prompt (nobase_note's voice).
-prose() {   # text [colour]
+prose() {   # text [color]
   local w line col=${2:-$C_TEXT}
   w=$(( $(disp_width) - 2 ))
   while IFS= read -r line; do

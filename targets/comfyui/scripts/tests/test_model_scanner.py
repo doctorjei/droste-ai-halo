@@ -1552,10 +1552,10 @@ class ScannerTest(unittest.TestCase):
         """Field dump of the real wan_2.1_vae.safetensors (Jei, s33): top-level prefixes
         `conv1, conv2, decoder, encoder`, keys like `decoder.upsamples.0.residual.0.gamma`
         -- and NO quant_conv / post_quant_conv anywhere. Under heuristics 11 that file had
-        an encoder/decoder pair and NOTHING the anatomy rule recognised, so it abstained
+        an encoder/decoder pair and NOTHING the anatomy rule recognized, so it abstained
         and fell to naming. `upsamples`/`downsamples` is the third spelling that ships."""
         wan = {k: {} for k in wan_vae_keys()}
-        # the premise of the case: no quantisation convs to fall back on
+        # the premise of the case: no quantization convs to fall back on
         self.assertFalse([k for k in wan if "quant_conv." in k])
         self.assertEqual({k.split(".")[0] for k in wan},
                          {"conv1", "conv2", "decoder", "encoder"})
@@ -2217,7 +2217,7 @@ class ScannerTest(unittest.TestCase):
         """Every KIND the shared rules can return must have a home in this tool.
 
         The map uses `.get`, so an unmapped kind ABSTAINS rather than raising -- the
-        right behaviour for a rule that exists for the adopt side only, and the wrong
+        right behavior for a rule that exists for the adopt side only, and the wrong
         thing to discover by watching a file go unclassified. This test is the tripwire:
         add a rule that returns a new kind and either map it or add it to the exemption
         list below, deliberately."""

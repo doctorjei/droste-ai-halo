@@ -179,7 +179,7 @@ RUN set -e; sp=$(echo /opt/venv/lib/python*/site-packages) \
 #        recursion limit. No sign of the same pathology.
 #      * The interaction that actually broke pip: with a local-version torch
 #        (`2.9.1+rocm…`) installed, `uv pip install --dry-run "torch==2.9.1"` reports
-#        "Would make no changes" — uv honours PEP 440 local-version satisfaction and does
+#        "Would make no changes" — uv honors PEP 440 local-version satisfaction and does
 #        not re-resolve torch.
 #    ⚠️ That measurement used the PyPI vllm wheel, not our locally built ROCm one, and this
 #    step installs local .whl FILES rather than resolving a name. It was strong evidence,

@@ -189,7 +189,7 @@ hook::seal_state() {
 # ⚠️ IT MUST NOT MAKE A WEDGED HOOK IMMORTAL, and the two guards below are that promise:
 #   * it stops the moment the working process is gone, so a hook killed without running
 #     its EXIT trap leaves the record to go stale and the stale-`starting` relaunch
-#     recovers it — the behaviour g1lab/initstamp.sh checks 19-20 pin down, and the
+#     recovers it — the behavior g1lab/initstamp.sh checks 19-20 pin down, and the
 #     reason "never relaunch while the status says starting" was rejected as the fix;
 #   * it stops after HOOK_HEARTBEAT_MAX beats regardless, so a recycled pid cannot keep
 #     a dead launch looking alive for the life of the container.

@@ -6,7 +6,7 @@ every trait the user's config surface offers, and every value in it equals the u
 default AT THE PINS. That is deliberate — it makes a commented line in the user's file
 mean exactly one thing, "droste's default" — but it converts a TRACKING default into a
 PINNED one. The moment jupyter_server, jupyterlab or traitlets moves, a baked value that
-upstream has changed silently keeps this box on the old behaviour, and nothing about the
+upstream has changed silently keeps this box on the old behavior, and nothing about the
 build says so: the file still parses, the server still starts, the trait still exists.
 
 There is a second failure it catches, and it is the quieter one. A trait upstream has

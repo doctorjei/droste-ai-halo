@@ -256,7 +256,7 @@ close_paren() {  # <string> <index-of-$>
     printf '%s' -1
 }
 
-# ── scan_rhs — walk one right-hand side, honouring bash's own quoting ────────
+# ── scan_rhs — walk one right-hand side, honoring bash's own quoting ────────
 # ⚠️ QUOTING IS WHY THIS IS A SCANNER AND NOT A grep. `'$VAR'` is a literal
 # dollar and `"$VAR"` is the box-killer; a regex that cannot tell them apart
 # either misses the second or cries wolf on the first, and a checker that cries
@@ -327,10 +327,10 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
         # One shape: `${` + a plain NAME + one of `-` `:-` `+` `:+` `=` `:=` —
         # the six operators that cannot abort the source under `set -u`, and the
         # ONLY question this checker asks. Note what is NOT here: no list of
-        # hazards, and no arm that has to recognise `${!IND-}` or `$((…))` in
+        # hazards, and no arm that has to recognize `${!IND-}` or `$((…))` in
         # order to refuse them. `!IND` is not a plain NAME and `$((` does not
         # begin `${NAME`, so both miss the shape and fall through to be rejected
-        # like anything else unrecognised.
+        # like anything else unrecognized.
         # ⚠️ EVERYTHING BELOW THIS BLOCK RUNS ONLY ON A LINE ALREADY REFUSED. It
         # picks the WORDING; it cannot change the verdict.
         if [ "$nx" = '{' ]; then
@@ -387,7 +387,7 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
                                "only \${$name-} \${$name:-…} \${$name+…} \${$name:+…} \${$name=…} \${$name:=…} are allowed here" "$src" ;;
                     esac
                 else
-                    report "$file" "$lineno" "\${$body}" 'unrecognised expansion' \
+                    report "$file" "$lineno" "\${$body}" 'unrecognized expansion' \
                            'the allowed forms are `${NAME-…}` `${NAME:-…}` `${NAME+…}` `${NAME:+…}` `${NAME=…}` `${NAME:=…}`' "$src"
                 fi ;;
             esac
@@ -428,7 +428,7 @@ scan_rhs() {  # <file> <lineno> <rhs> <srcline>
             # a future bash grows an introducer nobody listed, the whitelist has
             # already refused it and this is the message it gets. A `*)` that
             # skipped instead would quietly re-open the hole the whitelist closed.
-            report "$file" "$lineno" "\$$nx" 'an expansion this checker does not recognise' \
+            report "$file" "$lineno" "\$$nx" 'an expansion this checker does not recognize' \
                    'the only allowed form is `${NAME-…}`, `${NAME:-…}`, `${NAME+…}` or `${NAME:+…}`' "$src"
             i=$((i + 2)); continue ;;
         esac

@@ -223,8 +223,6 @@ LLAMA_BOOL_FLAGS=(
     "MMPROJ_AUTO:--mmproj-auto:--no-mmproj-auto"
     "MMPROJ_OFFLOAD:--mmproj-offload:--no-mmproj-offload"
     "CONT_BATCHING:--cont-batching:--no-cont-batching"
-    "MMAP:--mmap:--no-mmap"
-    "DIRECT_IO:--direct-io:--no-direct-io"
     "KV_OFFLOAD:--kv-offload:--no-kv-offload"
     "REPACK:--repack:--no-repack"
     "LOG_PREFIX:--log-prefix:--no-log-prefix"
@@ -239,8 +237,8 @@ LLAMA_SWITCH_FLAGS=(
     "SWA_FULL:--swa-full"                 "ENDPOINT_METRICS:--metrics"
     "ENDPOINT_PROPS:--props"              "EMBEDDINGS:--embeddings"
     "RERANKING:--reranking"               "REUSE_PORT:--reuse-port"
-    "OFFLINE:--offline"                   "MLOCK:--mlock"
-    "CPU_MOE:--cpu-moe"                   "NO_HOST:--no-host"
+    "OFFLINE:--offline"                   "CPU_MOE:--cpu-moe"
+    "NO_HOST:--no-host"
     "BACKEND_SAMPLING:--backend-sampling" "IGNORE_EOS:--ignore-eos"
 )
 # ONOFF — the flag carries its own `on`/`off` argument. "<SUFFIX>:<flag>".
@@ -308,7 +306,13 @@ LLAMA_LIST_FLAGS=(
 # an EMPTY argument turns NUMA **on** in distribute mode. `off` has to mean "emit no
 # flag", which a value row cannot express. Anything llama does not recognise throws
 # and kills startup, so the menu is closed.
+# LOAD_MODE replaces --mmap/--mlock/--direct-io: at this pin all three are deprecated
+# and each ASSIGNS params.load_mode, so they overwrote each other (MMAP=on + MLOCK=on
+# meant "mmap off"). First pair emits nothing — upstream's default is already mmap.
 LLAMA_CHOICE_FLAGS=(
+    # `auto` is omitted: llama-model.cpp rewrites it to MMAP before any consumer reads
+    # it, so it is a synonym. check-llama-collisions.sh watches for that changing.
+    "LOAD_MODE|mmap=|none=--load-mode none|mlock=--load-mode mlock|mmap+mlock=--load-mode mmap+mlock|dio=--load-mode dio"
     "NUMA|off=|distribute=--numa distribute|isolate=--numa isolate|numactl=--numa numactl"
     "AUTO_MODEL|none=|embd-gemma=--embd-gemma-default|fim-qwen-1.5b=--fim-qwen-1.5b-default|fim-qwen-3b=--fim-qwen-3b-default|fim-qwen-7b=--fim-qwen-7b-default|fim-qwen-7b-spec=--fim-qwen-7b-spec|fim-qwen-14b-spec=--fim-qwen-14b-spec|fim-qwen-30b=--fim-qwen-30b-default|gpt-oss-20b=--gpt-oss-20b-default|gpt-oss-120b=--gpt-oss-120b-default|vision-gemma-4b=--vision-gemma-4b-default|vision-gemma-12b=--vision-gemma-12b-default"
 )
@@ -437,6 +441,14 @@ llama_argv() {
             [ -n "$first" ] && seen="$seen $var" || first=$var
         done
         [ -n "$seen" ] && serve::err "$first and$seen all set the same thing in llama, so the last one on the command line silently wins. Set ONE of them in $CFG_FILE."
+    done
+
+    # Retired by the LOAD_MODE collapse. Config files are seeded if_missing, so an older
+    # box still carries all three lines; they must not go quietly inert.
+    for suffix in MMAP MLOCK DIRECT_IO; do
+        var="DROSTE_LLAMA_$suffix"
+        [ -n "${!var:-}" ] || continue
+        serve::err "$var is retired and is being ignored. llama deprecated --mmap/--mlock/--direct-io in favour of --load-mode, where all three set ONE value instead of three independent switches. Use DROSTE_LLAMA_LOAD_MODE in $CFG_FILE: none, mmap, mlock, mmap+mlock or dio."
     done
 
     # Ordering: droste's own flags FIRST, the user's catch-all LAST, because llama

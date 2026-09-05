@@ -74,7 +74,12 @@ printf '\nllama flag/env existence — %s @ %s\n\n' "$REPO_URL" "${REF:0:12}"
 # checks below are what must speak for an empty set, so the pipelines have to
 # survive long enough to reach them. (Found by mutating this script, not by
 # reading it: emptying llama.cfg produced a silent exit 1.)
-grep -hE '^[[:space:]]*\{' "$ARG" | grep -ohE '"--[a-z0-9-]+"' | tr -d '"' | sort -u > "$TMP/have_flags" || true
+#
+# ⚠️ THE CHARACTER CLASS CARRIES A DOT ON PURPOSE. `--fim-qwen-1.5b-default` is a real
+# upstream flag and [a-z0-9-] cannot match it, so it read as absent on both sides at
+# once — which cancels out and looks like agreement. A class that silently excludes the
+# same name from BOTH sets is the worst kind of gap: it can never go red.
+grep -hE '^[[:space:]]*\{' "$ARG" | grep -ohE '"--[a-z0-9.-]+"' | tr -d '"' | sort -u > "$TMP/have_flags" || true
 grep -ohE 'set_env\("LLAMA_ARG_[A-Z0-9_]+"\)' "$ARG" | sed -E 's/set_env\("//; s/"\)//' | sort -u > "$TMP/have_env" || true
 
 # ── What we ship ─────────────────────────────────────────────────────────────
@@ -82,7 +87,16 @@ grep -ohE 'set_env\("LLAMA_ARG_[A-Z0-9_]+"\)' "$ARG" | sed -E 's/set_env\("//; s
 # the flag exists — this file discusses podman flags and writes ${LLAMA_ARG_X=…}
 # placeholders, and sweeping those in produces noise that trains people to ignore
 # the report.
-grep -ohE '"[A-Z0-9_]+:(--[a-z0-9-]+)"' "$SPEC" | sed -E 's/.*:(--[a-z0-9-]+)"/\1/' | sort -u > "$TMP/our_flags" || true
+#
+# 🚨 THIS USED TO MATCH `"NAME:--flag"` AND NOTHING ELSE, WHICH COVERED 45 OF 97. The
+# pattern needed a closing quote right after the flag, so a three-part boolean row
+# ("MMAP:--mmap:--no-mmap") matched at neither end and every CHOICE row was invisible:
+# --no-mmap, --numa and all eleven model presets went unchecked. More than half the
+# flags we emit, in the tool whose whole job is to say none of them vanished.
+# A table entry is a quoted string whose first token is a SUFFIX followed by `:` or
+# `|`; prose, podman flags and ${LLAMA_ARG_X=…} placeholders have neither, and the
+# EXCLUSIVE_GROUPS rows are space-separated so they stay out too.
+grep -ohE '"[A-Z0-9_]+[:|][^"]*"' "$SPEC" | grep -ohE '\-\-[a-z0-9.-]+' | sort -u > "$TMP/our_flags" || true
 # Env names: only lines that OFFER a setting, i.e. a commented assignment at the
 # start of a line. Same reason.
 grep -ohE '^# ?LLAMA_ARG_[A-Z0-9_]+=' "$CFG" | sed -E 's/^# ?//; s/=$//' | sort -u > "$TMP/our_env" || true

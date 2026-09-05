@@ -14,6 +14,7 @@ On a Strix Halo machine with podman and distrobox installed:
 ```bash
 curl -fsSLO https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh | bash
 ```
+If you are security conscious, you can also directly pull the script and explore it by hand. Everything is rootless.
 
 To pin a version instead of tracking the newest release, swap `latest/download`
 for `download/v0.4.0`. The installer is published as a release asset; `0.4.0` is

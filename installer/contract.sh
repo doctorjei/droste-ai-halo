@@ -121,7 +121,7 @@ declare -A BIND_PROMPT=(
 # line. ds4's upstream default is 8000, same as
 # vllm, so its default is nudged to 8001 to keep both runnable side by side.
 declare -A BOX_HOST_PORT=(
-  [comfyui]=8188 [llama]=8080 [vllm]=8000 [ds4]=8001 [finetuning]=8888
+  [comfyui]=8188 [llama]=9931 [vllm]=8000 [ds4]=8001 [finetuning]=8888
 )
 
 # Box-selection table columns: service name + one-line description.

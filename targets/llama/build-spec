@@ -93,15 +93,21 @@ SERVE_CFG_PREFIX="DROSTE_LLAMA_"
 # never set cannot be blank, and `LLAMA_ARG_HOST=""` binds ::1 only and restart-loops
 # the box (s57). The template's reserved block names both spellings for the same reason.
 #
-# The port a user gets when they set none — llama-server's own, and the value llama.cfg
-# already shows on its commented DROSTE_LLAMA_PORT line. 🚨 THE ROW IS WHAT MAKES THAT
-# LINE TRUE (§7a, ruled s60): the address has a library-wide default and the port had
-# none, so before this row an absent port did not mean "use 8080" — it meant the box
-# refused to serve. ⚠️ NO BAKED TOKEN TO KEEP IT IN STEP WITH, unlike the address: this
-# box's argv carries no --port at all, so a direct `podman run` gets llama.cpp's own
-# 8080 and the two agree by coincidence rather than by construction. Changing this
-# number without changing llama_argv would end that agreement silently.
-SERVE_PORT_DEFAULT=8080
+# The port a user gets when they set none, and the value llama.cfg already shows on its
+# commented DROSTE_LLAMA_PORT line. 🚨 THE ROW IS WHAT MAKES THAT LINE TRUE (§7a, ruled
+# s60): the address has a library-wide default and the port had none, so before this row
+# an absent port did not mean "use this number" — it meant the box refused to serve.
+# 🚨 IT IS NO LONGER llama-server's OWN DEFAULT, AND THAT IS DELIBERATE (s66). Upstream
+# warns on every start that binds :8080 — "server default port will be changed to :9931
+# in a future release", ggml-org/llama.cpp#26508, fired from a string_ends_with on the
+# LISTENING ADDRESS in tools/server/server.cpp. Moving now means moving once, on our
+# schedule, instead of inheriting the change mid-pin and explaining a port that moved by
+# itself. ⚠️ SO THE OLD "they agree by coincidence" NOTE IS SPENT: this box's argv still
+# carries no --port, so a direct `podman run` of the raw image gets llama.cpp's 8080
+# while every box droste creates gets this number. That divergence is now BY DESIGN —
+# the serve lane always applies SERVE_PORT_DEFAULT, and `podman run <image>` is not a
+# lane we police (ruled s61).
+SERVE_PORT_DEFAULT=9931
 #
 # ⚠️ THE TLS PAIR HAS NO LIBRARY DEFAULT, deliberately: there is no majority spelling,
 # and a wrong flag is not a wrong value — the server rejects the argv and never starts.

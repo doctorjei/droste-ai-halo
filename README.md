@@ -159,7 +159,7 @@ either way.
 | comfyui | ComfyUI web UI | 8188 | `comfyui.cfg` |
 | finetuning | JupyterLab | 8888 | `finetuning.cfg` (token auth; token is in `/opt/data/.droste-serve.log`) |
 | vllm | `vllm serve --config` | 8000 | `vllm.cfg` + `vllm_config.yaml` — set `model:`\* |
-| llama | `llama-server` | 8080 | `llama.cfg` — set `LLAMA_ARG_MODEL` |
+| llama | `llama-server` | 9931 | `llama.cfg` — set `LLAMA_ARG_MODEL` |
 | ds4 | `ds4-server` | 8001 | `ds4.cfg` — set `DROSTE_DS4_MODEL` |
 
 \* vllm is the one box that will not start until you tell it which model to

@@ -162,7 +162,7 @@ else
   # from a preflight row and keeps its own bracketed drawing.
   C_OKB=$'\e[0;32m' C_OK=$'\e[0;92m'                      # preflight ✅ row
   C_BADB=$'\e[0;31m'                                      # preflight 🚨 row
-  # Reset-prefixed like every other entry so no shade inherits a neighbour's
+  # Reset-prefixed like every other entry so no shade inherits a neighbor's
   # weight; also worn by the one QUESTION that carries the caution sign.
   C_NOTB=$'\e[0;33m'                                      # preflight 🔶 row
   # The one WARNING that rides under an option list: bold italic yellow (Jei's
@@ -187,11 +187,11 @@ else
   # reader has to TYPE. Its own entry rather than a borrowed one: C_ERR and
   # C_ARROW are the same bold red but mean "this failed" / "aside follows"
   # everywhere else. Deliberately NOT italic: 3;37 renders bold-bright on Jei's
-  # terminal, which is why the parenthetical is coloured instead of slanted.
-  C_STOPW=$'\e[1;91m'   # ...and its tail, italic grey. Reset-prefixed on purpose:
+  # terminal, which is why the parenthetical is colored instead of slanted.
+  C_STOPW=$'\e[1;91m'   # ...and its tail, italic gray. Reset-prefixed on purpose:
   C_STOPT=$'\e[0;3;37m'  # it follows the bold red above and must not inherit it.
   # Answer PROMPTS (the "<text> [options] {:|?} " line). Deliberately a
-  # different bracket colour from the option LISTS above them: in a prompt the
+  # different bracket color from the option LISTS above them: in a prompt the
   # bracket is punctuation around the choice, in a list it indexes the row.
   C_PBRK=$'\e[1;97m'    # prompt [ ]
   C_PDEF=$'\e[1;92m'    # prompt default option / default value
@@ -203,7 +203,7 @@ else
   C_CTR=$'\e[0;33m'     # box table: Container column
   C_SVCN=$'\e[1;95m'    # box table: Service column
   # Per-box summary box: C_SGRP = its "* Paths" / "* Server" group headers,
-  # C_SHDR = the "+ Data Path:" row labels (body-text grey — the label says what
+  # C_SHDR = the "+ Data Path:" row labels (body-text gray — the label says what
   # the row is, the VALUE is what the eye is looking for).
   C_SBOX=$'\e[0;36m' C_SBUL=$'\e[1;92m' C_SHDR=$'\e[0;37m' C_SVAL=$'\e[1;96m'
   C_SGRP=$'\e[1;4;94m'
@@ -216,7 +216,7 @@ else
   # after "quit"), hence the explicit leading reset. Its siblings C_SVC / C_FILE
   # are the same shape but only ever open a line or follow a RESET, so they are
   # left exactly as they are.
-  C_QTXT=$'\e[0;3;37m'  # quit notice body (light grey italic)
+  C_QTXT=$'\e[0;3;37m'  # quit notice body (light gray italic)
   C_QEXIT=$'\e[1;93m'   # the word "exit" in the quit notice
   C_QKEY=$'\e[1;92m'    # the word "quit" (what the user actually types)
   C_DETH=$'\e[1;3;4;95m'  # "Previous box setup configurations detected:"
@@ -235,8 +235,8 @@ else
   #   C_EMBOX  "all boxes", in both batch questions: "bold, italic, dark
   #            yellow" — the same three attributes as C_WARNI (0;1;3;33), which
   #            is the *Warning: line rendered directly above it.
-  #   C_EMPTH  "all data paths": "bold, italic" with no colour named, so it
-  #            keeps body text's own grey (C_TEXT is 0;37) and adds 1;3.
+  #   C_EMPTH  "all data paths": "bold, italic" with no color named, so it
+  #            keeps body text's own gray (C_TEXT is 0;37) and adds 1;3.
   C_EMLBL=$'\e[0;1;3;95m'
   C_EMBOX=$'\e[0;1;3;33m'
   C_EMPTH=$'\e[0;1;3;37m'
@@ -254,7 +254,7 @@ else
   # BORN-EMOJI ONLY (U+2705, U+1F536, U+1F6A8): each is Emoji_Presentation by
   # default, so it is two columns wide with no VS16 promotion in sight — a
   # VS16-promoted glyph (⚠️ and its class) is what breaks the width math. They
-  # bring their own colour, so nothing is painted onto them; the row's colour
+  # bring their own color, so nothing is painted onto them; the row's color
   # opens AFTER the marker.
   MK_OK=$'\U2705' MK_CAUT=$'\U1F536' MK_BAD=$'\U1F6A8'
   # Same arithmetic, different marker width: these are BORN-emoji and occupy exactly
@@ -317,7 +317,7 @@ hdr() { printf '%s%s%s\n' "$C_HDR" "$1" "$RESET"; }
 # is display-only: ask_choice lowercases both sides before validating.
 # Padding is emitted only when there is a tail.
 #
-# Colour: the brackets keep the dark shade (green when this row is the current
+# Color: the brackets keep the dark shade (green when this row is the current
 # default, blue otherwise) and EVERYTHING else on the row — letter, rest, pad,
 # tail — takes the matching bright one, so a row reads as one object.
 opt_row() {   # letter rest tail column-width is-default
@@ -378,14 +378,14 @@ subnote() { printf '  %s `-> %s%s%s\n\n' "$C_ARROW" "$C_TEXT" "$1" "$RESET"; }
 # without making the run stop to say it.
 #
 # Layout, byte for byte: two spaces, the marker (two columns — born-emoji, see
-# the palette), the row colour, ONE space, the text, reset. The colour opens
+# the palette), the row color, ONE space, the text, reset. The color opens
 # after the glyph so nothing repaints the emoji, and the space lives inside it
 # so the row ends in exactly one reset.
 pf_ok()   { printf '  %s%s %s%s\n' "$MK_OK"   "$C_OKB"  "$1" "$RESET"; }
 pf_bad()  { printf '  %s%s %s%s\n' "$MK_BAD"  "$C_BADB" "$1" "$RESET"; }
 pf_note() { printf '  %s%s %s%s\n' "$MK_CAUT" "$C_NOTB" "$1" "$RESET"; }
 
-# Follow-on detail under a preflight row — body-text grey, with any command emph()'d
+# Follow-on detail under a preflight row — body-text gray, with any command emph()'d
 # inside the string.
 # ⚠️ THE INDENT IS MODE-DEPENDENT AND MUST BE (s45). It used to be a hardcoded four
 # spaces, inherited from linger_fallback_note() rather than measured against the row it
@@ -419,7 +419,7 @@ banner() {   # text [bold] [min-inner-width]
   for (( i = 0; i < n; i = i + 1 )); do fill+=$h; done
   top="$tl$fill$tr"
   bot="$bl$fill$br"
-  # The padding after the title is FRAME-coloured (it is frame, not title), and
+  # The padding after the title is FRAME-colored (it is frame, not title), and
   # it is one space in the ordinary case — the same line the banner always drew.
   printf -v pad '%*s' "$(( n - ${#text} - 1 ))" ''
   mid="$v $tcol$text$C_FRAME$pad$v"
@@ -430,23 +430,40 @@ banner() {   # text [bold] [min-inner-width]
   printf '  %s%s%s\n' "$C_FRAME" "$bot" "$RESET"
 }
 
-# Jei's coloured droste mark, the same art the in-box toolbox banners draw
+# Jei's colored droste mark, the same art the in-box toolbox banners draw
 # (droste-ai-halo commit 198f3f9), re-indented to sit above the installer title.
 # It is ANSI + private-use box glyphs by construction, so --ascii skips it.
 logo_header() {
-  [[ $ASCII -eq 1 ]] && return 0
+  # 🚨 --ascii GETS A LOGO NOW, WHERE IT USED TO GET NOTHING (s66). The mark is the
+  # first thing the installer draws, and returning early meant an --ascii run opened on
+  # a bare prompt. ⚠️ NO ESCAPES HERE, DELIBERATELY: this mode's contract is printable
+  # ASCII and tab only, and every color atom is empty in this branch anyway. Jei's
+  # spec for this art — "logo portion BOLD; ^ and /\ bright yellow" — is conditioned on
+  # "if ANSI is supported", which in --ascii it is not. Delivering it needs the
+  # color-ASCII mode he floated and does not exist yet; the art is placed so that
+  # wrapping these five lines in color atoms is the whole of that change.
+  if [[ $ASCII -eq 1 ]]; then
+    printf '\n'
+    printf '%s\n' \
+      '  .--------.   __  ___________________' \
+      '  |_|^|    |  |  \  ._  _   _ _|_  _' \
+      "  |---' /\\ |  |   | | \`/ \\ /_' |  /_\\" \
+      '  |        |  |   | |  \_/ `_/ |  \_.' \
+      "  \`--------' \`|__/ -------------------"
+    return 0
+  fi
   printf '\n'
   printf '%s\n' \
     $' \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
-    $' \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-    $' \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+    $' \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+    $' \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
     $' \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
     $' \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
   return 0
 }
 
-# "[a, b, c]" — light-grey brackets and separators, the names in $1's colour.
-name_list() {   # colour name...
+# "[a, b, c]" — light-gray brackets and separators, the names in $1's color.
+name_list() {   # color name...
   local col=$1 n out="" first=1
   shift
   for n in "$@"; do
@@ -457,11 +474,11 @@ name_list() {   # colour name...
   printf '%s[%s%s]%s' "$C_TEXT" "$out" "$C_TEXT" "$RESET"
 }
 
-# Inline emphasis inside a prompt: the fragment takes the named colour and the
-# prompt's body colour is restored after it (ask_raw opened the line in C_TEXT).
+# Inline emphasis inside a prompt: the fragment takes the named color and the
+# prompt's body color is restored after it (ask_raw opened the line in C_TEXT).
 emph()  { printf '%s%s%s' "$C_PATHB" "$1" "$C_TEXT"; }
 emphg() { printf '%s%s%s' "$C_PATHG" "$1" "$C_TEXT"; }
-# The same thing in a colour the caller names — for the marked-up fragments that
+# The same thing in a color the caller names — for the marked-up fragments that
 # have one entry each rather than one shared "emphasis" shade. Restoring C_TEXT
 # (0;37, reset-prefixed) is what CLEARS the bold and the italic again: the hint
 # cluster that follows opens on C_PBRK (1;97), which sets no reset of its own,
@@ -485,7 +502,7 @@ subhdr() {   # text
 }
 
 # An EXPLAINER above a run of prompts: sub()'s placement (blank line, indent
-# two) in the quit notice's voice — light grey italic, the shade this installer
+# two) in the quit notice's voice — light gray italic, the shade this installer
 # uses for a sentence that explains rather than titles. A subtitle names the
 # block it opens; this one tells the reader what the block is going to ask for,
 # so it is deliberately NOT the underlined subtitle style (Jei's mock).
@@ -624,7 +641,7 @@ _fp_best() {   # keep_d1 keep_parent
       if [[ ${#cand} -le $_FP_BUDGET ]]; then lk=$k; break; fi
     done
   fi
-  # Re-maximise the inner directories against the leaf we just settled on: an
+  # Re-maximize the inner directories against the leaf we just settled on: an
   # earlier draft kept the first fit and wasted up to five cells.
   out=$(_fp_render "$lk" 0 "$kd1" "$kp")
   cand=$(_fp_render "$lk" -1 "$kd1" "$kp")
@@ -711,7 +728,7 @@ abs_path() {  # absolutize (relative → $HOME) + lexical normalize; ~ kept as ~
   # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
   case "$p" in
     "~"|"~/") printf '~'; return 0 ;;
-    # The tail is normalised as if it were rooted, then the ~ is put back:
+    # The tail is normalized as if it were rooted, then the ~ is put back:
     # `realpath` has no idea what a ~ is and would read it as a directory name
     # in the CWD, which is the one place this installer never resolves against.
     "~/"*) tail=${p#\~/}; p=/$tail ;;
@@ -724,7 +741,7 @@ abs_path() {  # absolutize (relative → $HOME) + lexical normalize; ~ kept as ~
   if q=$(realpath -m -s -- "$p" 2>/dev/null); then p=$q; fi
   # shellcheck disable=SC2088  # putting the LITERAL ~ back is the point
   case "$1" in
-    # "~/.." normalises its tail down to "/", which as a tail means the home
+    # "~/.." normalizes its tail down to "/", which as a tail means the home
     # directory itself — the bare ~ spelling, not a trailing slash fs_path
     # would then have to special-case.
     "~/"*) if [[ $p == / ]]; then printf '~'; else printf '~%s' "$p"; fi ;;
@@ -749,11 +766,11 @@ fs_path() {  # stored spelling → resolved path
 # Do two spellings name the SAME directory? Walking symlinks is precisely what
 # abs_path refuses to do when STORING a path (a link is an answer, not a
 # detour), but a comparison is transient and has to see through them — the same
-# licence probe_fstype's `findmnt --target` takes. Falls back to a literal
+# license probe_fstype's `findmnt --target` takes. Falls back to a literal
 # compare on a host with no realpath(1).
 #
 # EVERY MACHINE DECISION IS SPELLING-INDEPENDENT: this is what lets ~/foo and
-# /srv/foo be recognised as one directory (they are, whatever the ini says), so
+# /srv/foo be recognized as one directory (they are, whatever the ini says), so
 # a difference in spelling can change what is DISPLAYED and nothing else.
 same_dir() {  # a b → 0 when both spellings resolve to one directory
   local a b
@@ -809,7 +826,7 @@ init_input() {
 # escape bytes are counted as width. Unfenced, the first redraw that goes back
 # to the start of the line (Ctrl-A, then type) reprints the answer OVER the
 # prompt — which is how this was found.
-rl_prompt() {   # painted prompt → the same prompt, its colours fenced
+rl_prompt() {   # painted prompt → the same prompt, its colors fenced
   local s=$1 out="" esc=$'\e' re
   re="^([^$esc]*)($esc\[[0-9;]*[a-zA-Z])(.*)$"
   while [[ $s =~ $re ]]; do
@@ -832,7 +849,7 @@ quit_now() {
   exit 0
 }
 
-# The notice itself: body light grey italic, "exit" bold bright yellow, "quit"
+# The notice itself: body light gray italic, "exit" bold bright yellow, "quit"
 # (the word you actually type) bold bright green.
 quit_notice() {
   printf '\n  %sTo %s%s%s at any time, enter %s%s%s at the prompt.%s\n' \
@@ -842,7 +859,7 @@ quit_notice() {
 }
 
 ANS=""
-# Text printed between the indent and the prompt's body colour, for the one
+# Text printed between the indent and the prompt's body color, for the one
 # prompt shape that opens with something that is NOT body text (the caution
 # sign and the clause it introduces). Empty for every other prompt, and cleared
 # by the helper that sets it — ask_raw only reads it.
@@ -852,7 +869,7 @@ ASK_LEAD=""
 # Set to a short answer (a letter) by the choice helpers below, which is what makes
 # TAB fill the default in at a [Y/n], [y/n/c] or [M/r/u/k] prompt.
 #
-# Jei ruled the behaviour (s45): "tab at Y/n should fill in the default answer".
+# Jei ruled the behavior (s45): "tab at Y/n should fill in the default answer".
 # ⭐ It FILLS, it does not ANSWER: the macro inserts the letter into the line and the
 # user still presses Enter, so TAB never commits a choice on its own. Pre-filling with
 # `read -e -i` was the other candidate and is a different thing — it shows the default
@@ -876,10 +893,10 @@ ask_tab_bind() {   # macro → TAB inserts it; empty → TAB is filename complet
   return 0
 }
 ask_raw() {  # $1 = prompt text (printed without newline)
-  # ONE place owns the 2-space prompt indent and the body-text colour — call
-  # sites pass bare text (which may carry its own [option] colours inside).
+  # ONE place owns the 2-space prompt indent and the body-text color — call
+  # sites pass bare text (which may carry its own [option] colors inside).
   #
-  # What the user TYPES is bright yellow. On a tty the colour is opened before
+  # What the user TYPES is bright yellow. On a tty the color is opened before
   # the read so the terminal's own echo wears it, and closed after (the RESET
   # lands at the head of the next line, where it is invisible). Under scripted
   # input there is no echo, so the answer is printed here already dressed —
@@ -941,11 +958,11 @@ ask_yn() {  # question default(Y|N)  → ANS_YN=1/0   (renders "... [Y/n]? ")
 }
 
 # The same question with a CAUTION SIGN and a clause in front of it: the sign
-# (unpainted — it brings its own colour), then the reason the question is being
+# (unpainted — it brings its own color), then the reason the question is being
 # asked in the preflight note's yellow, then the question itself in body text.
 # The clause rides in ASK_LEAD rather than in the question string because
 # ask_raw opens its line in body text, and both the sign and the clause have to
-# be printed before that colour is set. The separating space belongs to the
+# be printed before that color is set. The separating space belongs to the
 # QUESTION for the same reason (it is body text in the mock, not clause yellow).
 ask_yn_caution() {  # clause question default(Y|N) → ANS_YN
   ASK_LEAD="$MK_CAUT $C_NOTB$1"
@@ -956,7 +973,7 @@ ask_yn_caution() {  # clause question default(Y|N) → ANS_YN
 
 # The INLINE three-way cluster "[y]es, [N]o, or [c]ase-by-case". It is written
 # out as prose rather than squeezed into a "[y/n/c]" hint because the middle
-# option needs a name a reader can act on, and it wears OPTION-LIST colours
+# option needs a name a reader can act on, and it wears OPTION-LIST colors
 # (Jei's mockup comment): the current default green with its letter capitalised,
 # the other two blue — exactly what opt_row does one row at a time.
 YNC_WORDS="y:es n:o c:ase-by-case"

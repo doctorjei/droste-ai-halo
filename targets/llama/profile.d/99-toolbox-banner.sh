@@ -146,7 +146,7 @@ PY
 # (cfg_get warns about a mangled line, and a login banner is not where a user
 # wants to meet that), then the answer is range-checked — so a missing,
 # unreadable or hand-mangled file quietly falls back to the in-container default
-# (8080: llama-server's own) instead of printing garbage or failing the login
+# (read from the build-spec, below) instead of printing garbage or failing the login
 # shell. The LAST assignment wins, which is cfg_get's rule as it was sourcing's.
 # ⚠️ The path is a literal here rather than read from the baked build-spec's
 # CFG_FILE, and that is the point: the file we tell the user to edit further down
@@ -257,7 +257,7 @@ serve_addr() {
 # `/llama//health`) is mangled identically and reported unhealthy — which is
 # correct, because the routes really are at a path nothing can reach. The banner
 # is the same claim in the other lane, so it does the same concatenation and adds
-# no separator of its own. Normalising a slash in or out here would print a URL
+# no separator of its own. Normalizing a slash in or out here would print a URL
 # that looks right and answers nothing, while the box stayed unusable — the worse
 # of the two failures, and the one this line exists to remove.
 #
@@ -301,8 +301,8 @@ SERVE_PREFIX="$(serve_prefix)"
 echo
 printf '%s\n' \
   $'             \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
-  $'             \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+  $'             \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
   $'             \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
   $'             \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
 cat <<'ASCII'

@@ -240,7 +240,7 @@ serve_addr() {
 
 # serve_host — the address to BIND, for the ad-hoc `vllm serve` row printed below.
 # Prints a usable IPv4 literal and returns 0; prints NOTHING and returns 1 when the
-# configured one cannot be honoured.
+# configured one cannot be honored.
 #
 # 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
 # maps the wildcard to loopback because "where do I browse" and "what do I bind"
@@ -255,11 +255,11 @@ serve_addr() {
 # box's bind was handed a command that undoes it — and handed it by us, which is
 # worse than them typing it. This box serves an OpenAI-compatible API with no
 # authentication in front of it, which is what makes the widening expensive. Absent
-# or blank is our documented default and yields 0.0.0.0; anything we cannot honour
+# or blank is our documented default and yields 0.0.0.0; anything we cannot honor
 # returns 1, and no command is printed at all.
 #
 # The three arms, each chosen rather than fallen into:
-#   no config file      → 0.0.0.0. Nothing to honour, and it is what the server
+#   no config file      → 0.0.0.0. Nothing to honor, and it is what the server
 #                         lane reads from the same absence.
 #   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
 #                         see it; the server lane refuses to serve on this file at
@@ -310,8 +310,8 @@ SERVE_BIND="$(serve_host)" || SERVE_BIND=""
 echo
 printf '%s\n' \
   $'             \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
-  $'             \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+  $'             \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
   $'             \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
   $'             \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
 cat <<'ASCII'
@@ -334,7 +334,7 @@ printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config
 printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL_TABLE stanzas in the config"
 # The --host is DROSTE_VLLM_HOST, not the display address above: this row is a
 # command the user will run, so it must bind what the box was configured to bind.
-# When that setting cannot be honoured the command is WITHHELD (Jei, s60: "fail") —
+# When that setting cannot be honored the command is WITHHELD (Jei, s60: "fail") —
 # printing `--host 0.0.0.0` regardless is how a user who deliberately narrowed the
 # bind ends up serving an unauthenticated API on every interface.
 if [[ -n "$SERVE_BIND" ]]; then

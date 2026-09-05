@@ -234,7 +234,7 @@ serve_addr() {
 
 # serve_host — the address to BIND, for the foreground launcher below. Prints a
 # usable IPv4 literal and returns 0; prints NOTHING and returns 1 when the
-# configured one cannot be honoured.
+# configured one cannot be honored.
 #
 # 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
 # maps the wildcard to loopback because "where do I browse" and "what do I bind"
@@ -250,10 +250,10 @@ serve_addr() {
 # got EVERY interface back the moment they ran it in the foreground — the same shape
 # as a certificate with no key: they believe the port is protected and it is not.
 # Absent or blank is our documented default and yields 0.0.0.0; anything we cannot
-# honour returns 1, and the caller declines to launch rather than widening.
+# honor returns 1, and the caller declines to launch rather than widening.
 #
 # The three arms, each chosen rather than fallen into:
-#   no config file      → 0.0.0.0. Nothing to honour, and it is what the server
+#   no config file      → 0.0.0.0. Nothing to honor, and it is what the server
 #                         lane reads from the same absence.
 #   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
 #                         see it; the server lane refuses to serve on this file at
@@ -327,8 +327,8 @@ SERVE_ADDR="$(serve_addr)"
 echo
 printf '%s\n' \
   $'             \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
-  $'             \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+  $'             \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
   $'             \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
   $'             \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
 cat <<'ASCII'
@@ -404,7 +404,7 @@ start_comfy_ui() {
     return 1
   fi
   # REFUSE rather than bind wider than asked (Jei, s60). A DROSTE_COMFYUI_HOST we
-  # cannot honour used to be ignored here in favour of 0.0.0.0 — every interface,
+  # cannot honor used to be ignored here in favor of 0.0.0.0 — every interface,
   # on a box with no authentication — which is the one outcome a user narrowing the
   # bind was trying to avoid. The message names the setting and the file; the
   # per-value diagnosis (IPv6 vs not-an-address) belongs to serve::read_config and

@@ -238,7 +238,7 @@ serve_addr() {
 
 # serve_host — the address to BIND, for the ad-hoc `jupyter lab` recipe printed
 # below. Prints a usable IPv4 literal and returns 0; prints NOTHING and returns 1
-# when the configured one cannot be honoured.
+# when the configured one cannot be honored.
 #
 # 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
 # maps the wildcard to loopback because "where do I browse" and "what do I bind"
@@ -252,10 +252,10 @@ serve_addr() {
 # the recipe below printed `--ip 0.0.0.0` as a literal, so a user who narrowed their
 # box's bind was handed a command that undoes it — and handed it by us, which is
 # worse than them typing it. Absent or blank is our documented default and yields
-# 0.0.0.0; anything we cannot honour returns 1, and no command is printed at all.
+# 0.0.0.0; anything we cannot honor returns 1, and no command is printed at all.
 #
 # The three arms, each chosen rather than fallen into:
-#   no config file      → 0.0.0.0. Nothing to honour, and it is what the server
+#   no config file      → 0.0.0.0. Nothing to honor, and it is what the server
 #                         lane reads from the same absence.
 #   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
 #                         see it; the server lane refuses to serve on this file at
@@ -306,8 +306,8 @@ SERVE_BIND="$(serve_host)" || SERVE_BIND=""
 echo
 printf '%s\n' \
   $'             \033[1;97m ╔\033[1;96m═╤\033[1;94m═╤\033[0;34m════╗ \033[1;90m🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;97m🭺🭺🭺🭺🭺🭺🭺🭺\033[0;37m🭺🭺🭺🭺🭺🭺\033[1;90m' \
-  $'             \033[1;96m ╟─┘\033[0;37m■\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
-  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;97m██ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
+  $'             \033[1;96m ╟─┘\033[1;93m★\033[0;94m│\033[0;34m    ║ \033[1;90m █🮂🮂\033[0;37m🭕🭏    \033[1;97m        \033[0;37m🭋' \
+  $'             \033[1;94m ╟───┘ \033[0;34m\033[1;93m⭐ \033[0;34m║ \033[1;90m █ \033[0;37m  █ 🭩🬂\033[1;97m🭗🭄🮂🭏 🭄🮀🭧\033[0;37m🭢🬨🬂🭗🭂🮀\033[1;90m🭍' \
   $'             \033[0;34m ║ \033[0;34m\033[0;34m\033[0;34m       ║ \033[1;90m █\033[0;37m  🭊🭠 🭞\033[1;97m  🭕▂🭠 ▄ \033[0;37m🭨🭬🭦🭩🭛🭓\033[1;90m🬭🬽' \
   $'             \033[0;34m\033[0;34m\033[0;34m\033[0;34m ╚════════╝ \033[1;90m`\033[0;37m🮃🮃🮃🭘🭷🭷\033[1;97m🭷🭷🭷🭷🭷🭷🭷🭣\033[0;37m🬂🭘🭷🭷🭷🭷\033[1;90m🭷🭷🭷🭷\033[0m'
 cat <<'ASCII'
@@ -328,7 +328,7 @@ printf '  (token: run `jupyter server list`; it rerolls on every restart)\n'
 printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 # The --ip is DROSTE_JUPYTER_HOST, not the display address above: this line is a
 # command the user will run, so it must bind what the box was configured to bind.
-# When that setting cannot be honoured the recipe is WITHHELD (Jei, s60: "fail") —
+# When that setting cannot be honored the recipe is WITHHELD (Jei, s60: "fail") —
 # printing `--ip 0.0.0.0` regardless is how a user who deliberately narrowed the
 # bind ends up on every interface, with a Jupyter whose token is the only thing in
 # front of it.
@@ -349,7 +349,7 @@ printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 # ⭐ SO THE RECIPE IS NARROW AND HONEST RATHER THAN BROAD AND HALF-TRUE: plain jupyter
 # on the address and port you configured, with server_start named as the lane that
 # applies the rest. Same shape as the ruled distrobox.ini fixes — point at the lane
-# that honours the config instead of printing one that only half-honours it.
+# that honors the config instead of printing one that only half-honors it.
 if [[ -n "$SERVE_BIND" ]]; then
   printf 'To run one in THIS shell instead, stop the server first (server_stop):\n'
   printf '  jupyter lab --ip %s --port %s --notebook-dir=/opt/workspace\n' \

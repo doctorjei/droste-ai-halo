@@ -10,7 +10,7 @@ Quick & easy ComfyUI, llama.cpp, DS4, vLLM, & model finetuning boxes for **Strix
 On a Strix Halo machine with **podman** and **distrobox**:
 
 ```bash
-curl -fsSLO https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh | bash
+curl -fsSL https://github.com/doctorjei/droste-ai-halo/releases/latest/download/droste-setup.sh | bash
 ```
 
 Images can also be directly pulled from `ghcr.io/doctorjei/droste-<name>-halo`.

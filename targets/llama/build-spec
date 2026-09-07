@@ -250,8 +250,7 @@ LLAMA_BOOL_FLAGS=(
 LLAMA_SWITCH_FLAGS=(
     "BUILTIN_SPEC_DEFAULT:--spec-default" "SPEC_DRAFT_CPU_MOE:--spec-draft-cpu-moe"
     "SWA_FULL:--swa-full"                 "ENDPOINT_METRICS:--metrics"
-    "ENDPOINT_PROPS:--props"              "EMBEDDINGS:--embeddings"
-    "RERANKING:--reranking"               "REUSE_PORT:--reuse-port"
+    "ENDPOINT_PROPS:--props"              "REUSE_PORT:--reuse-port"
     "OFFLINE:--offline"                   "CPU_MOE:--cpu-moe"
     "NO_HOST:--no-host"
     "BACKEND_SAMPLING:--backend-sampling" "IGNORE_EOS:--ignore-eos"
@@ -380,18 +379,30 @@ LLAMA_CHOICE_FLAGS=(
     # Upstream's default is LLAMA_TENSOR_READ_LAZY_AUTO, so `auto` emits nothing.
     "TENSOR_READ_LAZY|auto=|on=--tensor-read-lazy on|off=--tensor-read-lazy off"
     "NUMA|off=|distribute=--numa distribute|isolate=--numa isolate|numactl=--numa numactl"
+    # THE SERVING MODE, AS ONE SETTING (s69). --embeddings and --reranking were two
+    # booleans encoding one N-state — `--rerank` IS embedding mode plus pooling=rank —
+    # so "both on" asked for something the server cannot represent. Folding --pooling in
+    # makes every bad combination unrepresentable instead of warned about: a pooling type
+    # with no embedding mode enables NO endpoint and inflates n_outputs_max to n_batch,
+    # and one set alongside --reranking is silently overwritten (argv beats env).
+    # ⚠️ mean/cls/last are NOT expert overrides. conversion/base.py writes the GGUF
+    # pooling key ONLY when the source repo carried a sentence-transformers modules.json,
+    # so a plain HF encoder arrives with none, resolves to NONE, and OAI clients get a
+    # 400 naming no remedy. These values are how a user supplies what the file lacks.
+    "TASK_TYPE|completion=|embedding=--embeddings|embedding-none=--embeddings --pooling none|embedding-mean=--embeddings --pooling mean|embedding-cls=--embeddings --pooling cls|embedding-last=--embeddings --pooling last|rerank=--reranking"
     "AUTO_MODEL|none=|embd-gemma=--embd-gemma-default|fim-qwen-1.5b=--fim-qwen-1.5b-default|fim-qwen-3b=--fim-qwen-3b-default|fim-qwen-7b=--fim-qwen-7b-default|fim-qwen-7b-spec=--fim-qwen-7b-spec|fim-qwen-14b-spec=--fim-qwen-14b-spec|fim-qwen-30b=--fim-qwen-30b-default|gpt-oss-20b=--gpt-oss-20b-default|gpt-oss-120b=--gpt-oss-120b-default|vision-gemma-4b=--vision-gemma-4b-default|vision-gemma-12b=--vision-gemma-12b-default"
 )
 # Settings that write the SAME field upstream, so more than one is a silent
 # last-wins race. We say so instead of letting argument order decide.
-# A shared field is not automatically a conflict — "set ONE of them" is false where one
-# option is a superset of another (EMBEDDINGS/RERANKING) or the overlap is partial
-# (CTX_SIZE/FIT_CTX). Those two are exemptions in check-llama-collisions.sh, not groups.
+# A shared field is not automatically a conflict — "set ONE of them" is false where the
+# overlap is partial (CTX_SIZE/FIT_CTX). That is an exemption in
+# check-llama-collisions.sh, not a group.
+# ⚠️ THE POOLING/RERANKING GROUP IS GONE, AND SO IS THE EMBEDDING EXEMPTION (s69): both
+# described states TASK_TYPE can no longer express. A group is a warning about a config
+# a user can still write; when the config becomes unwritable the group is dead weight.
 LLAMA_EXCLUSIVE_GROUPS=(
     "GRAMMAR GRAMMAR_FILE JSON_SCHEMA JSON_SCHEMA_FILE"
     "SAMPLERS SAMPLING_SEQ"
-    # --reranking forces pooling_type=RANK, silently overriding a chosen pooling.
-    "LLAMA_ARG_POOLING RERANKING"
     "LLAMA_ARG_CHAT_TEMPLATE LLAMA_ARG_CHAT_TEMPLATE_FILE"
     "LLAMA_ARG_UI_CONFIG LLAMA_ARG_UI_CONFIG_FILE"
     # Two upstream spellings of one field, not two knobs.
@@ -763,6 +774,31 @@ llama_argv() {
         [ -n "${!var:-}" ] || continue
         serve::err "$var is retired and is being ignored. llama deprecated --mmap/--mlock/--direct-io in favor of --load-mode, where all three set ONE value instead of three independent switches. Use DROSTE_LLAMA_LOAD_MODE in $CFG_FILE: none, mmap, mlock, mmap+mlock or dio."
     done
+
+    # Retired by the TASK_TYPE collapse (s69), same one-minor-release policy.
+    for suffix in EMBEDDINGS RERANKING; do
+        var="DROSTE_LLAMA_$suffix"
+        [ -n "${!var:-}" ] || continue
+        serve::err "$var is retired and is being ignored. --embeddings and --reranking were never independent switches — --reranking IS embedding mode plus pooling=rank — so two booleans could ask for a state the server has no representation of. Use DROSTE_LLAMA_TASK_TYPE in $CFG_FILE: completion, embedding, embedding-none, embedding-mean, embedding-cls, embedding-last or rerank."
+    done
+
+    # LLAMA_ARG_POOLING left the surface with them, but it is NATIVE — llama still reads
+    # it from the environment, so an older box's line goes on working and must not go
+    # quietly inert either.
+    # 🚨 THREE ARMS BECAUSE THE TRUTH IS DIFFERENT IN EACH, and one message for all three
+    # would be false for two of them. Measured, not reasoned: argv beats env, and
+    # upstream's own env-vs-argv warning fires only when the SAME option is set both
+    # ways — these are two different options, so nothing upstream says a word.
+    if [ -n "${LLAMA_ARG_POOLING:-}" ]; then
+        case ${DROSTE_LLAMA_TASK_TYPE:-} in
+            embedding-*|rerank)
+                serve::err "LLAMA_ARG_POOLING is set and DROSTE_LLAMA_TASK_TYPE=$DROSTE_LLAMA_TASK_TYPE is overriding it — llama reads environment variables before the command line, so the flag we emit wins. LLAMA_ARG_POOLING is retired from the config surface; remove it from $CFG_FILE." ;;
+            embedding)
+                serve::err "LLAMA_ARG_POOLING is retired from the config surface, though it is still taking effect here. DROSTE_LLAMA_TASK_TYPE=embedding-$LLAMA_ARG_POOLING says the same thing in one setting; set that in $CFG_FILE and remove LLAMA_ARG_POOLING." ;;
+            *)
+                serve::err "LLAMA_ARG_POOLING is set but no embedding mode is, so it enables no endpoint and only inflates the server's output buffer. It is retired from the config surface: use DROSTE_LLAMA_TASK_TYPE=embedding-$LLAMA_ARG_POOLING in $CFG_FILE, or remove the line." ;;
+        esac
+    fi
 
     # A gating dependency, not a last-wins race: the two write different fields and the
     # CONSUMER ANDs them, so an exclusive group's "last one wins" would be false here.

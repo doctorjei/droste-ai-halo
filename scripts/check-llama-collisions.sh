@@ -72,9 +72,9 @@ model = open(model_path, encoding='utf-8', errors='replace').read()
 # Settings whose overlap is real but whose "set ONE of them" would be FALSE. Each of
 # these is a decision, not an oversight; deleting a line here makes the check red.
 EXEMPT = {
-    'embedding':
-        'RERANKING is a superset of EMBEDDINGS (it sets embedding plus a pooling '
-        'type), so setting both is redundant rather than contradictory.',
+    # The 'embedding' exemption was removed in s69: EMBEDDINGS and RERANKING were folded
+    # into DROSTE_LLAMA_TASK_TYPE, so no two shipped settings write that field any more.
+    # An exemption for a state nobody can express is a claim nothing tests.
     'fit_params_min_ctx':
         'CTX_SIZE writes n_ctx AND this; FIT_CTX writes only this. A user may want '
         'both, so telling them to pick one would be wrong.',

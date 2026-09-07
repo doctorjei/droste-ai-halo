@@ -8,8 +8,7 @@
 #
 # Reserved by Droste — do not set
 # -------------------------------
-# DO NOT SET THESE; they are overridden by Droste anyway, but if somehow they
-# became active, they would cause the box to malfunction.
+# DO NOT SET THESE; they are needed by Droste.
 # ~~ config ~~   [this build] how the box hands vLLM this file
 # ~~~ host ~~~   [this build] sets the bind address for the server
 # ~~~ port ~~~   [this build] sets the port for the server

@@ -25,6 +25,8 @@ ARG LLAMA_REF=fb2cc35ab3507a5aab56fe593620cd96d8f45384
 # Re-add if needed
 COPY llama-grammar.patch /tmp/
 COPY llama-api-prefix-auth.patch /tmp/
+COPY llama-mla-cache-coerce.patch /tmp/
+COPY llama-spec-types-default.patch /tmp/
 
 # Fetch the pinned commit by sha, then materialize submodules.
 # NOT a clone: `git clone --single-branch` retrieves only the fork's default
@@ -209,6 +211,182 @@ RUN set -e; \
     [ "$(nx '                    res.set_redirect(api_prefix + "/", 302);')" = 1 ] \
       || die "the bare-prefix route does not redirect to the slashed form after applying"; \
     echo "llama-api-prefix-auth: applied; the api-key exemption, the frontend-asset set and the bare-prefix redirect are all built from the configured prefix"
+
+# ── The MLA asymmetric-cache-type coercion ───────────────────────────────────
+#
+# WHAT IT FIXES: an MLA model (and LLM_ARCH_DEEPSEEK4) has no separate V cache --
+# V is a view of K -- so params.type_v names a buffer that does not exist. Handed
+# a type_k != type_v pair, llama_init_from_model LOGS AN ERROR AND RETURNS
+# nullptr: the model does not load at all. That is backwards next to the same
+# function's treatment of every other awkward cache configuration a few lines
+# below it, all of which COERCE and say so -- turbo types with flash attention
+# off, a quantized V on FLASH_ATTN_TYPE_AUTO, flash attention on Grok. This patch
+# coerces here too: WARN, then params.type_v = params.type_k. K WINS, because K
+# is the physical buffer and V the view, and because coercing toward K RAISES
+# precision, so a bad pair fails loudly (does not fit) instead of silently
+# degrading quality. Full rationale in llama-mla-cache-coerce.patch.
+#
+# 🚨 TWO OUTCOMES, NOT ONE, AND THAT IS WHY die() BELOW SPELLS OUT BOTH. Unlike
+# the two patches above, this one fixes a DEFECT in a branch upstream is actively
+# editing, so upstream may reach the same conclusion without us. Which of the two
+# things happened decides whether to re-derive the hunk or DELETE this patch
+# outright -- opposite actions from the same red build. Read the source first.
+#
+# 🚨 WHY A GUARD AND NOT A BARE `patch`. Every failure mode here is quiet. A
+# fuzzed hunk could land the coercion AFTER the context has been built from
+# type_k/type_v; a rename of is_mla() would leave a dead branch that patches
+# perfectly and changes nothing. Both look identical from outside: the image
+# builds, the server starts, /health answers 200, and an MLA model either still
+# refuses to load or loads with a cache type nobody chose. So: exact WHOLE-LINE
+# counts before AND after, `-F0` so patch may not improvise, a refusal to patch
+# twice, and a check that the coercion still precedes the context constructor.
+# The counts are the contract; if one moves, re-derive rather than adjust it.
+RUN set -e; \
+    f=src/llama-context.cpp; \
+    h=src/llama-hparams.h; \
+    die() { echo "llama-mla-cache-coerce: FATAL: $*" >&2; \
+            echo "llama-mla-cache-coerce: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-mla-cache-coerce: READ llama_init_from_model in ${f} at the CURRENT LLAMA_REF" >&2; \
+            echo "llama-mla-cache-coerce: before touching anything. THERE ARE TWO OUTCOMES HERE AND THEY" >&2; \
+            echo "llama-mla-cache-coerce: CALL FOR OPPOSITE ACTIONS:" >&2; \
+            echo "llama-mla-cache-coerce:   (a) the stock ERROR + 'return nullptr' is GONE and our" >&2; \
+            echo "llama-mla-cache-coerce:       coercion is not there either. Upstream rewrote the branch." >&2; \
+            echo "llama-mla-cache-coerce:       If it now coerces the cache types itself, or no longer" >&2; \
+            echo "llama-mla-cache-coerce:       refuses an asymmetric pair on a model with no separate V" >&2; \
+            echo "llama-mla-cache-coerce:       cache, DELETE llama-mla-cache-coerce.patch AND THIS GUARD." >&2; \
+            echo "llama-mla-cache-coerce:       Do NOT re-derive a hunk for a fix that is already there." >&2; \
+            echo "llama-mla-cache-coerce:   (b) the stock ERROR + 'return nullptr' is STILL PRESENT and the" >&2; \
+            echo "llama-mla-cache-coerce:       hunk merely failed to apply. That is ordinary drift:" >&2; \
+            echo "llama-mla-cache-coerce:       RE-DERIVE the hunk at the new sha and update the counts in" >&2; \
+            echo "llama-mla-cache-coerce:       this guard to match what you actually found." >&2; \
+            echo "llama-mla-cache-coerce: Do NOT drop -F0 or raise the fuzz to make this pass. A fuzzed" >&2; \
+            echo "llama-mla-cache-coerce: hunk can land the coercion after the context has already been" >&2; \
+            echo "llama-mla-cache-coerce: built from type_k/type_v, and THAT failure is invisible: the" >&2; \
+            echo "llama-mla-cache-coerce: image builds, the server starts, /health answers 200, and an MLA" >&2; \
+            echo "llama-mla-cache-coerce: model either still refuses to load or loads with a cache type" >&2; \
+            echo "llama-mla-cache-coerce: nobody chose." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    [ -f "$f" ] \
+      || die "$f does not exist at this LLAMA_REF -- the context initializer has moved or been renamed"; \
+    [ -f "$h" ] \
+      || die "$h does not exist at this LLAMA_REF -- the hparams header has moved or been renamed"; \
+    [ "$(nx '        params.type_v = params.type_k;')" = 0 ] \
+      || die "$f already coerces the V cache type to K -- refusing to patch twice"; \
+    [ "$(nx '        LLAMA_LOG_WARN("%s: model has no separate V cache (V is a view of K) - coercing V cache type %s to match K (%s)\n", __func__, ggml_type_name(params.type_v), ggml_type_name(params.type_k));')" = 0 ] \
+      || die "$f already carries the coercion WARN -- refusing to patch twice"; \
+    [ "$(nx '    if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4) && params.type_k != params.type_v) {')" = 1 ] \
+      || die "expected exactly 1 asymmetric-cache-type branch on MLA/DEEPSEEK4 in $f"; \
+    [ "$(nx '        LLAMA_LOG_ERROR("%s: model does not support different K (%s) and V (%s) cache types\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));')" = 1 ] \
+      || die "expected exactly 1 stock hard-failure ERROR for asymmetric cache types in $f"; \
+    [ "$(grep -Fxc -- '    bool is_mla() const;' "$h" || true)" = 1 ] \
+      || die "llama_hparams::is_mla() is gone from $h -- the branch this patch edits would be DEAD CODE and the coercion a silent no-op"; \
+    [ "$(nx '        auto * ctx = new llama_context(*model, params);')" = 1 ] \
+      || die "llama_init_from_model no longer builds the context from its local params -- coercing that local would never be read"; \
+    patch -p1 -F0 < /tmp/llama-mla-cache-coerce.patch \
+      || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
+    [ "$(nx '        LLAMA_LOG_ERROR("%s: model does not support different K (%s) and V (%s) cache types\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));')" = 0 ] \
+      || die "the stock hard-failure ERROR SURVIVED the patch"; \
+    [ "$(nx '        LLAMA_LOG_WARN("%s: model has no separate V cache (V is a view of K) - coercing V cache type %s to match K (%s)\n", __func__, ggml_type_name(params.type_v), ggml_type_name(params.type_k));')" = 1 ] \
+      || die "expected exactly 1 coercion WARN after applying"; \
+    [ "$(nx '        params.type_v = params.type_k;')" = 1 ] \
+      || die "expected exactly 1 V-to-K coercion after applying"; \
+    kl="$(grep -Fn -- '        params.type_v = params.type_k;' "$f" | cut -d: -f1)"; \
+    cl="$(grep -Fn -- '        auto * ctx = new llama_context(*model, params);' "$f" | cut -d: -f1)"; \
+    [ "$kl" -lt "$cl" ] \
+      || die "the coercion lands AFTER the context is constructed -- params_mem would be built from the type the user did not get"; \
+    echo "llama-mla-cache-coerce: applied; an asymmetric K/V pair on a model with no separate V cache now warns and coerces V to K instead of refusing to load"
+
+# ── The speculative-type default predicate ───────────────────────────────────
+#
+# WHAT IT FIXES: common/arg.cpp's spec_types_is_default() is an EXACT vector
+# equality against the pristine {COMMON_SPECULATIVE_TYPE_NONE}, and its two
+# callers use the answer for one thing only -- deciding whether to discover a
+# draft repo's sidecar and infer the speculative type from it. So ANY entry in
+# that vector suppresses both, including the ngram methods, which are model-free
+# and say nothing about which sidecar a draft repo should contribute. Concretely:
+# --spec-default PUSHES NGRAM_MOD onto the vector, so with it on, `-hfd <repo>`
+# alone never fetches the repo's sidecar and never infers DFlash/MTP/Eagle3/
+# DSpark. The patch asks std::none_of over the SIX DRAFT_* types instead, so the
+# predicate means what its callers need it to mean. Full rationale in
+# llama-spec-types-default.patch.
+#
+# 🚨 TWO OUTCOMES, NOT ONE, AND THAT IS WHY die() BELOW SPELLS OUT BOTH. This bug
+# is in ggml-org's own tree and affects their own feature combination (ngram
+# drafting plus a draft repo), so it can be fixed without us. Which of the two
+# things happened decides whether to re-derive the hunk or DELETE this patch
+# outright -- opposite actions from the same red build. Read the source first.
+#
+# 🚨 WHY A GUARD AND NOT A BARE `patch`. The failure is a NON-EVENT: the image
+# builds, the server starts, /health answers 200, and a sidecar the user asked
+# for by naming a draft repo simply never arrives. Nothing anywhere reports it.
+# So: exact WHOLE-LINE counts before AND after, `-F0` so patch may not improvise,
+# a refusal to patch twice, and an assertion that the predicate is still CALLED.
+#
+# ⚠️ ONE COUNT IS A FLOOR, DELIBERATELY. ggml-org master already carries a THIRD
+# call site (type inference from the draft GGUF's metadata) that our pin lacks,
+# so pinning the call count exactly would go red on a rebase that changes nothing
+# this patch depends on. What is load-bearing is that the predicate is consulted
+# AT ALL -- widening a test nobody reads is the silent no-op this guard exists to
+# catch. Every other count here is exact and IS the contract; if one of those
+# moves, re-derive rather than adjust it.
+#
+# ⚠️ AND THE ENUM COUNT IS EXACT ON PURPOSE, IN BOTH DIRECTIONS. The patch names
+# the six draft types by hand; a SEVENTH added upstream would be omitted from the
+# predicate silently, which is the same defect pointing the other way. Counting
+# the family in common/common.h is the only thing that can see that.
+RUN set -e; \
+    f=common/arg.cpp; \
+    g=common/common.h; \
+    die() { echo "llama-spec-types-default: FATAL: $*" >&2; \
+            echo "llama-spec-types-default: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-spec-types-default: READ spec_types_is_default in ${f} at the CURRENT LLAMA_REF" >&2; \
+            echo "llama-spec-types-default: before touching anything. THERE ARE TWO OUTCOMES HERE AND THEY" >&2; \
+            echo "llama-spec-types-default: CALL FOR OPPOSITE ACTIONS:" >&2; \
+            echo "llama-spec-types-default:   (a) the stock exact-equality predicate is GONE and our" >&2; \
+            echo "llama-spec-types-default:       replacement is not there either. Upstream rewrote the" >&2; \
+            echo "llama-spec-types-default:       function. If it now excludes the ngram types itself," >&2; \
+            echo "llama-spec-types-default:       DELETE llama-spec-types-default.patch AND THIS GUARD." >&2; \
+            echo "llama-spec-types-default:       Do NOT re-derive a hunk for a fix that is already there." >&2; \
+            echo "llama-spec-types-default:   (b) the stock exact-equality predicate is STILL PRESENT and" >&2; \
+            echo "llama-spec-types-default:       the hunk merely failed to apply. That is ordinary drift:" >&2; \
+            echo "llama-spec-types-default:       RE-DERIVE the hunk at the new sha and update the counts" >&2; \
+            echo "llama-spec-types-default:       in this guard to match what you actually found." >&2; \
+            echo "llama-spec-types-default: Do NOT drop -F0 or raise the fuzz to make this pass, and do NOT" >&2; \
+            echo "llama-spec-types-default: widen the enum count to silence it -- a draft type missing from" >&2; \
+            echo "llama-spec-types-default: the predicate is invisible: the image builds, the server starts," >&2; \
+            echo "llama-spec-types-default: /health answers 200, and the draft sidecar the user asked for by" >&2; \
+            echo "llama-spec-types-default: naming a draft repo simply never arrives." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    ns() { grep -Fc  -- "$1" "$f" || true; }; \
+    [ -f "$f" ] \
+      || die "$f does not exist at this LLAMA_REF -- the argument parser has moved or been renamed"; \
+    [ -f "$g" ] \
+      || die "$g does not exist at this LLAMA_REF -- the common header has moved or been renamed"; \
+    [ "$(nx '    return std::none_of(params.speculative.types.begin(), params.speculative.types.end(),')" = 0 ] \
+      || die "$f already tests the draft types with std::none_of -- refusing to patch twice"; \
+    [ "$(nx 'static bool spec_types_is_default(const common_params & params) {')" = 1 ] \
+      || die "expected exactly 1 spec_types_is_default definition in $f"; \
+    [ "$(nx '    return params.speculative.types == std::vector<enum common_speculative_type>{COMMON_SPECULATIVE_TYPE_NONE};')" = 1 ] \
+      || die "expected exactly 1 stock exact-equality predicate body in $f"; \
+    [ "$(nx '#include <algorithm>')" = 1 ] \
+      || die "$f no longer includes <algorithm> -- std::none_of would not compile"; \
+    [ "$(ns 'spec_types_is_default(params)')" -ge 2 ] \
+      || die "spec_types_is_default is DEFINED but consulted fewer than twice in $f -- widening a predicate nobody reads is a silent no-op"; \
+    [ "$(grep -Fc -- '    COMMON_SPECULATIVE_TYPE_DRAFT_' "$g" || true)" = 6 ] \
+      || die "the draft family in $g is no longer exactly the SIX types this patch enumerates -- a seventh would be omitted from the predicate silently"; \
+    patch -p1 -F0 < /tmp/llama-spec-types-default.patch \
+      || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
+    [ "$(nx '    return params.speculative.types == std::vector<enum common_speculative_type>{COMMON_SPECULATIVE_TYPE_NONE};')" = 0 ] \
+      || die "the stock exact-equality predicate SURVIVED the patch"; \
+    [ "$(nx '    return std::none_of(params.speculative.types.begin(), params.speculative.types.end(),')" = 1 ] \
+      || die "expected exactly 1 std::none_of predicate after applying"; \
+    [ "$(ns 'type == COMMON_SPECULATIVE_TYPE_DRAFT_')" = 6 ] \
+      || die "expected exactly 6 DRAFT_* tests after applying -- one per draft type in the enum"; \
+    [ "$(ns 'spec_types_is_default(params)')" -ge 2 ] \
+      || die "the patched predicate lost its call sites"; \
+    echo "llama-spec-types-default: applied; an ngram method no longer suppresses draft-repo sidecar discovery or sidecar type inference"
 
 # Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
 # COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is

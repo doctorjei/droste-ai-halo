@@ -1,0 +1,125 @@
+Subject:    arg: ask spec_types_is_default() about DRAFT types only, so an ngram
+            method no longer suppresses draft-sidecar discovery
+Upstream:   NOT FILED, and not going to be. Standing project ruling on outward
+            submissions ("Someone else might refile, but not us."). There is no
+            issue number to track and nobody is chasing this.
+Applies to: TheTom/llama-cpp-turboquant @ fb2cc35ab3507a5aab56fe593620cd96d8f45384
+            (common/arg.cpp, function spec_types_is_default)
+
+WHAT IT FIXES
+=============
+`spec_types_is_default()` is an EXACT vector equality against the pristine
+one-element `{COMMON_SPECULATIVE_TYPE_NONE}`, and it has exactly two callers at
+this pin, both inside `common_models_handler_init` / the models handler:
+
+  * DRAFT-REPO SIDECAR DISCOVERY — when a draft repo is set with `-hfd` and no
+    type was requested, ask the repo for every sidecar it ships (mtp, dflash,
+    eagle3, dspark) so the type can be inferred afterwards.
+  * SIDECAR TYPE INFERENCE — pick the speculative type from whichever sidecar the
+    draft repo actually produced (mtp > dspark > dflash > eagle3).
+
+Both are asking the same real question: HAS THE USER ALREADY CHOSEN A DRAFT TYPE?
+Exact equality answers a different and stricter one: is the type vector untouched?
+
+⇒ ANY value in that vector suppresses both, INCLUDING THE NGRAM METHODS, which
+have nothing to do with a draft repo. The ngram types
+(`NGRAM_SIMPLE`, `NGRAM_MAP_K`, `NGRAM_MAP_K4V`, `NGRAM_MOD`, `NGRAM_CACHE`) are
+model-free — they draft from the context that is already there, and they say
+NOTHING about which sidecar a draft repository should contribute. Selecting one
+should leave draft discovery entirely alone.
+
+The concrete failure this produces here: `--spec-default` PUSHES `NGRAM_MOD` onto
+`params.speculative.types`, so with it on, `-hfd <repo>` alone never fetches the
+repo's sidecar and never infers DFlash/MTP/Eagle3/DSpark. The user gets a plain
+full-model draft (or nothing) and is told nothing about it. Every symptom is a
+non-event: the image builds, the server starts, /health answers 200, and a
+feature the user asked for by naming a draft repo simply did not happen.
+
+⇒ THIS PATCH REPLACES THE EQUALITY WITH `std::none_of` OVER THE SIX `DRAFT_*`
+TYPES. The predicate now means what its callers need it to mean, and ngram and an
+auto-discovered draft sidecar can be used together.
+
+THE SIX ARE ENUMERATED FROM THE ENUM, NOT FROM MEMORY
+=====================================================
+`enum common_speculative_type` in common/common.h, at this pin, spells the draft
+family as: `DRAFT_SIMPLE`, `DRAFT_EAGLE3`, `DRAFT_MTP`, `DRAFT_MTP_ADAPTIVE`,
+`DRAFT_DFLASH`, `DRAFT_DSPARK`. Everything else in the enum is `NONE`, one of the
+five `NGRAM_*` values, or the `COUNT` sentinel.
+
+⚠️ A NEW DRAFT TYPE ADDED UPSTREAM IS NOT VISIBLE TO THIS PATCH. It would apply
+cleanly and silently under-report, exactly as the pre-patch code over-reported.
+Re-read the enum at every pin bump; the guard cannot see this for you, because a
+name that does not exist yet cannot be counted.
+
+`<algorithm>` IS ALREADY INCLUDED
+=================================
+Verified at this pin, not assumed: common/arg.cpp includes `<algorithm>` in its
+own include block, and the file already uses `std::find` in
+`common_models_handler_init` immediately below this function. No new include, no
+new API, no other file touched.
+
+WHAT WOULD MAKE IT REMOVABLE (a condition to NOTICE, not an outcome to expect)
+=============================================================================
+🚨 THIS IS NOT A PATCH WE EXPECT TO CARRY FOREVER, AND THE GUARD SAYS SO IN TWO
+DIRECTIONS. The bug is in ggml-org's own tree, it affects their own feature
+combination (ngram drafting plus a draft repo), and it can be fixed without us —
+so "they might fix it" is a live possibility here rather than a theoretical one.
+The anchor guard in scaffolding/Container.llama-build distinguishes the two
+outcomes, and they call for opposite actions:
+
+  * the stock equality predicate is GONE and our replacement is absent ⇒ READ the
+    function at the new ref. If upstream now excludes the ngram types itself,
+    DELETE this file and the guard. Do not re-derive a hunk for a fix that is
+    already there.
+  * the stock predicate is still present but the hunk fails at fuzz 0 ⇒ ordinary
+    drift. RE-DERIVE the hunk at the new sha and update the guard's counts to
+    match what you actually found.
+
+⚠️ AND IT CAN STOP MATTERING WITHOUT FAILING TO APPLY. If nothing calls
+`spec_types_is_default()` any more, this patch applies perfectly and changes
+nothing. That is why the guard also asserts the function is still CALLED.
+
+⚠️ THAT CALL-SITE ASSERTION IS A FLOOR (`-ge 2`), DELIBERATELY. ggml-org master
+already carries a THIRD call site (type inference from the draft GGUF's metadata)
+that our pin does not have, so pinning the count exactly would go red on a rebase
+that changes nothing this patch depends on. The floor still catches the failure
+that matters, which is nobody calling it at all.
+
+VERIFIED 2026-09-07 against ggml-org/llama.cpp master: the stock exact-equality
+predicate is still there, unchanged, and its call sites number THREE (draft-repo
+sidecar discovery, sidecar type inference, and the GGUF-metadata inference above).
+So upstream has not fixed this, and the floor is measured rather than guessed.
+
+THE BLANK CONTEXT LINES ARE A SINGLE SPACE — DO NOT LET AN EDITOR STRIP THEM
+===========================================================================
+The hunk's leading and trailing context both include an empty source line, and a
+canonical unified diff spells one as a single space. Tools that trim trailing
+whitespace turn them into truly empty lines, which makes GNU patch apply this
+with fuzz — and the guard runs `patch -F0`, so it would then fail outright. That
+is the strictness working as intended; the fix is to restore the spaces, never to
+relax the fuzz.
+
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -360,7 +360,20 @@
+ }
+ 
+ static bool spec_types_is_default(const common_params & params) {
+-    return params.speculative.types == std::vector<enum common_speculative_type>{COMMON_SPECULATIVE_TYPE_NONE};
++    // "default" here means "no draft type has been chosen", because the only thing the
++    // callers do with the answer is decide whether to discover/infer a draft sidecar.
++    // The ngram methods are model-free -- they draft from the context itself and say
++    // nothing about which sidecar a draft repo should contribute -- so their presence
++    // must not suppress that discovery. Ask for the absence of the DRAFT_* types only.
++    return std::none_of(params.speculative.types.begin(), params.speculative.types.end(),
++        [](enum common_speculative_type type) {
++            return type == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE
++                || type == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3
++                || type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
++                || type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE
++                || type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH
++                || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
++        });
+ }
+ 
+ common_models_handler common_models_handler_init(const common_params & params, llama_example curr_ex) {

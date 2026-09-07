@@ -1675,12 +1675,23 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
 - `hip-rocm7rc.patch` was DROPPED as non-upstream (no upstream Dockerfile applies
   it; the turboquant build succeeds on ROCm 7.x / HIP 7 without it). Re-add it
   (and its COPY) only if an on-host HIP7 build failure shows it's needed.
-- The consumed patches (`llama-grammar.patch`, `llama-api-prefix-auth.patch`) live
+- The consumed patches — `llama-grammar.patch`, `llama-api-prefix-auth.patch`,
+  `llama-mla-cache-coerce.patch`, `llama-spec-types-default.patch` — live
   in `scaffolding/llama-artifacts/` — this stage's build CONTEXT (`art_ctx` in
   `build-halo.yml`), not the directory the Containerfile itself sits in.
   `llama-grammar.patch` was copied from the upstream toolbox submodule so the
-  context is self-contained; `llama-api-prefix-auth.patch` is ours. Both patch
-  relative to the repo root (`-p1`).
+  context is self-contained; the other three are ours. All patch
+  relative to the repo root (`-p1`), and **all four are anchor-guarded**.
+  ⚠️ **THIS LIST IS A MEMBERSHIP LIST — extend it when you add a patch.** It read
+  "the two consumed patches" until s67 added two more, which is exactly the shape
+  of stale documentation that teaches a wrong count as fact.
+  🚨 **AND THE FOUR DO NOT ALL CARRY THE SAME PERMANENCE.** The first two are
+  PERMANENT (see each below). The last two fix DEFECTS upstream may fix on its
+  own, so their guards print a TWO-OUTCOME message: *stock code gone AND our
+  replacement absent* ⇒ read the function and **delete the patch** if upstream now
+  does it; *stock code present but the hunk failed at `-F0`* ⇒ ordinary drift,
+  re-derive at the new sha. **Do not flatten them into one story** — the two
+  outcomes call for opposite actions from the same red build.
 - The shallow fetch brings no submodules, so materialize them after the
   checkout (`git submodule update --init --recursive`).
 - Apply the turboquant grammar patch: `llama-grammar.patch` raises
@@ -1795,6 +1806,80 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   3 → 4 and the "routes are still registered under the prefix" check was measuring
   our own prose. Comment reworded so the count stays a fact about CODE. *Same family
   as a reachability `grep -r` that matches the file it lives in.*
+- Apply the MLA cache-type coercion: `llama-mla-cache-coerce.patch` replaces the
+  hard failure on an asymmetric K/V pair for a model with no separate V cache with
+  a WARN plus `params.type_v = params.type_k`.
+  ⭐ **WHY IT IS A DEFECT AND NOT A PREFERENCE.** `llama_init_from_model` COERCES
+  every other awkward cache configuration and says so — turbo types with flash
+  attention off, a quantized V on `FLASH_ATTN_TYPE_AUTO`, flash attention on Grok —
+  and HARD-FAILS only this one, which is the case whose right answer is
+  unambiguous: an MLA model has ONE cache, so it has one type. `type_v` there names
+  a buffer that does not exist. **Coerce what cannot work; honor what can.**
+  ✅ **K WINS, and it is ruled** (Jei, s67). K is the physical buffer and V the
+  view, so honoring `type_k` is the implementation rather than a policy. It also
+  fails in the safer direction: coercing toward K RAISES precision, so a bad pair
+  OOMs loudly instead of silently degrading quality. ⚠️ **Accepted cost, on the
+  record:** `q8_0` is ~2.7x turbo3, so an MLA model that fits at `turbo3`/`turbo3`
+  today may stop fitting. A user who wants the small cache sets both explicitly.
+  ✅ **Ordering verified in the source, not assumed:** `params` is a BY-VALUE
+  parameter (a mutable local, mutated the same way by the flash-attention blocks
+  ten lines down), and the coercion runs before `new llama_context(*model,
+  params)` builds `params_mem` from `type_k`/`type_v`. **The guard re-derives that
+  ordering at build time** by comparing the two lines' positions in the file it
+  just patched — a computed fact, not a cited line number.
+  ⭐ **This is what makes S1a a plain default change:** `K=q8_0` / `V=turbo3`
+  becomes correct everywhere, because each model decides for itself — which is the
+  only thing that works under router mode, where several models are loaded at once
+  and no single static value could be right for all of them.
+- **Its anchor guard: 8 checks before, 4 after (one of them positional), `-F0`, and
+  a refusal to patch twice.** Two of the before-checks are REACHABILITY, not
+  rewrite targets: that `llama_hparams::is_mla()` still exists (a rename leaves a
+  DEAD branch that patches perfectly and changes nothing) and that the context is
+  still constructed from the local `params` the patch mutates.
+  ✅ **Counterfactuals, run host-side with the guard body extracted from the
+  Containerfile by script:** clean pin ⇒ GREEN · ctor refactored to a differently
+  named local ⇒ RED on the reachability check · `is_mla()` renamed in the hparams
+  header ⇒ RED · a line inserted in the leading context ⇒ RED at `-F0` · an
+  already-patched tree ⇒ RED, refuses twice. **In the first three the bare
+  `patch -p1 -F0` exits 0** — i.e. with no guard the build would have gone green on
+  a no-op. 🚨 **And dropping `-F0` applies the drifted hunk at fuzz 1, rc=0
+  (measured)** — same asymmetry the api-prefix note records.
+- Apply the speculative-type predicate fix: `llama-spec-types-default.patch`
+  rewrites `spec_types_is_default()` in `common/arg.cpp` from an exact vector
+  equality against `{COMMON_SPECULATIVE_TYPE_NONE}` to a `std::none_of` over the
+  SIX `DRAFT_*` types.
+  ⭐ **WHAT BREAKS WITHOUT IT.** Both callers use the answer for one thing only —
+  whether to discover a draft repo's sidecar and infer the type from it — so ANY
+  entry in the vector suppresses both, **including the ngram methods, which are
+  model-free and say nothing about which sidecar to use**. Concretely:
+  `--spec-default` PUSHES `NGRAM_MOD` onto the vector, so with it on, `-hfd <repo>`
+  alone never fetches the repo's sidecar and never infers DFlash/MTP/Eagle3/DSpark.
+  ⚠️ **The failure is a NON-EVENT** — the image builds, the server starts, `/health`
+  answers 200, and a feature the user asked for by naming a draft repo just does not
+  happen. Nothing reports it.
+  ✅ **This SUPERSEDES the `PRE_LAUNCH` workaround** (dropping `--spec-default` when
+  a draft repo is set): with the patch in there is nothing to work around, and
+  unlike the workaround it keeps ngram AND an auto-discovered draft together.
+  ✅ `<algorithm>` is already included at the pin (verified, not assumed; the file
+  uses `std::find` in the function immediately below). No new include, no new API.
+- **Its anchor guard: 8 checks before, 4 after, `-F0`, and a refusal to patch
+  twice.** ⚠️ **ONE COUNT IS A FLOOR ON PURPOSE** — call sites are `-ge 2`, because
+  ggml-org master already carries a THIRD (type inference from the draft GGUF's
+  metadata) that our pin lacks, so an exact count would go red on a benign rebase
+  while the floor still catches the real failure, which is nobody calling it.
+  ⭐ **The enum count is EXACT and guards the OTHER direction:** the patch names the
+  six draft types by hand, so a SEVENTH added upstream would be omitted from the
+  predicate silently — counting the family in `common/common.h` is the only thing
+  that can see that. *A hand-written enumeration owes a count over the set.*
+  ✅ **Counterfactuals, same extract-by-script harness:** clean pin ⇒ GREEN · both
+  call sites renamed away ⇒ RED on the floor · a seventh draft type added to the
+  enum ⇒ RED on the exact count · a line inserted in the leading context ⇒ RED at
+  `-F0` · already-patched tree ⇒ RED. **In the first two the bare `patch -p1 -F0`
+  exits 0**, and dropping `-F0` on the drifted tree applies at fuzz 1, rc=0.
+  ⚠️ **Both new patches were checked for the substring-collision defect the
+  api-prefix note records** (an explanatory comment feeding a guard's own count):
+  after applying, the DRAFT_* test count is exactly 6 and the call-site count
+  exactly 2, so no added prose is being measured as code.
 - ⭐ **TURBOQUANT IS OPT-IN — the kernels are compiled in, nothing selects them.**
   Measured at the pin (`common/arg.cpp:390`): the fork's contribution here is three KV
   CACHE quant types, `GGML_TYPE_TURBO2_0/3_0/4_0`, added to `kv_cache_types` — the list

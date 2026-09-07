@@ -1,0 +1,112 @@
+Subject:    context: coerce the V cache type to K on models with no separate V
+            cache, instead of refusing to load
+Upstream:   NOT FILED, and not going to be. Standing project ruling on outward
+            submissions ("Someone else might refile, but not us."). There is no
+            issue number to track and nobody is chasing this.
+Applies to: TheTom/llama-cpp-turboquant @ fb2cc35ab3507a5aab56fe593620cd96d8f45384
+            (src/llama-context.cpp, inside llama_init_from_model)
+
+WHAT IT FIXES
+=============
+An MLA model (and LLM_ARCH_DEEPSEEK4) has no separate V cache at all: V is a view
+of K, so `type_v` describes a buffer that does not exist. Upstream's response to
+being handed a `type_k != type_v` pair there is a hard failure —
+`LLAMA_LOG_ERROR` plus `return nullptr`, i.e. the model does not load.
+
+That is backwards with respect to how the SAME function treats every other
+impossible-or-suboptimal cache configuration a few lines below it:
+
+  * turbo cache types with flash attention DISABLED are not refused — flash
+    attention is auto-enabled and a WARN is logged;
+  * a quantized V with `FLASH_ATTN_TYPE_AUTO` is not refused — it is promoted to
+    ENABLED with an INFO line;
+  * flash attention on Grok is not refused — it is forced off with a WARN.
+
+So the established house behavior in `llama_init_from_model` is: coerce the
+configuration that cannot work as written, say so, and carry on. The MLA branch
+is the one place that hard-fails instead, and it hard-fails the case where the
+right answer is unambiguous — there is only one cache, so there is only one type
+it can have.
+
+⇒ THIS PATCH REPLACES THE ERROR + `return nullptr` WITH A WARN + `params.type_v =
+params.type_k`. K WINS.
+
+WHY K WINS AND NOT V
+====================
+Two reasons, one mechanical and one about which way a mistake should fail.
+
+  * MECHANICAL: K is the physical buffer and V is the view of it. Honoring
+    `type_k` and ignoring `type_v` is the natural implementation of "there is one
+    cache", not a policy choice imposed on top of one.
+  * DIRECTION OF FAILURE: on this project the operative pair is a high-precision
+    K with a compact V (`q8_0` / `turbo3`). Coercing toward K raises V's precision
+    and therefore RAISES memory use, which fails loudly and immediately — the
+    model does not fit and says so. Coercing toward V would lower K's precision
+    silently, and a quality regression nobody is told about is the more expensive
+    of the two mistakes. A user who wants the small cache on an MLA model sets
+    both types explicitly and gets exactly that, with no warning.
+
+ACCEPTED COST, ON THE RECORD: an MLA model that fits today at `turbo3`/`turbo3`
+may fail to fit once a `q8_0` K is in play, because `q8_0` is ~2.7x turbo3 per
+element. That is the loud failure above, and it is the trade that was chosen.
+
+WHY IT IS SAFE WHERE IT SITS
+============================
+  * `params` is a BY-VALUE parameter of `llama_init_from_model` (see its
+    signature) — a mutable local. The flash-attention blocks immediately below
+    mutate it the same way, so this is not a new kind of write.
+  * This runs BEFORE `new llama_context(*model, params)`, which is where the
+    memory parameters are built from `type_k`/`type_v`. The coerced value is what
+    the context actually gets.
+  * The two per-type divisibility checks that follow read `params.type_v`, so
+    they now validate the COERCED type — which is the type the cache will really
+    have. Checking the discarded one would have been the bug.
+
+WHAT WOULD MAKE IT REMOVABLE (a condition to NOTICE, not an outcome to expect)
+=============================================================================
+🚨 THIS IS NOT A PATCH WE EXPECT TO CARRY FOREVER, AND THE GUARD SAYS SO IN TWO
+DIRECTIONS. What it fixes is a DEFECT in a place upstream is actively editing —
+a hard failure where a coercion is available and where the surrounding code
+already coerces — so upstream may well arrive at the same conclusion on its own.
+The anchor guard in scaffolding/Container.llama-build distinguishes the two
+outcomes, and they call for opposite actions:
+
+  * the stock ERROR + `return nullptr` is GONE and our coercion is absent ⇒ READ
+    the function at the new ref. If upstream now coerces (or otherwise stopped
+    refusing asymmetric types on MLA), DELETE this file and the guard. Do not
+    re-derive a hunk for a fix that is already there.
+  * the stock code is still present but the hunk fails at fuzz 0 ⇒ ordinary
+    drift. RE-DERIVE the hunk at the new sha and update the guard's counts to
+    match what you actually found.
+
+VERIFIED 2026-09-07 against ggml-org/llama.cpp master: the branch is still there,
+still `LLAMA_LOG_ERROR` + `return nullptr`, byte for byte. Nothing to adopt, and
+nothing to wait for.
+
+⚠️ AND IT CAN STOP MATTERING WITHOUT FAILING TO APPLY. If `is_mla()` were removed
+or stubbed, this branch would go dead and the patch would apply perfectly while
+changing nothing. That is why the guard also asserts the predicate still exists
+and that the mutated `params` still reaches the context constructor.
+
+THE BLANK CONTEXT LINES ARE A SINGLE SPACE — DO NOT LET AN EDITOR STRIP THEM
+===========================================================================
+The hunk's leading and trailing context both include an empty source line, and a
+canonical unified diff spells one as a single space. Tools that trim trailing
+whitespace turn them into truly empty lines, which makes GNU patch apply this
+with fuzz — and the guard runs `patch -F0`, so it would then fail outright. That
+is the strictness working as intended; the fix is to restore the spaces, never to
+relax the fuzz.
+
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3856,8 +3856,8 @@
+     }
+ 
+     if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4) && params.type_k != params.type_v) {
+-        LLAMA_LOG_ERROR("%s: model does not support different K (%s) and V (%s) cache types\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
+-        return nullptr;
++        LLAMA_LOG_WARN("%s: model has no separate V cache (V is a view of K) - coercing V cache type %s to match K (%s)\n", __func__, ggml_type_name(params.type_v), ggml_type_name(params.type_k));
++        params.type_v = params.type_k;
+     }
+ 
+     // TurboQuant cache types require flash attention — auto-enable if disabled

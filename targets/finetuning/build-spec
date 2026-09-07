@@ -349,9 +349,20 @@ jupyter_env() {
     # DROSTE_ name the equivalent guard is targeted and lives beside its own default
     # (ds4's DS4_BLANK_IS_DEFAULT, and the SEARCH_VENV_FIRST block below), because
     # droste-common.sh:85-90 reserves this helper for natives.
+    # 🚨 HF_XET_HIGH_PERFORMANCE IS HERE UNDER THE s67 CLASS-2 STANDARD PROCEDURE
+    # (Jei: "if it was unset before, it should be unset again"), which is UNIFORM for the
+    # class and deliberately does NOT ask whether this particular blank is harmless.
+    # ⭐ IT EARNS THE ENTRY ANYWAY: the Python side looks safe — `_is_true("")` is false,
+    # identical to absent — but xet-core reads the variable ITSELF in Rust,
+    # `if let Ok(val) = std::env::var(...)`, and `std::env::var` returns `Ok("")` for a
+    # blank, so THAT BRANCH FIRES; only `parse_bool_value(&val).unwrap_or(false)` keeps it
+    # off. A per-variable analysis stopping at the obvious reader would have called the
+    # blank harmless. ⚠️ finetuning.cfg carries the ALIAS too
+    # (`${HF_XET_HIGH_PERFORMANCE-${HF_XET_HP-}}`), so an alias-only user gets the value
+    # normalised into the primary name and both readers then agree.
     droste::blank_is_unset \
         IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR \
-        JUPYTER_PREFER_ENV_PATH JUPYTER_PLATFORM_DIRS
+        JUPYTER_PREFER_ENV_PATH JUPYTER_PLATFORM_DIRS HF_XET_HIGH_PERFORMANCE
 
     # ── the XDG bases, one of which finetuning.cfg offers; blanks strand caches ─
     # 🚨 A BLANK XDG_CACHE_HOME MOVES THE HF CACHE OUT FROM BEHIND THE CRITICAL BIND,

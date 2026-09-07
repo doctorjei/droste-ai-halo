@@ -795,7 +795,21 @@ vllm_env() {
     # if the names it walks really are vLLM's. This one is botocore's and tensorizer's.
     local -a _class2_on_clear=(
         AWS_ENDPOINT_URL                                # runai_streamer_loader.py:53-57
+        HF_XET_HIGH_PERFORMANCE                         # xet-core: std::env::var -> Ok("")
     )
+    # 🚨 HF_XET_HIGH_PERFORMANCE IS LISTED UNDER THE s67 CLASS-2 STANDARD PROCEDURE
+    # (Jei: "if it was unset before, it should be unset again"), which is UNIFORM for the
+    # class and deliberately does NOT ask whether this particular blank is harmless.
+    # ⭐ IT EARNS THE ENTRY ANYWAY, and the reason is why the rule is uniform: the Python
+    # side looks safe — `_is_true("")` is false, identical to absent — but xet-core reads
+    # the variable ITSELF in Rust, `if let Ok(val) = std::env::var(...)`, and
+    # `std::env::var` returns `Ok("")` for a blank, so THAT BRANCH FIRES. Only
+    # `parse_bool_value(&val).unwrap_or(false)` keeps it off. A per-variable analysis that
+    # stopped at the obvious reader would have called the blank harmless.
+    # ⚠️ THE SURFACE CARRIES THE ALIAS TOO — vllm.cfg shows
+    # `${HF_XET_HIGH_PERFORMANCE-${HF_XET_HP-}}`, so an alias-only user gets the value
+    # normalised into the primary name and BOTH readers then agree; without that, Rust
+    # runs high-performance while huggingface_hub's Python constant still reads false.
 
     # ⭐ AND THE ELEVEN THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
     # list" is a decision rather than an omission. For the nine vLLM natives TWO

@@ -95,6 +95,41 @@
 # lanes, one behavior — a build-spec must never have to ask which door it came in).
 # Keep it free of side effects: definitions only.
 
+# ── droste::cfg_is_passthrough — does this line say "keep whatever is there"? ─
+# Usage:  droste::cfg_is_passthrough "$file" HF_TOKEN   # 0 = yes, 1 = no
+#
+# ⭐ THE SHAPE IS THE DECLARATION. A right-hand side that begins `${NAME-` or `${NAME:-`
+# FOR ITS OWN NAME is the system-class pass-through form: "keep whatever is there;
+# replace the right-hand side to set your own." Every other spelling — a literal, a blank,
+# a reference to a DIFFERENT name — is the user asking for a value, and gets one.
+# 🚨 IT READS THE FILE, NOT THE ENVIRONMENT, and it has to: by the time cfg_apply holds a
+# diff, `${NAME-}` and a bare `NAME=` have produced the identical empty string. The intent
+# survives only in the text.
+# ⚠️ COMMENTED LINES CANNOT MATCH, and that is load-bearing rather than incidental: a file
+# carrying a commented `# NAME=${NAME-}` AND a live bare `NAME=` must take the LIVE line's
+# meaning. The anchor requires the name at the start of the line (optionally after
+# `export`), so a leading `#` fails it.
+# ⚠️ THE LAST ASSIGNMENT WINS, because that is the one bash executed.
+# ⭐ A NESTED FALLBACK STILL COUNTS — `${HF_XET_HIGH_PERFORMANCE-${HF_XET_HP-}}` is still
+# "pass through this name, else look somewhere else", and when BOTH are unset the honest
+# result is still that nobody set anything.
+# ⚠️ `${NAME+…}` IS DELIBERATELY NOT MATCHED. That is a presence TEST, not a pass-through:
+# it yields the alternative when the name is set and nothing when it is not, so treating
+# it as "keep what is there" would invert its meaning.
+droste::cfg_is_passthrough() {
+    local file=${1-} name=${2-} line
+    [ -n "$file" ] && [ -n "$name" ] || return 1
+    [ -r "$file" ] || return 1
+    # The name reaching here has already been validated as a shell name by cfg_apply, so
+    # it carries no regex metacharacter.
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${name}=" "$file" 2>/dev/null | tail -n1)
+    [ -n "$line" ] || return 1
+    case ${line#*=} in
+        '${'"$name"'-'*|'${'"$name"':-'*) return 0 ;;
+    esac
+    return 1
+}
+
 # ── droste::cfg_apply — the whole design, in one function ────────────────────
 # Usage:  droste::cfg_apply "$CFG_FILE"
 # Always returns 0. A config file must not be able to stop the box from starting; that
@@ -311,7 +346,7 @@ droste::cfg_apply() {
     # 4) VALIDATE + APPLY. `export NAME=VALUE` and never `eval`: the value came out of
     #    the child already fully expanded, so re-evaluating it here would expand a
     #    user's literal `$` a second time behind their back.
-    local applied=0 removed=0
+    local applied=0 removed=0 kept=0
     # Where the CURRENT list of this box's settings lives, so the warning below can
     # point at it rather than describing it. The image bakes each port's templates
     # under one directory and the seeded copy keeps the template's own basename
@@ -335,6 +370,41 @@ droste::cfg_apply() {
         # Unchanged from what this box already had: nothing to do, and saying so keeps
         # the applied count meaningful.
         if [ "${base[$name]+isset}" = isset ] && [ "${base[$name]}" = "${now[$name]}" ]; then
+            continue
+        fi
+        # ── "keep whatever is there" has to include KEEPING NOTHING (s68, Jei) ────
+        # 🚨 THE LINE `NAME=${NAME-}` MEANS *keep whatever is there*, AND UNTIL s68 THAT
+        # WAS TRUE OF EVERY STATE EXCEPT THE COMMONEST ONE. With the name already set the
+        # right-hand side reproduces its value, the diff is empty and nothing happens —
+        # a true no-op. With the name UNSET it expands to nothing, `set -a` exports the
+        # empty result, and a variable that did not exist now exists holding "". For any
+        # reader that asks *is it set* rather than *is it non-empty*, uncommenting a line
+        # we ship as a no-op turned a feature ON.
+        # ⭐ JEI'S FRAMING, WHICH IS WHY THIS IS GENERAL AND NOT ANOTHER LIST: "**we**
+        # don't want to be the conflating factor between unset and empty." Droste touches
+        # nothing it was not asked to touch — a name this file never mentions is
+        # byte-identical in both children and never reaches this loop at all — and the one
+        # place we were manufacturing a value out of an absence was here.
+        # 📐 THE INTENT IS CARRIED BY THE SHAPE OF THE LINE, so nothing has to be listed:
+        #     NAME=${NAME-}   "pass through whatever exists"  ⇒ nothing exists ⇒ create
+        #                                                       nothing
+        #     NAME=           "I want this empty"             ⇒ applied, empty
+        # ⚠️ THAT SECOND ROW IS THE HALF A BLANKET RULE WOULD HAVE BROKEN. "Never create
+        # an empty variable" reads like the same idea and is not: `VLLM_PLUGINS=` means
+        # LOAD NO PLUGINS where an absent name loads all of them, and `KV_DISK_DIR=` means
+        # no disk cache. Those are real capabilities, spelled the only way they can be
+        # spelled, and they survive here because the user did not write the pass-through
+        # form.
+        # ⚠️ IT FIRES ONLY ON A NAME BEING **CREATED**. Clearing a value that WAS set is a
+        # change the user asked for and still applies: base holds it, so the two states
+        # differ and this test never sees them.
+        # ⭐ IT DOES NOT RETIRE `droste::blank_is_unset`, and the two are not rivals: this
+        # covers the CONFIG FILE, which is the route we ship; that helper covers a
+        # set-and-empty arriving by a route this function cannot see — a create-time
+        # `--env` in additional_flags, or an `export` typed inside `distrobox enter`.
+        if [ "${base[$name]+isset}" != isset ] && [ -z "${now[$name]}" ] \
+           && droste::cfg_is_passthrough "$file" "$name"; then
+            kept=$(( kept + 1 ))
             continue
         fi
         # ⭐ HERE, AND NOT EARLIER, SO THE WARNING CAN NAME THE FILE HONESTLY. This
@@ -445,11 +515,18 @@ droste::cfg_apply() {
         removed=$(( removed + 1 ))
     done
 
-    [ "$applied" -eq 0 ] && [ "$removed" -eq 0 ] && return 0
+    # ⭐ THE PASS-THROUGH SKIP IS REPORTED, NOT SILENT, and it belongs in THIS line rather
+    # than in a warning of its own. It is not a mistake to warn about — the line did
+    # exactly what it says — but it IS user input we deliberately did not apply, and the
+    # standing rule is that nothing droste declines to do happens quietly. One clause in a
+    # summary that already prints costs no extra output.
+    local tail=""
+    [ "$kept" -gt 0 ] && tail=" $kept line(s) said to keep whatever was already set, and nothing was, so nothing was created."
+    [ "$applied" -eq 0 ] && [ "$removed" -eq 0 ] && [ "$kept" -eq 0 ] && return 0
     if [ "$removed" -gt 0 ]; then
-        serve::info "applied $applied setting(s) from $file, and unset $removed the file asked to remove."
+        serve::info "applied $applied setting(s) from $file, and unset $removed the file asked to remove.$tail"
     else
-        serve::info "applied $applied setting(s) from $file."
+        serve::info "applied $applied setting(s) from $file.$tail"
     fi
     return 0
 }

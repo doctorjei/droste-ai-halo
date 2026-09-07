@@ -1428,10 +1428,13 @@ serve::_mem_at_launch() {
 # itself as evidence is worse than silence.
 #
 # 🚨 THE SCAN IS BLIND TO TERMINAL ESCAPES, AND ALL THREE OF ITS STEPS DEPEND ON THAT.
-# A served process that writes color breaks this function three separate ways, and a
-# user can already turn color on today: droste::cfg_apply is name-blind, so FORCE_COLOR
-# — or a server's own color flag — reaches the service from the box's <box>.cfg like any
-# other setting.
+# ⭐ THIS IS THE PRESENT STATE, NOT A PRECAUTION: comfyui's log is colored TODAY, at our
+# pin. ComfyUI's app/logger.py installs a ColoredFormatter with NO isatty test and no
+# knob (COMFYUI_REF 4da9e2db), so every line it writes begins with an escape at COLUMN 0
+# — `\033[32m[INFO]\033[0m ` and, for a failure, `\033[1m\033[31m[ERROR]\033[0m `.
+# ComfyUI-Manager 4.2.2 opens 22 print sites with `\x1b[2K\r`, and ComfyUI_essentials
+# prints `\033[96m…\033[0m` from two more. A column-0 anchor against that log was
+# already broken before this function was written.
 #   1. the `=== droste-serve:` exclusion is ANCHORED at line start, so a color prefix on
 #      one of OUR OWN lines slides it past the anchor and the report quotes itself back
 #      as the server's words. Silently — this is the self-poisoning defect returning by
@@ -1443,24 +1446,50 @@ serve::_mem_at_launch() {
 #      word INSIDE the message splits a signature and the evidence is simply missed.
 # So the strip happens FIRST, ahead of the exclusion, the match and the truncation.
 #
-# WHAT IS STRIPPED, chosen by CLASS rather than by the one case that bit us — an
-# `ESC[0m`-only regex answers (2) and neither of the others:
+# WHAT IS STRIPPED, chosen by CLASS rather than by the one case that bit us. 🚨 AN
+# SGR-ONLY REGEX (`\x1b\[[0-9;]*m`) IS MEASURABLY NOT ENOUGH — the RESET ALONE defeats
+# it two different ways, and both are real:
 #   OSC    ESC ] … BEL|ST      window titles and OSC-8 hyperlinks. Their payload is TEXT
 #                              (`8;;https://…`) and would survive as garbage in the quote.
-#   CSI    ESC [ … final       SGR color, and equally cursor motion, EL/ED erase, scroll
-#                              regions — everything a progress display reaches for.
-#   Fe/Fs  ESC <int>* <final>  the short escapes: charset designation (ESC ( B), ESC M,
-#                              ESC 7/8. Matched per ECMA-48, so a stray ESC consumes its
-#                              own sequence rather than the remainder of the line.
-#   C0     < 0x20 except TAB,  the leftovers, and they matter on their own: a bare CR
-#          plus DEL            from a progress bar (huggingface and tqdm write them by
-#                              the thousand) repaints over our "  | " prefix, and a
-#                              truncated sequence leaves a lone ESC behind.
+#   CSI    ESC [ … final       SGR color, and equally cursor motion and the EL erase that
+#                              opens all 22 of ComfyUI-Manager's `\x1b[2K\r` sites.
+#   Fe/Fs  ESC <int>* <final>  the short escapes. tornado's LogFormatter — the jupyter
+#                              surface — takes its reset from terminfo `sgr0`, which on
+#                              xterm IS `ESC ( B ESC [ m`: an SGR-only strip removes the
+#                              `ESC [ m` and leaves `ESC ( B` sitting in the text.
+#                              Matched per ECMA-48, so a stray ESC consumes its own
+#                              sequence rather than the remainder of the line.
+#   C0     < 0x20 except TAB   the leftovers, and they are not theoretical either: the
+#          and CR, plus DEL    SAME terminfo `sgr0` is `ESC [ m` + SI (0x0F) on screen,
+#                              tmux and the linux console (measured with `tput sgr0`), so
+#                              an SGR-only strip leaves a raw shift-in behind — and a
+#                              stray SO/SI switches the terminal into the line-drawing
+#                              charset for everything after it.
 # TAB survives because it only moves forward and cannot rewrite what was already
 # printed — the allowlist reasoning of scripts/check-control-chars.sh, narrowed to one
 # line (\n \v \f cannot help a value that gets embedded in a single message). NUL needs
 # no rule of its own: command substitution drops it. 0x80-0xFF is deliberately untouched
 # — those are the continuation bytes of every multibyte character in the log.
+#
+# ⭐ CR IS THE ONE THAT NEEDED A DECISION RATHER THAN A CLASS, AND IT IS SPLIT, NOT
+# DELETED. ComfyUI-Manager writes `orig_print(f"\x1b[2K\rFetching: {path}", end='')` —
+# note `end=''`, so one FILE LINE really does accumulate a dozen erased segments before
+# anything writes a newline. Three options, and only one is safe:
+#   delete the CR   splices the segments into "Fetching: AFetching: BFetching done." —
+#                   stale text eats the 220-character quote, and worse, the JOIN can
+#                   fabricate a signature that neither segment contains.
+#   keep the last   what the terminal shows, but it DROPS the earlier segments — and a
+#     segment only  background writer overwriting an error line would then delete the
+#                   very words this function exists to find.
+#   split at CR     each segment is scanned on its own: nothing is lost, nothing is
+#     ⇐ chosen      fabricated at a join, and the quote is ONE segment rather than a
+#                   line of overwritten history.
+# ⚠️ THE SPLIT RUNS AFTER THE EXCLUSION, deliberately: `^` in sed anchors to the whole
+# pattern space, so splitting first would leave a segment beginning with our own prefix
+# untested. A note appended to one of Manager's partial lines is therefore still
+# scanned — a hole that predates this and is closed at the other end, by _log_note's
+# wording carrying no signature ("the machine short of memory"). That wording is
+# load-bearing, not a phrasing preference; there is a row on it.
 #
 # WHY sed AND NOT BASH, on a path where the shell may itself be short of memory (the
 # reason serve::_meminfo_kb above spawns nothing at all): the strip has to happen BEFORE
@@ -1475,7 +1504,7 @@ serve::_mem_at_launch() {
 # otherwise) and keeps invalid multibyte bytes in a log harmless.
 serve::_mem_evidence() {
     local n=${1:-400} pat=() sig line
-    local esc=$'\033' bel=$'\007' c0=$'\001-\010\013-\037\177'
+    local esc=$'\033' bel=$'\007' cr=$'\015' c0=$'\001-\010\013-\014\016-\037\177'
     case "$DROSTE_SERVE_LOG" in /dev/*) return 1 ;; esac
     [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 1
     for sig in "${DROSTE_SERVE_OOM_SIGNATURES[@]}"; do pat+=(-e "$sig"); done
@@ -1492,7 +1521,8 @@ serve::_mem_evidence() {
                           -e "s,${esc}\\[[0-?]*[ -/]*[@-~],,g" \
                           -e "s,${esc}[ -/]*[0-~],,g" \
                           -e "s,[${c0}],,g" \
-                          -e '/^=== droste-serve:/d' 2>/dev/null \
+                          -e '/^=== droste-serve:/d' \
+                          -e "s,${cr},\\n,g" 2>/dev/null \
            | grep -iF "${pat[@]}" 2>/dev/null | tail -1) || line=""
     [ -n "$line" ] || return 1
     printf '%s' "${line:0:220}"

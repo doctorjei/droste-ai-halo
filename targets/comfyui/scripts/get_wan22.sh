@@ -3,7 +3,8 @@
 # The startup model scanner links cached models into ComfyUI/models.
 set -euo pipefail
 
-export HF_HUB_ENABLE_HF_TRANSFER=1
+# NO `HF_HUB_ENABLE_HF_TRANSFER`: at this box's hub 0.36.2 cap it DISABLES resume,
+# and the header above promises resume-friendly. Why → Container.comfyui.
 HF="/opt/venv/bin/hf"
 
 # Repositories

@@ -133,8 +133,16 @@ RUN uv pip install -r requirements.txt \
 # and "test it" means letting THIS box's constraints resolve** — the s67 error was a
 # dry run that pinned 1.30.0 directly, which answered a question nobody had asked.
 # ⇒ when `TRANSFORMERS_VERSION` next crosses into 5.x, the cap lifts, this box joins
-# the 1.x line, and BOTH this extra and the `HF_HUB_ENABLE_HF_TRANSFER` exports in
-# `targets/comfyui/scripts/get_*.sh` become dead weight. **Re-check then, not before.**
+# the 1.x line, and this extra becomes dead weight. **Re-check then, not before.**
+# 🚨 **THE `HF_HUB_ENABLE_HF_TRANSFER` EXPORTS ARE GONE (Jei, s69) — DO NOT RESTORE THEM.**
+# At 0.36.2 the flag **DISABLES RESUME** (`file_download.py`: *"do not resume download if
+# `force_download=True` or `HF_HUB_ENABLE_HF_TRANSFER=True`"*), and all four
+# `targets/comfyui/scripts/get_*.sh` headers promise **"resume-friendly"**. A multi-GB
+# pull that cannot resume is worse than a slower one that can, so the promise wins.
+# ⇒ **the extra stays and nothing enables it**: it is inert until someone sets the variable
+# by hand, which is a choice a user may legitimately make for a fast, reliable link.
+# ⚠️ **This is why the extra and the exports are NOT one decision** — a future reader
+# removing the extra "because nothing uses it" would also remove that user's option.
 # ⚠️ THE SECOND INSTALL LOST ITS `--prefer-binary` WHEN IT MOVED TO uv (s46, Jei's call) —
 # and the flag was NOT silently dropped, it was measured first. Read this before adding a
 # flag back or "restoring" the pip line.

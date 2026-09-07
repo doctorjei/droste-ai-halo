@@ -54,8 +54,8 @@ HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
-# LLAMA_ARG_* lines (llama-server reads them natively), the 73 DROSTE_LLAMA_* settings
-# the tables below translate — 70 into argv, 3 into the environment — and
+# LLAMA_ARG_* lines (llama-server reads them natively), the 74 DROSTE_LLAMA_* settings
+# the tables below translate — 71 into argv, 3 into the environment — and
 # DROSTE_LLAMA_EXTRA_ARGS.
 # ⚠️ It is NOT sourced into this shell: droste::cfg_apply runs it in a CHILD shell
 # and applies the difference, so a typo in it is a warning rather than a dead box.
@@ -159,20 +159,23 @@ OPTIONAL=(
 # ── The llama.cfg → argv tables ──────────────────────────────────────────────
 # ⭐ THESE TABLES ARE THE ONLY MAPPING. llama.cfg names a setting; this file says
 # which flag it emits. There is NO derivation rule and there must never be one —
-# 63 of the 70 names below happen to match `--$(lower suffix)` and seven do not
+# 64 of the 71 names below happen to match `--$(lower suffix)` and seven do not
 # (AUTO_MODEL, HF_TOKEN_FILE, BUILTIN_SPEC_DEFAULT, DRY_SEQ_BREAKERS and the three
 # ENDPOINT_*), so a derivation would need seven exceptions. Jei's ruling on ds4
 # stands here: A RULE WITH AN EXCEPTION IS WORSE THAN NO RULE, because a reader who
 # derives a name gets a variable nothing reads. Adding a setting means editing
 # llama.cfg AND this file; there is nothing to fall back on.
-# ⚠️ 70 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
+# ⚠️ 71 IS THIS SECTION'S COUNT, NOT THE FILE'S. Three more settings are wired further
 # down, in the ENVIRONMENT tables — they have no flag to emit and never touch SERVICE.
 #
 # Every row was generated from the PINNED binary's own option table (paren-balanced
 # parse of arg.cpp at fb2cc35a) and not from llama.cfg's inline comments — three of
 # those comments name the wrong flag today.
 # ✅ RE-CHECKED at the s64 bump: all 46 flags emitted below still exist in arg.cpp's
-# alias lists. ⚠️ The build's own drift gate covers only THREE names
+# alias lists. ⚠️ THAT 46 IS A RECORD OF THAT CHECK, NOT A LIVE COUNT — it was measured
+# by an instrument that has since been widened, and the tables have grown; recount from
+# the tree with scripts/check-llama-flags.sh, which is the thing to run at a pin bump.
+# ⚠️ The build's own drift gate covers only THREE names
 # (LLAMA_ARG_HOST/PORT/MODEL, targets/Container.llama), so a green CI says nothing
 # about the other 43 — that cross-check is a dev-time step at every pin bump.
 #
@@ -188,6 +191,12 @@ OPTIONAL=(
 #          expressible and neither is a separate flag. Exactly one exists (see
 #          LLAMA_ONOFF_FLAGS below for why it still cannot be a native line).
 #   CHOICE is a menu where one value means "emit nothing" (comfyui's shape).
+# ⭐ AND A FIFTH KIND SINCE s67, WHICH IS NOT A BOOLEAN AT ALL:
+#   AUTO   a VALUE flag plus a droste-owned SENTINEL word. The sentinel emits
+#          nothing; every other accepted spelling is a number that reaches the flag
+#          unchanged. The sentinel is a word llama does not accept, so the value does
+#          NOT pass through unprocessed — which is the class-3 naming rule, and the
+#          reason the row is droste-named rather than native.
 # ⚠️ UNSET IS A THIRD STATE, DISTINCT FROM off. An unset bool emits NEITHER flag, so
 # upstream's own default stands. That matters for --kv-unified, whose help says the
 # effective default is "enabled if number of slots is auto": emitting --no-kv-unified
@@ -296,6 +305,34 @@ LLAMA_SWITCH_FLAGS=(
 LLAMA_ONOFF_FLAGS=(
     "FIT:--fit"
 )
+# AUTO — "<SUFFIX>:<flag>:<sentinel>". The SENTINEL is the setting's default and emits
+# NOTHING; any other value must be a non-negative integer and is passed to the flag.
+# Anything else warns and falls back to the sentinel — no fall-through values.
+#
+# 🚨 ONE ROW, AND IT EXISTS BECAUSE THE NATIVE LINE COULD NOT KEEP THE FILE'S OWN
+# PROMISE. llama.cfg's header says the value shown IS the default, so uncommenting a
+# shown line must be a NO-OP — and `LLAMA_ARG_CTX_SIZE=0` is not one:
+#   ABSENT   params.n_ctx stays 0 (common/common.h) and fit_params_min_ctx stays 4096,
+#            so llama's fitter is free to SHRINK the context to fit memory.
+#   `-c 0`   the {"-c","--ctx-size"} handler assigns n_ctx AND, only for the value 0,
+#            sets fit_params_min_ctx = UINT32_MAX — which FORBIDS that reduction.
+# Two different boxes from one gesture. ⭐ AND THE WIRING CANNOT SIMPLY SWALLOW `0`:
+# "the full training context, and do not shrink it" is a legitimate distinct request,
+# so what is missing is a THIRD spelling for "let the fitter decide". llama has none.
+# `auto` is ours, which is exactly why the setting is ours.
+# ✅ RULED (Jei, s67): "wrap this one for processing and list default as auto."
+#
+# 🚨 LLAMA_ARG_CTX_SIZE COMES OFF THE SURFACE WITH IT (Jei: "agreed re: surface"), and
+# the reason is precedence: llama parses the environment BEFORE argv, so a flag we
+# emit silently beats the user's own native line. Two settings writing n_ctx is a
+# last-wins race we always win. ⚠️ THE NAME STILL WORKS — llama reads it whatever we
+# do — so it keeps its _fatal_on_clear row and gets a RETIREMENT WARNING (llama_ctx_warn
+# below) for one minor release, per the s66 policy. Config files are seeded if_missing,
+# so an existing box carries the old line forever with no other way to learn it is no
+# longer part of this surface.
+LLAMA_AUTO_VALUE_FLAGS=(
+    "CTX_SIZE:--ctx-size:auto"
+)
 # Upstream takes ONE item per occurrence and expects the flag REPEATED; the user
 # gives us a `;`-separated list and we do the repeating. "<SUFFIX>:<flag>"
 # ⚠️ --dry-sequence-breaker clears llama's four built-in breakers on its FIRST
@@ -361,15 +398,229 @@ LLAMA_EXCLUSIVE_GROUPS=(
     "LLAMA_ARG_ROPE_SCALE LLAMA_ARG_ROPE_FREQ_SCALE"
 )
 
+# ── THE CONTEXT SIZE, AND THE ONE COMBINATION THAT KILLS A BOX (S1, s67) ─────
+#
+# llama_ctx_sentinel — the AUTO table's sentinel for CTX_SIZE, read OUT OF THE TABLE so
+# that nothing spells it a second time. Both functions below compare against it.
+llama_ctx_sentinel() {
+    local row
+    for row in ${LLAMA_AUTO_VALUE_FLAGS[@]+"${LLAMA_AUTO_VALUE_FLAGS[@]}"}; do
+        case $row in CTX_SIZE:*) printf '%s' "${row##*:}"; return 0 ;; esac
+    done
+    printf 'auto'
+}
+
+# llama_ctx_size — the EFFECTIVE request as one word: the sentinel when nothing usable
+# is set, otherwise the number that reaches `-c`. DELIBERATELY SILENT: llama_argv's
+# AUTO_VALUE loop owns the diagnostic, and a value read in two places must not be
+# complained about twice. A garbage value reads as the sentinel here BECAUSE that is
+# what the box will actually run — no `-c` is emitted, so the trap below is live.
+llama_ctx_size() {
+    local sentinel v
+    sentinel=$(llama_ctx_sentinel)
+    v=${DROSTE_LLAMA_CTX_SIZE:-$sentinel}
+    [ -n "$v" ] || v=$sentinel
+    case "$v" in
+        *[!0-9]*) printf '%s' "$sentinel" ;;
+        *)        printf '%s' "$v" ;;
+    esac
+}
+
+# The FIVE speculative types that are SIDECAR-BACKED. Enumerated from
+# common_speculative_type_to_str (common/speculative.cpp) at the pin, which is the
+# function that defines the spelling `--spec-type` accepts — not from a sibling note.
+# Naming one of these sets the matching opts.download_<kind> in
+# common_models_handler_init, and THAT is what puts a sidecar into the MAIN model's
+# download plan; with no draft of the user's own, its callback assigns it as the draft.
+# 🚨 draft-simple IS THE SIXTH draft-* TYPE AND MUST NEVER BE ADDED HERE. It sets NONE
+# of the four download flags, so no plan entry appears and nothing is attached —
+# including it would warn about a configuration that is fine.
+LLAMA_SIDECAR_SPEC_TYPES=( draft-mtp draft-mtp-adaptive draft-dflash draft-eagle3 draft-dspark )
+
+# llama_spec_type_has_sidecar — does ONE --spec-type value name a sidecar type?
+# Exit status, not output: 0 yes, 1 no.
+# ⚠️ TOKENS ARE MATCHED EXACTLY, WITH NO TRIMMING, BECAUSE UPSTREAM DOES NOT TRIM.
+# string_split (common/common.h) keeps surrounding spaces and
+# common_speculative_types_from_names THROWS on any name its map does not hold — so
+# `draft-dflash, ngram-mod` is a box that does not start, not a warning we missed.
+# Being more lenient than the parser would invent a case upstream does not have.
+# 🚨 `none` ANYWHERE IN ONE VALUE CANCELS THAT WHOLE VALUE. types_from_names returns
+# {NONE} the moment it sees it and drops everything else in the same string, so
+# `draft-dflash,none` attaches nothing. ⚠️ That cancellation is PER VALUE STRING, not
+# global: the handler APPENDS, so a later `--spec-type none` does not undo an earlier
+# `LLAMA_ARG_SPEC_TYPE=draft-dflash`. Each value is asked on its own for that reason.
+llama_spec_type_has_sidecar() {
+    local v=${1:-} tok t
+    local -a toks=()
+    [ -n "$v" ] || return 1
+    IFS=',' read -r -a toks <<<"$v"
+    for tok in ${toks[@]+"${toks[@]}"}; do
+        [ "$tok" = none ] && return 1
+    done
+    for tok in ${toks[@]+"${toks[@]}"}; do
+        for t in "${LLAMA_SIDECAR_SPEC_TYPES[@]}"; do
+            [ "$tok" = "$t" ] && return 0
+        done
+    done
+    return 1
+}
+
+# llama_draft_attached — prints "yes" when this box will load a DRAFT MODEL, and
+# nothing otherwise. It decides nothing about the argv; it exists for the warning.
+# "$@" is the already-split catch-all argv.
+#
+# THE ENTRY POINTS, ENUMERATED FROM arg.cpp AT THE PIN rather than remembered. A draft
+# exists when params.speculative.draft.mparams is non-empty (has_dft(), common/common.h),
+# and these are the only ways a user reaches that from here:
+#   · LLAMA_ARG_SPEC_DRAFT_MODEL     {--spec-draft-model, -md, --model-draft}
+#   · LLAMA_ARG_SPEC_DRAFT_HF_REPO   {--spec-draft-hf, -hfd, -hfrd, --hf-repo-draft}
+#   · either flag list written into DROSTE_LLAMA_EXTRA_ARGS, which is why the catch-all
+#     is scanned and not just the two variables
+#   · DROSTE_LLAMA_AUTO_MODEL=fim-qwen-7b-spec / fim-qwen-14b-spec — the only two of
+#     the eleven presets whose handlers assign draft.mparams.hf_repo themselves. ⚠️ And
+#     they are the WORST case rather than an edge one: both also set params.n_ctx = 0
+#     inside the lambda, which never reaches the `-c` handler, so fit_params_min_ctx is
+#     untouched and the pair arrives at exactly the state warned about below.
+#   · LLAMA_ARG_SPEC_TYPE (or a --spec-type in the catch-all) naming one of the five
+#     SIDECAR-BACKED types. THIS ONE ATTACHES A DRAFT WITH NOTHING ELSE SET, which is
+#     why it is here: the type booleans set opts.download_<kind> DIRECTLY, the MAIN
+#     model's plan then carries the sidecar, and with no draft repo of the user's own
+#     `had_spec_url` is false, so the `if (params.speculative.draft.mparams.empty())`
+#     callback assigns it as the draft. A 1.1B DFlash head with its own 1M declared
+#     context, from a repo the user only named as the main model.
+#
+# ⭐ THAT ROUTE IS *NOT* THE ONE `spec_types_is_default` GATES, AND THE DISTINCTION IS
+# THE WHOLE POINT OF THE ROW ABOVE. Everything gated on that predicate concerns
+# `plan_spec` — the DRAFT REPO's plan — which needs a draft repo, i.e. a case the first
+# two entries already catch. The main-model route reads only the type booleans.
+# 🚨 SO `--spec-default` IS IRRELEVANT TO IT, IN BOTH DIRECTIONS, and this comment said
+# the opposite until it was traced end to end: the route is reachable at this pin as
+# shipped, and S1c-PATCH neither opens nor closes it. Do not reattach it to that patch.
+#
+# ⚠️ IT IS A NECESSARY CONDITION, NOT A SUFFICIENT ONE, AND THAT IS STATED RATHER THAN
+# HIDDEN. Naming a sidecar type only attaches something if the main repo ACTUALLY SHIPS
+# that sidecar (and the main model has to come from an hf_repo at all — `plan` is only
+# built when `params.model.hf_repo` is non-empty). So this can warn when no draft ever
+# materialises. ⭐ That is the right direction to be wrong in: the cost of the false
+# warning is a line of log, and the cost of the false silence is the box.
+#
+# 🚨 IT IS STILL A FLOOR, NOT A SWEEP. A models PRESET (`plan.preset` →
+# params.models_preset) carries per-model arguments in an .ini this shell never reads,
+# so a draft named in there is invisible here. Do not read silence as "no draft".
+llama_draft_attached() {
+    local f take=0 a
+    [ -n "${LLAMA_ARG_SPEC_DRAFT_MODEL:-}" ]   && { printf 'yes'; return 0; }
+    [ -n "${LLAMA_ARG_SPEC_DRAFT_HF_REPO:-}" ] && { printf 'yes'; return 0; }
+    case "${DROSTE_LLAMA_AUTO_MODEL:-}" in
+        fim-qwen-7b-spec|fim-qwen-14b-spec) printf 'yes'; return 0 ;;
+    esac
+    llama_spec_type_has_sidecar "${LLAMA_ARG_SPEC_TYPE:-}" && { printf 'yes'; return 0; }
+    for f in --spec-draft-model -md --model-draft \
+             --spec-draft-hf -hfd -hfrd --hf-repo-draft; do
+        [ -n "$(droste::arg_value "$f" "$@")" ] && { printf 'yes'; return 0; }
+    done
+    # ⚠️ NOT droste::arg_value, AND THE REASON IS UPSTREAM'S SEMANTICS. That helper
+    # returns the LAST occurrence, because that is what an argument parser keeps — but
+    # --spec-type's handler APPENDS to params.speculative.types, so EVERY occurrence
+    # contributes and an earlier one cannot be overwritten by a later one. Asking only
+    # the last would miss `--spec-type draft-dflash --spec-type ngram-mod`.
+    for a in "$@"; do
+        if [ "$take" = 1 ]; then
+            take=0
+            llama_spec_type_has_sidecar "$a" && { printf 'yes'; return 0; }
+            continue
+        fi
+        case $a in
+            --spec-type)   take=1 ;;
+            --spec-type=*) llama_spec_type_has_sidecar "${a#*=}" && { printf 'yes'; return 0; } ;;
+        esac
+    done
+    return 0
+}
+
+# llama_ctx_warn — the two things worth saying about the context size. "$@" is the
+# already-split catch-all argv.
+# ⚠️ EVERY ARM RETURNS 0 AND PRINTS ONLY. llama_argv runs inside PRE_LAUNCH, which the
+# resolver calls BARE under `set -euo pipefail`, so a non-zero return from a diagnostic
+# would take the box down. Verified by running every arm under errexit, not by reading.
+# ⚠️ THE TWO SEVERITIES ARE A CHOICE, NOT AN ACCIDENT. The retirement is `serve::err`,
+# like the MMAP/MLOCK/DIRECT_IO loop above it: the user wrote a line that no longer
+# means what their file says it means. The draft trap is `serve::warn`, like
+# llama_hf_cache_warn: nothing they wrote is wrong, and running a draft with no context
+# ceiling is a legitimate thing to ask for on a model small enough to survive it.
+# ⭐ So the LOUDER label is on the smaller problem, deliberately — severity here tracks
+# "is this configuration a mistake", not "how much does it cost when it goes wrong".
+llama_ctx_warn() {
+    local ctx native sentinel eff
+    sentinel=$(llama_ctx_sentinel)
+    ctx=$(llama_ctx_size)
+    native=${LLAMA_ARG_CTX_SIZE:-}
+
+    # THE EFFECTIVE REQUEST, IN LLAMA'S OWN PRECEDENCE ORDER: argv is parsed after the
+    # environment and a later occurrence overwrites an earlier one, and llama_argv puts
+    # the catch-all LAST — so a `-c` there beats our flag, which beats the native line.
+    # An empty result means NOTHING anywhere set a context size.
+    # ⚠️ Two spellings, checked in a fixed order rather than by position: a user who
+    # writes BOTH `-c` and `--ctx-size` into the catch-all gets whichever llama parses
+    # last, which this cannot see. It decides only whether to PRINT, so the cost of
+    # being wrong there is one message, not a wrong box.
+    eff=$(droste::arg_value --ctx-size "$@")
+    [ -n "$eff" ] || eff=$(droste::arg_value -c "$@")
+    [ -n "$eff" ] || { [ "$ctx" = "$sentinel" ] || eff=$ctx; }
+    [ -n "$eff" ] || eff=$native
+
+    # ── 1. the retired native name (s66 policy: warn for ONE minor release) ────
+    # ⭐ IT IS NOT UNSET, AND THAT IS DELIBERATE. Erasing a user's explicit context size
+    # would drop that box into exactly the failure arm 2 exists to prevent, so the line
+    # goes on working and the message says what to do. ⚠️ TWO ARMS, because the remedy
+    # differs: with a droste value set the native is already being beaten silently;
+    # with none it is still the thing sizing the context.
+    # ⚠️ DELETE THIS BLOCK ONE MINOR RELEASE AFTER THE NAME LEFT llama.cfg. The policy
+    # says the warning goes too — a retired name that warns forever is a second surface.
+    if [ -n "$native" ]; then
+        if [ "$ctx" = "$sentinel" ]; then
+            serve::err "LLAMA_ARG_CTX_SIZE is no longer one of this box's settings — DROSTE_LLAMA_CTX_SIZE replaces it, and adds '$sentinel' (let llama size the context to fit memory) beside 0 and a number. Your line still sets the context today, but DROSTE_LLAMA_CTX_SIZE overrides it silently as soon as you use it. Move it in $CFG_FILE."
+        else
+            serve::err "LLAMA_ARG_CTX_SIZE is set and DROSTE_LLAMA_CTX_SIZE=$ctx is overriding it — llama reads environment variables before the command line, so the flag we emit wins. LLAMA_ARG_CTX_SIZE is retired; remove it from $CFG_FILE."
+        fi
+    fi
+
+    # ── 2. a draft model with no BOUNDED context size: the box-killer (S1b) ────
+    # 🚨 THE SMALL MODEL IS THE ONE WITH NO CEILING, WHICH IS WHY THIS IS NOT OBVIOUS.
+    # A context of 0 — set or left unset — resolves PER MODEL from that model's own GGUF
+    # (`n_ctx == 0 ? hparams.n_ctx_train : n_ctx`), and llama's fitter sizes only the
+    # TARGET: common_fit_params mutates a LOCAL cparams and never writes back to
+    # params.n_ctx, so common_base_params_to_speculative still copies a zero. The target
+    # ends up bounded by free memory and the draft does not.
+    # ⚠️ THERE IS NO VALUE WE COULD WRITE THAT FIXES IT, WHICH IS WHY IT IS A WARNING AND
+    # NOT A DEFAULT. `-cd` / LLAMA_ARG_SPEC_DRAFT_N_CTX is dead code at this pin, and a
+    # box-wide context default is model-specific: 262144 is right for a sliding-window
+    # model and ~29 GiB of KV on a dense 80-layer one.
+    # 🚨 `0` IS NOT A CURE, AND IT GETS ITS OWN MESSAGE. An explicit 0 stops the fitter
+    # SHRINKING the target (fit_params_min_ctx = UINT32_MAX) but still leaves n_ctx at 0,
+    # so each model takes its own declared maximum and the two need not be the same
+    # number at all. Reporting that as "no context size is set" would be false — the user
+    # set one — so the two arms say different things, as a loud entry owes.
+    if [ "$(llama_draft_attached "$@")" = yes ]; then
+        if [ -z "$eff" ]; then
+            serve::warn "A draft model is configured and no context size is set, so the draft sizes its KV cache from its OWN training context — llama's fitter only sizes the main model, and it never passes the result on. A small long-context draft can ask for tens of GiB that way and take this box down. Set DROSTE_LLAMA_CTX_SIZE=<tokens> in $CFG_FILE; the main model and the draft always share it."
+        elif [ "$eff" = 0 ]; then
+            serve::warn "A draft model is configured and the context size is 0, which means 'the full training context' PER MODEL — so the draft claims its own declared maximum, not the main model's, and a small long-context draft can ask for tens of GiB and take this box down. Set DROSTE_LLAMA_CTX_SIZE=<tokens> in $CFG_FILE; the main model and the draft always share it."
+        fi
+    fi
+    return 0
+}
+
 # llama_argv — DROSTE_LLAMA_* → SERVICE. Its own function, comfyui-style, so it can
 # be driven alone (source the spec, call it, print SERVICE) without the mkdir, the
-# HF token read or the health-prefix write. With 69 settings that is the difference
+# HF token read or the health-prefix write. With 70 settings that is the difference
 # between a testable translator and one nobody can check.
 # ⚠️ It REBUILDS SERVICE from constants rather than appending: serve::build_service
 # can run PRE_LAUNCH a second time in the same process, and a doubled argv of this
 # length would be very hard to read in a log.
 llama_argv() {
     local dyn=() entry suffix var val flag onf offf rest pairs=() pair def flags ok list _lm
+    local sentinel
     local -a items=()
     local g first seen
 
@@ -403,6 +654,24 @@ llama_argv() {
     for entry in "${LLAMA_VALUE_FLAGS[@]}"; do
         var="DROSTE_LLAMA_${entry%%:*}"; flag=${entry#*:}; val=${!var:-}
         [ -n "$val" ] && dyn+=( "$flag" "$val" )
+    done
+
+    # AUTO — a value flag with a sentinel that emits nothing. See the table.
+    # ⚠️ BLANK IS THE SENTINEL, NOT A THIRD STATE. A number has a default the user is
+    # entitled to get back (Jei's category 2), so a cleared line means "give me auto",
+    # exactly as an absent one does. This is the narrowing of N1a's "blank ⇒ off": the
+    # opt-out reading survives only for an unbounded string whose blank means something.
+    for entry in "${LLAMA_AUTO_VALUE_FLAGS[@]}"; do
+        suffix=${entry%%:*}; rest=${entry#*:}
+        flag=${rest%%:*}; sentinel=${rest#*:}
+        var="DROSTE_LLAMA_$suffix"; val=${!var:-}
+        [ -n "$val" ] || val=$sentinel
+        case "$val" in
+            "$sentinel") ;;                    # the fitter's call — emit nothing
+            *[!0-9]*)
+                serve::err "$var='$val' is not $sentinel or a whole number — using '$sentinel', which lets llama size the context to fit memory. Fix it in $CFG_FILE and restart the box." ;;
+            *) dyn+=( "$flag" "$val" ) ;;
+        esac
     done
 
     for entry in "${LLAMA_BOOL_FLAGS[@]}"; do
@@ -554,6 +823,12 @@ llama_argv() {
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_LLAMA_EXTRA_ARGS:-}")
     SERVICE=( llama-server --slot-save-path /opt/program-cache/slots --host 0.0.0.0
               ${dyn[@]+"${dyn[@]}"} ${_extra[@]+"${_extra[@]}"} )
+
+    # 🚨 PLACEMENT IS LOAD-BEARING IN ONE DIRECTION: it must sit BELOW the mapfile,
+    # because a user may reach a draft — or a context size — through the catch-all, and
+    # a check that never looked there would go quiet on exactly the box that needs the
+    # message. Below that line its position is free; it appends nothing to SERVICE.
+    llama_ctx_warn ${_extra[@]+"${_extra[@]}"}
 }
 
 # ── The llama.cfg → ENVIRONMENT tables ───────────────────────────────────────
@@ -623,9 +898,13 @@ llama_argv() {
 # are LIVE: turbo-quant.cuh:164 and :172 read them, ggml/src/ggml-hip/CMakeLists.txt:63
 # globs `../ggml-cuda/*.cu` so the HIP build compiles the path, and there is no
 # architecture predicate anywhere in it — the only gate is `group_size < 128`
-# (turbo-quant.cuh:265-268). With our own LLAMA_ARG_CACHE_TYPE_K/V=turbo3 default the
-# code runs on every K and V cache write. So this is a Feature Exposure decision under
-# the rule that hiding needs a STATED reason, not a report that the feature is absent.
+# (turbo-quant.cuh:265-268). Our own default puts a turbo type on V, so the code runs on
+# every V cache write. So this is a Feature Exposure decision under the rule that hiding
+# needs a STATED reason, not a report that the feature is absent.
+# ⚠️ IT USED TO SAY "on every K and V cache write", WHICH WAS TRUE OF THE turbo3/turbo3
+# DEFAULT AND IS NOT TRUE OF q8_0/turbo3 (s67). K is no longer a turbo type, so the path
+# is V-only by construction now — see the ⚠️ paragraph below, whose conclusion the change
+# strengthens rather than weakens.
 # 🚨 THE REASON LIVES HERE ONLY, AND THAT IS JEI'S RULING (s61), NOT AN OMISSION.
 # llama.cfg carried a prose half of this in its Misc block until s60's `129499f` removed
 # it. Asked whether that deletion was intended, he ruled: "all correct and intended. All
@@ -664,12 +943,14 @@ llama_argv() {
 #     saved, negligible speed cost — and the fork publishes no measurement, not even a
 #     prose claim, unlike auto-asymmetric (PPL 2887 vs 7.4) or the MMA path (KLD).
 #
-# ⚠️ ONE OF THE REASONS IS OURS, NOT UPSTREAM'S, AND IT BELONGS IN OUR FILE. When
-# DROSTE_LLAMA_KV_AUTO_ASYMMETRIC fires — which our own turbo3/turbo3 default arms by
-# construction on any high-GQA model — K is upgraded to q8_0 and only V still goes
-# through the turbo set_rows path. InnerQ would then silently become V-ONLY
-# equalisation, which is not the thing it was written to do. That is our default
-# interacting with the feature, so it is our defect to name.
+# ⚠️ ONE OF THE REASONS IS OURS, NOT UPSTREAM'S, AND IT BELONGS IN OUR FILE. Our default
+# is q8_0 on K and turbo3 on V (s67), so only V goes through the turbo set_rows path and
+# InnerQ is V-ONLY equalisation on every box, which is not the thing it was written to
+# do. That is our default interacting with the feature, so it is our defect to name.
+# ⭐ THE s67 CACHE-TYPE CHANGE MADE THIS REASON STRONGER, NOT WEAKER, AND THE DIRECTION
+# IS WORTH RECORDING. It used to hold only when DROSTE_LLAMA_KV_AUTO_ASYMMETRIC fired —
+# which the old turbo3/turbo3 default armed on any high-GQA model, but not on every one.
+# Setting K to q8_0 ourselves makes it unconditional and removes the model-dependence.
 #
 # ⭐ THE DOOR BACK, because a hidden feature with no way back is worse than one with a
 # stated condition: if InnerQ is ever benchmarked on gfx1151 with turbo3 caches, this
@@ -975,11 +1256,21 @@ llama_pre_launch() {
     # derivation happens downstream at server-http.cpp:290-293.
     #
     # ⚠️ A NAMED LIST, NOT A SWEEP — droste::blank_is_unset's own comment
-    # (base/resolve/droste-common.sh:85-90) is the rule, and it forbids a blanket
-    # policy. Every DROSTE_LLAMA_* keeps its blank, because there a blank is the
-    # documented N1a opt-out (BUILTIN_SPEC_DEFAULT= means "don't", and must go on
-    # meaning it). No DROSTE_-owned name appears below; that is a standing invariant,
+    # (base/resolve/droste-common.sh, the SCOPE paragraph) is the rule, and it forbids a
+    # blanket policy. No DROSTE_-owned name appears below; that is a standing invariant,
     # not an accident of the current contents.
+    # 🚨 THE REASON IS OWNERSHIP, NOT "A DROSTE BLANK ALWAYS MEANS off". This passage
+    # said so until s67, citing `BUILTIN_SPEC_DEFAULT=` as a blank that "means don't and
+    # must go on meaning it" — and that stopped being true in s58, when that setting's
+    # operator became `:=` precisely so a blank would yield our `on`. The reasoning ~500
+    # lines above (at the `: "${DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT:=on}"` line) has been
+    # right the whole time and this sentence contradicted it.
+    # ⭐ WHAT A DROSTE-OWNED BLANK MEANS IS DECIDED PER SETTING BY JEI'S THREE CATEGORIES
+    # (s57), in the WIRING, where the setting's own semantics are known: a finite set or
+    # a number falls back to OUR default; only an unbounded string whose blank is itself
+    # an answer keeps it. This helper cannot make that distinction — it cannot tell a
+    # deliberate opt-out from a mistake — which is why droste-owned names are kept off
+    # its list whichever way their own answer goes.
     # ⭐ PLACEMENT IS ORDERING, NOT LOCATION. Nothing between here and the exec reads
     # these names, and `unset` drops the export mark along with the variable, so before
     # or after the compgen loop below is identical — measured, exactly as for THREADS.
@@ -1342,17 +1633,36 @@ llama_pre_launch() {
     # Whole story, the pinned chain and why CRITICAL cannot do this: llama_hf_cache_warn.
     llama_hf_cache_warn
 
-    # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56) ──────
+    # ── a droste-supplied default on a NATIVE name (N9, ruled by Jei s56/s67) ──
     # llama.cfg shows LLAMA_ARG_CACHE_TYPE_K/V=turbo3. When this was written its menu
     # starred f16 while the shown value said turbo3, and the file header promises the
     # shown value IS the default — the file contradicting ITSELF, which no rule could
     # settle. Jei ruled: "our default should be turbo3." ✅ HE THEN MADE THE FILE AGREE:
     # the menu now reads `{f32, f16, …, turbo3*, turbo4}`. The contradiction is gone, so
     # do not go looking for it; this comment records why the default is ours to set.
-    # ⭐ turbo3 is a real member of that menu, so this is a choice between two legal
-    # values, not a value the parser would reject.
+    #
+    # 🚨 THE PAIR IS ASYMMETRIC AS OF s67, AND K MOVED TO q8_0 (Jei: "that's what we
+    # should make our default in the next release"). It is the FORK'S OWN documented
+    # recommendation, not a taste: docs/KV-cache-quantization.md's usage block is
+    # `--cache-type-k q8_0 --cache-type-v turbo3`, and the same file's table gives
+    # TURBO_AUTO_ASYMMETRIC a default of 1.
+    # ⭐ SO turbo3/turbo3 WAS A DEFAULT THAT ARGUED WITH ITSELF: on any model with a
+    # large GQA ratio the auto-asymmetric guard in src/llama-kv-cache.cpp UPGRADED K to
+    # q8_0 anyway and logged a warning — this box warning the user about a choice WE
+    # had made, and then running the pair we now ask for outright. Setting it directly
+    # is the same cache with no message.
+    # ⭐ Both q8_0 and turbo3 are real members of that menu, so this is a choice between
+    # legal values, not a value the parser would reject.
     # ⚠️ REAL BEHAVIOR CHANGE, and unmeasured on hardware: KV quantization buys
     # cache footprint at some quality cost. Both K and V, because the file shows both.
+    # ⚠️ THE SURFACE HALF IS JEI'S AND HAS NOT LANDED YET (board S3 item 2). Until it
+    # does, llama.cfg still SHOWS turbo3 on the K line, still stars turbo3 in the
+    # cache-type menu, and still shows f16 on BOTH draft cache-type lines — four shown
+    # values that this wiring no longer delivers. Under the s56 rule
+    # the FILE is right and the wiring is the bug — that rule is about a wiring that
+    # never delivered what the file states, and it does NOT cover this case, where the
+    # REQUIREMENT moved and its owner has not yet written it down. ❌ Do not "resolve"
+    # the disagreement by editing llama.cfg; report it instead.
     # ✅ `=` not `:=`, and set before the compgen loop below so it is exported with
     # every other LLAMA_*: llama-server reads these from its ENVIRONMENT, not argv,
     # so the default has to cross the exec like a user's own value would.
@@ -1371,8 +1681,28 @@ llama_pre_launch() {
     # ⚠️ This REVERSES the s56 ordering note that put the defaults first. That note
     # was written to protect a blank as the user's opt-out; Jei's s57 rule replaced
     # that reading for anything from a finite set, and a KV cache type is one.
-    : "${LLAMA_ARG_CACHE_TYPE_K=turbo3}"
+    : "${LLAMA_ARG_CACHE_TYPE_K=q8_0}"
     : "${LLAMA_ARG_CACHE_TYPE_V=turbo3}"
+
+    # ── the SAME pair for the DRAFT model, which had no default at all (s67) ───
+    # 🚨 A DRAFT'S CACHE TYPES ARE NOT INHERITED FROM THE MAIN MODEL'S — they are
+    # OVERWRITTEN BY THE DRAFT'S OWN FIELDS. common_base_params_to_speculative
+    # (common/speculative.cpp) copies the base params wholesale and then assigns
+    # `result.cache_type_k = params_spec.cache_type_k` (and _v), whose struct defaults
+    # are GGML_TYPE_F16 (common_params_speculative_draft, common/common.h). So until
+    # this line existed the main model ran a quantized cache and its draft ran f16 —
+    # about 5x the bytes per token, since f16 is 16 bpw against turbo3's 3.125 (read
+    # the static_asserts, NOT the docs: they say 2/3.25/4.25 and are stale).
+    # ⭐ THE DRAFT IS A FIXED SURCHARGE ON WHATEVER CONTEXT IS CHOSEN, so its cache
+    # type is one of only two levers on that surcharge; the other is the shared
+    # context size, which llama gives the draft no separate control over (`-cd` /
+    # LLAMA_ARG_SPEC_DRAFT_N_CTX is written by its handler and READ BY NOTHING at this
+    # pin — checked tree-wide, and the same on the fork's HEAD).
+    # ⚠️ SAME `=` NOT `:=` AND SAME POSITION BELOW blank_is_unset as the pair above,
+    # for exactly the same reason: both names are on _fatal_on_clear, so a cleared line
+    # has already become an absence and lands on OUR default rather than on llama's f16.
+    : "${LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K=q8_0}"
+    : "${LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V=turbo3}"
 
     # ── the settings that reach the engine as ENVIRONMENT, not as argv ─────────
     # 🚨 IT MUST RUN AFTER droste::blank_is_unset ABOVE, for the same reason the two

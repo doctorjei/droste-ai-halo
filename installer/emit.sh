@@ -164,6 +164,21 @@ configure_box() {  # box
   # questions can be asked as one block: when the base was declined, the new
   # paths ARE the answers to the prompts above (Jei's second example).
   relocate_box "$box"
+  # 🚨 THE RECORD FOLLOWS THE DATA, IMMEDIATELY. Until s69 the ini was written
+  # only in the Executing phase, so a ^C anywhere between here and there left the
+  # data at its NEW path and the ini naming the OLD one, with nothing detecting
+  # it on any later run. Jei hit exactly that in s47 and repaired his box by hand.
+  # ⚠️ EVERY INPUT emit_ini NEEDS IS ALREADY SETTLED AT THIS LINE, which is what
+  # makes this safe rather than a partial record: CFG_PORT, CFG_BOXSV and
+  # CFG_HSTSV are answered above (set_box_port and the two serve questions), and
+  # PATHS is what relocate_box just finished settling. Checked, not assumed.
+  # ⭐ Only when something MOVED — see RELOC_MOVED. A box that moved nothing has
+  # no record to get out of step, so it writes nothing until Executing, exactly
+  # as before; that keeps the blast radius to the case being fixed.
+  # ⚠️ execute() rewrites this file later. That is not waste and must not be
+  # "optimised" away: this write exists to be there when the later one never
+  # happens.
+  [[ $RELOC_MOVED -eq 1 ]] && emit_ini "$box"
   stale_cache_offer "$box"
 
   [[ $asked -eq 1 ]] && say ""

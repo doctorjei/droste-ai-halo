@@ -579,6 +579,19 @@ USE_ALL_BOXES=""      # u|c      — "Apply this decision to all boxes" (form 2)
 # the move pass is going to fill.)
 RELOC_NO_CREATE=0
 
+# 🚨 SET WHEN A MOVE ACTUALLY LANDED, so the caller can write the box's ini
+# BEFORE the next question is asked. The failure it exists to close: moves run
+# during the per-box interview, the ini is written in the Executing phase, and a
+# ^C between the two leaves the DATA at the new path and the RECORD at the old
+# one — with nothing detecting it afterwards. Jei hit exactly that in s47 and
+# repaired his box by hand.
+# ⚠️ IT IS "SOMETHING MOVED", NOT "relocate_box RAN". Scoping it to a real move
+# is what keeps the fix from changing what a ^C leaves behind in every OTHER
+# case: a box whose data did not move has no record to get out of step, so it
+# goes on writing nothing until the Executing phase, exactly as before.
+# ⭐ Declined, [u]se and [k]eep do not set it — none of them moves a byte.
+RELOC_MOVED=0
+
 # Is this bind one the move pass is going to ask about? Both callers need the
 # same answer: relocate_box, to build its list, and set_bind_path, which must
 # NOT create the destination for one of them — the move makes what it needs,
@@ -755,6 +768,8 @@ relocate_box() {  # box
   # becomes a loop with no way out of it).
   local -A A_MOVE=() M_OLD=() M_NEW=() M_DEC=() B_NEW=() CHANGED=()
   local ask_moves=1
+  # Per box, not per run: the caller reads it immediately after this returns.
+  RELOC_MOVED=0
   for label in $(box_labels "$box"); do scope+=("$label"); done
 
  while [[ ${#scope[@]} -gt 0 ]]; do
@@ -1195,8 +1210,13 @@ relocate_box() {  # box
       # from a full data dir is the whole bug this feature exists to fix.
       u) subnote "$old is left where it is $EMD nothing was moved." ;;
       k) revert_path "$box" "$label" "$old" ;;
-      *) move_one "$box" "$label" "$old" "$new" "${M_DEC[$label]:-plain}" \
-           || revert_path "$box" "$label" "$old" ;;
+      # A move that LANDED is the one case where the record on disk is now
+      # behind the data, so it is the one case that raises the flag.
+      *) if move_one "$box" "$label" "$old" "$new" "${M_DEC[$label]:-plain}"; then
+           RELOC_MOVED=1
+         else
+           revert_path "$box" "$label" "$old"
+         fi ;;
     esac
   done
   # The directories a [c]hange re-derived and this pass held back: made only now

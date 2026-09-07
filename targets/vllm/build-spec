@@ -787,16 +787,63 @@ vllm_env() {
     # endpoint where an absent one leaves the streamer to resolve its own. Measured in
     # two interpreters: absent leaves RUNAI_STREAMER_S3_ENDPOINT unset, "" sets it to
     # "". Exactly the shape the array above is full of, one package further out.
-    # ⚠️ THE TWO CREDENTIAL NAMES ARE NOT HERE, and that is a measurement too — see the
-    # not-guarded list below. A longer list is not a better one.
-    # ⚠️ AND IT IS ITS OWN ARRAY BECAUSE IT IS NOT A KEY IN vllm/envs.py. The suite
-    # cross-checks every guarded name against upstream's env dict, which is what would
+    # ⚠️ IT IS ITS OWN ARRAY BECAUSE ITS MEMBERS ARE NOT vLLM'S NAMES. The suite
+    # cross-checks the OTHER arrays against upstream's env dict, which is what would
     # catch a name renamed out from under the pin — and that check only means something
-    # if the names it walks really are vLLM's. This one is botocore's and tensorizer's.
+    # if the names it walks really are vLLM's.
+    # 🚨 THE ARRAY'S MEMBERSHIP TEST IS OWNERSHIP, NOT ABSENCE FROM envs.py, AND s68 IS
+    # WHERE THE TWO STOPPED COINCIDING. CUDA_HOME below IS an envs.py key and belongs
+    # here anyway: vLLM reading a variable does not make vLLM its owner, any more than
+    # llama-server reading HF_TOKEN through -hft makes that name llama's. Reading the
+    # earlier "not a key in envs.py" line as the rule would exclude exactly the names
+    # this array exists for.
+    # ⚠️ AND THE ENTRY CRITERION IS NO LONGER A MEASURED DIFFERENCE EITHER — it is the
+    # s67 class-2 procedure, which is uniform. "A longer list is not a better one" still
+    # governs every OTHER array in this function; for this one the class is the list.
     local -a _class2_on_clear=(
         AWS_ENDPOINT_URL                                # runai_streamer_loader.py:53-57
         HF_XET_HIGH_PERFORMANCE                         # xet-core: std::env::var -> Ok("")
+        # ── s68: the rest of the class, added because the RULE is the criterion ──
+        HF_TOKEN                                        # HuggingFace's; ray copies it
+        AWS_ACCESS_KEY_ID                               # botocore's
+        AWS_SECRET_ACCESS_KEY                           # botocore's
+        CUDA_HOME                                       # the CUDA toolkit's
     )
+    # 🚨 THE FOUR ABOVE ARE HERE BECAUSE THE s67 CLASS-2 PROCEDURE IS UNIFORM, AND EACH
+    # OF THEM WAS PREVIOUSLY EXCLUDED BY A MEASUREMENT — which is exactly the test the
+    # ruling overrides for this class: "do not re-derive per name whether an empty string
+    # happens to be harmless for that reader; the procedure is the answer."
+    # ⭐ THE MEASUREMENTS WERE NOT WRONG, AND THEY ARE KEPT BELOW rather than deleted.
+    # What changed is that they are no longer the criterion. Recording them still earns
+    # its place: it is what says an entry costs nothing, and it is the evidence the next
+    # reader needs if the ruling is ever revisited.
+    #   HF_TOKEN               huggingface_hub cleans a blank to None, so "" already
+    #                          reads as absent there. ⚠️ IT HAS A SECOND READER IN THIS
+    #                          IMAGE, which is the whole reason the rule is uniform:
+    #                          v1/executor/ray_executor.py:77 copies it to every Ray
+    #                          worker through ADDITIONAL_ENV_VARS — a set upstream's own
+    #                          comment calls "these non-vLLM env vars", which is vLLM
+    #                          agreeing with the classification.
+    #   AWS_ACCESS_KEY_ID      botocore's EnvProvider.load() gates on `if access_key:`,
+    #   AWS_SECRET_ACCESS_KEY  so "" makes the environment provider decline and the chain
+    #                          moves on to ~/.aws and the instance metadata exactly as an
+    #                          absence does. MEASURED at botocore 1.43.83 with HOME on an
+    #                          empty directory: absent and "" both give
+    #                          `Session().get_credentials() -> None`.
+    #                          ⚠️ THEY ARE THE PAIR THIS ENTRY MUST NOT GET WRONG in the
+    #                          other direction: a blank credential is the user saying
+    #                          NOTHING, not the user saying "none", so unsetting removes
+    #                          no capability the s57 exception protects.
+    #   CUDA_HOME              envs.py:553 is `os.environ.get("CUDA_HOME", None)`, so a
+    #                          blank hands back "" where an absence hands back None — a
+    #                          difference at the accessor, unlike the three above.
+    #                          🚨 AND AT THIS PIN NOTHING IN THE RUNTIME READS IT: grepped
+    #                          across the v0.16.0 tree, `CUDA_HOME` appears in envs.py,
+    #                          setup.py and the build tooling only. That makes the
+    #                          vllm.cfg line a knob with no runtime consumer — the shape
+    #                          the three dead S3_* names had — and it is REPORTED rather
+    #                          than acted on here, because what a surface offers is
+    #                          Jei's to decide and this file only owns the wiring.
     # 🚨 HF_XET_HIGH_PERFORMANCE IS LISTED UNDER THE s67 CLASS-2 STANDARD PROCEDURE
     # (Jei: "if it was unset before, it should be unset again"), which is UNIFORM for the
     # class and deliberately does NOT ask whether this particular blank is harmless.
@@ -811,9 +858,12 @@ vllm_env() {
     # normalised into the primary name and BOTH readers then agree; without that, Rust
     # runs high-performance while huggingface_hub's Python constant still reads false.
 
-    # ⭐ AND THE ELEVEN THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
-    # list" is a decision rather than an omission. For the nine vLLM natives TWO
-    # INDEPENDENT REASONS AGREE, which is the strongest evidence either is right:
+    # ⭐ AND THE EIGHT THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
+    # list" is a decision rather than an omission. 🚨 ALL EIGHT ARE vLLM'S OWN NAMES,
+    # AND THAT IS NOT A COINCIDENCE — s68 moved every class-2 name off this list under
+    # the uniform procedure, so what is left is exactly the set the measured-difference
+    # test still governs. For these eight TWO INDEPENDENT REASONS AGREE, which is the
+    # strongest evidence either is right:
     #   · a blank ALREADY BEHAVES AS AN ABSENCE. envs.py hands back "" where it would
     #     hand back None, but every consumer gates on TRUTHINESS, so the difference
     #     never reaches a decision — `if not model_redirect_path: return model`
@@ -827,18 +877,14 @@ vllm_env() {
     #     mistake. Guarding one would be the single way this rule can go wrong.
     #   VLLM_API_KEY   VLLM_LOGGING_CONFIG_PATH   VLLM_MODEL_REDIRECT_PATH
     #   VLLM_LORA_RESOLVER_CACHE_DIR   VLLM_LORA_RESOLVER_HF_REPO_LIST
-    #   VLLM_NCCL_SO_PATH   VLLM_NCCL_INCLUDE_PATH   CUDA_HOME
-    #   VLLM_DISABLED_KERNELS
-    # ⚠️ THE OTHER TWO SIT HERE ON ONE REASON, NOT TWO, AND THE SECOND DOES NOT APPLY.
-    # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are class 2 — botocore owns the
-    # contract — and a blank credential is not the user saying "none", it is the user
-    # saying nothing: EnvProvider.load() gates on `if access_key:` (botocore
-    # credentials.py), so "" makes the environment provider decline and the chain moves
-    # on to ~/.aws and the instance metadata exactly as an absence does. MEASURED at
-    # botocore 1.43.83 with HOME pointed at an empty directory: absent and "" both give
-    # `Session().get_credentials() -> None`, and a real pair still resolves. Nothing to
-    # fix, so nothing to list.
-    #   AWS_ACCESS_KEY_ID   AWS_SECRET_ACCESS_KEY
+    #   VLLM_NCCL_SO_PATH   VLLM_NCCL_INCLUDE_PATH   VLLM_DISABLED_KERNELS
+    # ⚠️ AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY AND CUDA_HOME USED TO BE NAMED HERE,
+    # ON THE MEASUREMENT NOW RECORDED BESIDE THEIR ENTRIES ABOVE. They are guarded as of
+    # s68 and the measurement did not change — the CRITERION did, for class 2 only.
+    # ⭐ AND THE ONE THING THIS REWRITE MUST NOT LOSE: the second reason above — "a blank
+    # is the user saying none" — NEVER APPLIED TO THE AWS PAIR. A blank credential is the
+    # user saying NOTHING. That was already written down when they sat here on one reason
+    # rather than two, and it is why unsetting them removes no capability.
     # 🚨 S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_ENDPOINT_URL ARE OFF THIS LIST
     # BECAUSE THEY ARE OFF THE SURFACE, NOT BECAUSE THE VERDICT CHANGED — AND THE REASON
     # RECORDED FOR THEM WAS WRONG. They were filed under "a blank already behaves as an

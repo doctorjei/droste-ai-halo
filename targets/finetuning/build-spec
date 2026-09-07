@@ -360,9 +360,22 @@ jupyter_env() {
     # blank harmless. ⚠️ finetuning.cfg carries the ALIAS too
     # (`${HF_XET_HIGH_PERFORMANCE-${HF_XET_HP-}}`), so an alias-only user gets the value
     # normalised into the primary name and both readers then agree.
+    # 🚨 MPLBACKEND JOINS THEM IN s68, UNDER THE SAME CLASS-2 PROCEDURE AND WITH NO
+    # MEASURED DIFFERENCE BEHIND IT — which is what the ruling asks for. matplotlib is
+    # another application in this image, not the box's server, so the class reaches it;
+    # IPYTHONDIR, QT_API and NBFORMAT_VALIDATOR are the same class and were already here
+    # on measurements of their own, so this closes the family rather than opening one.
+    # ⭐ AND ITS BLANK IS HARMLESS AT THE PIN: matplotlib/__init__.py:1288 is
+    # `if os.environ.get('MPLBACKEND'):`, a TRUTHINESS gate, so "" never reaches
+    # rcParams['backend'] and reads exactly as an absence (matplotlib 3.11.1).
+    # ⚠️ SAYING SO IS NOT RE-DERIVING THE ENTRY — under the s67 rule the procedure is the
+    # answer and a harmless blank is not a reason to leave a class-2 name out. It is
+    # recorded because it is what makes the entry costless, and because the next reader
+    # will otherwise go and measure it again.
     droste::blank_is_unset \
         IPYTHONDIR QT_API JUPYTER_DEFAULT_PROVISIONER_NAME NBFORMAT_VALIDATOR \
-        JUPYTER_PREFER_ENV_PATH JUPYTER_PLATFORM_DIRS HF_XET_HIGH_PERFORMANCE
+        JUPYTER_PREFER_ENV_PATH JUPYTER_PLATFORM_DIRS HF_XET_HIGH_PERFORMANCE \
+        MPLBACKEND
 
     # ── the XDG bases, one of which finetuning.cfg offers; blanks strand caches ─
     # 🚨 A BLANK XDG_CACHE_HOME MOVES THE HF CACHE OUT FROM BEHIND THE CRITICAL BIND,

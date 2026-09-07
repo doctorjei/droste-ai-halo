@@ -1438,6 +1438,15 @@ llama_pre_launch() {
     #                  before the Authorization header (download.cpp:313-314) and
     #                  `is_valid_hf_token(token)` … `else if (!token.empty())` for the
     #                  API path (hf-cache.cpp:207-211). So "" IS the default here.
+    # 🚨 HF_TOKEN IS NEVERTHELESS UNSET NOW, AND NOT BY THIS RULE — s68 added it to
+    # _class2_on_clear below under the s67 CLASS-2 STANDARD PROCEDURE, which is uniform
+    # for the class and deliberately overrides the measured-difference test these three
+    # categories are. ⇒ THE TALLY ABOVE STILL DESCRIBES THE CATEGORY-3 VERDICTS, but the
+    # set this function LEAVES ALONE is one smaller than it reads: HF_TOKEN is no longer
+    # in it. ⭐ THE VERDICT ITSELF IS STILL TRUE AND WORTH KEEPING — it is what makes the
+    # entry costless, since unsetting a name whose "" already IS the default cannot
+    # change a start. The name leaves because HuggingFace owns it, not because a blank
+    # was found to hurt.
     # ⭐ Right conclusion, wrong mechanism, and it mattered: the API-key reasoning is
     # about a PARSER dropping an empty field, which is exactly the kind of thing that
     # changes upstream. Attaching HF_TOKEN to it would have made a live re-check of
@@ -1580,9 +1589,46 @@ llama_pre_launch() {
     local -a _cache_blank_is_unset=(
         LLAMA_CACHE                         # common.cpp:995 is a bare getenv() test
     )
+
+    # ── a fourth separate claim: the one CLASS-2 name on this surface (s68) ───
+    # 🚨 HF_TOKEN IS HERE UNDER THE s67 CLASS-2 STANDARD PROCEDURE (Jei: "for variables
+    # in the class (external to Droste and server), follow one standard procedure: if it
+    # was unset before, it should be unset again"), which is UNIFORM for the class and
+    # deliberately does NOT ask whether this particular blank is harmless. The canon
+    # names HF_TOKEN as the class-2 example outright: HuggingFace owns the contract, and
+    # llama-server reading it through -hft does not make it llama's.
+    # ⭐ IT IS THE HALF THAT WAS MISSING, NOT A NEW POLICY. llama.cfg already ships the
+    # class-2 SHAPE — `HF_TOKEN=${HF_TOKEN-}`, "keep whatever is there; replace the RHS
+    # to set your own" — and that shape is only a true no-op with this guard behind it:
+    # was set ⇒ same string ⇒ no diff; was unset ⇒ empty ⇒ deleted ⇒ unset.
+    # ⚠️ AND ITS BLANK IS HARMLESS AT THE PIN, WHICH IS THE POINT RATHER THAN AN
+    # ARGUMENT AGAINST THE ENTRY. arg.cpp:2664-2670 is a bare `params.hf_token = value`,
+    # common.h:484 already initializes it to "", and both consumers are emptiness-gated
+    # (`if (!opts.bearer_token.empty())` at download.cpp:313-314; `is_valid_hf_token()`
+    # … `else if (!token.empty())` at hf-cache.cpp:207-211). The uniform rule exists
+    # BECAUSE a per-variable reading is what missed xet-core's Rust reader in s67 — a
+    # class-2 name may have more than one reader, in more than one language, and
+    # checking the obvious one is not checking it.
+    # ⚠️ A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM, exactly as the three above:
+    # this one rests on the class-2 ruling, not on a measured difference at the pin, so
+    # it must not silently inflate an audit that counts measured ones.
+    # ⚠️ ITS ORDER AGAINST THE DROSTE_LLAMA_HF_TOKEN_FILE BLOCK FURTHER DOWN DOES NOT
+    # MATTER, AND THAT WAS MEASURED RATHER THAN ASSUMED. This comment first claimed the
+    # guard "must stay above" it; moving the whole block above this call (llamawire's Q2)
+    # changed NOTHING — 375/375 either way. The two mechanisms cannot collide: this guard
+    # only ever deletes an EMPTY value, and the file block only ever `export`s a
+    # NON-EMPTY one, assigning without exporting when the file is empty or unreadable.
+    # ⭐ WORTH KEEPING AS A NOTE RATHER THAN DELETING: "placement is ordering" is a real
+    # hazard elsewhere in these specs (a `${NATIVE=default}` below a guard IS order-
+    # dependent), so the next reader will ask the question. The answer is recorded here
+    # with the mutation that settles it, so nobody re-derives it from the shape of the code.
+    local -a _class2_on_clear=(
+        HF_TOKEN                            # HuggingFace's, not llama's (s67 rule)
+    )
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
                            "${_turbo_blank_is_unset[@]}" \
-                           "${_cache_blank_is_unset[@]}"
+                           "${_cache_blank_is_unset[@]}" \
+                           "${_class2_on_clear[@]}"
 
     # ── the XDG bases llama.cfg never names, whose blank breaks the cache dir ──
     # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAME WITH A

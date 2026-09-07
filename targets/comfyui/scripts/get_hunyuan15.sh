@@ -4,6 +4,7 @@
 # into ComfyUI/models.
 set -euo pipefail
 
+export HF_HUB_ENABLE_HF_TRANSFER=1
 HF="/opt/venv/bin/hf"
 
 # Repositories

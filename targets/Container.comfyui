@@ -118,16 +118,23 @@ WORKDIR /opt/ComfyUI
 RUN uv pip install -r requirements.txt \
     && uv pip install \
        pillow opencv-python-headless imageio imageio-ffmpeg scipy \
-       huggingface_hub pyyaml websocket-client
-# ⚠️ THE `[hf_transfer]` EXTRA WAS DROPPED (s67) BECAUSE IT NEVER EXISTED HERE.
-# huggingface_hub 1.0 removed hf_transfer in favour of Xet, and 1.30.0's
-# `provides_extra` has no `hf_transfer` entry — pip silently discards an unknown
-# extra, so this line installed the plain package for as long as the image has
-# been on the 1.x line. ⭐ Nothing is lost: `hf-xet` is a CORE requirement on
-# x86_64 (`hf-xet<2.0.0,>=1.5.2`, a platform marker rather than an extra) and is
-# used by default unless `HF_HUB_DISABLE_XET` is set, which nothing here sets.
-# 🚫 Do NOT "restore" the extra, and do NOT set `HF_HUB_ENABLE_HF_TRANSFER` — at
-# 1.x that variable only emits a FutureWarning and changes no behaviour.
+       "huggingface_hub[hf_transfer]" pyyaml websocket-client
+# 🚨 THE `[hf_transfer]` EXTRA IS LIVE **ON THIS BOX ONLY**, AND IT WAS BRIEFLY
+# DELETED IN s67 BY MISTAKE — READ THIS BEFORE TOUCHING IT AGAIN.
+# ⭐ **COMFYUI IS THE ONE BOX CAPPED BELOW huggingface_hub 1.0**, because
+# `transformers==${TRANSFORMERS_VERSION}` (4.57.1 above) requires
+# `huggingface-hub<1.0,>=0.34.0` — verified against PyPI metadata. It resolves to
+# **0.36.2**, where `provides_extra` DOES list `hf-transfer`, `hf_transfer>=0.1.4`
+# is a real requirement, and `file_download.py` uses it in 20 places.
+# ⚠️ **The other four boxes are on hub 1.x**, where hf_transfer was REMOVED for Xet:
+# there the extra is silently discarded and `HF_HUB_ENABLE_HF_TRANSFER` only emits a
+# FutureWarning. **Both statements are true at once — the difference is the cap.**
+# 🚨 **SO A CLAIM ABOUT `huggingface_hub` IS MEANINGLESS WITHOUT NAMING THE VERSION,
+# and "test it" means letting THIS box's constraints resolve** — the s67 error was a
+# dry run that pinned 1.30.0 directly, which answered a question nobody had asked.
+# ⇒ when `TRANSFORMERS_VERSION` next crosses into 5.x, the cap lifts, this box joins
+# the 1.x line, and BOTH this extra and the `HF_HUB_ENABLE_HF_TRANSFER` exports in
+# `targets/comfyui/scripts/get_*.sh` become dead weight. **Re-check then, not before.**
 # ⚠️ THE SECOND INSTALL LOST ITS `--prefer-binary` WHEN IT MOVED TO uv (s46, Jei's call) —
 # and the flag was NOT silently dropped, it was measured first. Read this before adding a
 # flag back or "restoring" the pip line.

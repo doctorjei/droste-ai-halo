@@ -605,3 +605,83 @@ cfg_quote() {  # VALUE [PREFERRED-QUOTE] → 0 + CFG_QUOTED, 1 when unrepresenta
   return 1
 }
 
+
+# ── The FORMAT MARKER: a file's SETTING SURFACE, derived not declared (S2b) ──
+# 🚨 INSTALLER-ONLY. This is NOT part of the two-copy parse contract above — the
+# box has no twin of it and needs none, and cfgdiff.sh must never be widened to
+# compare it. It answers one question, on the HOST, about two files that are
+# both in front of us: does <box>.cfg still offer the same settings the image
+# now ships?
+#
+# ⭐ WHY DERIVED. The alternative is a version stamp somebody has to remember to
+# bump, which rots the first time it is forgotten and then lies in the direction
+# that costs the user something (we say "unchanged" when it changed). The shape
+# is read from the two files themselves, so it cannot disagree with them.
+#
+# 📐 WHAT COUNTS AS THE FORMAT: the SET OF SETTING NAMES the file mentions as an
+# assignment, active or shipped commented-out. Both forms count because that is
+# how a droste config file offers a setting — every line ships as `# NAME=value`
+# and the user's edit is to remove the `#`, so a name that is present is a knob
+# the user can reach whether or not they reached for it.
+# ⚠️ VALUES ARE DELIBERATELY NOT PART OF IT. A changed default (llama's port,
+# 8080 → 9931) is not a format change; it is what S2a's election is for, and
+# folding it in here would write an example for every box whose owner ever set
+# anything.
+# ⚠️ NEITHER IS ORDER, NOR PROSE. Re-flowing a section or rewording a comment
+# leaves every knob present and correct, and there is nothing for the user to
+# act on. What this catches is a setting that APPEARED (a knob their file cannot
+# reach), one that VANISHED (a line in their file that is now inert — llama's
+# retired MMAP/MLOCK/DIRECT_IO), and a RENAME, which is both at once.
+# ⚠️ ACCEPTED COST, stated so it is not rediscovered as a bug: a user who ADDS a
+# setting name of their own, or deletes one, has a file whose surface differs
+# from ours for as long as they keep it that way, and gets an example on every
+# run. The example is OURS and is rewritten in place, so the cost is one file.
+#
+# The names are UPPER-CASE by construction (`[A-Z][A-Z0-9_]*`), which is what
+# every setting on every one of the five surfaces looks like — DROSTE_*,
+# LLAMA_ARG_*, VLLM_*, HF_*, XDG_*. Lower case is prose: a comment explaining
+# `n_ctx=0` is not a setting, and matching it would make the marker fire on a
+# reworded sentence.
+declare -A CFG_SHAPE=()
+CFG_SHAPE_N=0
+cfg_shape() {  # FILE → 0 + CFG_SHAPE holding one key per setting name present
+  local f=$1 line
+  CFG_SHAPE=(); CFG_SHAPE_N=0
+  [[ -f $f && -r $f ]] || return 1
+  # `|| [[ -n $line ]]` — a last line with no trailing newline IS a line, the
+  # same rule the reader above keeps (contract §5).
+  while IFS= read -r line || [[ -n $line ]]; do
+    # `if`, never `[[ … ]] && continue`: a false test as the last command of a
+    # loop body is the status of the whole loop, and this runs under `set -e`.
+    if [[ $line =~ ^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)= ]]; then
+      if [[ -z ${CFG_SHAPE[${BASH_REMATCH[2]}]:-} ]]; then
+        CFG_SHAPE[${BASH_REMATCH[2]}]=1
+        CFG_SHAPE_N=$((CFG_SHAPE_N + 1))
+      fi
+    fi
+  done < "$f"
+  return 0
+}
+
+# The comparison, and the two lists a caller needs to SAY what changed. An
+# unreadable side is "cannot tell", which is 1 (no example) rather than 0 — we
+# do not write a file on the strength of a read that failed.
+CFG_SHAPE_ADDED=""   # names the shipped template has and the user's file lacks
+CFG_SHAPE_GONE=""    # names the user's file has and the shipped template lacks
+cfg_shape_differs() {  # TEMPLATE FILE → 0 when the surfaces differ, else 1
+  local tmpl=$1 file=$2 name
+  local -A t=()
+  CFG_SHAPE_ADDED="" CFG_SHAPE_GONE=""
+  cfg_shape "$tmpl" || return 1
+  for name in ${CFG_SHAPE[@]+"${!CFG_SHAPE[@]}"}; do t[$name]=1; done
+  cfg_shape "$file" || return 1
+  for name in ${t[@]+"${!t[@]}"}; do
+    if [[ -z ${CFG_SHAPE[$name]:-} ]]; then CFG_SHAPE_ADDED="$CFG_SHAPE_ADDED $name"; fi
+  done
+  for name in ${CFG_SHAPE[@]+"${!CFG_SHAPE[@]}"}; do
+    if [[ -z ${t[$name]:-} ]]; then CFG_SHAPE_GONE="$CFG_SHAPE_GONE $name"; fi
+  done
+  CFG_SHAPE_ADDED=${CFG_SHAPE_ADDED# }
+  CFG_SHAPE_GONE=${CFG_SHAPE_GONE# }
+  [[ -n $CFG_SHAPE_ADDED || -n $CFG_SHAPE_GONE ]]
+}

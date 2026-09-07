@@ -172,6 +172,23 @@ write_notes() {
       data="${PATHS["$box:data"]:-${EXD_PATH["$box:data"]:-<data-dir>}}"
       port=$(box_port_disp "$box")
       printf '\n### %s — %s\n\n' "$box" "${BOX_PITCH[$box]}"
+      # S2b — said HERE because the step log is not a surface anybody reads. The
+      # test is the file's presence, not a variable: the example is written by a
+      # run_step CHILD, which cannot hand a flag back, and asking the filesystem
+      # is true whichever run wrote it. The path printed is the SPELLING; only
+      # the test resolves it.
+      # ⚠️ IT DESCRIBES THE FILE, NOT A DIVERGENCE. The example is refreshed and
+      # never deleted, so it outlives the mismatch that caused it — a bullet
+      # saying "your file is out of date" would go false the moment the user
+      # acted on it, and nothing would ever correct it.
+      if [[ -f $(fs_path "$data/${BOX_CFG[$box]}.example") ]]; then
+        printf -- '- `%s/%s.example` is what a brand-new box%s `%s` looks like\n' \
+          "$data" "${BOX_CFG[$box]}" "'s" "${BOX_CFG[$box]}"
+        printf '  under this image. It is there because yours was seeded by an\n'
+        printf '  earlier one and settings have been added or retired since;\n'
+        printf '  diff the two and copy across whatever you want. Your file is\n'
+        printf '  never overwritten, and the example is refreshed, never deleted.\n'
+      fi
       case "$box" in
         comfyui)
           printf -- '- Web UI: http://localhost:%s.\n' "$port"

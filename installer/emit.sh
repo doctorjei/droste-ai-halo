@@ -32,6 +32,43 @@ ask_port() {  # box default → ANS_PORT
   done
 }
 
+# What the PORT PROMPT offers, and nothing else. Same shape as path_default():
+# a modify run's defaults come from the recorded entries and fall back to the
+# fresh ones ("one question set, three run types"), which is why this is the one
+# place left that may test ACTION.
+port_default() {  # box → the port to offer at the prompt
+  local box=$1
+  if [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]]; then
+    printf '%s' "${EXD_PORT[$box]}"
+  else
+    printf '%s' "${BOX_HOST_PORT[$box]}"
+  fi
+}
+
+# 🚨 THE PORT DECISION, IN ONE PLACE — AND AN ELECTION IS AN ANSWER (S2a, s67).
+# "Use default ports for all services" is a question the user answered YES to;
+# the value it settles is THE DEFAULT, for a box that already exists exactly as
+# much as for a new one. This function used to fall back to `port_default` on
+# that branch, so a modify run on a box carrying a recorded port re-recorded THAT
+# port and the election changed nothing — v0.4.0 shipped llama on 8080, v0.5.0
+# moved it to 9931, and every box created before the move kept 8080 however the
+# question was answered, while the README documented the new one.
+# ⚠️ THE ELECTION IS THE ONLY THING THAT MAY OVERWRITE A RECORDED PORT. A user
+# who declined it is asked, and the prompt still OFFERS what their box already
+# has — so a custom port survives unless its owner says otherwise. That
+# narrowness is the whole licence: write_box_cfg merges this value into a file
+# that is otherwise seeded `if_missing` and never overwritten.
+set_box_port() {  # box → CFG_PORT[box]  (prompts only when defaults were declined)
+  local box=$1
+  if [[ $PORTS_DEFAULT -eq 1 ]]; then
+    CFG_PORT[$box]=${BOX_HOST_PORT[$box]}
+    return 0
+  fi
+  ask_port "$box" "$(port_default "$box")"
+  CFG_PORT[$box]=$ANS_PORT
+  return 0
+}
+
 # ONE section per box now ("Box Settings"), carrying whatever General Setup left
 # unanswered for it: a Networking subheader (its port, and the two start
 # questions when either was answered "case-by-case") and a "<Box> Paths"
@@ -39,7 +76,7 @@ ask_port() {  # box default → ANS_PORT
 # ask shows its banner and its summary, and no section at all.
 configure_box() {  # box
   local box=$1 pair label dest
-  local asked=0 bw sv_def=N hs_def=N pdef
+  local asked=0 bw sv_def=N hs_def=N
   # The "<Box> Paths" subheader belongs to whichever of the two asks first: the
   # path prompts when the family was NOT placed, the move questions when it was
   # (a box can have nothing to ask about its paths and still have files to move).
@@ -77,14 +114,10 @@ configure_box() {  # box
   if [[ $want_port -eq 1 || $want_sv -eq 1 || $HOST_MODE == c ]]; then
     subhdr "Networking"
   fi
-  pdef=${BOX_HOST_PORT[$box]}
-  [[ ${ACTION[$box]} == modify && -n "${EXD_PORT[$box]:-}" ]] && pdef=${EXD_PORT[$box]}
-  if [[ $want_port -eq 1 ]]; then
-    ask_port "$box" "$pdef"
-    CFG_PORT[$box]=$ANS_PORT
-  else
-    CFG_PORT[$box]=$pdef
-  fi
+  # The decision and the prompt both live in set_box_port; want_port only
+  # decides whether a SECTION is opened for it (nothing is asked when the
+  # install-wide election already settled every port).
+  set_box_port "$box"
   CFG_BOXSV[$box]=""
   if [[ $want_sv -eq 1 ]]; then
     [[ ${ACTION[$box]} == modify && -n "${EXD_BOXSV[$box]:-}" ]] && sv_def=Y
@@ -509,6 +542,74 @@ cfg_wait_seed() {  # file → 0 once it exists and has stopped growing, 1 on tim
   return 1
 }
 
+# ── <box>.cfg.example — the escape hatch for a file that is an OLDER SHAPE ───
+# 🚨 THIS IS THE GENERAL CASE THE PORT ELECTION IS THE NARROW EXCEPTION TO (S2b,
+# s67). `<box>.cfg` is seeded `if_missing` and is the user's from then on, so a
+# box set up under an older image keeps its file for ever — settings we have
+# since added are unreachable in it, and settings we have since retired sit in it
+# reading as authoritative while doing nothing. We may not overwrite it. So we
+# put what we WOULD have written next to it, and the user diffs.
+#
+# 📐 "EXACTLY WHAT WOULD HAVE BEEN WRITTEN HAD NO FILE EXISTED" is a two-step
+# recipe, and both steps are here: the baked template as the box would have
+# copied it, then the same cfg_set merges the caller is about to make into the
+# real file. Miss the second and the example is not the file a fresh box gets.
+#
+# The template is read out of the RUNNING container, which is the only place it
+# exists — the installer is a `curl | bash` script on the host and has no
+# checkout. That is also why this reaches only a box the ladder started: a KEPT
+# box is never started (keep = change nothing), and starting one to write it an
+# example would be exactly the "change" that was declined.
+box_cfg_template() {  # box → the baked template on stdout, 1 when unreachable
+  local box=$1
+  [[ -n ${RUNTIME:-} ]] || return 1
+  "$RUNTIME" exec "$(box_ctr "$box")" cat "$CFG_TEMPLATE_DIR/${BOX_CFG[$box]}"
+}
+
+CFG_EXAMPLE=""
+seed_cfg_example() {  # box cfgfile → 0 + CFG_EXAMPLE naming the file written
+  local box=$1 f=$2 ex tmp dir
+  CFG_EXAMPLE=""
+  ex="$f.example"                     # <box>.cfg.example, beside what it describes
+  dir=$(dirname "$f")
+  tmp=$(mktemp "$dir/.droste-cfg.XXXXXX" 2>/dev/null) || {
+    warn "could not write in $dir $EMD no ${BOX_CFG[$box]}.example was written"; return 1; }
+  if ! box_cfg_template "$box" > "$tmp" || [[ ! -s $tmp ]]; then
+    rm -f "$tmp" 2>/dev/null || :
+    # NOT fatal and NOT counted against the run: the answers still got recorded
+    # in the real file. Say it once, in the step log, and carry on.
+    warn "could not read the baked ${BOX_CFG[$box]} out of $(box_ctr "$box") $EMD no .example was written"
+    return 1
+  fi
+  # ⚠️ AN EXISTING EXAMPLE IS REFRESHED EVEN WHEN THE SHAPES NOW AGREE. It is a
+  # file we wrote, describing a shape that has since moved; leaving it stale
+  # would hand the user a "current" copy that is not current. What we never do
+  # is CREATE one for a file that is already the right shape.
+  if ! cfg_shape_differs "$tmp" "$f" && [[ ! -f $ex ]]; then
+    rm -f "$tmp" 2>/dev/null || :
+    return 1
+  fi
+  # The user's own mode, not mktemp's 0600 — the example sits in their data dir
+  # beside a file they read, and should be as readable as it is.
+  chmod --reference="$f" "$tmp" 2>/dev/null || :
+  mv -f "$tmp" "$ex" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || :
+    warn "could not write $ex"; return 1; }
+  CFG_EXAMPLE=$ex
+  # What changed, by name: the whole value of the example is the diff, so the log
+  # should say which way to read it.
+  printf 'wrote %s (the current shape of %s)\n' "$ex" "${BOX_CFG[$box]}"
+  # `if`, not `[[ … ]] &&`: a false test as the last command of a list is the
+  # status of the list, and this runs under `set -e`.
+  if [[ -n $CFG_SHAPE_ADDED ]]; then
+    printf '  settings this image adds: %s\n' "$CFG_SHAPE_ADDED"
+  fi
+  if [[ -n $CFG_SHAPE_GONE ]]; then
+    printf '  settings your file has that this image does not: %s\n' "$CFG_SHAPE_GONE"
+  fi
+  return 0
+}
+
 # Merge this run's answers into the box's settings file. Runs as one run_step
 # child, so everything it says lands in that step's log; it reports a real value
 # CHANGE by touching the marker file, which is what tells create_box whether a
@@ -519,7 +620,7 @@ cfg_wait_seed() {  # file → 0 once it exists and has stopped growing, 1 on tim
 # {yes, no} menu would have the user open their config file and find a value
 # that is not in its own list of values.
 write_box_cfg() {  # box marker → 0 recorded, 1 something could not be recorded
-  local box=$1 marker=$2 f key val name cur rc=0
+  local box=$1 marker=$2 f ex="" key val name cur rc=0
   f=$(box_cfg_file "$box") || return 0
   [[ -n $f ]] || return 0
   f=$(fs_path "$f")      # the box's data dir, as the kernel needs it spelled
@@ -527,6 +628,13 @@ write_box_cfg() {  # box marker → 0 recorded, 1 something could not be recorde
     warn "$f has not appeared after ${CFG_SEED_WAIT}s $EMD the box seeds it at its first start, so your port and startup answers were not recorded"
     return 1
   fi
+  # S2b, BEFORE the merges below and not after: the example has to receive the
+  # same two values, so it exists by the time the loop runs. A box that got its
+  # file this very run is the ordinary case and produces nothing — the file the
+  # seeder just copied IS the current shape.
+  # ⚠️ NOT part of `rc`. Failing to write an explanatory copy must never report
+  # the run's answers as unrecorded; it says so in the step log and stops there.
+  if seed_cfg_example "$box" "$f"; then ex=$CFG_EXAMPLE; fi
   for key in STARTUP_ENABLED PORT; do
     case $key in
       STARTUP_ENABLED) val=$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf yes || printf no) ;;
@@ -534,6 +642,9 @@ write_box_cfg() {  # box marker → 0 recorded, 1 something could not be recorde
     esac
     name=$(cfg_name "$box" "$key")
     cur=$(cfg_get "$name" "$f")
+    # The example is what a box with NO file would have ended up with, so it
+    # takes every value the real file takes. Its own outcome is not `rc`.
+    if [[ -n $ex ]]; then cfg_set "$name" "$val" "$ex" || :; fi
     if ! cfg_set "$name" "$val" "$f"; then rc=1; continue; fi
     # The marker means "a value on disk is not what it was", which is the only
     # thing a restart is for. cfg_set is idempotent — an unchanged value writes

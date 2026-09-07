@@ -234,6 +234,21 @@ img_disp() {   # box → droste-<box>-halo
 # (The old -server / -box lane suffixes are gone with the lanes; see box_ctr().)
 INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 
+# Where the BAKED template for <box>.cfg lives INSIDE the image. This is the
+# file apply_templates.py copies to /opt/data/<box>.cfg at the box's first start
+# (`if_missing`), so it is, byte for byte, what a box with no settings file
+# would have been given. The installer reads it to answer one question it cannot
+# answer from the host: "is the file on disk still the shape we ship?".
+# 🚨 IT MIRRORS TWO THINGS AND HAS TO KEEP MIRRORING BOTH — the default of
+# RESOLVE_TEMPLATES_DIR in base/resolve/droste-resolve.sh, and the COPY that
+# puts templates/ there in every targets/Container.<box>. Every target's
+# templates.yaml maps the basename in BOX_CFG to /opt/data/<same name>, which is
+# why one directory plus BOX_CFG is enough for all five.
+# ⚠️ It is read through `podman exec`, which inherits NOTHING from the init hook
+# (a recorded pattern), so the variable's in-box value is not available to us and
+# the path is written out rather than expanded from the box's environment.
+CFG_TEMPLATE_DIR="/opt/resources/templates"
+
 # ── Healthcheck contract (P1's droste-healthcheck.sh, baked in every image) ───
 # droste-setup.sh wires podman's healthcheck at CREATE time (the images carry no
 # HEALTHCHECK of their own): the probe reads the box's <box>.cfg for the port

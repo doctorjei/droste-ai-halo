@@ -1426,8 +1426,56 @@ serve::_mem_at_launch() {
 # this same file, so a report containing the words "out of memory" would be matched by
 # the NEXT scan and quoted back as if the server had said it. A diagnostic that can cite
 # itself as evidence is worse than silence.
+#
+# 🚨 THE SCAN IS BLIND TO TERMINAL ESCAPES, AND ALL THREE OF ITS STEPS DEPEND ON THAT.
+# A served process that writes color breaks this function three separate ways, and a
+# user can already turn color on today: droste::cfg_apply is name-blind, so FORCE_COLOR
+# — or a server's own color flag — reaches the service from the box's <box>.cfg like any
+# other setting.
+#   1. the `=== droste-serve:` exclusion is ANCHORED at line start, so a color prefix on
+#      one of OUR OWN lines slides it past the anchor and the report quotes itself back
+#      as the server's words. Silently — this is the self-poisoning defect returning by
+#      a side door.
+#   2. `${line:0:220}` TRUNCATES, and a cut landing before the sequence that resets the
+#      color bleeds the service's color into every line printed after the report.
+#   3. the signature match itself (grep -iF, unanchored) survives level-based coloring,
+#      which puts the escapes at the ENDS of a line — but a logger that highlights a
+#      word INSIDE the message splits a signature and the evidence is simply missed.
+# So the strip happens FIRST, ahead of the exclusion, the match and the truncation.
+#
+# WHAT IS STRIPPED, chosen by CLASS rather than by the one case that bit us — an
+# `ESC[0m`-only regex answers (2) and neither of the others:
+#   OSC    ESC ] … BEL|ST      window titles and OSC-8 hyperlinks. Their payload is TEXT
+#                              (`8;;https://…`) and would survive as garbage in the quote.
+#   CSI    ESC [ … final       SGR color, and equally cursor motion, EL/ED erase, scroll
+#                              regions — everything a progress display reaches for.
+#   Fe/Fs  ESC <int>* <final>  the short escapes: charset designation (ESC ( B), ESC M,
+#                              ESC 7/8. Matched per ECMA-48, so a stray ESC consumes its
+#                              own sequence rather than the remainder of the line.
+#   C0     < 0x20 except TAB,  the leftovers, and they matter on their own: a bare CR
+#          plus DEL            from a progress bar (huggingface and tqdm write them by
+#                              the thousand) repaints over our "  | " prefix, and a
+#                              truncated sequence leaves a lone ESC behind.
+# TAB survives because it only moves forward and cannot rewrite what was already
+# printed — the allowlist reasoning of scripts/check-control-chars.sh, narrowed to one
+# line (\n \v \f cannot help a value that gets embedded in a single message). NUL needs
+# no rule of its own: command substitution drops it. 0x80-0xFF is deliberately untouched
+# — those are the continuation bytes of every multibyte character in the log.
+#
+# WHY sed AND NOT BASH, on a path where the shell may itself be short of memory (the
+# reason serve::_meminfo_kb above spawns nothing at all): the strip has to happen BEFORE
+# the anchored exclusion, so it cannot be applied to the single line that comes out the
+# end. In bash that means either holding the whole 400-line tail in an array or
+# rewriting the fixed-string matcher as a bash loop, and the substitution itself needs
+# `shopt -s extglob` — a global shell option this library must not switch on behind its
+# callers' backs. sed streams in constant memory, and by ABSORBING the `grep -v` it
+# costs ZERO extra processes: the pipeline is four, exactly as it was. sed is Essential
+# in Debian, unlike the `ps` and `bc` that _mem_top and _gib design around.
+# LC_ALL=C makes the ranges byte-exact (bracket ranges are collation-dependent
+# otherwise) and keeps invalid multibyte bytes in a log harmless.
 serve::_mem_evidence() {
     local n=${1:-400} pat=() sig line
+    local esc=$'\033' bel=$'\007' c0=$'\001-\010\013-\037\177'
     case "$DROSTE_SERVE_LOG" in /dev/*) return 1 ;; esac
     [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 1
     for sig in "${DROSTE_SERVE_OOM_SIGNATURES[@]}"; do pat+=(-e "$sig"); done
@@ -1435,8 +1483,16 @@ serve::_mem_evidence() {
     # `set -euo pipefail`. Guarded so the function RETURNS rather than dying; the guard
     # that is actually observable is mem_report's own `|| ev=""` (a command substitution
     # already contains the abort), and that one is pinned by a test.
+    # The sed script uses `,` as its delimiter so `/` — an intermediate byte in two of
+    # the three sequence patterns — needs no backslash: inside a bracket expression a
+    # backslash is a LITERAL, so `[ -\/]` would be the range 0x20-0x5C and would eat
+    # most of the alphabet.
     line=$(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null \
-           | grep -v '^=== droste-serve:' \
+           | LC_ALL=C sed -e "s,${esc}\\][^${esc}${bel}]*\\(${bel}\\|${esc}\\\\\\),,g" \
+                          -e "s,${esc}\\[[0-?]*[ -/]*[@-~],,g" \
+                          -e "s,${esc}[ -/]*[0-~],,g" \
+                          -e "s,[${c0}],,g" \
+                          -e '/^=== droste-serve:/d' 2>/dev/null \
            | grep -iF "${pat[@]}" 2>/dev/null | tail -1) || line=""
     [ -n "$line" ] || return 1
     printf '%s' "${line:0:220}"

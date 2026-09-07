@@ -88,7 +88,9 @@ RUN microdnf -y --nodocs --setopt=install_weak_deps=0 \
   python3-pip \
   && microdnf clean all && rm -rf /var/cache/dnf/*
 
-# hf CLI for model downloads (hf_xet enables HF_XET_HIGH_PERFORMANCE=1)
+# hf CLI for model downloads. The `hf_xet` extra installs the Xet backend; it sets
+# NO environment variable, and `HF_XET_HIGH_PERFORMANCE` is unset in every image.
+# (On x86_64 `hf-xet` is a core requirement anyway, so the extra is belt-and-braces.)
 RUN pip install --no-cache-dir 'huggingface_hub[hf_xet]'
 
 # copy

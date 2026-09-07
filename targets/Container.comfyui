@@ -118,7 +118,16 @@ WORKDIR /opt/ComfyUI
 RUN uv pip install -r requirements.txt \
     && uv pip install \
        pillow opencv-python-headless imageio imageio-ffmpeg scipy \
-       "huggingface_hub[hf_transfer]" pyyaml websocket-client
+       huggingface_hub pyyaml websocket-client
+# ⚠️ THE `[hf_transfer]` EXTRA WAS DROPPED (s67) BECAUSE IT NEVER EXISTED HERE.
+# huggingface_hub 1.0 removed hf_transfer in favour of Xet, and 1.30.0's
+# `provides_extra` has no `hf_transfer` entry — pip silently discards an unknown
+# extra, so this line installed the plain package for as long as the image has
+# been on the 1.x line. ⭐ Nothing is lost: `hf-xet` is a CORE requirement on
+# x86_64 (`hf-xet<2.0.0,>=1.5.2`, a platform marker rather than an extra) and is
+# used by default unless `HF_HUB_DISABLE_XET` is set, which nothing here sets.
+# 🚫 Do NOT "restore" the extra, and do NOT set `HF_HUB_ENABLE_HF_TRANSFER` — at
+# 1.x that variable only emits a FutureWarning and changes no behaviour.
 # ⚠️ THE SECOND INSTALL LOST ITS `--prefer-binary` WHEN IT MOVED TO uv (s46, Jei's call) —
 # and the flag was NOT silently dropped, it was measured first. Read this before adding a
 # flag back or "restoring" the pip line.

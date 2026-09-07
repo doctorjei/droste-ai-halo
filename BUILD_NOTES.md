@@ -2111,7 +2111,12 @@ kernels already live in the base).
   runtime's `local.conf`): the base already wires `/opt/rocm/lib{,64}`; this adds
   the COPY'd `/usr/local/lib{,64}` via `ds4-local.conf` + `ldconfig`.
 - App-level Python runtime into the base venv: huggingface CLI for model
-  downloads (the `hf_xet` extra flips on `HF_XET_HIGH_PERFORMANCE=1`).
+  downloads. ⚠️ **CORRECTED s67 — this used to say the `hf_xet` extra "flips on
+  `HF_XET_HIGH_PERFORMANCE=1`". It does not.** An extra installs a package and sets
+  no environment variable; `HF_XET_HIGH_PERFORMANCE` is **unset in every image**.
+  The extra is also largely redundant — `hf-xet<2.0.0,>=1.5.2` is a CORE
+  requirement of huggingface_hub on x86_64 (a platform marker, not an extra), so
+  Xet is installed and used by default unless `HF_HUB_DISABLE_XET` is set.
   `python3-pip` is NOT re-added — the runtime base already installs it, and `pip`
   here is the venv pip (PEP668-safe).
 - ds4 cockpit TUI from the PINNED git ref, isolated via `pipx --global`: `git` is

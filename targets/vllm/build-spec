@@ -1012,14 +1012,37 @@ vllm_env() {
         debug=DEBUG info=INFO warning=WARNING warn=WARN \
         error=ERROR critical=CRITICAL fatal=FATAL notset=NOTSET
 
-    # ⚠️ THE NATIVE VARIABLE IS NOT A WORD, IT IS A DIGIT. logger.py:30-38 tests
-    # `== "0"` then `== "1"` and treats EVERYTHING ELSE as auto — so `always` and
-    # `never`, the words a person would reach for, both silently mean auto. That is
-    # the whole reason this one is droste-named. `auto` is wired to the literal
-    # upstream default rather than to "-" because writing it is faithful: it names
-    # the isatty branch that upstream itself falls through to.
-    # (NO_COLOR is honored by upstream ahead of all three; we do not touch it.)
-    vllm_menu LOGGING_COLOR VLLM_LOGGING_COLOR auto=auto always=1 never=0
+    # ⚠️ THE NATIVE VARIABLE IS NOT A WORD, IT IS A DIGIT. `_use_color()` in
+    # vllm/logger.py tests `== "0"` then `== "1"` and treats EVERYTHING ELSE — every
+    # word a person would reach for, blank included — as auto, silently. That is the
+    # whole reason this one is droste-named.
+    #
+    # ⭐ THE VOCABULARY IS {on, off}, AND IT USED TO BE {always, never} (s67). "log
+    # color" is a NOUN PHRASE: it names a STATE, it does not ask a yes/no question, so
+    # by the grammar rule it takes on/off. The words were the only thing standing
+    # between this and llama's LLAMA_ARG_LOG_COLORS {auto*, on, off} — one concept
+    # spelled two ways across two boxes is a One Surface defect, and the wire is
+    # unaffected because this value is processed rather than passed through: on and off
+    # emit the same 1 and 0 that always and never did. ⚠️ `always`/`never` are RETIRED,
+    # not aliased — no backward compatibility is owed, and a box seeded before the
+    # rename gets vllm_pick's loud rejection naming the three words it may use.
+    #
+    # 🚨 AND `auto` EMITS NOTHING — it is a "-" like the two menus above, not the
+    # literal word it was until s67. Three measurements, at v0.16.0:
+    #   * envs.py resolves it ANYWAY: `os.getenv("VLLM_LOGGING_COLOR", "auto")`, so an
+    #     ABSENT variable already becomes the string `auto` before any reader sees it.
+    #     Writing the word buys nothing that absence does not already give.
+    #   * `_use_color()` never COMPARES against "auto"; it is the arm everything
+    #     unrecognized falls into. Emitting a value the reader does not test is a
+    #     fall-through by definition, and the honest spelling of "upstream decides" is
+    #     an absence — the same reasoning as KV_CACHE_LAYOUT and AOT_COMPILE.
+    #   * cfg_apply is name-blind, so a user can write a native VLLM_LOGGING_COLOR
+    #     line anywhere in the file. Exporting the word would DELETE it, and `auto` is
+    #     what vllm.cfg ships — uncommenting the printed line must be a no-op.
+    # ⚠️ NO_COLOR IS HONORED AHEAD OF ALL OF THIS AND ITS READER IS UNUSUAL:
+    # `os.getenv("NO_COLOR", "0") != "0"`, so a BLANK NO_COLOR is TRUE and turns color
+    # off no matter what this setting says. We set it nowhere and must not start.
+    vllm_menu LOGGING_COLOR VLLM_LOGGING_COLOR auto=- on=1 off=0
 
     # ⚠️ The native value is a logging-dictConfig `ext://` REFERENCE, not a word.
     # A value that resolves to a non-stream object configures CLEANLY and then

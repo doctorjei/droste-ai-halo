@@ -1421,30 +1421,28 @@ serve::_mem_at_launch() {
     printf '%s' "$kb"
 }
 
-# _mem_evidence — the service's own last word about memory, if it left one.
-# 🚨 OUR OWN NOTES ARE EXCLUDED, and that is not tidiness: serve::_log_note writes into
-# this same file, so a report containing the words "out of memory" would be matched by
-# the NEXT scan and quoted back as if the server had said it. A diagnostic that can cite
-# itself as evidence is worse than silence.
+# ── DROSTE_SERVE_ESC_SED — what a terminal escape looks like, WRITTEN ONCE ───
 #
-# 🚨 THE SCAN IS BLIND TO TERMINAL ESCAPES, AND ALL THREE OF ITS STEPS DEPEND ON THAT.
+# 🚨 TWO CALLERS, ONE DEFINITION, AND THAT IS THE WHOLE POINT OF IT BEING UP HERE.
+# serve::_mem_evidence scans the service log for a MACHINE; serve::_log_tail reproduces it
+# for a HUMAN. Both are defeated by exactly the same bytes, and a second copy of "what an
+# escape looks like" would drift the way the key-signature rules drifted before they were
+# moved into one module. ⭐ THE DRIFT WOULD BE SILENT: a class this list forgets does not
+# fail anything, it bleeds — into a 220-character quote in one caller and into every line
+# of `podman logs` in the other.
+# ⚠️ CR IS DELIBERATELY NOT IN HERE, and that is a design statement rather than an
+# omission. Every class below is a pure deletion that means the same thing to both
+# callers. CR is not a character to delete, it is a RENDERING instruction — "what follows
+# overwrites what preceded" — and the right answer to it depends on what the caller does
+# with the line afterward. The two callers reach different answers, each argued at its own
+# site. Sharing a wrong answer would be worse than not sharing.
+#
 # ⭐ THIS IS THE PRESENT STATE, NOT A PRECAUTION: comfyui's log is colored TODAY, at our
 # pin. ComfyUI's app/logger.py installs a ColoredFormatter with NO isatty test and no
 # knob (COMFYUI_REF 4da9e2db), so every line it writes begins with an escape at COLUMN 0
 # — `\033[32m[INFO]\033[0m ` and, for a failure, `\033[1m\033[31m[ERROR]\033[0m `.
 # ComfyUI-Manager 4.2.2 opens 22 print sites with `\x1b[2K\r`, and ComfyUI_essentials
-# prints `\033[96m…\033[0m` from two more. A column-0 anchor against that log was
-# already broken before this function was written.
-#   1. the `=== droste-serve:` exclusion is ANCHORED at line start, so a color prefix on
-#      one of OUR OWN lines slides it past the anchor and the report quotes itself back
-#      as the server's words. Silently — this is the self-poisoning defect returning by
-#      a side door.
-#   2. `${line:0:220}` TRUNCATES, and a cut landing before the sequence that resets the
-#      color bleeds the service's color into every line printed after the report.
-#   3. the signature match itself (grep -iF, unanchored) survives level-based coloring,
-#      which puts the escapes at the ENDS of a line — but a logger that highlights a
-#      word INSIDE the message splits a signature and the evidence is simply missed.
-# So the strip happens FIRST, ahead of the exclusion, the match and the truncation.
+# prints `\033[96m…\033[0m` from two more.
 #
 # WHAT IS STRIPPED, chosen by CLASS rather than by the one case that bit us. 🚨 AN
 # SGR-ONLY REGEX (`\x1b\[[0-9;]*m`) IS MEASURABLY NOT ENOUGH — the RESET ALONE defeats
@@ -1471,6 +1469,41 @@ serve::_mem_at_launch() {
 # no rule of its own: command substitution drops it. 0x80-0xFF is deliberately untouched
 # — those are the continuation bytes of every multibyte character in the log.
 #
+# ⚠️ TWO OBLIGATIONS ON EVERY CALLER, both load-bearing:
+#   * run sed under LC_ALL=C. The bracket ranges are byte-exact only there (collation
+#     decides them otherwise), and it keeps invalid multibyte bytes in a log harmless.
+#   * append your own expressions AFTER these. The scripts use `,` as the delimiter so
+#     `/` — an intermediate byte in two of the three sequence patterns — needs no
+#     backslash: inside a bracket expression a backslash is a LITERAL, so `[ -\/]` would
+#     be the range 0x20-0x5C and would eat most of the alphabet.
+DROSTE_SERVE_ESC_SED=(
+    -e $'s,\033\\][^\033\007]*\\(\007\\|\033\\\\\\),,g'   # OSC   ESC ] … BEL or ST
+    -e $'s,\033\\[[0-?]*[ -/]*[@-~],,g'                   # CSI   ESC [ … final
+    -e $'s,\033[ -/]*[0-~],,g'                            # Fe/Fs ESC … final
+    -e $'s,[\001-\010\013-\014\016-\037\177],,g'          # C0 minus TAB, LF and CR, + DEL
+)
+
+# _mem_evidence — the service's own last word about memory, if it left one.
+# 🚨 OUR OWN NOTES ARE EXCLUDED, and that is not tidiness: serve::_log_note writes into
+# this same file, so a report containing the words "out of memory" would be matched by
+# the NEXT scan and quoted back as if the server had said it. A diagnostic that can cite
+# itself as evidence is worse than silence.
+#
+# 🚨 THE SCAN IS BLIND TO TERMINAL ESCAPES, AND ALL THREE OF ITS STEPS DEPEND ON THAT.
+# ⭐ THIS IS THE PRESENT STATE, NOT A PRECAUTION — the evidence, and the classes that get
+# deleted, are stated once at DROSTE_SERVE_ESC_SED above. A column-0 anchor against
+# comfyui's log was already broken before this function was written.
+#   1. the `=== droste-serve:` exclusion is ANCHORED at line start, so a color prefix on
+#      one of OUR OWN lines slides it past the anchor and the report quotes itself back
+#      as the server's words. Silently — this is the self-poisoning defect returning by
+#      a side door.
+#   2. `${line:0:220}` TRUNCATES, and a cut landing before the sequence that resets the
+#      color bleeds the service's color into every line printed after the report.
+#   3. the signature match itself (grep -iF, unanchored) survives level-based coloring,
+#      which puts the escapes at the ENDS of a line — but a logger that highlights a
+#      word INSIDE the message splits a signature and the evidence is simply missed.
+# So the strip happens FIRST, ahead of the exclusion, the match and the truncation.
+#
 # ⭐ CR IS THE ONE THAT NEEDED A DECISION RATHER THAN A CLASS, AND IT IS SPLIT, NOT
 # DELETED. ComfyUI-Manager writes `orig_print(f"\x1b[2K\rFetching: {path}", end='')` —
 # note `end=''`, so one FILE LINE really does accumulate a dozen erased segments before
@@ -1484,6 +1517,10 @@ serve::_mem_at_launch() {
 #   split at CR     each segment is scanned on its own: nothing is lost, nothing is
 #     ⇐ chosen      fabricated at a join, and the quote is ONE segment rather than a
 #                   line of overwritten history.
+# ⚠️ serve::_log_tail PICKS THE SECOND OPTION, AND THAT IS NOT A CONTRADICTION — the two
+# callers weigh the same three options against different jobs, which is exactly why CR is
+# not in the shared list. Its reasoning is at its own site; read them together before
+# changing either.
 # ⚠️ THE SPLIT RUNS AFTER THE EXCLUSION, deliberately: `^` in sed anchors to the whole
 # pattern space, so splitting first would leave a segment beginning with our own prefix
 # untested. A note appended to one of Manager's partial lines is therefore still
@@ -1500,11 +1537,9 @@ serve::_mem_at_launch() {
 # callers' backs. sed streams in constant memory, and by ABSORBING the `grep -v` it
 # costs ZERO extra processes: the pipeline is four, exactly as it was. sed is Essential
 # in Debian, unlike the `ps` and `bc` that _mem_top and _gib design around.
-# LC_ALL=C makes the ranges byte-exact (bracket ranges are collation-dependent
-# otherwise) and keeps invalid multibyte bytes in a log harmless.
 serve::_mem_evidence() {
     local n=${1:-400} pat=() sig line
-    local esc=$'\033' bel=$'\007' cr=$'\015' c0=$'\001-\010\013-\014\016-\037\177'
+    local cr=$'\015'
     case "$DROSTE_SERVE_LOG" in /dev/*) return 1 ;; esac
     [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 1
     for sig in "${DROSTE_SERVE_OOM_SIGNATURES[@]}"; do pat+=(-e "$sig"); done
@@ -1512,15 +1547,8 @@ serve::_mem_evidence() {
     # `set -euo pipefail`. Guarded so the function RETURNS rather than dying; the guard
     # that is actually observable is mem_report's own `|| ev=""` (a command substitution
     # already contains the abort), and that one is pinned by a test.
-    # The sed script uses `,` as its delimiter so `/` — an intermediate byte in two of
-    # the three sequence patterns — needs no backslash: inside a bracket expression a
-    # backslash is a LITERAL, so `[ -\/]` would be the range 0x20-0x5C and would eat
-    # most of the alphabet.
     line=$(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null \
-           | LC_ALL=C sed -e "s,${esc}\\][^${esc}${bel}]*\\(${bel}\\|${esc}\\\\\\),,g" \
-                          -e "s,${esc}\\[[0-?]*[ -/]*[@-~],,g" \
-                          -e "s,${esc}[ -/]*[0-~],,g" \
-                          -e "s,[${c0}],,g" \
+           | LC_ALL=C sed "${DROSTE_SERVE_ESC_SED[@]}" \
                           -e '/^=== droste-serve:/d' \
                           -e "s,${cr},\\n,g" 2>/dev/null \
            | grep -iF "${pat[@]}" 2>/dev/null | tail -1) || line=""
@@ -1603,13 +1631,63 @@ serve::mem_report() {
 # Silent unless the log is a readable regular file: the unwritable-data-dir path in
 # launch repoints DROSTE_SERVE_LOG at /dev/stderr, where the output has already
 # gone and which must never be read back.
+#
+# 🚨 THE TAIL IS STRIPPED OF TERMINAL ESCAPES, AND THE EXPOSURE HERE IS WORSE THAN THE
+# ONE serve::_mem_evidence FIXES, not better. That function quotes ONE line into a
+# 220-character report; this one reproduces TEN, verbatim, into the container log — the
+# single surface a user has after a failed start. A service whose logger colors its
+# output (comfyui's does, TODAY, at our pin — see DROSTE_SERVE_ESC_SED) therefore hands
+# `podman logs` ten unbalanced escape sequences, and the failure mode is not cosmetic:
+# an SGR left open bleeds into everything printed afterward, a stray SO/SI switches the
+# reader's terminal into the line-drawing charset, and an OSC-8 payload arrives as
+# garbage text. ⭐ THE PREFIX MAKES IT SPECIFICALLY OURS: `droste-serve:   | ` is
+# printed by US and then followed by whatever the service left, so a bleed reads as
+# droste's own output misbehaving.
+# ⇒ SAME LIST, ONE DEFINITION, up at DROSTE_SERVE_ESC_SED. Copying the pattern instead
+# would put two answers to "what is an escape" in one file, and the one that fell behind
+# would fail silently.
+#
+# ⭐ CR IS THE DECISION THAT DIFFERS FROM _mem_evidence's, DELIBERATELY, AND IT IS THE
+# OPTION THAT FUNCTION REJECTED. It weighs the same three answers — delete the CR, keep
+# only the last segment, split into separate units — against a different job:
+#   the split      is what _mem_evidence chose, because it loses no evidence. HERE it
+#   is UNBOUNDED   breaks the one guarantee this function offers. ComfyUI-Manager's
+#                  `\x1b[2K\r…` sites use `end=''`, so ONE physical line accumulates a
+#                  segment per custom node; splitting turns `_log_tail 10` into hundreds
+#                  of lines dumped where a user expects ten. ⚠️ Making `podman logs`
+#                  unreadable on the failure path defeats the entire purpose of the
+#                  function, which exists to make that log self-explanatory.
+#   deleting it    splices "Fetching: AFetching: B" into one run-on line. Rejected for
+#                  the same reason as there: it fabricates text nobody wrote.
+#   last segment   is what a TERMINAL SHOWS for that line, and rendering is this
+#     ⇐ chosen     function's job where scanning was that one's. One line in, one line
+#                  out, so `n` still means what it says.
+# ⚠️ THE COST IS REAL AND IS ACCEPTED: a message a later writer overwrote is gone. Two
+# things pay for it. Segments only accumulate where a writer withholds the newline — a
+# progress display — and Python tracebacks, the thing a user actually needs from this
+# tail, are written a line at a time and are untouched. And on this very path the memory
+# report runs immediately after this call, scanning 400 lines WITH the split, so the
+# evidence class most worth not losing is recovered at the other end.
+# ⚠️ THE NAME OF THAT FUNCTION IS DELIBERATELY NOT SPELLED HERE: memdiag.sh counts its
+# CALL SITES by grepping this file, and a mention in a comment is indistinguishable from
+# a call to that row.
+# ⚠️ TRAILING CRs GO FIRST, and the order matters: `foo\r` renders as `foo`, so taking
+# the last segment without that step would blank every line of a CRLF log.
+#
+# ONE EXTRA PROCESS ON A FAILURE PATH, and it is the same trade _mem_evidence documents:
+# the alternative is a bash rewrite needing `shopt -s extglob`, a global option this
+# library must not switch on behind its callers. sed streams in constant memory and is
+# Essential in Debian.
 serve::_log_tail() {
-    local n=${1:-10} line
+    local n=${1:-10} line cr=$'\015'
     case "$DROSTE_SERVE_LOG" in /dev/*) return 0 ;; esac
     [ -f "$DROSTE_SERVE_LOG" ] && [ -r "$DROSTE_SERVE_LOG" ] || return 0
     while IFS= read -r line; do
         printf 'droste-serve:   | %s\n' "$line" >&2
-    done < <(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null)
+    done < <(tail -n "$n" "$DROSTE_SERVE_LOG" 2>/dev/null \
+             | LC_ALL=C sed "${DROSTE_SERVE_ESC_SED[@]}" \
+                            -e "s,${cr}${cr}*\$,," \
+                            -e "s,.*${cr},," 2>/dev/null)
     return 0
 }
 

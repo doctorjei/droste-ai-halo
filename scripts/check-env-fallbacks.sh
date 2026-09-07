@@ -17,7 +17,7 @@
 #      another variable"
 #
 # `${OTHER-}` is mechanically safe and legitimately useful — it is exactly how a
-# class-2 line says "default is whatever is already there, replace the right-hand
+# system-class line says "default is whatever is already there, replace the right-hand
 # side to set your own". So a template may reach for another variable; it may
 # only do it in one shape.
 #

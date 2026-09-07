@@ -195,7 +195,7 @@ OPTIONAL=(
 #   AUTO   a VALUE flag plus a droste-owned SENTINEL word. The sentinel emits
 #          nothing; every other accepted spelling is a number that reaches the flag
 #          unchanged. The sentinel is a word llama does not accept, so the value does
-#          NOT pass through unprocessed — which is the class-3 naming rule, and the
+#          NOT pass through unprocessed — which is the server-class naming rule, and the
 #          reason the row is droste-named rather than native.
 # ⚠️ UNSET IS A THIRD STATE, DISTINCT FROM off. An unset bool emits NEITHER flag, so
 # upstream's own default stands. That matters for --kv-unified, whose help says the
@@ -1439,7 +1439,7 @@ llama_pre_launch() {
     #                  `is_valid_hf_token(token)` … `else if (!token.empty())` for the
     #                  API path (hf-cache.cpp:207-211). So "" IS the default here.
     # 🚨 HF_TOKEN IS NEVERTHELESS UNSET NOW, AND NOT BY THIS RULE — s68 added it to
-    # _class2_on_clear below under the s67 CLASS-2 STANDARD PROCEDURE, which is uniform
+    # _system_class_on_clear below under the s67 SYSTEM-CLASS STANDARD PROCEDURE, which is uniform
     # for the class and deliberately overrides the measured-difference test these three
     # categories are. ⇒ THE TALLY ABOVE STILL DESCRIBES THE CATEGORY-3 VERDICTS, but the
     # set this function LEAVES ALONE is one smaller than it reads: HF_TOKEN is no longer
@@ -1590,15 +1590,15 @@ llama_pre_launch() {
         LLAMA_CACHE                         # common.cpp:995 is a bare getenv() test
     )
 
-    # ── a fourth separate claim: the one CLASS-2 name on this surface (s68) ───
-    # 🚨 HF_TOKEN IS HERE UNDER THE s67 CLASS-2 STANDARD PROCEDURE (Jei: "for variables
+    # ── a fourth separate claim: the one SYSTEM-CLASS name on this surface (s68) ───
+    # 🚨 HF_TOKEN IS HERE UNDER THE s67 SYSTEM-CLASS STANDARD PROCEDURE (Jei: "for variables
     # in the class (external to Droste and server), follow one standard procedure: if it
     # was unset before, it should be unset again"), which is UNIFORM for the class and
     # deliberately does NOT ask whether this particular blank is harmless. The canon
-    # names HF_TOKEN as the class-2 example outright: HuggingFace owns the contract, and
+    # names HF_TOKEN as the system-class example outright: HuggingFace owns the contract, and
     # llama-server reading it through -hft does not make it llama's.
     # ⭐ IT IS THE HALF THAT WAS MISSING, NOT A NEW POLICY. llama.cfg already ships the
-    # class-2 SHAPE — `HF_TOKEN=${HF_TOKEN-}`, "keep whatever is there; replace the RHS
+    # system-class SHAPE — `HF_TOKEN=${HF_TOKEN-}`, "keep whatever is there; replace the RHS
     # to set your own" — and that shape is only a true no-op with this guard behind it:
     # was set ⇒ same string ⇒ no diff; was unset ⇒ empty ⇒ deleted ⇒ unset.
     # ⚠️ AND ITS BLANK IS HARMLESS AT THE PIN, WHICH IS THE POINT RATHER THAN AN
@@ -1607,10 +1607,10 @@ llama_pre_launch() {
     # (`if (!opts.bearer_token.empty())` at download.cpp:313-314; `is_valid_hf_token()`
     # … `else if (!token.empty())` at hf-cache.cpp:207-211). The uniform rule exists
     # BECAUSE a per-variable reading is what missed xet-core's Rust reader in s67 — a
-    # class-2 name may have more than one reader, in more than one language, and
+    # system-class name may have more than one reader, in more than one language, and
     # checking the obvious one is not checking it.
     # ⚠️ A SEPARATE ARRAY BECAUSE IT IS A SEPARATE CLAIM, exactly as the three above:
-    # this one rests on the class-2 ruling, not on a measured difference at the pin, so
+    # this one rests on the system-class ruling, not on a measured difference at the pin, so
     # it must not silently inflate an audit that counts measured ones.
     # ⚠️ ITS ORDER AGAINST THE DROSTE_LLAMA_HF_TOKEN_FILE BLOCK FURTHER DOWN DOES NOT
     # MATTER, AND THAT WAS MEASURED RATHER THAN ASSUMED. This comment first claimed the
@@ -1622,13 +1622,13 @@ llama_pre_launch() {
     # hazard elsewhere in these specs (a `${NATIVE=default}` below a guard IS order-
     # dependent), so the next reader will ask the question. The answer is recorded here
     # with the mutation that settles it, so nobody re-derives it from the shape of the code.
-    local -a _class2_on_clear=(
+    local -a _system_class_on_clear=(
         HF_TOKEN                            # HuggingFace's, not llama's (s67 rule)
     )
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
                            "${_turbo_blank_is_unset[@]}" \
                            "${_cache_blank_is_unset[@]}" \
-                           "${_class2_on_clear[@]}"
+                           "${_system_class_on_clear[@]}"
 
     # ── the XDG bases llama.cfg never names, whose blank breaks the cache dir ──
     # 🚨 THE GUARD COVERS THE WHOLE XDG BASE-DIRECTORY FAMILY, NOT ONLY THE NAME WITH A

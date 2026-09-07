@@ -777,7 +777,7 @@ vllm_env() {
         VLLM_CUDART_SO_PATH
     )
 
-    # ── class 2 proper: a name that is not vLLM's at all (s58) ────────────────
+    # ── system-class proper: a name that is not vLLM's at all (s58) ────────────────
     # 🚨 THE MEASURED DIFFERENCE IS NOT IN A vLLM READER — IT IS IN A LOADER THAT
     # COPIES THE VALUE ONWARD. model_loader/runai_streamer_loader.py:53-57 is
     #     aws_endpoint_url = os.getenv("AWS_ENDPOINT_URL")
@@ -798,9 +798,9 @@ vllm_env() {
     # earlier "not a key in envs.py" line as the rule would exclude exactly the names
     # this array exists for.
     # ⚠️ AND THE ENTRY CRITERION IS NO LONGER A MEASURED DIFFERENCE EITHER — it is the
-    # s67 class-2 procedure, which is uniform. "A longer list is not a better one" still
+    # s67 system-class procedure, which is uniform. "A longer list is not a better one" still
     # governs every OTHER array in this function; for this one the class is the list.
-    local -a _class2_on_clear=(
+    local -a _system_class_on_clear=(
         AWS_ENDPOINT_URL                                # runai_streamer_loader.py:53-57
         HF_XET_HIGH_PERFORMANCE                         # xet-core: std::env::var -> Ok("")
         # ── s68: the rest of the class, added because the RULE is the criterion ──
@@ -809,7 +809,7 @@ vllm_env() {
         AWS_SECRET_ACCESS_KEY                           # botocore's
         CUDA_HOME                                       # the CUDA toolkit's
     )
-    # 🚨 THE FOUR ABOVE ARE HERE BECAUSE THE s67 CLASS-2 PROCEDURE IS UNIFORM, AND EACH
+    # 🚨 THE FOUR ABOVE ARE HERE BECAUSE THE s67 SYSTEM-CLASS PROCEDURE IS UNIFORM, AND EACH
     # OF THEM WAS PREVIOUSLY EXCLUDED BY A MEASUREMENT — which is exactly the test the
     # ruling overrides for this class: "do not re-derive per name whether an empty string
     # happens to be harmless for that reader; the procedure is the answer."
@@ -844,7 +844,7 @@ vllm_env() {
     #                          the three dead S3_* names had — and it is REPORTED rather
     #                          than acted on here, because what a surface offers is
     #                          Jei's to decide and this file only owns the wiring.
-    # 🚨 HF_XET_HIGH_PERFORMANCE IS LISTED UNDER THE s67 CLASS-2 STANDARD PROCEDURE
+    # 🚨 HF_XET_HIGH_PERFORMANCE IS LISTED UNDER THE s67 SYSTEM-CLASS STANDARD PROCEDURE
     # (Jei: "if it was unset before, it should be unset again"), which is UNIFORM for the
     # class and deliberately does NOT ask whether this particular blank is harmless.
     # ⭐ IT EARNS THE ENTRY ANYWAY, and the reason is why the rule is uniform: the Python
@@ -860,7 +860,7 @@ vllm_env() {
 
     # ⭐ AND THE EIGHT THAT ARE DELIBERATELY NOT GUARDED, NAMED SO THAT "not on the
     # list" is a decision rather than an omission. 🚨 ALL EIGHT ARE vLLM'S OWN NAMES,
-    # AND THAT IS NOT A COINCIDENCE — s68 moved every class-2 name off this list under
+    # AND THAT IS NOT A COINCIDENCE — s68 moved every system-class name off this list under
     # the uniform procedure, so what is left is exactly the set the measured-difference
     # test still governs. For these eight TWO INDEPENDENT REASONS AGREE, which is the
     # strongest evidence either is right:
@@ -880,7 +880,7 @@ vllm_env() {
     #   VLLM_NCCL_SO_PATH   VLLM_NCCL_INCLUDE_PATH   VLLM_DISABLED_KERNELS
     # ⚠️ AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY AND CUDA_HOME USED TO BE NAMED HERE,
     # ON THE MEASUREMENT NOW RECORDED BESIDE THEIR ENTRIES ABOVE. They are guarded as of
-    # s68 and the measurement did not change — the CRITERION did, for class 2 only.
+    # s68 and the measurement did not change — the CRITERION did, for system-class only.
     # ⭐ AND THE ONE THING THIS REWRITE MUST NOT LOSE: the second reason above — "a blank
     # is the user saying none" — NEVER APPLIED TO THE AWS PAIR. A blank credential is the
     # user saying NOTHING. That was already written down when they sat here on one reason
@@ -907,7 +907,7 @@ vllm_env() {
     # listed at all, here or above — VLLM_HOST_IP, VLLM_LOOPBACK_IP, the default-False
     # AITER flags, and so on. There is nothing to decide about them.
     droste::blank_is_unset "${_fatal_on_clear[@]}" "${_wrong_on_clear[@]}" \
-                           "${_class2_on_clear[@]}"
+                           "${_system_class_on_clear[@]}"
 
     # ── the XDG bases vllm.cfg QUOTES but does not EXPOSE (s58) ───────────────
     # 🚨 FOUR OF THE FILE'S LINES DOCUMENT THEIR DEFAULT AS `${XDG_CACHE_HOME:-~/.cache}/

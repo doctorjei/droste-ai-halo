@@ -2002,7 +2002,10 @@ Toolbox submodule provenance (droste-ai-halo):
   tarball used `/opt/rocm/llvm/bin`).
 - Pure-python FP8 Triton kernels (leonyurko): NOT a wheel — the modules live on
   `PYTHONPATH` at serve time (`patch_fp8_kernels.py`'s shim does
-  `from fp8_triton import fp8_gemm`, opt-in via `VLLM_STRIX_FP8_TRITON=1`).
+  `from fp8_triton import fp8_gemm`, gated on `VLLM_STRIX_FP8_TRITON=1`).
+  🚨 NO LONGER OPT-IN — `vllm_pre_launch` defaults it ON (s71): with it off, ANY
+  fp8 model KILLS THE ENGINE CORE on gfx1151, because the shim's passthrough
+  reaches `torch._scaled_mm`, which is "only supported on ... ROCm MI300+".
   Carried as a source tree; vllm-runtime `COPY`s it to `/opt/fp8`.
   🚨 IT NEVER RAN, IN ANY BUILD THIS REPO HAS PRODUCED, UNTIL s61 part 2. The
   script targeted `vllm/model_executor/kernels/linear/scaled_mm/pytorch.py`, the
@@ -2351,9 +2354,24 @@ Toolbox submodule provenance (droste-ai-halo):
   clone, the trim, the COPY and `PYTHONPATH` all worked; the patch that puts a
   call to `fp8_triton` into the wheel targeted a path that does not exist at our
   pin, so no build before s61 part 2 shipped a shim at all. Re-pointed and
-  guarded in s61 part 2; still unvalidated on hardware, and no decode win is
-  expected until the output-padding gate is addressed (see the FP8 bullet in the
-  vllm-build section).
+  guarded in s61 part 2, and VALIDATED ON HARDWARE in s71 (Raiju, gfx1151).
+  🚨 IT IS NOT A TUNING KNOB ON THIS HARDWARE, IT IS REQUIRED. With
+  `VLLM_STRIX_FP8_TRITON` unset the shim falls through to `torch._scaled_mm`,
+  which raises "only supported on CUDA devices with compute capability >= 9.0
+  or 8.9, or ROCm MI300+" and the engine core dies before the first token. With
+  it set, the same model serves. `vllm_pre_launch` therefore DEFAULTS IT ON.
+  ⭐ The old note here said "no decode win is expected until the output-padding
+  gate is addressed". That gate WAS addressed in s71 and the framing was wrong
+  twice over: `--compilation-config {"mode":3}` does lift the M=17 padding (the
+  log resolves `CompilationMode.VLLM_COMPILE: 3` even under `--enforce-eager`),
+  but it buys +0.4% batch / +4.2% single-stream AND it also turns inductor
+  compilation on, so the gain is not attributable to the padding. ⇒ overriding
+  `get_output_padding` is NOT worth carrying. Measured; do not re-derive.
+  ⚠️ Separately measured, and the opposite result: the ROCm *MoE* padding
+  (`VLLM_ROCM_MOE_PADDING`, unquantized experts) is worth ~11.7% (891 vs 787
+  tok/s, reproduced twice) at a cost of ~0.9 GiB. Its default (on) is correct.
+  ⭐ SAME FLAG FAMILY, SAME FOUR-PART GATE, DIFFERENT CALL SITE, OPPOSITE
+  ANSWERS — never generalize one padding arm to the other.
 - Startup-log noise, known and COSMETIC — `Op 'sparse_attn_indexer' not present
   in model, enabling with '+sparse_attn_indexer' has no effect` is UPSTREAM's
   own ROCm default, not ours (2026-08-14; nothing in this repo touches

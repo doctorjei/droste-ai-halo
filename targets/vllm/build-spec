@@ -81,7 +81,16 @@ export DROSTE_VLLM_CONFIG
 # through droste::cfg_get and is the only place that validates it (an IPv4 literal, one
 # message on all five boxes); a second reader here would be a second mechanism that
 # agrees with it only until one of the two changes.
-SERVICE=( vllm serve --host 0.0.0.0 --config "$DROSTE_VLLM_CONFIG" )
+# ⚠️ THE COMPILATION MODE IS STATED HERE TOO, FOR THE SAME REASON AS `--host`:
+# PRE_LAUNCH REBUILDS this array rather than appending to it, so a token present
+# in only one of the two makes the box's behavior depend on whether PRE_LAUNCH
+# ran. The value here is the WIRING DEFAULT; PRE_LAUNCH re-emits it from
+# $DROSTE_VLLM_COMPILATION_MODE, so a user's choice still wins.
+# 🚨 IF THE DEFAULT MODE EVER CHANGES, CHANGE IT IN BOTH PLACES — same standing
+# hazard the `--host 0.0.0.0` pair carries, and g1lab/vllmwire.sh has a row for
+# each so a one-sided edit reddens.
+SERVICE=( vllm serve --host 0.0.0.0 --config "$DROSTE_VLLM_CONFIG"
+          --compilation-config '{"mode":3}' )
 
 # ── HEALTH — probe endpoint for droste-healthcheck.sh ────────────────────────
 # vLLM's OpenAI server exposes /health (200 when the engine is ready). Weight
@@ -257,7 +266,14 @@ VLLM_BOOL_VARS=(
     "RT_LORA_UPDATES_OK:VLLM_ALLOW_RUNTIME_LORA_UPDATING:1:0"
     # ── Caches & config ── bool(int) ×3, == "1" ×1
     "USE_TRITON_AWQ:VLLM_USE_TRITON_AWQ:1:0"
-    "DISABLE_COMPILE_CACHE:VLLM_DISABLE_COMPILE_CACHE:1:0"
+    # ⚠️ INVERTED (DISABLE_), like the four other negatives in this table. Upstream
+    # spells it as a DISABLE, and `DISABLE_COMPILE_CACHE=off` is a double negative
+    # a reader has to unpick — "off, do not disable" — so we expose the positive
+    # state and swap the wire values. Renaming is the canon's stated fix for an
+    # upstream negative name; this row was simply the one that never got it.
+    # ⚠️ THIS IS A RENAME, NOT A DEFAULT CHANGE. Unset still leaves the variable
+    # alone, so the image's baked VLLM_DISABLE_COMPILE_CACHE=1 continues to stand.
+    "COMPILE_CACHE:VLLM_DISABLE_COMPILE_CACHE:0:1"                   # INVERTED (DISABLE_)
     "ASSETS_CACHE_MODEL_CLEAN:VLLM_ASSETS_CACHE_MODEL_CLEAN:1:0"
     "V1_USE_OUTLINES_CACHE:VLLM_V1_USE_OUTLINES_CACHE:1:0"
     # ── Server liveness ── bool(int)
@@ -1364,6 +1380,55 @@ vllm_pre_launch() {
     # and 7), so a default set at source time is overwritten by their file.
     : "${DROSTE_VLLM_STRIX_FP8_TRITON:=on}"
 
+    # ── compilation mode: lift the M=17 activation padding (s71, MEASURED) ────
+    # 🚨 THE GATE IS `pad_output = mode < CompilationMode.VLLM_COMPILE`, so a mode
+    # below 3 pads every quantized activation to 17 rows. `--enforce-eager`
+    # resolves mode to NONE(0), which is why a stock box pads — and at decode
+    # with one sequence the real M is 1, so 17 rows of work are done for 1 row
+    # of answer.
+    # ⭐ THE THREE-ARM ISOLATION, single-stream, Qwen2.5-1.5B fp8 on gfx1151:
+    #     mode0 30.36 · mode2 30.46 · mode3 31.86 tok/s
+    #   ⇒ COMPILATION alone +0.33%, THE PADDING alone +4.60%, combined +4.94%.
+    #   mode 2 (DYNAMO_TRACE_ONCE) is what separates them: it compiles AND keeps
+    #   the padding, because 2 < 3. Batch throughput is UNCHANGED in all three
+    #   arms (854-858 tok/s) because at any real concurrency M already exceeds
+    #   17 — so this is an interactive/single-user win, not a serving one.
+    # ⭐ N1a: the default belongs HERE, not as an active line in vllm.cfg, which
+    # is seeded `if_missing` and would reach only boxes created after the edit.
+    # ⚠️ `:=` — a finite set, so a blank yields OUR default (s57 category 2).
+    # ⚠️ KV memory is IDENTICAL across the arms (23.88 GiB), and mode 3 coexists
+    # with `enforce-eager: true` — vLLM logs "overriding optimization level to
+    # -O0" and leaves an explicitly-set mode alone (`if ... mode is None`).
+    # ⭐ THIS IS NOT AN EXOTIC SETTING — IT RESTORES WHAT THE BOX WOULD ALREADY
+    # HAVE. vLLM derives the mode only `if ... mode is None`, and the derivation
+    # is BINARY: optimization_level > O0 gives VLLM_COMPILE, O0 gives NONE.
+    # `enforce-eager: true` (our Halo cudagraph workaround) forces O0, so mode
+    # NONE — and the M=17 padding — is a SIDE EFFECT of that workaround, not
+    # anything anyone chose. Setting the mode explicitly decouples them: cudagraph
+    # capture stays off (`cudagraph_mode: NONE` in the measured log) while the
+    # compilation mode a non-enforce-eager box would have had comes back.
+    # ⭐ Modes 1 and 2 are UNREACHABLE through optimization_level; only an
+    # explicit mode gets there. That is why `dynamo_trace_once` had to exist as
+    # a setting for the isolation to be possible at all.
+    # ✅ STARTUP COST MEASURED (Raiju), and it is the reason this is safe to
+    # default: with the compile cache ENABLED, two consecutive starts took 116s
+    # and 117s — no second-start speedup at all. If compilation were a
+    # meaningful share of startup the cache would have shown it, so it is not,
+    # and mode >= 1 costs no meaningful startup time even though
+    # VLLM_DISABLE_COMPILE_CACHE=1 stays baked.
+    # ⚠️ That same run found NO PicklingError with the cache on, so the baked
+    # workaround looks stale — but removing it buys nothing measurable, so it
+    # STAYS. One negative test on one model is not proof the bug cannot recur.
+    : "${DROSTE_VLLM_COMPILATION_MODE:=vllm_compile}"
+    case "$DROSTE_VLLM_COMPILATION_MODE" in
+        none)                _droste_cmode=0 ;;
+        stock_torch_compile) _droste_cmode=1 ;;
+        dynamo_trace_once)   _droste_cmode=2 ;;
+        vllm_compile)        _droste_cmode=3 ;;
+        *)  _droste_cmode=3
+            serve::err "DROSTE_VLLM_COMPILATION_MODE=\"$DROSTE_VLLM_COMPILATION_MODE\" is not one of none|stock_torch_compile|dynamo_trace_once|vllm_compile in $CFG_FILE — using vllm_compile. Fix the line and restart the box." ;;
+    esac
+
     vllm_env
 
     # Runs BEFORE SERVICE is built: the guard may repoint $DROSTE_VLLM_CONFIG at an
@@ -1381,6 +1446,12 @@ vllm_pre_launch() {
     # Quote-aware split (droste::split_args): a value may contain spaces.
     # shellcheck disable=SC2206
     mapfile -d '' -t _extra < <(droste::split_args "${DROSTE_VLLM_EXTRA_ARGS:-}")
+    # --compilation-config sits BEFORE the catch-all like every other droste
+    # flag, so a --compilation-config in DROSTE_VLLM_EXTRA_ARGS still wins.
+    # ⚠️ It wins WHOLESALE, not key-by-key: argparse keeps the last occurrence,
+    # so a user passing their own dict replaces our mode rather than merging
+    # with it. Say so in the config file, not only here.
     SERVICE=( vllm serve --host 0.0.0.0 --config "$DROSTE_VLLM_CONFIG"
+              --compilation-config "{\"mode\":$_droste_cmode}"
               ${_extra[@]+"${_extra[@]}"} )
 }

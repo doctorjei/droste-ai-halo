@@ -1,0 +1,155 @@
+Subject:    ggml-cuda: stop direct ROCm_Host compute on HIP integrated GPUs, so
+            multi-sequence batches on gfx1151 no longer return corrupted output
+Upstream:   ggml-org/llama.cpp#25863 -- OPEN, and NOT OURS. We filed nothing and
+            will not (standing project ruling on outward submissions). It is
+            authored by Victor-Loos, reviewed and independently validated by an
+            AMD engineer (liminfei-amd), who asked for merge on 2026-07-24. It
+            was still unmerged when this patch was carried.
+            BECAUSE IT MAY MERGE, THE GUARD'S FAILURE MESSAGE HAS TWO ARMS.
+            See "TWO OUTCOMES" below -- this is NOT one of our permanent carries.
+Applies to: TheTom/llama-cpp-turboquant @ fb2cc35ab3507a5aab56fe593620cd96d8f45384
+            (ggml/src/ggml-cuda/ggml-cuda.cu, functions
+            ggml_backend_cuda_device_supports_buft,
+            ggml_backend_cuda_device_get_props,
+            ggml_backend_cuda_device_get_host_buffer_type)
+
+WHAT IT FIXES
+=============
+On gfx1151 (Strix Halo) our HIP build returns WRONG OUTPUT whenever a batch
+carries more than one sequence. Measured on Loaf at this pin, gemma-4-31B-it-qat
+UD-Q4_K_XL over GPL-3, 14 chunks, four arms:
+
+    CPU reference (-ngl 0, touches no HIP)  ....  519.2226   <- ground truth
+    GPU, n_seq=1  (-b 512)                  ....  526.5510   (+1.4%, normal)
+    GPU, n_seq=4, HIP_LAUNCH_BLOCKING=1     ....  450.2324   (-13.3%, WRONG)
+    GPU, n_seq=4, no variable               ....  542607.9074 / 555865.6336
+
+i.e. TWO defects, not one. The unblocked arm is a race -- catastrophic and
+nondeterministic (the two runs above disagree with each other). Serializing
+kernel launches with HIP_LAUNCH_BLOCKING=1 removes the race and leaves a
+DETERMINISTIC 13-23% error, present at every one of the fourteen chunks, in the
+same direction. A stable wrong answer is still a wrong answer, and blocking is
+therefore NOT a remedy: it buys reproducibility, not correctness.
+
+ROOT CAUSE, bisected upstream (not by us) to ggml-org/llama.cpp c7d87229
+"ggml-cuda : restore prop.integrated on HIP builds" (#24233): restoring the real
+prop.integrated on HIP made supports_buft(ROCm_Host) flip false -> true, so the
+CUDA backend began computing DIRECTLY on host-visible buffers on APUs. At this
+pin the enabling line is still there --
+
+    #if defined(GGML_USE_HIP)
+            info.devices[id].integrated = prop.integrated;
+    #else
+            info.devices[id].integrated = false; // Temporarily disabled ... (#15034)
+    #endif
+
+-- and note the shape of it: the guard EXISTS and is on the WRONG BRANCH.
+Upstream disabled the path for CUDA *because of corrupted output* and left it
+live for HIP, which is the branch gfx1151 takes. We build -DGGML_HIP=ON on an
+integrated GPU, so we are exposed by construction, not by luck.
+
+The upstream symptom is the same defect seen from the serving side: with
+-np 4 --kv-unified, llama-server returns complete responses belonging to a
+DIFFERENT, earlier request (#25992). liminfei-amd reproduced that on gfx1151 --
+2 cross-request replays in 96 responses -- and reported 96/96 clean with this
+patch applied.
+
+WHY THIS PATCH AND NOT SOMETHING CHEAPER
+========================================
+Three alternatives were considered and all are worse:
+
+  * HIP_LAUNCH_BLOCKING=1 -- MEASURED HERE, DOES NOT FIX IT (the 450.2324 arm
+    above). It also serializes every kernel launch. Do not reach for it.
+  * GGML_CUDA_NO_PINNED=1 -- disables the host-buffer factory outright. That is
+    the FIRST version of this very PR, and liminfei-amd measured it at
+    pp512 5857 -> 1502 t/s, a 3.9x prefill loss. It additionally aborts at an
+    unpatched pin (their retest notes it "no longer aborts" only WITH the patch),
+    so it cannot even be used as a probe here.
+  * The Vulkan backend, or halo-box/strix-llama.cpp -- that fork carries the
+    IDENTICAL regression (same integrated = prop.integrated under HIP, zero
+    occurrences of supports_cuda_host_buft), which is why its own CI sets
+    HIP_LAUNCH_BLOCKING=1; and it implements no turbo KV type, while
+    LLAMA_ARG_CACHE_TYPE_V=turbo3 is our shipped default.
+
+COST: liminfei-amd, gfx1151 / ROCm 7.2.1, exact-parent/head ABBA across
+ngl=0,10,99 -- within -1.84% to +0.87%. Pinned staging and output buffers REMAIN
+AVAILABLE; only direct compute on ROCm_Host is refused. An independent
+llama-bench (Qwen3.6-35B-A3B) put pp512 at 1165.42 -> 1144.09 and tg128 at
+67.57 -> 68.11. Those are AMD's numbers on ROCm 7.2.1, not ours on TheRock
+7.13.0a20260501 -- re-measure on our stack rather than quoting them forward.
+
+TWO OUTCOMES, AND THEY CALL FOR OPPOSITE ACTIONS
+================================================
+Unlike our other carried patches, this one has a live upstream PR that an AMD
+engineer has asked to merge. When the guard goes red, READ THE SOURCE FIRST:
+
+  (a) supports_cuda_host_buft (or an equivalent) is ALREADY in the pinned tree,
+      or the HIP branch no longer sets integrated = prop.integrated.
+      => upstream fixed it. DELETE this patch and its guard, advance the pin.
+      Do NOT re-derive a hunk for a fix that is already there.
+  (b) the stock one-line supports_buft return is STILL present and the hunk
+      merely failed to apply. => ordinary drift: RE-DERIVE at the new sha and
+      update the guard's counts to match what you actually found.
+
+DEVIATION FROM THE UPSTREAM DIFF: the PR's diff carries "old mode 100644 /
+new mode 100755" -- an artifact of the author's checkout. Those two lines are
+STRIPPED here; making a source file executable is not part of the fix. Nothing
+else differs, so a re-derivation can diff this body against the PR directly.
+
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -4661,6 +4661,22 @@ static enum ggml_backend_dev_type ggml_backend_cuda_device_get_type(ggml_backend
+         : GGML_BACKEND_DEVICE_TYPE_GPU;
+ }
+ 
++static bool ggml_backend_cuda_host_buffer_supported() {
++    return getenv("GGML_CUDA_NO_PINNED") == nullptr;
++}
++
++static bool ggml_backend_cuda_device_supports_cuda_host_buft(int device) {
++#if defined(GGML_USE_HIP)
++    if (ggml_cuda_info().devices[device].integrated) {
++        return false;
++    }
++#else
++    GGML_UNUSED(device);
++#endif
++
++    return ggml_backend_cuda_host_buffer_supported();
++}
++
+ static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
+     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
+ 
+@@ -4670,7 +4686,7 @@ static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_back
+     props->device_id   = ctx->pci_bus_id.empty() ? nullptr : ctx->pci_bus_id.c_str();
+     ggml_backend_cuda_device_get_memory(dev, &props->memory_free, &props->memory_total);
+ 
+-    bool host_buffer = getenv("GGML_CUDA_NO_PINNED") == nullptr;
++    bool host_buffer = ggml_backend_cuda_host_buffer_supported();
+ #ifdef GGML_CUDA_NO_PEER_COPY
+     bool events = false;
+ #else
+@@ -4698,6 +4714,10 @@ static ggml_backend_buffer_type_t ggml_backend_cuda_device_get_buffer_type(ggml_
+ 
+ static ggml_backend_buffer_type_t ggml_backend_cuda_device_get_host_buffer_type(ggml_backend_dev_t dev) {
+     GGML_UNUSED(dev);
++    if (!ggml_backend_cuda_host_buffer_supported()) {
++        return nullptr;
++    }
++
+     return ggml_backend_cuda_host_buffer_type();
+ }
+ 
+@@ -5131,7 +5151,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+ static bool ggml_backend_cuda_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+     ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *) dev->context;
+     const bool integrated = ggml_cuda_info().devices[dev_ctx->device].integrated;
+-    return (ggml_backend_buft_is_cuda(buft) && buft->device == dev) || (integrated && ggml_backend_buft_is_cuda_host(buft));
++    return (ggml_backend_buft_is_cuda(buft) && buft->device == dev) ||
++        (integrated &&
++         ggml_backend_buft_is_cuda_host(buft) &&
++         ggml_backend_cuda_device_supports_cuda_host_buft(dev_ctx->device));
+ }
+ 
+ static int64_t get_op_batch_size(const ggml_tensor * op) {

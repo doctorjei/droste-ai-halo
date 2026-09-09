@@ -27,6 +27,7 @@ COPY llama-grammar.patch /tmp/
 COPY llama-api-prefix-auth.patch /tmp/
 COPY llama-mla-cache-coerce.patch /tmp/
 COPY llama-spec-types-default.patch /tmp/
+COPY llama-hip-igpu-host-buffer.patch /tmp/
 
 # Fetch the pinned commit by sha, then materialize submodules.
 # NOT a clone: `git clone --single-branch` retrieves only the fork's default
@@ -387,6 +388,101 @@ RUN set -e; \
     [ "$(ns 'spec_types_is_default(params)')" -ge 2 ] \
       || die "the patched predicate lost its call sites"; \
     echo "llama-spec-types-default: applied; an ngram method no longer suppresses draft-repo sidecar discovery or sidecar type inference"
+
+# ── Direct ROCm_Host compute on HIP integrated GPUs ──────────────────────────
+#
+# WHAT IT FIXES: on gfx1151 our HIP build returns WRONG OUTPUT whenever a batch
+# carries more than one sequence. Measured on Loaf at this pin (gemma-4-31B-it-qat
+# UD-Q4_K_XL over GPL-3, 14 chunks): CPU reference 519.2226, n_seq=1 526.5510,
+# n_seq=4 with HIP_LAUNCH_BLOCKING=1 450.2324, n_seq=4 unblocked 542607.9074.
+# That is TWO defects -- a race, plus a DETERMINISTIC 13-23% error that survives
+# serialization -- and it is why HIP_LAUNCH_BLOCKING is NOT the remedy. Upstream
+# bisected the cause to c7d87229 (#24233), which restored prop.integrated on HIP
+# and thereby let the backend compute directly on host-visible buffers. Full
+# rationale, the alternatives, and AMD's cost measurements live in
+# llama-hip-igpu-host-buffer.patch.
+#
+# 🚨 TWO OUTCOMES, NOT ONE. Unlike our other carries this is a LIVE upstream PR
+# (#25863) that an AMD engineer validated and asked to merge, so it may land
+# without us. Which of the two things happened decides whether to re-derive the
+# hunk or DELETE this patch outright -- opposite actions from the same red build.
+#
+# 🚨 WHY A GUARD AND NOT A BARE `patch`. Every failure here is silent: the image
+# builds, the server starts, /health answers 200, and multi-sequence batches go
+# on returning numbers nobody can tell are wrong by looking at them. The output
+# is fluent; only a perplexity or a nonce-checked serving test can see it.
+#
+# ⚠️ THE LOAD-BEARING CHECK IS THAT THE REGRESSION IS STILL HERE. A patch that
+# targets a path the pinned tree no longer has would no-op in every build while
+# everything around it looked configured -- so the guard asserts BOTH that
+# `integrated = prop.integrated` is present AND that it is the `#if
+# defined(GGML_USE_HIP)` arm, which is the arm gfx1151 takes under -DGGML_HIP=ON.
+# If that line is gone, upstream fixed this and outcome (a) applies.
+#
+# ⚠️ AND REACHABILITY IS ASSERTED SEPARATELY FROM APPLICATION. The new predicate
+# could apply perfectly and be called by nothing; the total-reference count of 2
+# (its definition plus its one call site inside supports_buft) is what says the
+# fix is actually consulted. Counts are the contract; if one moves, re-derive
+# rather than adjust it.
+RUN set -e; \
+    f=ggml/src/ggml-cuda/ggml-cuda.cu; \
+    die() { echo "llama-hip-igpu-host-buffer: FATAL: $*" >&2; \
+            echo "llama-hip-igpu-host-buffer: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-hip-igpu-host-buffer: READ ggml_backend_cuda_device_supports_buft in ${f} at the" >&2; \
+            echo "llama-hip-igpu-host-buffer: CURRENT LLAMA_REF before touching anything. THERE ARE TWO" >&2; \
+            echo "llama-hip-igpu-host-buffer: OUTCOMES HERE AND THEY CALL FOR OPPOSITE ACTIONS:" >&2; \
+            echo "llama-hip-igpu-host-buffer:   (a) supports_cuda_host_buft (or an equivalent) is ALREADY" >&2; \
+            echo "llama-hip-igpu-host-buffer:       in the tree, or the HIP arm no longer sets" >&2; \
+            echo "llama-hip-igpu-host-buffer:       integrated = prop.integrated. Upstream merged #25863 or" >&2; \
+            echo "llama-hip-igpu-host-buffer:       reverted #24233. DELETE llama-hip-igpu-host-buffer.patch" >&2; \
+            echo "llama-hip-igpu-host-buffer:       AND THIS GUARD, and advance the pin. Do NOT re-derive a" >&2; \
+            echo "llama-hip-igpu-host-buffer:       hunk for a fix that is already there." >&2; \
+            echo "llama-hip-igpu-host-buffer:   (b) the stock one-line supports_buft return is STILL present" >&2; \
+            echo "llama-hip-igpu-host-buffer:       and the hunk merely failed to apply. That is ordinary" >&2; \
+            echo "llama-hip-igpu-host-buffer:       drift: RE-DERIVE the hunk at the new sha and update the" >&2; \
+            echo "llama-hip-igpu-host-buffer:       counts in this guard to match what you actually found." >&2; \
+            echo "llama-hip-igpu-host-buffer: Do NOT drop -F0, and do NOT substitute HIP_LAUNCH_BLOCKING=1 or" >&2; \
+            echo "llama-hip-igpu-host-buffer: GGML_CUDA_NO_PINNED=1 for this patch. The first was MEASURED" >&2; \
+            echo "llama-hip-igpu-host-buffer: not to fix the defect; the second costs 3.9x prefill and aborts" >&2; \
+            echo "llama-hip-igpu-host-buffer: at an unpatched pin. See the patch header." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    ns() { grep -Fc  -- "$1" "$f" || true; }; \
+    [ -f "$f" ] \
+      || die "$f does not exist at this LLAMA_REF -- the CUDA/HIP backend has moved or been renamed"; \
+    [ "$(nx 'static bool ggml_backend_cuda_device_supports_cuda_host_buft(int device) {')" = 0 ] \
+      || die "$f already defines supports_cuda_host_buft -- refusing to patch twice"; \
+    [ "$(nx 'static bool ggml_backend_cuda_host_buffer_supported() {')" = 0 ] \
+      || die "$f already defines ggml_backend_cuda_host_buffer_supported -- refusing to patch twice"; \
+    [ "$(nx '        info.devices[id].integrated = prop.integrated;')" = 1 ] \
+      || die "the #24233 regression is NOT in this tree -- nothing here computes on ROCm_Host, so this patch would be a silent no-op"; \
+    [ "$(grep -A1 -Fx '#if defined(GGML_USE_HIP)' "$f" | grep -Fxc '        info.devices[id].integrated = prop.integrated;' || true)" = 1 ] \
+      || die "integrated = prop.integrated is no longer the '#if defined(GGML_USE_HIP)' arm -- this patch guards a branch our -DGGML_HIP=ON build may not take"; \
+    [ "$(nx '    return (ggml_backend_buft_is_cuda(buft) && buft->device == dev) || (integrated && ggml_backend_buft_is_cuda_host(buft));')" = 1 ] \
+      || die "expected exactly 1 stock one-line supports_buft return in $f"; \
+    [ "$(nx '    bool host_buffer = getenv("GGML_CUDA_NO_PINNED") == nullptr;')" = 1 ] \
+      || die "expected exactly 1 stock GGML_CUDA_NO_PINNED capability test in $f"; \
+    [ "$(nx '    return ggml_backend_cuda_host_buffer_type();')" = 1 ] \
+      || die "expected exactly 1 stock get_host_buffer_type return in $f"; \
+    [ "$(ns 'ggml_backend_buft_is_cuda_host')" -ge 1 ] \
+      || die "ggml_backend_buft_is_cuda_host is gone -- the condition this patch narrows would be DEAD CODE and the fix a silent no-op"; \
+    patch -p1 -F0 < /tmp/llama-hip-igpu-host-buffer.patch \
+      || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
+    [ "$(nx '    return (ggml_backend_buft_is_cuda(buft) && buft->device == dev) || (integrated && ggml_backend_buft_is_cuda_host(buft));')" = 0 ] \
+      || die "the stock one-line supports_buft return SURVIVED the patch"; \
+    [ "$(nx 'static bool ggml_backend_cuda_device_supports_cuda_host_buft(int device) {')" = 1 ] \
+      || die "expected exactly 1 supports_cuda_host_buft definition after applying"; \
+    [ "$(ns 'ggml_backend_cuda_device_supports_cuda_host_buft')" = 2 ] \
+      || die "supports_cuda_host_buft is not referenced exactly twice (its definition plus its one call site) -- a predicate nobody calls is the silent no-op this guard exists to catch"; \
+    [ "$(nx '         ggml_backend_cuda_device_supports_cuda_host_buft(dev_ctx->device));')" = 1 ] \
+      || die "supports_buft does not consult supports_cuda_host_buft after applying"; \
+    [ "$(nx '    bool host_buffer = ggml_backend_cuda_host_buffer_supported();')" = 1 ] \
+      || die "the host-buffer capability test was not rewired onto the shared helper"; \
+    [ "$(nx '    if (!ggml_backend_cuda_host_buffer_supported()) {')" = 1 ] \
+      || die "get_host_buffer_type does not refuse the buffer type when pinned memory is off"; \
+    [ "$(nx '        info.devices[id].integrated = prop.integrated;')" = 1 ] \
+      || die "the patch removed the integrated flag itself -- it is supposed to narrow supports_buft, not disable iGPU detection"; \
+    echo "llama-hip-igpu-host-buffer: applied; the CUDA backend no longer computes directly on ROCm_Host buffers on HIP integrated GPUs (pinned staging is untouched)"
 
 # Node toolchain for the embedded Web UI. Builder stage only -- the runtime image
 # COPYs /artifacts and never sees it. Trixie ships node 20.19 / npm 9.2, which is

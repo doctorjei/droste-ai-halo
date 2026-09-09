@@ -1676,22 +1676,27 @@ device bitcode all come from the build base's pip SDK (all inherited as ENV).
   it; the turboquant build succeeds on ROCm 7.x / HIP 7 without it). Re-add it
   (and its COPY) only if an on-host HIP7 build failure shows it's needed.
 - The consumed patches — `llama-grammar.patch`, `llama-api-prefix-auth.patch`,
-  `llama-mla-cache-coerce.patch`, `llama-spec-types-default.patch` — live
+  `llama-mla-cache-coerce.patch`, `llama-spec-types-default.patch`,
+  `llama-hip-igpu-host-buffer.patch` — live
   in `scaffolding/llama-artifacts/` — this stage's build CONTEXT (`art_ctx` in
   `build-halo.yml`), not the directory the Containerfile itself sits in.
   `llama-grammar.patch` was copied from the upstream toolbox submodule so the
-  context is self-contained; the other three are ours. All patch
-  relative to the repo root (`-p1`), and **all four are anchor-guarded**.
+  context is self-contained; the other four are ours. All patch
+  relative to the repo root (`-p1`), and **all five are anchor-guarded**.
   ⚠️ **THIS LIST IS A MEMBERSHIP LIST — extend it when you add a patch.** It read
   "the two consumed patches" until s67 added two more, which is exactly the shape
   of stale documentation that teaches a wrong count as fact.
-  🚨 **AND THE FOUR DO NOT ALL CARRY THE SAME PERMANENCE.** The first two are
-  PERMANENT (see each below). The last two fix DEFECTS upstream may fix on its
+  🚨 **AND THE FIVE DO NOT ALL CARRY THE SAME PERMANENCE.** The first two are
+  PERMANENT (see each below). The last three fix DEFECTS upstream may fix on its
   own, so their guards print a TWO-OUTCOME message: *stock code gone AND our
   replacement absent* ⇒ read the function and **delete the patch** if upstream now
   does it; *stock code present but the hunk failed at `-F0`* ⇒ ordinary drift,
   re-derive at the new sha. **Do not flatten them into one story** — the two
   outcomes call for opposite actions from the same red build.
+  ⭐ **`llama-hip-igpu-host-buffer.patch` is the one MOST likely to reach outcome
+  (a): it is a LIVE upstream PR (#25863) that an AMD engineer validated and asked
+  to merge on 2026-07-24.** If it lands, delete our copy and advance the pin —
+  do not re-derive a hunk for a fix that is already there.
 - The shallow fetch brings no submodules, so materialize them after the
   checkout (`git submodule update --init --recursive`).
 - Apply the turboquant grammar patch: `llama-grammar.patch` raises

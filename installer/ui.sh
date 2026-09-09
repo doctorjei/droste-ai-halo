@@ -697,8 +697,10 @@ pad_cell_u() {   # text display-width column-width
 term_width() {
   local w=${COLUMNS:-}
   [[ -z $w ]] && w=$(tput cols 2>/dev/null || echo 80)
-  case "$w" in ''|*[!0-9]*) w=80 ;; esac
-  w=$(( w - 1 )); [[ $w -lt 59 ]] && w=59
+  # ⚠️ [[:digit:]], not [0-9]: the range collates in the caller's locale, so an
+  # exported COLUMNS of `１` passed this guard and then broke `$(( w - 1 ))`.
+  case "$w" in ''|*[![:digit:]]*) w=80 ;; esac
+  w=$(( 10#$w - 1 )); [[ $w -lt 59 ]] && w=59
   printf '%s' "$w"
 }
 
@@ -729,8 +731,9 @@ disp_width() {
 term_cols() {
   local w=${COLUMNS:-}
   [[ -z $w ]] && w=$(tput cols 2>/dev/null || echo 80)
-  case "$w" in ''|*[!0-9]*) w=80 ;; esac
-  w=$(( w - 1 )); [[ $w -lt 1 ]] && w=1
+  # ⚠️ [[:digit:]], not [0-9] — see term_width; same guard, same reason.
+  case "$w" in ''|*[![:digit:]]*) w=80 ;; esac
+  w=$(( 10#$w - 1 )); [[ $w -lt 1 ]] && w=1
   printf '%s' "$w"
 }
 

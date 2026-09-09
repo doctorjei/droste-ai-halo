@@ -13,10 +13,24 @@ ask_port() {  # box default → ANS_PORT
   while :; do
     ask_raw "Host port for ${BOX_NAME[$box]} $(dflt "$def"): "
     [[ -z $ANS ]] && ANS=$def
-    if [[ ! $ANS =~ ^[0-9]+$ ]] || (( ANS < 1 || ANS > 65535 )); then
+    # 🚨 [[:digit:]], NOT [0-9], AND A LENGTH CAP AND 10#. All three are load-
+    # bearing, and each one alone left a value that REACHED the arithmetic and
+    # was then ACCEPTED — an error printed by `(( ))` makes the condition false,
+    # so the bad port sailed past the guard and into the box's config:
+    #   `１`  — [0-9] is a locale-collating RANGE and matched it (en_US.UTF-8)
+    #   `08`  — read as octal: "value too great for base"
+    #   a 20-digit number — silently WRAPS, so it can land back inside 1-65535
+    # ⭐ POSIX pins [[:digit:]] to 0-9 in every locale. ⚠️ [[:alnum:]] does not.
+    if [[ ! $ANS =~ ^[[:digit:]]{1,5}$ ]] || (( 10#$ANS < 1 || 10#$ANS > 65535 )); then
       say "  Please give a port number (1-65535)."
       continue
     fi
+    # ⭐ NORMALIZE ONCE, HERE, AND EVERYTHING DOWNSTREAM COMPARES LIKE WITH LIKE.
+    # The duplicate check below is a STRING comparison against other boxes'
+    # recorded ports, so an accepted `08` would not match a recorded `8` and two
+    # boxes could be handed the same port with no complaint. The value the user
+    # meant is the same number either way; the spelling is ours to settle.
+    ANS=$((10#$ANS))
     other=""
     local b
     for b in "${BOXES[@]}"; do

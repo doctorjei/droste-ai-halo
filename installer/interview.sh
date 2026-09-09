@@ -1,10 +1,17 @@
 # ── Box selection ────────────────────────────────────────────────────────────
-# The answer is parsed ROBUSTLY: anything that is not an ASCII letter or digit
-# is a separator, so "1,2 3", "comfyui/llama" and "[1] [2]" all work. Tokens we
-# cannot place are named back rather than silently dropped, and the prompt
-# repeats.
+# The answer is parsed ROBUSTLY: punctuation is a separator, so "1,2 3",
+# "comfyui/llama" and "[1] [2]" all work. Tokens we cannot place are named back
+# rather than silently dropped, and the prompt repeats.
+# ⚠️ THIS COMMENT USED TO SAY "anything that is not an ASCII letter or digit",
+# and believing it is what hid a crash for a whole release. `[!a-zA-Z0-9]` is a
+# bracket RANGE and ranges COLLATE IN THE USER'S LOCALE — under en_US.UTF-8 a
+# full-width `１` is INSIDE it and survives as a token. That is deliberate now:
+# surviving is what lets the loop below NAME IT BACK. What must never happen is
+# a survivor reaching arithmetic, and the dispatch below is where that is
+# enforced. ⭐ Describe a bracket expression by what it MEASURABLY admits in the
+# caller's locale, never by what its characters look like.
 select_boxes() {
-  local box tok idx pick clean bad dw
+  local box tok idx clean bad dw
   declare -A want=()
   if [[ ${#ARG_BOXES[@]} -gt 0 ]]; then
     for tok in "${ARG_BOXES[@]}"; do
@@ -44,18 +51,46 @@ select_boxes() {
       # Separators first, then one token per word.
       clean=${ANS//[!a-zA-Z0-9]/ }
       for tok in $clean; do
-        case "${tok,,}" in
-          all|6) for box in "${BOXES[@]}"; do want[$box]=1; done ;;
-          [1-5]) pick=${BOXES[$((tok-1))]}; want[$pick]=1 ;;
-          *) if [[ -n "${BOX_HOST_PORT[${tok,,}]:-}" ]]; then want[${tok,,}]=1
-             else bad="$bad $tok"; fi ;;
-        esac
+        # 🚨 A DIGIT IS VOUCHED FOR BEFORE IT EVER REACHES $(( )). This was
+        # `case [1-5]`, and a bracket RANGE COLLATES IN THE USER'S LOCALE: under
+        # en_US.UTF-8 a full-width `１` MATCHED it, and `$((tok-1))` then died
+        # with "operand expected" and took the whole installer with it — no
+        # message, no re-prompt. One IME toggle away on a Japanese desktop.
+        # ⭐ POSIX pins [[:digit:]] to 0-9 in EVERY locale, which is what makes it
+        # the right instrument. ⚠️ [[:alnum:]] does NOT — it re-admits the very
+        # character this guards against. Measured under C, en_US and ja_JP.
+        # ⭐ The bound is DERIVED from BOXES, so the drawn menu and this dispatch
+        # cannot drift apart; the "All" index follows the list instead of being
+        # a hardcoded 6 that a sixth box would silently collide with.
+        if [[ ${tok,,} == all ]]; then
+          for box in "${BOXES[@]}"; do want[$box]=1; done
+        elif [[ $tok =~ ^[[:digit:]]{1,3}$ ]]; then
+          # 10# so a typed 08 is eight rather than a base error; the {1,3} cap
+          # keeps the value far below any overflow.
+          idx=$((10#$tok))
+          if   (( idx >= 1 && idx <= ${#BOXES[@]} )); then want[${BOXES[$((idx-1))]}]=1
+          elif (( idx == ${#BOXES[@]} + 1 )); then for box in "${BOXES[@]}"; do want[$box]=1; done
+          else bad="$bad $tok"; fi
+        elif [[ -n "${BOX_HOST_PORT[${tok,,}]:-}" ]]; then
+          want[${tok,,}]=1
+        else
+          bad="$bad $tok"
+        fi
       done
       if [[ -n $bad ]]; then
         subnote "Unrecognized:$bad $EMD use the names or numbers above."
         continue
       fi
-      [[ ${#want[@]} -gt 0 ]] && break
+      # ⚠️ AN ANSWER THAT SURVIVES AS NOTHING STILL HAS TO BE ANSWERED. If every
+      # character was a separator (`!!!`), or the locale folded a multibyte
+      # answer away before it could be named back, the loop used to re-prompt in
+      # SILENCE — the user sees their input vanish and is told nothing, which is
+      # the one outcome this installer never gets to have.
+      if [[ ${#want[@]} -eq 0 ]]; then
+        subnote "Unrecognized: $ANS $EMD use the names or numbers above."
+        continue
+      fi
+      break
     done
   fi
   SELECTED=()

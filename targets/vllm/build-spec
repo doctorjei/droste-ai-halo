@@ -1342,6 +1342,28 @@ vllm_pre_launch() {
         serve::err "DROSTE_VLLM_CONFIG is set but empty in $CFG_FILE, and vLLM cannot be started without a config file — using $DROSTE_VLLM_CONFIG instead. Give it a path or comment the line out, and restart the box."
     fi
 
+    # ── the FP8 shim is not optional on this hardware (s71, MEASURED) ─────────
+    # 🚨 WITHOUT IT, ANY FP8 MODEL KILLS THE ENGINE CORE ON gfx1151. patch_fp8_
+    # kernels.py's shim opens with `if not _VLLM_STRIX_FP8_TRITON:` and falls
+    # through to the stock kernel, and on Strix Halo that raises:
+    #   RuntimeError: torch._scaled_mm is only supported on CUDA devices with
+    #   compute capability >= 9.0 or 8.9, or ROCm MI300+
+    # Measured on Raiju serving Qwen2.5-1.5B --quantization fp8: engine core
+    # dead before the first token, on a stock box. With the shim on, the same
+    # model serves at ~855 tok/s. ⇒ the old "Measured: no difference at this
+    # pin" note was true of a bf16 test, which never enters the fp8 path.
+    # ⭐ N1a — THE DEFAULT BELONGS HERE, NOT AS AN ACTIVE LINE IN vllm.cfg:
+    # that file is seeded `if_missing`, so a template edit reaches only boxes
+    # created after it, while a wiring default reaches every box on its next
+    # start. The commented line in vllm.cfg documents the OVERRIDE.
+    # ⚠️ `:=` not `=`, matching targets/llama/build-spec's
+    # DROSTE_LLAMA_BUILTIN_SPEC_DEFAULT: this is a droste-owned FINITE SET, so
+    # by the s57 categories a blank yields OUR default rather than "off".
+    # ⚠️ It must run HERE and not at the top of this file: the user's cfg is
+    # applied between the spec being sourced and PRE_LAUNCH (apply_spec steps 6
+    # and 7), so a default set at source time is overwritten by their file.
+    : "${DROSTE_VLLM_STRIX_FP8_TRITON:=on}"
+
     vllm_env
 
     # Runs BEFORE SERVICE is built: the guard may repoint $DROSTE_VLLM_CONFIG at an

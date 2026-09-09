@@ -1410,12 +1410,19 @@ vllm_pre_launch() {
     # ⭐ Modes 1 and 2 are UNREACHABLE through optimization_level; only an
     # explicit mode gets there. That is why `dynamo_trace_once` had to exist as
     # a setting for the isolation to be possible at all.
-    # ✅ STARTUP COST MEASURED (Raiju), and it is the reason this is safe to
-    # default: with the compile cache ENABLED, two consecutive starts took 116s
-    # and 117s — no second-start speedup at all. If compilation were a
-    # meaningful share of startup the cache would have shown it, so it is not,
-    # and mode >= 1 costs no meaningful startup time even though
-    # VLLM_DISABLE_COMPILE_CACHE=1 stays baked.
+    # ✅ STARTUP COST MEASURED (Raiju), and it is a TRADE, not free — an earlier
+    # version of this comment claimed zero and was wrong, on a test that compared
+    # cache-on to cache-off within mode 3 rather than mode 3 to mode 0:
+    #     init engine / total startup
+    #     none 7.2s / 96s · dynamo_trace_once 138.3s / 228s · vllm_compile 24.7s / 113s
+    # ⇒ vllm_compile costs about +17s ONCE against +4.60% for the life of the
+    # process. Worth it on a box that is started and left up; say the number.
+    # 🚨 dynamo_trace_once is a TRAP and the config file warns about it: it does
+    # LESS compilation and costs 5.6x more startup than vllm_compile, for +0.33%.
+    # ⚠️ The compile cache does not currently help — enabling it moved startup by
+    # 1s, and the engine logs `cache_dir: ''`, so nothing is being cached. That
+    # is why VLLM_DISABLE_COMPILE_CACHE=1 staying baked costs nothing: these
+    # seconds are paid at every start either way.
     # ⚠️ That same run found NO PicklingError with the cache on, so the baked
     # workaround looks stale — but removing it buys nothing measurable, so it
     # STAYS. One negative test on one model is not proof the bug cannot recur.

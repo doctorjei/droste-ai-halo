@@ -1420,12 +1420,35 @@ vllm_pre_launch() {
     # 🚨 dynamo_trace_once is a TRAP and the config file warns about it: it does
     # LESS compilation and costs 5.6x more startup than vllm_compile, for +0.33%.
     # ⚠️ The compile cache does not currently help — enabling it moved startup by
-    # 1s, and the engine logs `cache_dir: ''`, so nothing is being cached. That
-    # is why VLLM_DISABLE_COMPILE_CACHE=1 staying baked costs nothing: these
-    # seconds are paid at every start either way.
+    # 1s. WHY is still open (board B7); what is NOT open is the reasoning this
+    # comment used to give, which was wrong and is corrected here rather than
+    # deleted, because it is an easy mistake to make twice:
+    # 🚨 `cache_dir: ''` IS NOT EVIDENCE OF ANYTHING. That value comes from the
+    # one full-config dump in the tree, EngineCore.__init__'s "Initializing a V1
+    # LLM engine ... with config: %s", which is emitted immediately BEFORE the
+    # executor is constructed. Both cache_dir and local_cache_dir are written
+    # later, inside VllmBackend.__call__ (vllm/compilation/backends.py, at our
+    # v0.16.0 pin) — so they read '' and None in EVERY vLLM log ever produced,
+    # cache working or not. The 1s MEASUREMENT stands; the inference from the log
+    # line does not. ⭐ A field printed before its writer runs is a fact about
+    # logging order, never about behavior.
+    # ⚠️ Nor is VLLM_CACHE_ROOT the cause: envs.py defaults it to
+    # <XDG_CACHE_HOME|~/.cache>/vllm, it is in compile_factors()'s ignored_factors,
+    # and CACHES already binds $HOME/.cache/vllm. Do not "fix" this with a mount.
+    # ⚠️ AND A COMPILE-CACHE HIT CANNOT RECOVER ALL OF THOSE SECONDS AT OUR TORCH
+    # PIN. There are TWO caches: this one skips inductor compilation, while the
+    # Dynamo bytecode transform is skipped only by VLLM_USE_AOT_COMPILE, whose
+    # default (envs.use_aot_compile) requires torch >= 2.10.0.dev. We are on
+    # 2.9.1, so it is OFF and Dynamo re-runs on every start regardless. vLLM logs
+    # that half separately ("Dynamo bytecode transform time: %.2f s"), so the
+    # split is already in our logs.
     # ⚠️ That same run found NO PicklingError with the cache on, so the baked
     # workaround looks stale — but removing it buys nothing measurable, so it
     # STAYS. One negative test on one model is not proof the bug cannot recur.
+    # 🚨 AND THAT NEGATIVE TEST IS ONLY AS GOOD AS THE FLIP HAVING REACHED THE
+    # SERVICE: server_restart launches through the supervisor, which re-sources
+    # this spec and reads <box>.cfg — a variable exported in a `distrobox enter`
+    # shell never gets there. Verify against the cfg before trusting it.
     : "${DROSTE_VLLM_COMPILATION_MODE:=vllm_compile}"
     case "$DROSTE_VLLM_COMPILATION_MODE" in
         none)                _droste_cmode=0 ;;

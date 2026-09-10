@@ -44,6 +44,19 @@ set +e   # this script decides its own exit codes
 
 SELF=$(basename -- "$0")
 
+# How long `restart` waits for the listening socket to actually go away after a stop
+# that killed something. See restart_service for what it fixes.
+# ⚠️ IT IS DELIBERATELY NOT DROSTE_SERVE_STOP_WAIT (60), AND THE TWO MEASURE DIFFERENT
+# THINGS. That one is a graceful-shutdown allowance for a model server releasing GPU
+# memory; this is the kernel finishing with a socket, which is milliseconds when it
+# happens at all. Overrunning it is SAFE — the start proceeds and serve::maybe_launch
+# reports whatever it finds — so a small value costs nothing, while a large one would
+# make a genuinely occupied port feel like a hang.
+# 🚨 IT LIVES HERE, NOT IN droste-serve.sh, AND THAT IS A SAFETY PROPERTY RATHER THAN
+# filing. droste-healthcheck.sh sources droste-serve.sh ALONE, so a budget declared in
+# this file is unreachable from a health probe by construction — see restart_service.
+: "${DROSTE_SERVE_RESTART_PORT_WAIT:=15}"
+
 usage() {
     # ⚠️ ASK FOR THE CONFIG PATH BEFORE NAMING IT. DROSTE_SERVE_ENV is EMPTY at source
     # time now that the serve settings live in the box's own <box>.cfg: the path is per
@@ -81,6 +94,12 @@ EOF
 # boxes default to `--pid host` and the record outlives the container.
 stop_service() {
     local waited=0 quiet=${1:-}
+    # Did this stop actually SIGNAL a process of ours? Only then can a listening socket
+    # still be on its way down, which is the one case restart_service has to wait for.
+    # A global rather than a return code because all three success outcomes are
+    # `return 0` and the caller has to tell them apart; restart_service is its only
+    # reader, and it reads it with a ${:-0} default so nothing depends on this running.
+    SERVE_STOP_SIGNALED=0
     serve::set_active 0
     if ! serve::_read_pidfile; then
         [ -n "$quiet" ] || printf 'No launch record — nothing of ours is running.\n'
@@ -93,6 +112,7 @@ stop_service() {
     fi
     printf 'Stopping the server (pid %s)...\n' "$SERVE_REC_PID"
     serve::_log_note "STOPPED: server_stop requested by $(id -un 2>/dev/null || echo '?')."
+    SERVE_STOP_SIGNALED=1
     kill -TERM "$SERVE_REC_PID" 2>/dev/null
     while [ "$waited" -lt "$DROSTE_SERVE_STOP_WAIT" ]; do
         if ! serve::_pid_is_ours "$SERVE_REC_PID" "$SERVE_REC_START"; then
@@ -167,6 +187,72 @@ start_service() {
     fi
     printf 'Server did NOT come up: %s\n' "${SERVE_STATE_MSG:-unknown}"
     return 1
+}
+
+# ── restart ─────────────────────────────────────────────────────────────────
+# 🚨 WHY THIS IS A FUNCTION AND NOT `stop_service quiet; start_service`, WHICH IS WHAT
+# IT WAS. The two halves prove DIFFERENT facts, and the gap between them is a race:
+# stop_service waits for the recorded PID to disappear (serve::_pid_is_ours), while the
+# launch that follows requires the PORT to be free (serve::_port_busy, inside
+# serve::maybe_launch). A pid can be gone while its listening socket is still held — by
+# a child that inherited the descriptor, or by an exit the kernel has not finished with
+# — so a restart could land on maybe_launch's refusal arm and report "port … is already
+# in use", while a second start moments later worked. Reported from a real box.
+# ⭐ THE FIX IS TO PROVE THE FACT THE NEXT STEP ACTUALLY REQUIRES rather than a
+# neighboring one. It costs nothing when there is nothing to wait for: the poll returns
+# as soon as the port answers "refused", which is the normal case.
+#
+# 🚨 IT IS NOT TIME_WAIT, AND THE OBVIOUS "FIX" FOR THAT WOULD BE A SECURITY BUG.
+# Upstream sets SO_REUSEADDR unconditionally (tools/server/server-http.cpp at our
+# LLAMA_REF), so a lingering CONNECTION cannot block the bind. ❌ Do not reach for
+# `--reuse-port`: that is SO_REUSEPORT, a different option for a different problem, and
+# it would let two servers bind the same port at once.
+#
+# 🚨 PLACEMENT IS THE WHOLE RISK, AND IT IS ANSWERED BY CONSTRUCTION, NOT BY CARE.
+# serve::_port_busy is a curl with --max-time 3, and serve::maybe_launch ALSO runs
+# inside the podman healthcheck under --health-on-failure=restart, where a probe that
+# overruns --health-timeout is KILLED and counted as a failure — which bounces the
+# container. A wait added to that shared path would turn a cosmetic restart failure into
+# a restart LOOP. This wait lives in droste-server.sh, which droste-healthcheck.sh never
+# sources (it takes droste-serve.sh alone), so a health probe cannot spend this budget
+# even by accident. ⚠️ NEVER move this into serve::maybe_launch or serve::_stop_stale.
+restart_service() {
+    stop_service quiet
+    # ⭐ ONLY AFTER A STOP THAT ACTUALLY SIGNALED SOMETHING. The other two stop outcomes
+    # — no launch record at all, and a recorded pid that was already gone — cannot be
+    # holding a socket on its way down, so waiting there would add latency to exactly
+    # the case where it can do no good. If a FOREIGN process owns the port, that is what
+    # maybe_launch's refusal is for and it should arrive immediately, not 15s later.
+    if [ "${SERVE_STOP_SIGNALED:-0}" -eq 1 ]; then
+        wait_port_free
+    fi
+    start_service
+}
+
+# wait_port_free — poll until nothing answers on the address:port we are about to bind,
+# or the budget runs out. Silent on the fast path; warns once if it gives up.
+# ⚠️ IT ASKS serve::_port_busy — THE SAME QUESTION serve::maybe_launch WILL ASK — and
+# that is the entire point of the change. Asking a neighboring question is the bug.
+# ⚠️ serve::read_config FIRST: stop_service never calls it (it only needs the launch
+# record), so SERVE_PORT is not set on this path. start_service calls it again a moment
+# later; it parses a file, prints nothing, and is safe to repeat.
+# ⚠️ EVERY ARM RETURNS 0. A diagnostic must never be the reason a restart does not
+# happen — if we cannot tell whether the port is free, the right move is to start and
+# let maybe_launch report what it finds.
+wait_port_free() {
+    local waited=0
+    serve::read_config
+    # A refused config or no usable port: start_service is about to say so properly,
+    # with the real message. Nothing to wait for and nothing to add here.
+    [ -z "${SERVE_CONFIG_ERR:-}" ] || return 0
+    [ -n "${SERVE_PORT:-}" ] || return 0
+    while [ "$waited" -lt "$DROSTE_SERVE_RESTART_PORT_WAIT" ]; do
+        serve::_port_busy "$SERVE_PORT" || return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+    serve::warn "port $SERVE_PORT was still in use ${DROSTE_SERVE_RESTART_PORT_WAIT}s after the server stopped — starting anyway. If something else owns that port, the message below says so."
+    return 0
 }
 
 # ── status ──────────────────────────────────────────────────────────────────
@@ -263,7 +349,7 @@ esac
 case "$action" in
     start)   start_service ;;
     stop)    stop_service ;;
-    restart) stop_service quiet; start_service ;;
+    restart) restart_service ;;
     status)  status_service ;;
     # Hidden, and hidden ON PURPOSE: this is the daemon body, spawned by the init hook
     # via serve::supervisor_start. It is not a verb, there is no symlink for it, and it

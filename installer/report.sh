@@ -75,12 +75,12 @@ write_notes() {
     printf '  directory first.\n'
     printf -- '- **Cache dir** (`caches/<box>` by default) — PROGRAM CACHES, and\n'
     printf '  nothing else: the Python environment overlay and its work dir,\n'
-    printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, the seeded\n' \
+    printf '  scratch temp, llama%s saved-prompt slots, ds4%s KV disk, and the\n' \
       "'s" "'s"
-    printf '  `extra_model_paths.yaml`, the server state dir. Nothing in here is\n'
-    printf '  authored and nothing is irreplaceable — droste-setup.sh offers to\n'
-    printf '  EMPTY it when it finds leftovers from an older generation, and the\n'
-    printf '  box rebuilds what it needs at the next start.\n'
+    printf '  server state dir. Nothing in here is authored and nothing is\n'
+    printf '  irreplaceable — droste-setup.sh offers to EMPTY it when it finds\n'
+    printf '  leftovers from an older generation, and the box rebuilds what it\n'
+    printf '  needs at the next start.\n'
     printf -- '- **Compute caches** (`%s`) — the compiled GPU\n' "$COMPUTE_CACHE"
     printf '  kernels, SHARED by every box because their content is keyed by\n'
     printf '  version and architecture. compute-caches is safe to delete anytime;\n'

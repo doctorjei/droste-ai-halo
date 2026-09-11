@@ -834,14 +834,15 @@ what a thing IS decides where it lives, and no consumer has to infer it again.
 Three roots, container-side (host defaults in parentheses):
 
 - **`/opt/data`** (`~/droste/data/<box>/program`) — per-box PERSISTENT. Configs
-  (the box's `<box>.cfg`, plus vllm's `vllm_config.yaml` and finetuning's
-  `jupyter_server_config.py`), comfyui `user/` + the
+  (the box's `<box>.cfg`, plus vllm's `vllm_config.yaml`, finetuning's
+  `jupyter_server_config.py` and comfyui's `extra_model_paths.yaml`), comfyui
+  `user/` + the
   custom_nodes upper + the model tree, ds4 `sessions/` + `cockpit/`, the
   finetuning workspace, the `.droste-*.log` files.
 - **`/opt/program-cache`** (`~/droste/caches/<box>`) — per-box PROGRAM CACHE,
   re-obtainable by construction: the venv upper and its `.work`, copy-mode
-  materializations, `tmp`, llama's slots, ds4's kv-disk, comfyui's seeded
-  `extra_model_paths.yaml`, the `state/` server state dir, and the
+  materializations, `tmp`, llama's slots, ds4's kv-disk, the `state/` server
+  state dir, and the
   per-box compute-cache fallback under `compute/`. The installer may empty this
   ROOT WHOLE on consent, so nothing a user would miss may ever be put here.
 - **`/opt/caches`** (`~/droste/compute-caches`) — the shared compute caches,

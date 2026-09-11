@@ -15,9 +15,16 @@ if_empty:
 # comfyui.cfg is the box's CONFIG SURFACE — the user's own edits, so DATA class
 # (/opt/data, never in the installer's wipe) and never overwritten once seeded.
 #
-# extra_model_paths.yaml is CACHE class (a re-seeded pointer file at the paths
-# baked into /opt/resources/model_configs), so it seeds onto /opt/program-cache —
-# if the installer ever empties that root, this file simply comes back.
+# extra_model_paths.yaml is DATA class too, and was CACHE class until s73. It
+# registers the paths baked into /opt/resources/model_configs, which is what made
+# "a re-seeded pointer file, never user work" look right — but the file's OWN header
+# tells the user "it is yours: edits persist and are never overwritten", and
+# /opt/program-cache is the root the installer OFFERS TO EMPTY. build-spec.example's
+# class table states the rule that settles it: "never put anything here that a user
+# would miss." A file we invite the user to edit is exactly that.
+# ⚠️ EXISTING BOXES KEEP THEIR OLD COPY at /opt/program-cache/extra_model_paths.yaml
+# and will be seeded a fresh default here; the old file is not read any more. Move it
+# by hand (box stopped) if it carries edits — same shape as the s47 ds4 rename.
 if_missing:
   comfyui.cfg: /opt/data/comfyui.cfg
-  extra_model_paths.yaml: /opt/program-cache/extra_model_paths.yaml
+  extra_model_paths.yaml: /opt/data/extra_model_paths.yaml

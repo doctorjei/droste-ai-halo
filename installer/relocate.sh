@@ -180,8 +180,8 @@ set_bind_path() {  # box label [force-prompt]
 
 # ── Stale program caches ─────────────────────────────────────────────────────
 # A box's program-cache dir holds nothing but disposables: the venv upper and
-# its work dir, tmp, slots, kv-disk, the seeded extra_model_paths.yaml, the
-# serve pid. Nothing in it is authored and nothing in it is data — the taxonomy
+# its work dir, tmp, slots, kv-disk, the serve pid. Nothing in it is authored and
+# nothing in it is data — the taxonomy
 # classifies BY LOCATION, which is exactly what makes this test cheap and
 # honest: anything in there at all is a previous generation's leftovers, and an
 # old stack layered under a new image is the failure that never names itself.

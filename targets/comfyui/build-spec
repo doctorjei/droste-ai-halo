@@ -7,9 +7,12 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # ComfyUI web UI on 8188 with the upstream Strix Halo perf flags. The extra
-# model-paths config lives on /opt/program-cache (seeded if_missing by
-# templates.yaml) and registers the baked /opt/resources/model_configs — CACHE
-# class per the taxonomy: a re-seeded pointer file, never user work. main.py is
+# model-paths config lives on /opt/data (seeded if_missing by templates.yaml) and
+# registers the baked /opt/resources/model_configs — DATA class per the taxonomy.
+# ⚠️ IT WAS ON /opt/program-cache UNTIL s73, filed as "a re-seeded pointer file,
+# never user work". That reading lost to the file's own header, which tells the user
+# their edits persist, and to the class table's rule for that root: "never put
+# anything here that a user would miss." See templates.yaml. main.py is
 # absolute: ComfyUI derives every path from base_path = main.py's directory, not
 # CWD (PRE_LAUNCH still cd's there for any relative writes).
 #
@@ -58,7 +61,7 @@ COMFYUI_ARGV_HEAD=(
     --listen 0.0.0.0 --port 8188
 )
 COMFYUI_ARGV_TAIL=(
-    --extra-model-paths-config /opt/program-cache/extra_model_paths.yaml
+    --extra-model-paths-config /opt/data/extra_model_paths.yaml
 )
 # A usable argv on its own, and comfyui_argv rebuilds it FROM THE TWO ARRAYS
 # rather than appending to it — so calling PRE_LAUNCH twice cannot grow it.

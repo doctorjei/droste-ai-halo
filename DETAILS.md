@@ -160,7 +160,7 @@ Mount contract (all ports):
   filesystem requirement.
 - **`/opt/program-cache`** — the box's PROGRAM-CACHE volume: everything it can
   re-obtain by itself. The venv overlay upper (and its `.work` sibling),
-  comfyui's scratch `temp/` and its seeded `extra_model_paths.yaml`, llama's
+  comfyui's scratch `temp/`, llama's
   slot store, ds4's KV disk, the server state dir `state/`, and
   the per-box compute-cache fallback under `compute/`. This root is the only
   thing `droste-setup.sh` ever empties, and only when you say yes to a question
@@ -203,10 +203,9 @@ what may be thrown away:
   itself, with the others inside it; nothing rewrites them, and the installer
   keeps using the paths their ini records.)
 - **`~/droste/caches/<box>`** — that box's program caches and nothing else: the
-  venv overlay, llama's slots, ds4's KV disk, scratch temp, the seeded
-  `extra_model_paths.yaml`. Emptied only on consent, at the installer's
-  stale-cache question; every one of those is re-seeded or rebuilt at the next
-  box start.
+  venv overlay, llama's slots, ds4's KV disk, scratch temp. Emptied only on
+  consent, at the installer's stale-cache question; every one of those is
+  re-seeded or rebuilt at the next box start.
 - **`~/droste/compute-caches`** — the compiled GPU kernels, shared by every box
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.

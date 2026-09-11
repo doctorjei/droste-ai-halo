@@ -337,8 +337,37 @@ printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL
 # When that setting cannot be honored the command is WITHHELD (Jei, s60: "fail") —
 # printing `--host 0.0.0.0` regardless is how a user who deliberately narrowed the
 # bind ends up serving an unauthenticated API on every interface.
+#
+# 🚨 AND THE ROW NAMES WHAT IT DOES NOT CARRY. This is `vllm serve` and nothing
+# else. The argv the box actually launches is the build-spec's SERVICE, which
+# carries `--config "$DROSTE_VLLM_CONFIG"`, and vllm_pre_launch then REBUILDS that
+# array: it folds in DROSTE_VLLM_EXTRA_ARGS and calls vllm_env, which exports the
+# native VLLM_* names the rest of vllm.cfg is translated into. A `distrobox enter`
+# shell went through none of it — podman exec inherits nothing from the init hook,
+# and the spec's own note says the same thing pointing the other way: "a variable
+# exported in a `distrobox enter` shell never gets there". So a user who copies
+# this row gets stock vLLM with BOTH of their files unread — and two other lines in
+# this banner make that easy to miss: "Pick a model" and "Config file … (vllm serve
+# --config)" are true of the SERVICE lane, not of this one.
+# ⚠️ AND THE FIX IS NOT TO ADD `--config`. That would apply the YAML and still skip
+# every env-borne setting — a command that reads as configured and is not, which is
+# the fall-through value this project does not ship. Half-true is the defect here,
+# so a BROADER recipe is not a better one.
+# ⭐ SO THE ROW IS NARROW AND HONEST RATHER THAN BROAD AND HALF-TRUE: plain vllm on
+# the address and port you configured, with server_start named as the lane that
+# applies the rest. Same shape as finetuning's jupyter recipe and the ruled
+# distrobox.ini fixes — point at the lane that honors the config instead of
+# printing one that only half-honors it.
+# ⚠️ DERIVING THE REAL ARGV IS NOT AVAILABLE HERE, unlike comfyui's start_comfy_ui.
+# That lane works because comfyui_argv was split out of comfyui_pre_launch to be
+# callable alone; vllm_pre_launch is one function that also runs vllm_config_guard
+# and the anchored-copy work, so there is nothing a login shell may safely call.
+# Splitting it is a build-spec change, not a banner change.
 if [[ -n "$SERVE_BIND" ]]; then
   printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host $SERVE_BIND --port $SERVE_PORT"
+  printf '  %-20s   %s\n' "" "(plain vllm — vllm_config.yaml and the rest of"
+  printf '  %-20s   %s\n' "" "vllm.cfg are NOT applied here; server_start is the"
+  printf '  %-20s   %s\n' "" "lane that does. Edit the file, then server_restart.)"
 else
   printf '  - %-18s → %s\n' "Ad-hoc serve" "not shown: fix DROSTE_VLLM_HOST in /opt/data/vllm.cfg"
   printf '  %-20s   %s\n' "" "(an IPv4 literal, or delete the line to bind 0.0.0.0)"

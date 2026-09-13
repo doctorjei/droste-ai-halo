@@ -1,7 +1,13 @@
 # templates.yaml — llama port seeding manifest (restricted subset, see
-# base/resolve/apply_templates.py). llama.cfg is a HAND-AUTHORED file beside this
-# one; it was generated at image build until s52. TWO dev-time checks when the
-# llama pin moves, and they answer different questions:
+# base/resolve/apply_templates.py for the format). The `if_missing` section is read
+# by the INSTALLER (cfg_manifest → cfg_write_seeds, installer/cfg.sh), which writes
+# the file on the host before the box has ever run — written iff it is absent, never
+# overwritten. apply_templates.py PARSES this section and does not act on it: the
+# installer is the single writer.
+#
+# llama.cfg is a HAND-AUTHORED file beside this one; it was generated at image build
+# until s52. TWO dev-time checks when the llama pin moves, and they answer different
+# questions:
 #   scripts/check-llama-flags.sh   does everything we ship still EXIST? (source
 #                                  only, no GPU, no build — run it FIRST)
 #   scripts/llama-options.sh       what has CHANGED that we might want to expose?

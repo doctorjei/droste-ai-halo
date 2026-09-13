@@ -479,13 +479,44 @@ serve::read_config() {
         SERVE_CONFIG_ERR="this box's build-spec declares CFG_FILE=$file but no SERVE_CFG_PREFIX, so its serve settings cannot be found — not serving. This is a bug in the image, not in your config file."
         return 0
     fi
+    # 🚨 A DECLARED CONFIG FILE THAT IS NOT THERE IS A FAULT, AND IT SAYS SO (ruled s78:
+    # "an absent config file doesn't need to (probably shouldn't) kill the container, but
+    # it SHOULD alert the user to the fact that the config file was missing, so the server
+    # hasn't been started"). This arm did not exist, and the fall-through was documented as
+    # "a box with no config file yet is a normal state" — which was true only because the
+    # IMAGE seeded <box>.cfg at the box's first start, so "no file yet" lasted one boot.
+    # The INSTALLER is the single writer now (cfg_manifest → cfg_write_seeds,
+    # installer/cfg.sh) and it writes the file BEFORE the box has ever run, so by the time
+    # anything here reads it the file exists or somebody removed it. A box that silently
+    # serves nothing because its settings vanished is exactly the silence this project
+    # forbids.
+    # ⚠️ THIS IS NOT THE `-z "$file"` ARM ABOVE AND THE TWO MUST NOT BE MERGED. That one is
+    # "no CFG_FILE declared at all" — the server lane, a lab, a harness — where silence is
+    # still correct. This one fires only when a path WAS declared and is absent from disk.
+    # ⚠️ THE BOX STILL STARTS. Nothing here returns non-zero and droste::cfg_apply keeps its
+    # "a config file must not be able to stop the box from starting" contract; the server
+    # does not come up because SERVE_STARTUP_ENABLED is already 0, which is unchanged.
+    # ⭐ THE REMEDY NAMES THE INSTALLER AND DELIBERATELY NOT `<box>.cfg.example`, and that
+    # is read from the code rather than assumed: seed_cfg_example (installer/emit.sh)
+    # writes the example ONLY where the file on disk is a DIFFERENT SHAPE from the baked
+    # template, so a box whose config the installer just wrote has no example beside it —
+    # and a KEPT box never reaches write_box_cfg at all (create_box gates it on
+    # is_configured). Pointing a user at a file that is usually not there is worse than
+    # pointing at nothing. The installer's own verbs are keep/modify/recreate, so the
+    # sentence names the two that write.
+    if [ ! -e "$file" ]; then
+        SERVE_CONFIG_ERR="$file does not exist — every setting in it reads as unset, so this box is not serving. The droste installer (droste-setup.sh) is what writes that file: re-run it on the host and choose modify or recreate for this box. Keeping the box as-is skips the config write, so it will not bring the file back."
+        return 0
+    fi
     # 🚨 ASK ABOUT READABILITY ONCE, HERE, AND NOT FIVE TIMES BELOW. droste::cfg_get warns
     # about an unreadable file and dedups with a memo — but the memo is a variable, the
     # normal call shape is `v=$(droste::cfg_get …)`, and a subshell's assignment dies with
     # the subshell. So five substitution calls produce five identical lines, and this
     # function runs inside the health probe every 30s: ~14,400 copies of one sentence a
     # day, which is how a log stops being read. The call pattern is OURS, so the fix is.
-    # (A missing file stays SILENT — a box with no config file yet is a normal state.)
+    # (The `-e` is redundant after the arm above and is kept anyway: this guard stays true
+    #  on its own terms, so reordering the two cannot turn it into a test of a file that
+    #  is not there.)
     if [ -e "$file" ] && [ ! -r "$file" ]; then
         SERVE_CONFIG_ERR="cannot read $file — every setting in it reads as unset, so this box is not serving. Check the file's permissions."
         return 0

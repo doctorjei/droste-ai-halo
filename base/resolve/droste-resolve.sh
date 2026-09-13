@@ -762,11 +762,15 @@ resolve::ensure_pcache() {
 
 # ── Template seeding (both lanes) ───────────────────────────────────────────
 # Runs AFTER mounts so seeds land on the mounted destinations. No-op if no manifest.
+# ⚠️ ONLY `if_empty` IS APPLIED (s78). The CONFIG FILES are the INSTALLER's to write: it
+# reads the manifest's `if_missing` section and writes them on the host before the box
+# has ever run (cfg_manifest → cfg_write_seeds, installer/cfg.sh), and apply_templates.py
+# parses that section without acting on it. What is still seeded here is the directory
+# trees — comfyui's input/user, finetuning's workspace.
 # OWNERSHIP (distrobox) — the FILE counterpart of the _mkuserdir/_own_dirs deviation,
-# and the one the seeding step was missing: this runs as root, so every seeded config
-# (vllm_config.yaml, ds4.cfg, llama.cfg, comfyui's extra_model_paths.yaml) landed
-# owned by the container's root — a subuid on the host under keep-id, i.e. uneditable
-# by the very user the docs tell to edit it ("after first start they are yours").
+# and the one the seeding step was missing: this runs as root, so everything it seeds
+# landed owned by the container's root — a subuid on the host under keep-id, i.e.
+# uneditable by the very user whose bind it was just written into.
 # Same gate as every other deviation (distrobox lane + a derived box user; the server
 # lane's service IS root by design — see droste-serve.sh's privilege model — so there
 # is nobody else to hand these to there) and the same `chown <user>:` shape.
@@ -834,7 +838,9 @@ resolve::apply_spec() {
     # 5) templates.yaml seeding (AFTER mounts)
     resolve::apply_templates "$RESOLVE_TEMPLATES_DIR"
 
-    # 6) CFG_FILE apply (generate-if-absent handled by templates' if_missing above).
+    # 6) CFG_FILE apply. Step 5 no longer generates the file — the installer writes it
+    # on the host before the box has ever run — so an ABSENT config file here is a real
+    # fault, and serve::read_config is what tells the user about it.
     # The file is run in a CHILD shell and the difference in its environment is exported
     # here, so plain VAR= lines still reach the service across the exec (llama-server
     # reads LLAMA_ARG_* from its environment) while a typo in the user's config warns

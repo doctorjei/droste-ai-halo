@@ -342,29 +342,39 @@ dir, which follows its own upper's root instead (kernel: workdir and upperdir
 must share a filesystem). See the 2026-08-15 storage-taxonomy entry below.
 
 ### Templates (first-run seeding)
-🚨 **THE INSTALLER IS NOW THE WRITER OF EVERY CONFIG FILE — the image's
-`if_missing` seeding is on its way out.** `droste-setup.sh` copies a box's
-templates out of the container it just created, with `podman cp`, before that
-container has ever been started, reads `templates.yaml`'s **`if_missing`
+🚨 **THE INSTALLER IS THE SINGLE WRITER OF EVERY CONFIG FILE.** `droste-setup.sh`
+copies a box's templates out of the container it just created, with `podman cp`,
+before that container has ever been started, reads `templates.yaml`'s **`if_missing`
 section to learn which files to write** (the list is derived from the image, not
-restated in the installer), and writes each one that is absent. `if_missing`
-then finds them present and skips, so the two mechanisms cannot fight — which is
-what makes that an independently landable step. **Cutting `if_missing` from the
-manifests and from `apply_templates.py` is the step that follows.**
-⚠️ **`if_empty` STAYS and is not affected**: its entries are directory TREES
-(comfyui `input`/`user`, finetuning `workspace`), not config surface, and they
-already have exactly one writer.
+restated in the installer), and writes each one that is absent.
+🚨 **`apply_templates.py` NO LONGER ACTS ON `if_missing` — AND THE SECTION STAYS IN
+ALL FIVE MANIFESTS, because cutting it would break the installer.** `cfg_manifest`
+gates on that section: it IS the file list the installer derives instead of restating.
+So the script still PARSES it (the name stays in its `SECTIONS` tuple) and does nothing
+with it, and a manifest carrying an `if_missing:` section and nothing else — ds4, llama,
+vllm — is a valid manifest and a clean no-op. ⚠️ **The plan that ordered this change says
+"cut `if_missing` from the five manifests"; that wording is wrong in the manifest half
+and following it writes no config files at all.**
+⚠️ **`if_empty` STAYS and is now the only rule the image applies**: its entries are
+directory TREES (comfyui `input`/`user`, finetuning `workspace`), not config surface,
+and they already had exactly one writer.
 ⭐ **Consequence worth knowing when reading the ladder: a (re)configured box is
 no longer started during the install unless it is meant to serve** — the start
 existed to make the seeding happen. The `if_empty` trees are therefore seeded at
 the user's first start instead.
+🚨 **AND AN ABSENT CONFIG FILE NOW ANNOUNCES ITSELF** (ruled s78). Nothing recreates it:
+`serve::read_config` sets `SERVE_CONFIG_ERR`, so **the box starts and the server does
+not**, and the message names the missing file and tells the user to re-run the installer
+and choose modify or recreate for that box. A KEPT box is deliberately not patched up
+behind the user's back — KEEP means "touch nothing".
 
 `targets/<port>/templates/` bakes to `/opt/resources/templates/`; the manifest
 `templates.yaml` (restricted YAML subset, parsed by the base's stdlib-only
 `apply_templates.py` — no pyyaml in the lean images) maps `src: dest` under two
-rules: `if_empty` (copy iff dest is a COMPLETELY empty dir — a user who deleted
-the starter content expressed intent, nothing is resurrected) and `if_missing`
-(copy iff dest does not exist — user edits are never overwritten). Seeding runs
+sections with **two different readers**: `if_empty` is applied by the image (copy iff
+dest is a COMPLETELY empty dir — a user who deleted the starter content expressed
+intent, nothing is resurrected), and `if_missing` is read by the **installer** (written
+iff dest does not exist — user edits are never overwritten). `if_empty` seeding runs
 AFTER mounts so seeds land on the bound destinations.
 ⚠️ **The installer's own reader must agree with this one byte for byte** — it
 strips whitespace from BOTH sides of `src` and `dest`, exactly as
@@ -376,9 +386,10 @@ the OPTIONAL primitive, not by the manifest.
 Seeding runs as root, so in the **distrobox lane** the resolver passes
 `--owner "$DROSTE_USER"` down to `apply_templates.py` and the script chowns
 what it CREATED — the file counterpart of the `_mkuserdir`/`_own_dirs`
-deviation. Without it the seeded configs land owned by the container's root,
-which is a host subuid under `keep-id` (uid 100000), and "after first start
-they are yours to edit" is false: the user needs `sudo chown` first. The chown
+deviation. Without it what it seeds lands owned by the container's root,
+which is a host subuid under `keep-id` (uid 100000), and the user needs
+`sudo chown` before they can touch their own bind. (The config files no longer
+raise this question at all: a host-written file is already theirs.) The chown
 sits in the Python because only it knows the exact created set — a
 pre-existing dest dir (often a user bind, e.g. comfyui's `input/`) and
 anything already inside one are never touched, and nothing is chowned

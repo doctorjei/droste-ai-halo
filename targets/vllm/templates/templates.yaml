@@ -1,6 +1,10 @@
-# vLLM template manifest — consumed by apply_templates.py (restricted YAML subset).
-# Seed the build-generated default config to the persisted /opt/data volume on first
-# run only; never overwrite the user's edited copy.
+# vLLM template manifest (restricted YAML subset; format defined by
+# apply_templates.py). The `if_missing` section is read by the INSTALLER
+# (cfg_manifest → cfg_write_seeds, installer/cfg.sh): it writes the build-generated
+# default config to the persisted /opt/data volume before the box has ever run, only
+# where the file is absent, and never overwrites the user's edited copy.
+# apply_templates.py PARSES this section and does not act on it — the installer is
+# the single writer.
 #
 # TWO files, because vLLM has two kinds of setting: serve flags (YAML keys) and
 # runtime environment variables (this box's CFG_FILE). Both are DATA class — the

@@ -2,7 +2,9 @@
 """apply_templates.py — seed baked default files into runtime locations.
 
 Shared template applier baked into the runtime base image. Reads a manifest
-``templates.yaml`` in the templates directory and applies two seeding rules.
+``templates.yaml`` in the templates directory and applies ONE seeding rule,
+``if_empty``. The other section, ``if_missing``, is parsed and deliberately not
+acted on — see SEMANTICS below.
 
 RESTRICTED YAML SUBSET (intentional — NO pyyaml dependency in the lean base):
 This parser understands ONLY this exact shape, and keeps the ``.yaml`` extension
@@ -25,23 +27,47 @@ SEMANTICS:
   if_empty   — copy src (dir or file) into dest IFF dest is a COMPLETELY EMPTY
                directory. "Empty" = no entries at all (dotfiles count as content).
                A missing dest counts as empty (created). Any entry → skip.
-  if_missing — copy src to dest IFF dest does NOT exist. Never overwrites.
+  if_missing — PARSED, NEVER ACTED ON HERE. It is a DECLARATION the INSTALLER
+               reads, not an instruction this script executes.
+
+THE INSTALLER IS THE SINGLE WRITER OF EVERY CONFIG FILE (ruled s73; the installer
+half built s77, this half s78). This script used to copy each ``if_missing`` entry
+at the box's FIRST CONTAINER START, which made two writers of one file behind one
+"only if absent" promise — and it forced the installer's whole order: create the
+box, START it so the file existed, merge the run's answers into what appeared, then
+RESTART it so the service read them. The installer now copies the whole templates
+directory out of a container that has never run and writes the files itself:
+``cfg_manifest`` reads this very section and ``cfg_write_seeds`` writes one host
+file per entry, both in ``installer/cfg.sh``.
+
+THE SECTION STAYS IN THE FIVE MANIFESTS, AND CUTTING IT WOULD BREAK THE INSTALLER.
+``cfg_manifest`` gates on the ``if_missing`` section — that section IS the file list
+the installer DERIVES rather than restates, so removing it leaves the installer with
+nothing to write. It therefore has to keep PARSING cleanly here, and a manifest
+carrying an ``if_missing`` section and nothing else (ds4, llama, vllm) is a VALID
+manifest and a clean no-op.
+An ``if_missing`` src that is not in the templates is no longer an error here
+either: this script does not read it, the installer checks its own copy and names
+it, and a nonzero exit from here aborts ``resolve::apply_spec`` under
+``set -euo pipefail`` — it would stop the box from starting over a file this script
+no longer writes.
 
 Copies preserve tree structure (shutil.copytree/copy2). Idempotent; prints one
 line per action, silent when there is nothing to do.
 
 OWNERSHIP (``--owner <user>``, optional):
 Seeding runs as ROOT in both lanes (the server ENTRYPOINT is root; so is the
-distrobox init hook). Without this flag every seeded config therefore lands owned
+distrobox init hook). Without this flag everything seeded therefore lands owned
 by the CONTAINER's root — which under rootless podman is a subuid on the host
-(uid 100000 with the usual mapping), so the user cannot edit the very files the
-docs hand them ("after first start they are yours to edit"). With it, everything
-this run CREATES is chowned to <user> and their PRIMARY group — the same shape as
-the resolver's `chown "$DROSTE_USER:"` idiom.
+(uid 100000 with the usual mapping), so the user cannot edit what was just put in
+their own bind (comfyui's ``input``/``user``, finetuning's ``workspace``). With it,
+everything this run CREATES is chowned to <user> and their PRIMARY group — the same
+shape as the resolver's `chown "$DROSTE_USER:"` idiom. (The config files carry no
+chown question any more: a host-written file is already the user's.)
 
 WHY THE CHOWN LIVES HERE AND NOT IN THE SHELL CALLER: only this script knows
-exactly what it created — a whole tree for ``if_empty``, one file (plus any parent
-dirs it had to make) for ``if_missing`` — and precision is the whole requirement.
+exactly what it created — a whole tree for a directory src, one file plus any
+parent dirs it had to make for a file src — and precision is the whole requirement.
 Nothing else is ever touched: a dest DIRECTORY that already existed keeps its
 ownership (it is routinely the user's own bind, e.g. comfyui's /opt/ComfyUI/input),
 a dest that already existed is never copied over in the first place, and no chown
@@ -50,7 +76,7 @@ WHETHER to pass the flag — lane policy belongs with the resolver's other lane
 deviations, not in here.
 
 Exit status: 0 on success or no-op (a missing manifest is fine). Nonzero only on
-real errors (e.g. a manifest src that does not exist). A failed chown is NOT one
+real errors (e.g. an ``if_empty`` src that does not exist). A failed chown is NOT one
 of them: it warns and continues, exactly as resolve::_own_dirs does — a seed the
 user has to chown by hand still beats a container that refuses to start.
 """
@@ -62,6 +88,11 @@ import shutil
 import sys
 
 TOOL = "apply_templates"
+# Both names stay here even though only ``if_empty`` is acted on: this is the set of
+# top-level keys parse_manifest ACCEPTS, and every shipped manifest still carries an
+# ``if_missing`` section for the installer to read (``cfg_manifest`` in
+# installer/cfg.sh). Dropping the name from this tuple would turn each of those five
+# files into a hard "unknown top-level key" error at box start.
 SECTIONS = ("if_empty", "if_missing")
 
 
@@ -214,16 +245,13 @@ def apply(templates_dir, ids=None):
         chown_created(copy_tree_or_file(src_path, dest), ids)
         print(f"{TOOL}: seeded {dest} from {src} (if_empty)")
 
-    # if_missing: copy only when the destination does not exist. Never overwrite.
-    for src, dest in sections["if_missing"].items():
-        src_path = os.path.join(templates_dir, src)
-        if not os.path.exists(src_path):
-            warn(f"if_missing src does not exist: {src_path}")
-            return 1
-        if os.path.exists(dest):
-            continue
-        chown_created(copy_tree_or_file(src_path, dest), ids)
-        print(f"{TOOL}: created {dest} from {src} (if_missing)")
+    # if_missing: NOTHING HAPPENS HERE, ON PURPOSE. The section is parsed above so a
+    # manifest that carries it stays valid — and every shipped manifest does carry it,
+    # because it is the file list the INSTALLER derives from (cfg_manifest →
+    # cfg_write_seeds, installer/cfg.sh). The installer is the single writer of every
+    # config file; a copy here would be the second writer this design removed.
+    # Do not "restore" this branch as a fallback: a dormant second writer is exactly
+    # what makes an "only if absent" promise impossible to reason about.
 
     return 0
 

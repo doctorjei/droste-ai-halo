@@ -84,7 +84,9 @@ HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE (optional) ──────────────────────────────────────────────────────
 # Absolute path to a file sourced right before PRE_LAUNCH. Used by llama/ds4 whose
-# config is an env file (generated into /opt/data by templates.yaml if_missing).
+# config is an env file — written into /opt/data on the HOST by the installer, from
+# the `if_missing` entries of this port's templates.yaml, before the box has ever run.
+# The image does not create it; serve::read_config reports an absent one.
 # The resolver sources it under `set -a`, so plain VAR= lines are EXPORTED and
 # survive the exec into the service (ports may still belt-and-braces re-export in
 # PRE_LAUNCH so the spec stays self-sufficient under other callers).

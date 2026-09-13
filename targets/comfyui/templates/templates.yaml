@@ -1,9 +1,13 @@
-# templates.yaml — comfyui seed manifest, applied by the shared apply_templates.py
-# AFTER mounts (restricted subset: flat `src: dest` maps; src relative to this dir,
-# dest absolute; see base/resolve/apply_templates.py).
+# templates.yaml — comfyui seed manifest (restricted subset: flat `src: dest` maps;
+# src relative to this dir, dest absolute; see base/resolve/apply_templates.py).
 #
-# if_empty  — copy iff dest is a COMPLETELY EMPTY (or missing) directory.
-# if_missing — copy iff dest does not exist. Never overwrites.
+# TWO SECTIONS, TWO READERS:
+# if_empty  — applied by the shared apply_templates.py AFTER mounts, at box start:
+#             copy iff dest is a COMPLETELY EMPTY (or missing) directory.
+# if_missing — read by the INSTALLER (cfg_manifest → cfg_write_seeds, installer/cfg.sh),
+#             which writes each file on the host before the box has ever run: written
+#             iff dest does not exist, never overwritten. apply_templates.py PARSES this
+#             section and does not act on it — the installer is the single writer.
 #
 # (mount_shared_models_here is NOT listed here — it is the /opt/models marker BODY,
 #  picked up by name by the resolver's OPTIONAL primitive.)

@@ -244,11 +244,11 @@ droste::cfg_apply() {
     local loud_dirs="XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_RUNTIME_DIR XDG_DATA_DIRS"
     # ── STALE DROSTE NAMES — the one thing this file CAN honestly call wrong ────
     # 🚨 THE FAILURE, MEASURED FROM THE TREE, NOT THEORISED. Every box's config file
-    # is seeded `if_missing` (apply_templates.py, the `if os.path.exists(dest)`
-    # skip), so a box created before a rename KEEPS its old file forever — a new
-    # image never rewrites it. `5e57310` renamed every droste-owned setting from
-    # <BOX>_DROSTE_* to DROSTE_<BOX>_*, so an older ds4.cfg says
-    # `DS4_DROSTE_MODEL=/opt/models/mine.gguf` and the wiring reads
+    # is written ONLY WHERE IT IS ABSENT (the installer's cfg_write_seeds; the image
+    # seeded it `if_missing` until s78), so a box created before a rename KEEPS its
+    # old file forever — a new image never rewrites it. `5e57310` renamed every
+    # droste-owned setting from <BOX>_DROSTE_* to DROSTE_<BOX>_*, so an older ds4.cfg
+    # says `DS4_DROSTE_MODEL=/opt/models/mine.gguf` and the wiring reads
     # DROSTE_DS4_MODEL, finds nothing, and falls back to the default path in
     # targets/ds4/build-spec. Nothing is there, ds4-server exits, and
     # --health-on-failure=restart turns that into a restart loop the user does not

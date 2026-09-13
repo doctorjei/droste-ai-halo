@@ -1,5 +1,12 @@
-# finetuning template manifest — read by /opt/resources/resolve/apply_templates.py
-# (restricted YAML subset: two flat sections, `src: dest`, src relative to this dir).
+# finetuning template manifest (restricted YAML subset: two flat sections,
+# `src: dest`, src relative to this dir; format defined by apply_templates.py).
+#
+# TWO SECTIONS, TWO READERS:
+# if_empty  — applied by /opt/resources/resolve/apply_templates.py at box start.
+# if_missing — read by the INSTALLER (cfg_manifest → cfg_write_seeds,
+#             installer/cfg.sh), which writes each file on the host before the box
+#             has ever run. apply_templates.py PARSES this section and does not act
+#             on it — the installer is the single writer.
 #
 # Baked /opt/workspace ships EMPTY (it is the user's bind mountpoint); the pristine
 # starter notebooks live here instead and are seeded ONLY into a completely empty

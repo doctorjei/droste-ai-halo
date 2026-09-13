@@ -211,6 +211,23 @@ declare -A BOX_NOTE=(
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
 IMAGE_SUFFIX="-halo:latest"
+
+# ── THE VERSION THIS INSTALLER IS (s77) ──────────────────────────────────────
+# Stamped as a comment on the first line of every config file and ini the
+# installer writes (`# droste-version: X.Y.Z`), so a file can say which release
+# authored it. NOTHING CONSUMES IT YET — it reserves the option to migrate a
+# config later without taking it (Jei, s73: "we can READ compatible config files
+# and reserve the OPTION to rewrite them"), and ABSENT IS NOT WRONG, because
+# every box in the field predates stamping.
+#
+# 🚨 `dev` IS THE HONEST ANSWER OUTSIDE A RELEASE, AND THE DEFAULT MUST STAY ONE.
+# Never stamp a version we do not have. `release.yml` hands the real one to
+# scripts/assemble-droste-setup.sh, which substitutes this line; a plain assembly
+# leaves it alone. ⚠️ That is also what keeps `lint-shell.yml`'s "two assemblies
+# are byte-identical" gate green — the version may not come from the clock, the
+# environment or a git describe, because all three would break it, and breaking
+# it would be the gate working.
+DROSTE_VERSION="dev"
 # The image ref AS SHOWN to the reader: the image STEM alone — no registry, no
 # owner, no tag. Every part dropped here is shared by every image this
 # installer pulls, so on screen it is 25 columns that distinguish nothing:
@@ -234,19 +251,23 @@ img_disp() {   # box → droste-<box>-halo
 # (The old -server / -box lane suffixes are gone with the lanes; see box_ctr().)
 INIT_HOOK="/opt/resources/resolve/droste-init-hook.sh"
 
-# Where the BAKED template for <box>.cfg lives INSIDE the image. This is the
-# file apply_templates.py copies to /opt/data/<box>.cfg at the box's first start
-# (`if_missing`), so it is, byte for byte, what a box with no settings file
-# would have been given. The installer reads it to answer one question it cannot
-# answer from the host: "is the file on disk still the shape we ship?".
+# Where the BAKED templates live INSIDE the image: every config file a box seeds,
+# plus the `templates.yaml` manifest that says where each one goes.
+# 🚨 SINCE s77 THE INSTALLER IS THE ONE THAT COPIES THEM OUT AND WRITES THEM —
+# this is no longer just the reference copy it diffs a user's file against, it is
+# the source of the files themselves (box_templates → cfg_write_seeds).
 # 🚨 IT MIRRORS TWO THINGS AND HAS TO KEEP MIRRORING BOTH — the default of
 # RESOLVE_TEMPLATES_DIR in base/resolve/droste-resolve.sh, and the COPY that
-# puts templates/ there in every targets/Container.<box>. Every target's
-# templates.yaml maps the basename in BOX_CFG to /opt/data/<same name>, which is
-# why one directory plus BOX_CFG is enough for all five.
-# ⚠️ It is read through `podman exec`, which inherits NOTHING from the init hook
-# (a recorded pattern), so the variable's in-box value is not available to us and
-# the path is written out rather than expanded from the box's environment.
+# puts templates/ there in every targets/Container.<box>.
+# ⚠️ THE FILE LIST IS NOT WRITTEN DOWN HERE, ON PURPOSE. `templates.yaml` travels
+# with the templates, so cfg_write_seeds reads the manifest rather than restating
+# it; a list here would be a second copy that rots the day a target gains a ninth
+# seeded file. BOX_CFG still names the one file the installer MERGES answers into.
+# ⚠️ It is read with `podman cp`, NOT `podman exec` — `cp` works on a container
+# that has never been started, which is what lets the config exist before the
+# first start. (`exec` also inherits nothing from the init hook, so the in-box
+# value of RESOLVE_TEMPLATES_DIR was never available to us either way; the path is
+# written out rather than expanded from the box's environment.)
 CFG_TEMPLATE_DIR="/opt/resources/templates"
 
 # ── Healthcheck contract (P1's droste-healthcheck.sh, baked in every image) ───

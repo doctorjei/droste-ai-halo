@@ -548,28 +548,14 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
 # are merged. Every other byte of the file is the user's and comes out exactly
 # as it went in.
 
-# How long to wait for the seed. The init hook mounts the overlays and, on a
-# comfyui box with no registry yet, scans the model tree — minutes, not seconds.
-# The template step runs before the launch but after the mounts, so this has to
-# be generous; it is a CEILING, not a delay (the poll returns the moment the
-# file settles).
-CFG_SEED_WAIT=300
-cfg_wait_seed() {  # file → 0 once it exists and has stopped growing, 1 on timeout
-  local f=$1 i=0 n=$(( CFG_SEED_WAIT * 2 )) cur="" prev=""
-  while [[ $i -lt $n ]]; do
-    if [[ -f $f ]]; then
-      # apply_templates.py seeds with shutil.copy2, which is NOT atomic: the file
-      # can exist while it is still being written. Two consecutive polls agreeing
-      # on a non-zero size is the cheap way to not merge into half a file.
-      cur=$(wc -c < "$f" 2>/dev/null) || cur=""
-      if [[ -n $cur && $cur -gt 0 && $cur == "$prev" ]]; then return 0; fi
-      prev=$cur
-    fi
-    sleep 0.5
-    i=$((i + 1))
-  done
-  return 1
-}
+# 🗑️ `cfg_wait_seed` + `CFG_SEED_WAIT` LIVED HERE AND WERE DELETED IN s77. They
+# polled for up to 300 s waiting for the IMAGE to seed <box>.cfg at the box's
+# first start, and watched the size settle because `shutil.copy2` is not atomic
+# so the file could exist while still being written. The installer writes the
+# file itself now, with a temp file and a rename, so there is nothing to wait for
+# and nothing that can be seen half-written. **Do not reintroduce a wait here:**
+# if the file is absent after cfg_write_seeds, that is a failure to report, not a
+# race to sleep through.
 
 # ── <box>.cfg.example — the escape hatch for a file that is an OLDER SHAPE ───
 # 🚨 THIS IS THE GENERAL CASE THE PORT ELECTION IS THE NARROW EXCEPTION TO (S2b,
@@ -584,30 +570,74 @@ cfg_wait_seed() {  # file → 0 once it exists and has stopped growing, 1 on tim
 # copied it, then the same cfg_set merges the caller is about to make into the
 # real file. Miss the second and the example is not the file a fresh box gets.
 #
-# The template is read out of the RUNNING container, which is the only place it
-# exists — the installer is a `curl | bash` script on the host and has no
-# checkout. That is also why this reaches only a box the ladder started: a KEPT
-# box is never started (keep = change nothing), and starting one to write it an
-# example would be exactly the "change" that was declined.
-box_cfg_template() {  # box → the baked template on stdout, 1 when unreachable
-  local box=$1
+# The templates are read out of the box's own container, which is the only place
+# they exist — the installer is a `curl | bash` script on the host and has no
+# checkout.
+#
+# 🚨 `podman cp`, NOT `podman exec`, AND THAT IS THE WHOLE POINT (s77). `exec`
+# needs a RUNNING container, which is what forced the old create → start → merge →
+# restart order and made a `.cfg.example` unreachable for a box that will not
+# start. `cp` works on a container that has NEVER RUN, measured on hardware for
+# every shipped image: s75 via `podman create` (35/0, Loaf + Raiju, cross-checked
+# on bifrost) and s77 via `distrobox assemble create`, which is how the installer
+# actually creates a box (45/0, Loaf, distrobox 1.7.0) — container `created`,
+# `podman diff` EMPTY, and the bytes identical to the other path's.
+#
+# ⚠️ ONE `cp` OF THE WHOLE DIRECTORY, not one per file: it is the shape that was
+# measured, and it is what puts `templates.yaml` itself in our hands — which is
+# what lets cfg_write_seeds DERIVE the file list instead of restating it.
+# ⚠️ THE DESTINATION MUST NOT EXIST. `podman cp <dir> <existing-dir>` NESTS (you
+# get dest/templates/…) while into an absent dest it does not, and `<dir>/.`
+# copies the contents — one command, three meanings, so it is picked on purpose.
+# ⚠️ EVERY podman FAILURE HERE EXITS 125, NOT 1 (measured s75): a missing path in
+# the container, a missing host destination, a container that is not there. Test
+# for non-zero; never branch on 1.
+# ⚠️ THE CALLER OWNS THE DIRECTORY AND REMOVES IT. No EXIT trap: pull.sh already
+# installs one, and bash keeps exactly one, so adding a second here would silently
+# replace the pull service's cleanup.
+box_templates() {  # box → a host dir holding the box's templates on stdout, 1 if not
+  local box=$1 ctr dest out rc
   [[ -n ${RUNTIME:-} ]] || return 1
-  "$RUNTIME" exec "$(box_ctr "$box")" cat "$CFG_TEMPLATE_DIR/${BOX_CFG[$box]}"
+  ctr=$(box_ctr "$box")
+  dest=$(mktemp -d "${TMPDIR:-/tmp}/droste-tmpl.XXXXXX" 2>/dev/null) || return 1
+  # mktemp -d made it, so the copy would NEST. Take the name and not the
+  # directory: `cp` creates it, and an absent dest is the non-nesting form.
+  rmdir "$dest" 2>/dev/null || { rm -rf "$dest" 2>/dev/null || :; }
+  out=$("$RUNTIME" cp "$ctr:$CFG_TEMPLATE_DIR" "$dest" 2>&1); rc=$?
+  if [[ $rc -ne 0 || ! -d $dest ]]; then
+    rm -rf "$dest" 2>/dev/null || :
+    warn "could not read the baked templates out of $ctr $EMD $out"
+    return 1
+  fi
+  printf '%s' "$dest"
+  return 0
+}
+
+# One box's <box>.cfg template, from a directory box_templates already copied.
+box_cfg_template() {  # box templates-dir → the baked template on stdout, 1 if absent
+  local box=$1 dir=$2 f
+  f="$dir/${BOX_CFG[$box]}"
+  [[ -f $f && -r $f ]] || return 1
+  cat "$f"
 }
 
 CFG_EXAMPLE=""
-seed_cfg_example() {  # box cfgfile → 0 + CFG_EXAMPLE naming the file written
-  local box=$1 f=$2 ex tmp dir
+seed_cfg_example() {  # box cfgfile templates-dir → 0 + CFG_EXAMPLE naming the file
+  local box=$1 f=$2 tdir=$3 ex tmp dir
   CFG_EXAMPLE=""
   ex="$f.example"                     # <box>.cfg.example, beside what it describes
   dir=$(dirname "$f")
   tmp=$(mktemp "$dir/.droste-cfg.XXXXXX" 2>/dev/null) || {
     warn "could not write in $dir $EMD no ${BOX_CFG[$box]}.example was written"; return 1; }
-  if ! box_cfg_template "$box" > "$tmp" || [[ ! -s $tmp ]]; then
+  # ⚠️ THE STAMP GOES ON THE EXAMPLE TOO. This file's whole contract is "exactly
+  # what would have been written had no file existed", and what cfg_seed_file
+  # writes carries a stamp — an unstamped example is not the file a fresh box gets.
+  if ! { printf '# droste-version: %s\n' "$DROSTE_VERSION"
+         box_cfg_template "$box" "$tdir"; } > "$tmp" || [[ ! -s $tmp ]]; then
     rm -f "$tmp" 2>/dev/null || :
     # NOT fatal and NOT counted against the run: the answers still got recorded
     # in the real file. Say it once, in the step log, and carry on.
-    warn "could not read the baked ${BOX_CFG[$box]} out of $(box_ctr "$box") $EMD no .example was written"
+    warn "the baked ${BOX_CFG[$box]} is not in the templates copied out of $(box_ctr "$box") $EMD no .example was written"
     return 1
   fi
   # ⚠️ AN EXISTING EXAMPLE IS REFRESHED EVEN WHEN THE SHAPES NOW AGREE. It is a
@@ -639,48 +669,48 @@ seed_cfg_example() {  # box cfgfile → 0 + CFG_EXAMPLE naming the file written
   return 0
 }
 
-# Merge this run's answers into the box's settings file. Runs as one run_step
-# child, so everything it says lands in that step's log; it reports a real value
-# CHANGE by touching the marker file, which is what tells create_box whether a
-# restart is owed. (A child cannot hand a variable back to the parent.)
+# Write this box's config files and merge this run's answers into its settings
+# file. Runs as one run_step child, so everything it says lands in that step's log.
+#
+# 🚨 THE ORDER THIS REPLACES IS THE WHOLE POINT (s77). It used to WAIT for the
+# image to seed <box>.cfg at the box's first start, merge into what appeared, and
+# leave a marker behind so create_box knew a RESTART was owed — the service had
+# already read a file that did not yet hold the user's answers. Now the file is
+# written before the box has ever run, so there is nothing to wait for, no marker,
+# and no restart: the first start reads the finished file.
 #
 # The vocabulary is the file's OWN: STARTUP_ENABLED's menu reads {yes, no*}, so
 # that is what gets written. The retired server.env wrote `1`, which under a
 # {yes, no} menu would have the user open their config file and find a value
 # that is not in its own list of values.
-write_box_cfg() {  # box marker → 0 recorded, 1 something could not be recorded
-  local box=$1 marker=$2 f ex="" key val name cur rc=0
+write_box_cfg() {  # box → 0 recorded, 1 something could not be recorded
+  local box=$1 f ex="" tdir key val name rc=0
   f=$(box_cfg_file "$box") || return 0
   [[ -n $f ]] || return 0
   f=$(fs_path "$f")      # the box's data dir, as the kernel needs it spelled
-  if ! cfg_wait_seed "$f"; then
-    warn "$f has not appeared after ${CFG_SEED_WAIT}s $EMD the box seeds it at its first start, so your port and startup answers were not recorded"
-    return 1
-  fi
+  # The baked templates, copied out of the container the ladder just created. It
+  # has never run, and `podman cp` does not need it to.
+  tdir=$(box_templates "$box") || return 1
+  # Every config file this box seeds, written only where the host file is absent.
+  cfg_write_seeds "$box" "$tdir" || rc=1
   # S2b, BEFORE the merges below and not after: the example has to receive the
-  # same two values, so it exists by the time the loop runs. A box that got its
-  # file this very run is the ordinary case and produces nothing — the file the
-  # seeder just copied IS the current shape.
+  # same two values, so it exists by the time the loop runs. A box whose file we
+  # just wrote is the ordinary case and produces nothing — the file we copied IS
+  # the current shape.
   # ⚠️ NOT part of `rc`. Failing to write an explanatory copy must never report
   # the run's answers as unrecorded; it says so in the step log and stops there.
-  if seed_cfg_example "$box" "$f"; then ex=$CFG_EXAMPLE; fi
+  if seed_cfg_example "$box" "$f" "$tdir"; then ex=$CFG_EXAMPLE; fi
+  rm -rf "$tdir" 2>/dev/null || :
   for key in STARTUP_ENABLED PORT; do
     case $key in
       STARTUP_ENABLED) val=$([[ -n ${CFG_BOXSV[$box]:-} ]] && printf yes || printf no) ;;
       PORT)            val=${CFG_PORT[$box]} ;;
     esac
     name=$(cfg_name "$box" "$key")
-    cur=$(cfg_get "$name" "$f")
     # The example is what a box with NO file would have ended up with, so it
     # takes every value the real file takes. Its own outcome is not `rc`.
     if [[ -n $ex ]]; then cfg_set "$name" "$val" "$ex" || :; fi
     if ! cfg_set "$name" "$val" "$f"; then rc=1; continue; fi
-    # The marker means "a value on disk is not what it was", which is the only
-    # thing a restart is for. cfg_set is idempotent — an unchanged value writes
-    # nothing at all — so this mirrors its own no-op test rather than guessing.
-    # No marker (mktemp failed) is not an error here: the caller then treats the
-    # settings as changed, which costs a restart and is the safe direction.
-    if [[ -n $marker && $cur != "$val" ]]; then printf '1\n' > "$marker" || :; fi
   done
   return $rc
 }

@@ -11,7 +11,7 @@ is_configured() {  # box → 0 when it is in CONFIGURE
 }
 
 create_box() {  # box
-  local box=$1 name log rc=0 src=0 marker="" serve=0 record=0
+  local box=$1 name log rc=0 src=0 serve=0 record=0
   name=$(box_ctr "$box")
   log=$(step_log create "$name")
   : > "$log"
@@ -36,57 +36,39 @@ create_box() {  # box
     distrobox assemble create --file "$(fs_path "$(ini_file "$box")")" || rc=$?
   if [[ $rc -eq 0 ]]; then
     SESSION_STATE[$box]=STOPPED
-    # Two independent reasons to start the container we just created:
+    # 🚨 ONE REASON TO START, NOT TWO (s77). There used to be a SEEDING START
+    # here: `podman start` replays the init line, the init line seeded <box>.cfg
+    # from the baked template, and the box therefore had to run ONCE before the
+    # installer had a file to record the port and box-start answers in — which
+    # also meant the service read a file that did not yet hold them, so a RESTART
+    # was owed whenever a value had actually changed. A start, a merge, a restart
+    # and (for a box not meant to serve) a stop, to produce one config file.
     #
-    #  1. THE SEEDING START. `podman start` is what replays the init line, and
-    #     the init line is what SEEDS <box>.cfg from the baked template — so the
-    #     box has to run ONCE before the installer has a file to record its port
-    #     and box-start answers in. That start does not serve: the file it is
-    #     about to create is the file the serve intent is read from, so on a
-    #     brand-new box the intent reads as absent and nothing is launched.
-    #     ONLY for a (re)configured box. KEEP means "change nothing about
-    #     settings", and its <box>.cfg is a settings file.
-    #  2. The [A] rung's own reason: a box whose server is meant to come up when
-    #     the box does. Unchanged.
+    # The installer writes that file itself now (write_box_cfg → cfg_write_seeds,
+    # out of the container we just created and have NOT started), so the only
+    # surviving reason to start is the [A] rung's own: a box whose server is meant
+    # to come up when the box does.
     #
-    # Whatever the reason, the container ends the run in the state the rung and
-    # the answer asked for — running only when (2) holds.
+    # ⚠️ TWO OBSERVABLE CONSEQUENCES, both deliberate. A (re)configured box that is
+    # not meant to serve is no longer started at all, so (1) its `if_empty` trees
+    # (comfyui input/user, finetuning workspace) are seeded at the USER's first
+    # start instead of during the install, and (2) the install no longer proves
+    # such a box can start. The first is a deferral; the second is a real loss,
+    # accepted because the start it bought also cost every user a start+stop cycle
+    # and a restart.
     serve=0; record=0
     [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" ]] && serve=1
     is_configured "$box" && record=1
-    if [[ -n $RUNTIME ]] && [[ $serve -eq 1 || $record -eq 1 ]]; then
+    # The config files FIRST, and before any start: that ordering is what makes
+    # the rest of this block simple, and it is the whole single-writer change.
+    if [[ -n $RUNTIME && $record -eq 1 ]]; then
+      run_step "configuring" "$log" write_box_cfg "$box" || rc=1
+    fi
+    # ...then the start, which now finds a finished file and needs no restart.
+    if [[ -n $RUNTIME && $serve -eq 1 ]]; then
       src=0
       run_step "starting" "$log" "$RUNTIME" start "$name" || src=$?
-      if [[ $src -eq 0 ]]; then
-        SESSION_STATE[$box]=ACTIVE
-        if [[ $record -eq 1 ]]; then
-          # The answers, merged one line at a time into the file the box just
-          # seeded. The marker is how the child reports that a value on disk
-          # actually changed — a restart is owed only then, and cfg_set writes
-          # nothing at all when the value is already what we would write.
-          marker=$(mktemp "${TMPDIR:-/tmp}/droste-cfg.XXXXXX" 2>/dev/null) || marker=""
-          run_step "configuring" "$log" write_box_cfg "$box" "$marker" || rc=1
-          # It is meant to serve, and it did not serve on the seeding start
-          # because the setting was not there to read yet. An EMPTY marker path
-          # means mktemp failed and we do not know — restart anyway, which costs
-          # a restart and is the safe direction.
-          if [[ $serve -eq 1 ]] && { [[ -z $marker ]] || [[ -s $marker ]]; }; then
-            src=0
-            run_step "restarting" "$log" "$RUNTIME" restart "$name" || src=$?
-            [[ $src -eq 0 ]] || rc=1
-          fi
-          [[ -n $marker ]] && rm -f "$marker"
-        fi
-        if [[ $serve -eq 0 ]]; then
-          # The start was ours, not the user's: the [c] rung stops at "created",
-          # and a box whose server is not meant to come up with it would
-          # otherwise be left running as an idle container.
-          run_step "stopping" "$log" "$RUNTIME" stop "$name" || rc=1
-          SESSION_STATE[$box]=STOPPED
-        fi
-      else
-        rc=1
-      fi
+      if [[ $src -eq 0 ]]; then SESSION_STATE[$box]=ACTIVE; else rc=1; fi
     fi
   fi
   if [[ $rc -eq 0 ]]; then status_ok "$name..."; else status_err "$name..." "$log"; fi

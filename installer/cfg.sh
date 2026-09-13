@@ -685,3 +685,165 @@ cfg_shape_differs() {  # TEMPLATE FILE → 0 when the surfaces differ, else 1
   CFG_SHAPE_GONE=${CFG_SHAPE_GONE# }
   [[ -n $CFG_SHAPE_ADDED || -n $CFG_SHAPE_GONE ]]
 }
+
+
+# ── THE SEEDED CONFIG FILES: the installer is their ONLY writer (s77) ────────
+# 🚨 INSTALLER-ONLY, exactly like the format marker above and for the same
+# reason: the box has no twin of any of this and needs none. cfgdiff.sh compares
+# the two PARSERS and must never be widened to reach these.
+#
+# Until s77 the IMAGE seeded every config file: apply_templates.py copied eight
+# `if_missing` entries at the box's FIRST CONTAINER START. That is what forced the
+# installer's whole order — create the box, START it so the file exists, merge the
+# run's answers into what the start had just produced, then RESTART it so the
+# service reads them. Jei ruled it out (s73: "this is weird, and we shouldn't be
+# doing this. Why are we?"), so the installer writes them itself, from the
+# templates baked in the image, read out of a container that has never run.
+#
+# 📐 THE FILE LIST IS DERIVED, NEVER RESTATED. A hardcoded list of eight names
+# here would be a SECOND COPY OF THE MANIFEST — the duplication the embed
+# proposal was vetoed for, one level down — and it would rot the first time a
+# target gained a ninth seeded file: silently, and in the direction that costs the
+# user a config file that is simply not there. So the manifest is read out of the
+# image beside the templates it describes, and adding a seeded file stays a
+# `targets/**` change with no edit here.
+#
+# ⚠️ `if_empty` IS DELIBERATELY NOT READ. Its three entries are directory TREES
+# (comfyui `input`/`user`, finetuning `workspace`), not config surface; they have
+# exactly one writer already, so there is no duplication to remove. The box still
+# seeds those at its first start.
+
+# The `if_missing` section of a copied templates/ directory, as two parallel
+# arrays. The format is the restricted subset apply_templates.py defines and
+# documents: two top-level keys, each a FLAT one-level map of `src: dest`, `#`
+# full-line comments and blank lines ignored, no nesting and no quoting. A
+# top-level key is one that starts in column 0 — the same test the Python reader
+# makes (`if not line[0].isspace()`).
+CFG_SEED_SRC=()
+CFG_SEED_DEST=()
+cfg_manifest() {  # templates-dir → 0 + CFG_SEED_SRC/DEST, 1 when there is none
+  local dir=$1 f line body section="" key val
+  CFG_SEED_SRC=(); CFG_SEED_DEST=()
+  f="$dir/templates.yaml"
+  [[ -f $f && -r $f ]] || return 1
+  # `|| [[ -n $line ]]` — a last line with no trailing newline IS a line, the
+  # same rule cfg_read_lines and cfg_shape keep.
+  while IFS= read -r line || [[ -n $line ]]; do
+    body=${line#"${line%%[![:space:]]*}"}
+    case $body in
+      ''|'#'*) continue ;;
+    esac
+    # Unindented ⇒ a section header; everything indented belongs to the section
+    # above it. An unknown section is simply not if_missing, so it is skipped
+    # rather than rejected — this reader has no business failing on a key
+    # apply_templates.py may grow later.
+    if [[ $line == "$body" ]]; then section=${body%%:*}; continue; fi
+    [[ $section == if_missing ]] || continue
+    key=${body%%:*}
+    val=${body#*:}                       # the FIRST colon: a dest has none
+    # 🚨 LEADING **AND TRAILING** WHITESPACE OFF BOTH, because that is exactly what
+    # the Python reader does (`src.strip()` / `dest.strip()`) and the two read the
+    # SAME FILE. Stripping only the leading side — the first version of this —
+    # writes a file whose name ends in a space the moment a manifest line does.
+    key=${key#"${key%%[![:space:]]*}"}; key=${key%"${key##*[![:space:]]}"}
+    val=${val#"${val%%[![:space:]]*}"}; val=${val%"${val##*[![:space:]]}"}
+    if [[ -n $key && -n $val ]]; then
+      CFG_SEED_SRC+=("$key")
+      CFG_SEED_DEST+=("$val")
+    fi
+  done < "$f"
+  [[ ${#CFG_SEED_SRC[@]} -gt 0 ]]
+}
+
+# One seeded file, written with the version stamp in front of it.
+#
+# 📐 THE STAMP IS A COMMENT ON ITS OWN FIRST LINE (ruled s73: "Its own line is
+# best"), and `#` is the comment character on all four surfaces we write — cfg,
+# yaml, and the Python trait file, which Jupyter EXECUTES but whose leading
+# comment is inert. ⚠️ Verified s77 that all eight templates open with a `#`
+# comment line: none has a shebang or a YAML `---` that a prepended line would
+# displace. A ninth template that did would need its stamp placed differently.
+# ⚠️ NOTHING CONSUMES THE STAMP. It reserves the option to migrate a config
+# later; it does not take it (Jei: "we can READ compatible config files and
+# reserve the OPTION to rewrite them"). ABSENT IS NOT WRONG — every box in the
+# field predates it.
+# ⚠️ It must stay a COMMENT: droste::cfg_apply PARSES <box>.cfg, so a
+# setting-shaped stamp would be exported as a variable. cfg_shape's regex wants
+# an UPPER-CASE name followed by `=`, which `droste-version:` is not, so the
+# stamp cannot move the surface comparison either.
+cfg_seed_file() {  # src dest → 0 written, 1 not
+  local src=$1 dst=$2 dir tmp
+  dir=$(dirname "$dst")
+  if [[ ! -d $dir ]]; then
+    warn "$dir does not exist $EMD $(basename "$dst") was not written"; return 1
+  fi
+  tmp=$(mktemp "$dir/.droste-cfg.XXXXXX" 2>/dev/null) || {
+    warn "could not write in $dir $EMD $(basename "$dst") was not written"; return 1; }
+  if ! { printf '# droste-version: %s\n' "$DROSTE_VERSION"; cat "$src"; } > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null || :
+    warn "could not write $tmp $EMD $(basename "$dst") was not written"; return 1
+  fi
+  # The TEMPLATE's own mode, not mktemp's 0600. The image used shutil.copy2,
+  # which preserves it, and this file is one the user edits.
+  chmod --reference="$src" "$tmp" 2>/dev/null || :
+  mv -f "$tmp" "$dst" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || :
+    warn "could not place $dst"; return 1; }
+  return 0
+}
+
+# Every config file one box seeds, written if it is not already there.
+#
+# 🚨 ONLY A FILE THAT IS NOT THERE IS WRITTEN. The installer inherits
+# `if_missing`'s promise exactly, because the file belongs to the user from the
+# moment it exists — and that is also what makes this safe to land while the
+# image is still seeding: `if_missing` then finds the file present and skips, so
+# the two mechanisms cannot fight.
+# 🚨 AN UNMAPPABLE DEST IS A LOUD SKIP, NEVER A SILENT ONE. A manifest entry
+# whose directory is not a bind this box has (or has not been given a path yet)
+# is a config file the user will not get; saying nothing would be a box that
+# comes up on stock defaults with nothing to edit and no explanation.
+cfg_write_seeds() {  # box templates-dir → 0 all good, 1 something was not written
+  local box=$1 dir=$2 i n src dest label hostdir spelled dst rc=0
+  if ! cfg_manifest "$dir"; then
+    warn "no template manifest in $dir $EMD this box's config files were not written"
+    return 1
+  fi
+  n=${#CFG_SEED_SRC[@]}
+  for (( i = 0; i < n; i++ )); do
+    src=${CFG_SEED_SRC[i]}; dest=${CFG_SEED_DEST[i]}
+    if [[ ! -f "$dir/$src" ]]; then
+      warn "the image's manifest names $src, which is not in its templates $EMD not written"
+      rc=1; continue
+    fi
+    # The container dest → which bind it is under → the host side of that bind.
+    # dest_to_label is the map the re-run detector already uses, read backwards.
+    label=$(dest_to_label "$box" "$(dirname "$dest")")
+    if [[ -z $label ]]; then
+      warn "$dest is not under a bind this box has $EMD $src was not written"
+      rc=1; continue
+    fi
+    # The same fallback box_cfg_file uses: PATHS holds what this run answered,
+    # EXD_PATH what a previous run recorded. A box that is being KEPT has the
+    # second and not the first.
+    spelled=${PATHS["$box:$label"]:-${EXD_PATH["$box:$label"]:-}}
+    if [[ -z $spelled ]]; then
+      warn "no host path is known for this box's $label bind $EMD $src was not written"
+      rc=1; continue
+    fi
+    # The path spelling contract: PATHS holds what the user TYPED, fs_path
+    # resolves only here at the filesystem boundary and its result is never
+    # stored, compared or printed.
+    hostdir=$(fs_path "$spelled")
+    dst="$hostdir/$(basename "$dest")"
+    if [[ -e $dst ]]; then continue; fi
+    if cfg_seed_file "$dir/$src" "$dst"; then
+      # The SPELLED path, not the resolved one: what the user typed is what we
+      # show them (the path spelling contract).
+      printf 'wrote %s\n' "$spelled/$(basename "$dest")"
+    else
+      rc=1
+    fi
+  done
+  return $rc
+}

@@ -19,10 +19,20 @@
 # VLLM_STRIX_FP8_TRITON did nothing at all. What ran on gfx1151 in this image was stock
 # torch._scaled_mm — the same code with the flag on or off — so nothing about the Triton
 # kernels was verified here, correctness included.
-# ✅ The patch is re-pointed and guarded as of s61 part 2; the flag is now WIRED. It is still
-# UNVALIDATED on hardware, and a second gate (vLLM pads decode to 17 rows, so the
-# rows-mapped M==1 GEMV that carries the speedup is unreachable) means no performance
-# win is expected yet. See scaffolding/vllm-artifacts/patch_fp8_kernels.py.
+# ✅ The patch is re-pointed and guarded as of s61 part 2, the flag is WIRED, and since
+# f392518 our PRE_LAUNCH defaults it ON — so the kernels DO run in this image now, and
+# they are not optional: with the flag off, an fp8 model reaches stock torch._scaled_mm
+# and gfx1151 kills the engine core ("ROCm MI300+", measured on Raiju at s71, seen
+# again in the field at s78).
+# ⚠️ THAT STILL DOES NOT MAKE THE STANZA'S SENTENCE OURS TO CLAIM. What this repo has
+# measured is that fp8 SERVES with the shim on and DIES with it off; nobody here has
+# checked outputs, so "correctness-verified" remains kyuz0's claim about kyuz0's images.
+# 🗄️ And the second gate this header used to name is GONE: vLLM pads decode to 17 rows
+# only while compilation mode < VLLM_COMPILE, and s71 made mode 3 our default — so the
+# "no performance win is expected yet" line that stood here described conditions this
+# image no longer runs under. There is still no Triton-vs-stock number, and there cannot
+# be one on gfx1151, because the stock arm does not run.
+# See scaffolding/vllm-artifacts/patch_fp8_kernels.py.
 # ⚠️ DO NOT "FIX" THE SENTENCE IN THE STANZA. Everything below this header is verbatim
 # upstream, which is the only thing that makes drift visible in git; an edit there would
 # show up as upstream drift at the next refresh and would put OUR claim inside THEIR

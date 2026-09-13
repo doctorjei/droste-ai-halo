@@ -284,22 +284,40 @@ VLLM_BOOL_VARS=(
     # a startup ValueError to a warning.
     "LONG_MAX_MODEL_LEN_OK:VLLM_ALLOW_LONG_MAX_MODEL_LEN:1:0"
     # ours, read by this image's patched FP8 kernels — not in vllm/envs.py.
-    # 🚨 WIRED AND GUARDED SINCE s61 part 2, AND STILL NEVER RUN ON HARDWARE. Two things a
-    # user turning this on is entitled to know, and neither is visible from the flag:
+    # 🚨 LOAD-BEARING, NOT EXPERIMENTAL, AND THE WIRING DEFAULTS IT ON (f392518). With
+    # the shim off, an fp8 model reaches stock torch._scaled_mm and gfx1151 raises
+    # "only supported on CUDA devices with compute capability >= 9.0 or 8.9, or ROCm
+    # MI300+" inside profile_run, before KV sizing: the engine core dies and the
+    # healthcheck relaunch-loops the box. MEASURED on Raiju at s71, and seen again in
+    # the FIELD at s78 on a box whose image predated this default — which is the whole
+    # argument for the default living in the wiring rather than in a template line.
+    # ⚠️ A bf16 model never enters that path, so `off` reads as harmless right up until
+    # a quantized model is served — which is how an earlier "no difference at this pin"
+    # note came to be recorded.
+    # ⇒ this row's `off` is a FALLTHROUGH TO A KERNEL THIS HARDWARE DOES NOT HAVE.
+    # The N1a default lives in vllm_pre_launch (see "the FP8 shim is not optional on
+    # this hardware"), not here; this row carries only the wire format.
+    # Two things a user reading it is still entitled to know:
     #   1. It did NOTHING AT ALL before s61 part 2. patch_fp8_kernels.py targeted a vLLM path
     #      that only exists AFTER our pin (the kernel-directory reorg landed one day
     #      after the v0.16.0 branch was cut), so it applied in zero builds this repo
     #      ever produced: on and off ran the same stock torch._scaled_mm. Any earlier
     #      measurement comparing the two arms compared identical code.
-    #   2. EXPECT NO SPEEDUP YET, even now. vLLM pads the quantized activation to 17
-    #      rows whenever compilation mode < VLLM_COMPILE — i.e. always under the
-    #      --enforce-eager these kernels require — so decode reaches the Triton kernel
-    #      at M=17 and the rows-mapped M==1 GEMV that carries the upstream win is
-    #      unreachable. Lifting that means overriding get_output_padding, which is a
-    #      change to vLLM's kernel-selection contract and is HELD as a separate,
-    #      hardware-gated item. Do not add it here to make a benchmark look better.
-    # ⇒ Treat this as EXPERIMENTAL and unvalidated. It is exposed because hiding it
-    # would need a reason, not because we can vouch for it.
+    #   2. THE M=17 PADDING THIS ROW USED TO WARN ABOUT IS GONE, AND OUR OWN DEFAULT IS
+    #      WHAT REMOVED IT. TorchFP8ScaledMMLinearKernel.get_output_padding() pads to 17
+    #      rows only while `mode < CompilationMode.VLLM_COMPILE`; s71 made
+    #      DROSTE_VLLM_COMPILATION_MODE=vllm_compile (mode 3) the default, so it returns
+    #      None and decode reaches the kernel at the real M. ⭐ WHAT BROKE WAS THE
+    #      INFERENCE, NOT THE MECHANISM: the old text read the padding off
+    #      `--enforce-eager`, which forces optimization level O0 — but vLLM derives the
+    #      mode only when it is UNSET, so stating the mode decouples the two.
+    #      ⚠️ STILL DO NOT OVERRIDE get_output_padding HERE. leonyurko's overlay does;
+    #      we reach the same state through a setting instead of through a change to
+    #      vLLM's kernel-selection contract, which is the cheaper of the two by far.
+    # ⚠️ NONE OF THIS IS A SPEEDUP CLAIM, AND THERE CANNOT BE ONE HERE: a Triton-vs-stock
+    # A/B on gfx1151 has no B arm, because stock does not run. What is measured is that
+    # fp8 SERVES with the shim on (s71's mode-3 arm had it explicitly on: 31.86 tok/s
+    # single-stream, ~855 tok/s batched, Qwen2.5-1.5B fp8) and dies with it off.
     "STRIX_FP8_TRITON:VLLM_STRIX_FP8_TRITON:1:0"
     # ── ROCm per-kernel toggles ── bool(int) ×2, .lower() in ("true","1") ×1
     "ROCM_FP8_PADDING:VLLM_ROCM_FP8_PADDING:1:0"
@@ -1458,6 +1476,46 @@ vllm_pre_launch() {
         *)  _droste_cmode=3
             serve::err "DROSTE_VLLM_COMPILATION_MODE=\"$DROSTE_VLLM_COMPILATION_MODE\" is not one of none|stock_torch_compile|dynamo_trace_once|vllm_compile in $CFG_FILE — using vllm_compile. Fix the line and restart the box." ;;
     esac
+
+    # ── the retired compile-cache name (s66 policy: warn for ONE minor release) ─
+    # 842a193 renamed DROSTE_VLLM_DISABLE_COMPILE_CACHE to DROSTE_VLLM_COMPILE_CACHE.
+    # A config file is written only when it is ABSENT and is never rewritten, so a box
+    # created before that rename still carries the old line and it is now inert — the
+    # defect this project forbids outright: a line that reads as authoritative and does
+    # nothing.
+    # 🚨 NOTHING ELSE REPORTS IT, WHICH IS WHY THE GUARD IS HERE AND NOT ELSEWHERE.
+    # droste::cfg_apply's stale-name guard fires on a name that CONTAINS `DROSTE` but
+    # does not START with `DROSTE_` — the retired <BOX>_DROSTE_* shape — and this rename
+    # stayed INSIDE the namespace, so the dead name passes it silently. vllm_env's loop
+    # is keyed on the NEW suffix and never looks at the old one.
+    # ⚠️ THE VALUE FLIPS WITH THE NAME, AND THAT IS THE WHOLE REASON THIS IS THREE ARMS
+    # RATHER THAN ONE "it moved" LINE. The old name was the DISABLE (`yes` ⇒
+    # VLLM_DISABLE_COMPILE_CACHE=1); the new one names the STATE (`on` ⇒ 0). A user who
+    # wrote `no` meant "do not disable it" — i.e. the cache ON — so a message that only
+    # renamed the setting would send them to write exactly the wrong word.
+    # ⚠️ AND THE BOX BAKES THE CACHE OFF (targets/Container.vllm's ENV and
+    # profile.d/01-rocm-env-for-triton.sh both set VLLM_DISABLE_COMPILE_CACHE=1), so the
+    # two intents are NOT equally harmed: an old `yes` is still getting what it asked
+    # for by accident, an old `no` silently stopped being honored at the rename. The
+    # messages say which of the two happened rather than making the user work it out.
+    # ⚠️ A BLANK IS DELIBERATELY NOT REPORTED. vllm_env skips an empty value
+    # (`[ -n "$val" ] || continue`), so `DROSTE_VLLM_DISABLE_COMPILE_CACHE=` did nothing
+    # BEFORE the rename either — there is no intent to carry across, and llama's retired
+    # loops test the same way.
+    # ⚠️ EVERY ARM PRINTS AND RETURNS 0. PRE_LAUNCH runs BARE under `set -euo pipefail`
+    # in the resolver lane, so a diagnostic that exits non-zero takes the box down, and
+    # "decline to serve" is not even available here — serve::set_active has no fallback
+    # in droste-common.sh. Say what happened and carry on.
+    # ⚠️ DELETE THIS BLOCK ONE MINOR RELEASE AFTER 842a193 SHIPPED: the policy retires
+    # the warning too, and a retired name that warns forever is a second surface.
+    _droste_ccache=${DROSTE_VLLM_DISABLE_COMPILE_CACHE:-}
+    if [ -n "$_droste_ccache" ]; then
+        case "$(droste::bool "$_droste_ccache")" in
+            on)  serve::err "DROSTE_VLLM_DISABLE_COMPILE_CACHE is retired and is being ignored. DROSTE_VLLM_COMPILE_CACHE replaces it and names the state, not the negation, so the value flips: your '$_droste_ccache' is DROSTE_VLLM_COMPILE_CACHE=off. Set that in $CFG_FILE and drop the old line." ;;
+            off) serve::err "DROSTE_VLLM_DISABLE_COMPILE_CACHE is retired and is being ignored. DROSTE_VLLM_COMPILE_CACHE replaces it and names the state, not the negation, so the value flips: your '$_droste_ccache' is DROSTE_VLLM_COMPILE_CACHE=on. Set that in $CFG_FILE and drop the old line." ;;
+            *)   serve::err "DROSTE_VLLM_DISABLE_COMPILE_CACHE is retired and is being ignored, and '$_droste_ccache' is not an on/off value. DROSTE_VLLM_COMPILE_CACHE replaces it: on persists torch.compile graphs between starts, off recompiles every start. Set the one you meant in $CFG_FILE." ;;
+        esac
+    fi
 
     vllm_env
 

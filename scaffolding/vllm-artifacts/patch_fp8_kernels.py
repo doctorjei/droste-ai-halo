@@ -16,6 +16,11 @@ from pathlib import Path
 # VLLM_ROCM_USE_AITER=0, and aren't benchmarked — so they're only used when
 # consciously activated (per kyuz0's suggestion on #67).
 #
+# ⚠️ "OPT-IN" DESCRIBES THIS SHIM, NOT A DROSTE BOX. `targets/vllm/build-spec`'s
+# PRE_LAUNCH does the opting in for every box (`: "${DROSTE_VLLM_STRIX_FP8_TRITON:=on}"`,
+# f392518), because on gfx1151 the stock branch below is not a fallback — it is a crash.
+# See the s78 block at the foot of this header.
+#
 # Deliberately a SEPARATE patch file (NOT patch_strix.py) so the FP8 work stays
 # independent of the is_integrated memory PR (#66). Surgical call-swap (not a file
 # overlay): preserves vLLM's current scale-handling in apply_scaled_mm, only
@@ -46,17 +51,35 @@ from pathlib import Path
 # Every failure mode here is invisible from outside: the image builds, the server
 # starts, /health answers 200, and FP8 quietly runs on the stock path.
 #
-# ⚠️ THE LANE IS WIRED AND GUARDED, AND STILL UNVALIDATED. It has never run on
-# hardware. `TorchFP8ScaledMMLinearKernel.get_output_padding()` returns 17 whenever
-# compilation mode < VLLM_COMPILE — i.e. always under the --enforce-eager these
-# kernels require — and vLLM pads the quantized activation to that many rows
-# (_custom_ops.py: `shape = (max(num_token_padding, input.shape[0]), shape[1])`).
-# So decode arrives at fp8_gemm with M=17, never M=1, and the rows-mapped GEMV that
-# is the ENTIRE decode win upstream advertises is unreachable. leonyurko's own
-# overlay overrides get_output_padding to None for exactly this reason; we
-# deliberately do NOT, because that is a behavior change to vLLM's kernel-selection
-# contract that cannot be measured without a gfx1151 box. Expect NO speedup until
-# that separate, hardware-gated item is done. Do not quietly add the override here.
+# ── THE LANE HAS RUN, AND IT IS NOT OPTIONAL HERE (measured s71, corrected s78) ─
+# 🚨 THIS PARAGRAPH USED TO SAY THE LANE HAD NEVER RUN ON HARDWARE AND TO EXPECT NO
+# SPEEDUP. Both were true when written and both are now false, so they are corrected
+# rather than deleted — the reasoning under them is what a future reader needs.
+# WITHOUT THE SHIM, AN FP8 MODEL KILLS THE ENGINE CORE ON gfx1151. The `if not
+# _VLLM_STRIX_FP8_TRITON:` branch below falls through to stock torch._scaled_mm, whose
+# capability check is the first statement of ATen's _scaled_mm_out_cuda, and this card
+# is not MI300+: "RuntimeError: torch._scaled_mm is only supported on CUDA devices with
+# compute capability >= 9.0 or 8.9, or ROCm MI300+", raised inside profile_run before
+# KV sizing, followed by a healthcheck relaunch loop. Measured on Raiju serving
+# Qwen2.5-1.5B fp8 at s71, and seen again in the field at s78 on a box whose image
+# predated the fix. ⇒ targets/vllm/build-spec's PRE_LAUNCH defaults the flag ON.
+#
+# ⭐ AND THE M=17 GATE IS NO LONGER WHAT IT WAS, BECAUSE OUR OWN DEFAULT MOVED.
+# `TorchFP8ScaledMMLinearKernel.get_output_padding()` returns 17 whenever compilation
+# mode < VLLM_COMPILE, and vLLM pads the quantized activation to that many rows
+# (_custom_ops.py: `shape = (max(num_token_padding, input.shape[0]), shape[1])`) — so
+# decode used to arrive at fp8_gemm with M=17, never M=1, and the rows-mapped GEMV that
+# is the decode win upstream advertises was unreachable. That mechanism is unchanged;
+# the CONDITION is what went away. The old text inferred `mode < VLLM_COMPILE` from the
+# --enforce-eager these kernels require, and vLLM derives the mode only when it is
+# UNSET — so DROSTE_VLLM_COMPILATION_MODE=vllm_compile (mode 3, the default since s71)
+# leaves enforce-eager in place and still returns None from get_output_padding.
+# ⚠️ SO DO NOT QUIETLY ADD THE OVERRIDE. leonyurko's overlay overrides
+# get_output_padding to None; we reach the same state from a setting rather than by
+# changing vLLM's kernel-selection contract, and that remains the cheaper answer.
+# ⚠️ AND DO NOT READ ANY OF THIS AS A MEASURED SPEEDUP: there is no Triton-vs-stock
+# comparison on gfx1151 and there cannot be one, because the stock arm does not run.
+# What is measured is that fp8 serves with the shim on and dies with it off.
 
 TARGET = 'vllm/model_executor/layers/quantization/kernels/scaled_mm/pytorch.py'
 # The post-refactor spelling, named ONLY so the death message can tell a future
@@ -156,6 +179,27 @@ def patch_fp8():
         if cls not in reg_txt:
             die(cls + " is not referenced by " + str(reg) + " -- the class this patch"
                 " rewrites is no longer registered, so the shim would never be reached")
+
+    # ⚠️ KNOWN GAP, RECORDED BECAUSE IT IS EXACTLY THE SHAPE THIS FILE EXISTS TO CATCH
+    # (s78). The checks above assert that the three pytorch.py classes are REGISTERED.
+    # They do NOT assert that the kernel registered AHEAD of them stays out of reach.
+    # At this pin _POSSIBLE_FP8_KERNELS[PlatformEnum.ROCM] lists
+    # ROCmFP8ScaledMMLinearKernel FIRST, and that class carries a FOURTH
+    # 'output = torch._scaled_mm(' — the non-skinny fallback inside
+    # rocm_per_tensor_float_w8a8_scaled_mm_impl, in scaled_mm/rocm.py: a file this patch
+    # never opens, whose call sites none of the counts below can see. It is unreachable
+    # on gfx1151 only because its is_supported() demands on_mi3xx() (gfx942/gfx950) AND
+    # VLLM_ROCM_USE_SKINNY_GEMM, so selection falls through to
+    # PerTensorTorchFP8ScaledMMLinearKernel, which IS patched.
+    # 🚨 IF A FUTURE PIN RELAXES THAT GATE, THE SHIM IS BYPASSED AND THE CRASH RETURNS
+    # SILENTLY: that kernel is chosen first, its fallback reaches stock torch._scaled_mm,
+    # gfx1151 raises "ROCm MI300+" in profile_run — and every guard in this function is
+    # still green, because the file it patched is untouched and correctly patched.
+    # ⭐ AN ASSERTION WOULD HAVE TO READ A SECOND FILE: that scaled_mm/rocm.py's
+    # is_supported still gates on on_mi3xx(), and/or that its torch._scaled_mm fallback
+    # is gone. DELIBERATELY NOT ADDED HERE — recording the gap beside the guard is this
+    # session's scope; widening the guard changes what the build refuses to produce, and
+    # that decision is not a comment's to make.
 
     n_defs = txt.count('    def apply_scaled_mm(')
     if n_defs != N_APPLY_DEFS:

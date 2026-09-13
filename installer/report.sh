@@ -201,19 +201,22 @@ write_notes() {
         llama)
           printf -- '- BEFORE first use: edit `%s/llama.cfg` and set\n' "$data"
           printf '  `LLAMA_ARG_MODEL` (a GGUF path, or use `-hf org/repo` via\n'
-          printf '  `DROSTE_LLAMA_EXTRA_ARGS`). The file is seeded at first start.\n'
+          printf '  `DROSTE_LLAMA_EXTRA_ARGS`). The file is already there — this\n'
+          printf '  installer wrote it, so you can edit it before the box ever runs.\n'
           printf -- '- API: http://localhost:%s (llama-server).\n' "$port"
           ;;
         vllm)
           printf -- '- BEFORE first use: edit `%s/vllm_config.yaml` and set\n' "$data"
-          printf '  `model:` (HF repo id or /opt/models path). Seeded at first start.\n'
+          printf '  `model:` (HF repo id or /opt/models path). Already written by\n'
+          printf '  this installer, so you can edit it before the box ever runs.\n'
           printf '  REQUIRED: left unset, vLLM exits with `No model specified!`\n'
           printf '  and the server never starts.\n'
           printf -- '- OpenAI-compatible API: http://localhost:%s/v1.\n' "$port"
           ;;
         ds4)
           printf -- '- BEFORE first use: edit `%s/ds4.cfg` and set\n' "$data"
-          printf '  `DROSTE_DS4_MODEL` (GGUF path). Seeded at first start.\n'
+          printf '  `DROSTE_DS4_MODEL` (GGUF path). Already written by this\n'
+          printf '  installer, so you can edit it before the box ever runs.\n'
           printf -- '- API: http://localhost:%s (ds4-server).\n' "$port"
           ;;
         finetuning)

@@ -535,21 +535,29 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
 
 # ── The box's settings file: recording the two answers we asked for ──────────
 # 🚨 THE INSTALL ORDER IS THE WHOLE DESIGN, AND IT IS NOT A CONVENTION:
-#     create → START (the start is what SEEDS <box>.cfg) → cfg_set → restart.
-# <box>.cfg is seeded `if_missing` by apply_templates.py at the box's FIRST
-# CONTAINER START, and the seeder SKIPS a destination that already exists. An
-# installer that wrote the file FIRST would leave a small stub that PERMANENTLY
-# BLOCKS the seed: the user would get a config file holding the serve settings
-# and NONE of the several hundred documented application settings, with nothing
-# failing and nothing warning. cfg_set REFUSES to create a missing file, which
-# is what turns this ordering into a guarantee — see the refusal in cfg_set, and
-# do not add a create path at either end.
+#     create → WRITE the config files → start (only if the box is to serve).
+# The installer copies the baked templates out of the container it just created
+# — which has never been started — and writes every config file that is absent.
+# The service therefore reads a FINISHED file on its first start: no seeding
+# start, no merge into something that appeared underneath us, and no restart.
 #
-# ⚠️ The box is therefore STARTED even at the rung that only creates. That start
-# is not "running the box": the FIRST start has no cfg to read, so the serve
-# intent reads as absent, no server is launched (contract B2), and create_box
-# puts the container back to the state the rung asked for afterwards. The
-# alternative is dropping two answers the user just gave on the floor.
+# 🗄️ THIS COMMENT USED TO STATE THE OPPOSITE ORDER AS "THE WHOLE DESIGN", and
+# said outright that "an installer that wrote the file FIRST would leave a small
+# stub that PERMANENTLY BLOCKS the seed". THAT REASONING WAS SOUND AND ITS
+# PREMISE IS GONE: the hazard was writing a FIVE-LINE STUB holding only the serve
+# settings, because `if_missing` would then skip the real template forever. We
+# write the WHOLE TEMPLATE, so there is no stub to block anything, and the merge
+# lands in a file that already carries every documented application setting.
+# ⚠️ Do not "restore" the old order from a stale note: it exists to serve a
+# seeding step that is being removed (plans/installer-owns-config-s73.md).
+#
+# ⭐ cfg_set STILL REFUSES to create a missing file, and that refusal is worth
+# keeping for a different reason now: it is what makes "the file exists because
+# WE wrote it" checkable rather than assumed. Do not add a create path there.
+#
+# ⚠️ A box that is not meant to serve is therefore NOT STARTED during the
+# install at all. The start existed to make the seeding happen; with the seeding
+# gone, the only surviving reason to start is the [A] rung's own.
 #
 # NEVER touched for a KEPT box (keep = "change nothing about settings"): only a
 # box being created gets here at all, and only the settings it was ASKED about

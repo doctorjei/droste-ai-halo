@@ -154,8 +154,11 @@ declare -A BOX_HAS_MODELS=(
   [comfyui]=1 [llama]=1 [vllm]=1 [ds4]=1 [finetuning]=0
 )
 
-# The box's SETTINGS FILE, seeded (if missing) onto /opt/data at the box's FIRST
-# CONTAINER START and owned by the user from then on. This is the file the five
+# The box's SETTINGS FILE, written onto /opt/data by THIS INSTALLER when it is
+# absent — before the box has ever started (s77) — and owned by the user from the
+# moment it exists. ⚠️ The image still carries the same template and still seeds
+# it `if_missing`, which is why landing the installer's write first was safe: the
+# seeder finds the file present and skips. This is the file the five
 # serve settings live in, so this map is what the installer writes through — it
 # MIRRORS `CFG_FILE` in each target's baked build-spec (/opt/data/<box>.cfg) and
 # has to keep mirroring it. The name follows the BOX; the settings inside it

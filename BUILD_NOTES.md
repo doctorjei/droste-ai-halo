@@ -342,13 +342,34 @@ dir, which follows its own upper's root instead (kernel: workdir and upperdir
 must share a filesystem). See the 2026-08-15 storage-taxonomy entry below.
 
 ### Templates (first-run seeding)
+🚨 **THE INSTALLER IS NOW THE WRITER OF EVERY CONFIG FILE — the image's
+`if_missing` seeding is on its way out.** `droste-setup.sh` copies a box's
+templates out of the container it just created, with `podman cp`, before that
+container has ever been started, reads `templates.yaml`'s **`if_missing`
+section to learn which files to write** (the list is derived from the image, not
+restated in the installer), and writes each one that is absent. `if_missing`
+then finds them present and skips, so the two mechanisms cannot fight — which is
+what makes that an independently landable step. **Cutting `if_missing` from the
+manifests and from `apply_templates.py` is the step that follows.**
+⚠️ **`if_empty` STAYS and is not affected**: its entries are directory TREES
+(comfyui `input`/`user`, finetuning `workspace`), not config surface, and they
+already have exactly one writer.
+⭐ **Consequence worth knowing when reading the ladder: a (re)configured box is
+no longer started during the install unless it is meant to serve** — the start
+existed to make the seeding happen. The `if_empty` trees are therefore seeded at
+the user's first start instead.
+
 `targets/<port>/templates/` bakes to `/opt/resources/templates/`; the manifest
 `templates.yaml` (restricted YAML subset, parsed by the base's stdlib-only
 `apply_templates.py` — no pyyaml in the lean images) maps `src: dest` under two
 rules: `if_empty` (copy iff dest is a COMPLETELY empty dir — a user who deleted
 the starter content expressed intent, nothing is resurrected) and `if_missing`
 (copy iff dest does not exist — user edits are never overwritten). Seeding runs
-AFTER mounts so seeds land on the bound destinations. The `/opt/models` marker
+AFTER mounts so seeds land on the bound destinations.
+⚠️ **The installer's own reader must agree with this one byte for byte** — it
+strips whitespace from BOTH sides of `src` and `dest`, exactly as
+`apply_templates.py`'s `.strip()` does. They read the same file; a divergence
+writes a filename with a trailing space. The `/opt/models` marker
 body (`mount_shared_models_here`) lives in templates/ too, picked up by name by
 the OPTIONAL primitive, not by the manifest.
 
@@ -1157,8 +1178,29 @@ whole:
 
     scripts/assemble-droste-setup.sh | cmp - droste-setup.sh
 
-⭐ **That is the acceptance test, and it admits no partial credit.** While both
-shapes are tracked, CI asserts it on every push.
+⚠️ **THAT COMMAND IS HISTORY: the artifact is NO LONGER TRACKED**, so there is
+nothing to `cmp` against and the gate is gone. What replaced it is a set of
+checks on the ASSEMBLY itself, in `lint-shell.yml`'s `installer` job — the
+assembler is silent on success · two consecutive assemblies are byte-identical ·
+the embedded Python compiles · the layering checker passes · **`--version`
+substitutes the release identity** (below). ⭐ **Those ARE the contract now; they
+are what the `cmp` stood in front of, not duplicates of it.**
+
+**The one transformation, and it is opt-in: `--version <X.Y.Z>`.** Without the
+flag the assembler is still a `cat` with guards, which is what keeps "two
+assemblies are byte-identical" meaningful — the version may not come from the
+clock, the environment or a `git describe`, because all three would break that
+gate. With it, exactly two named constants in `installer/contract.sh` are
+rewritten: `DROSTE_VERSION` (the `# droste-version:` stamp the installer writes
+into every config file and ini) and `DROSTE_IMAGE_TAG` (the image line it pins).
+🚨 **It asserts EXACTLY ONE matching line before rewriting either, and dies
+naming the constant otherwise** — silence there would publish an installer that
+stamps `dev` into every file it writes and pins `:latest` while claiming to pin a
+line. `release.yml` passes `github.ref_name` and then checks the result from the
+other side.
+📐 **A stable tag pins `X.Y`; a PRE-RELEASE pins its EXACT tag** — `release.yml`
+moves the `X.Y` and `X` aliases only for a stable release, so an rc pinning `0.7`
+would install a different build than the one it shipped beside, or nothing at all.
 
 **STDOUT is the product.** Nothing lands anywhere unless the caller redirects —
 CI does `> droste-setup.sh`, the g1lab suites redirect into their own `mktemp -d`,

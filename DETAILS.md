@@ -443,11 +443,23 @@ records** into `~/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
 definition for that box, healthcheck flags and all) and a `NOTES.md` guide
 with your real paths baked in — and can pull images, create boxes, and start
 servers. Your startup and port answers do not go into a file of droste's; they
-go into the box's own `<box>.cfg`, which the box seeds at its first start and
-which is yours from then on. So the order is create, start, merge the two
-lines, and restart only if a value actually changed — the installer edits the
-two settings it asked about and reproduces every other byte of your file
-exactly. Boxes asked to start at host boot also get a systemd **user** unit
+go into the box's own `<box>.cfg`, which is yours from the moment it exists.
+The installer writes that file itself: it copies the box's baked templates out
+of the container it just created — which has never been started — writes every
+config file that is not already there, and only then starts the box, and only
+if the box is meant to serve. So the order is create, write, start. A file that
+already exists is never overwritten; the installer edits the two settings it
+asked about and reproduces every other byte of your file exactly.
+
+Every config file and ini the installer writes carries a `# droste-version:`
+comment on its first line, recording the release that authored it. Nothing
+reads it yet — it is there so a future release can tell what it is looking at.
+
+(Earlier installers left that file to the BOX, which seeded it at its first
+start — so the installer had to create the box, start it, merge into what
+appeared, and restart it for the service to see the answers. If you have a box
+from then, nothing about it changed: your file is still yours and is still
+never overwritten.) Boxes asked to start at host boot also get a systemd **user** unit
 (`~/.config/systemd/user/droste-<box>.service`) doing `podman start`, and the
 installer enables lingering for you (printing the `sudo` form if the session
 will not let it).

@@ -464,17 +464,18 @@ cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
   if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
     warn "cfg_set: '$name' is not a shell variable name $EMD nothing written"; return 1
   fi
-  # 🚨 A FILE THAT IS NOT THERE IS A REFUSAL, NEVER A CREATE. <box>.cfg is seeded
-  # if_missing by apply_templates.py at the box's FIRST CONTAINER START, and that
-  # seeding is SKIPPED when the destination already exists. So a cfg_set that
-  # appended into a missing path would leave a five-line stub that PERMANENTLY
-  # BLOCKS the seed: the user gets a config file holding the serve settings and
-  # none of the several hundred documented app settings, with nothing failing and
-  # nothing warning. The install order (create → start, which seeds → cfg_set →
-  # restart) is what makes this case impossible; this refusal is what makes the
-  # ordering a guarantee rather than a convention the next caller can break.
+  # 🚨 A FILE THAT IS NOT THERE IS A REFUSAL, NEVER A CREATE — and the reason
+  # changed in s77 while the refusal stayed. It used to be that <box>.cfg was
+  # seeded `if_missing` by the IMAGE at the box's first start, so appending into
+  # a missing path left a five-line stub that PERMANENTLY BLOCKED that seed.
+  # The INSTALLER writes these files now (cfg_write_seeds), from the whole baked
+  # template, before the box has ever run — so the stub hazard is gone.
+  # ⭐ THE REFUSAL IS KEPT BECAUSE IT NOW CHECKS SOMETHING ELSE: reaching here
+  # means the write step did not produce the file, and merging into a fresh empty
+  # file would hide that by producing a config holding ONLY the serve settings
+  # and none of the several hundred documented app settings. Fail loudly instead.
   if [[ ! -e $file ]]; then
-    warn "$file does not exist yet $EMD the box seeds it at its first start, so $name was not recorded"
+    warn "$file was not written $EMD its config file is missing, so $name was not recorded; check the 'configuring' step's log"
     return 1
   fi
   # An EXISTING file we cannot read is a refusal too, not an overwrite:

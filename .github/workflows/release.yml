@@ -144,12 +144,35 @@ jobs:
           # other way round — `> file 2>&1 >/dev/null` — stderr lands IN the artifact
           # and stdout is discarded, which produces an EMPTY installer. Caught by
           # running it rather than reading it.
-          err=$(bash scripts/assemble-droste-setup.sh 2>&1 1>droste-setup.sh) || {
+          # 🚨 --version IS WHAT MAKES THIS A RELEASE ARTIFACT. It fixes the
+          # version the installer stamps into every config file it writes, and
+          # the image line it pins (X.Y for a stable tag, the EXACT tag for a
+          # pre-release, because the moving aliases stay on the last stable).
+          # Without it the artifact would ship `dev` and track `:latest`.
+          err=$(bash scripts/assemble-droste-setup.sh --version "${{ github.ref_name }}" \
+                  2>&1 1>droste-setup.sh) || {
             echo "::error::assembler failed: $err"; exit 1; }
           [ -z "$err" ] || { echo "::error::assembler wrote to stderr: $err"; exit 1; }
           [ -s droste-setup.sh ] || { echo "::error::assembled installer is empty"; exit 1; }
           bash -n droste-setup.sh
+          # 🚨 AND THE SUBSTITUTION IS VERIFIED HERE TOO, NOT JUST TRUSTED. The
+          # assembler already dies if a constant it must rewrite is missing; this
+          # catches the other direction — an artifact that came out carrying the
+          # unreleased defaults anyway. A released installer stamping `dev` into
+          # every config file it writes would be wrong in the one way nobody looks
+          # at, and pinned to `latest` while claiming to pin a line.
+          # ⚠️ `if`, NOT `grep -q … && { … }`: under `set -e` the latter leaves the
+          # STEP's exit status at grep's 1 whenever the check PASSES, so the good
+          # path is the one that would fail — a guard that breaks every release
+          # and never fires on the case it guards.
+          if grep -q '^DROSTE_VERSION="dev"$' droste-setup.sh; then
+            echo "::error::the release artifact still says DROSTE_VERSION=dev"; exit 1
+          fi
+          if grep -q '^DROSTE_IMAGE_TAG="latest"$' droste-setup.sh; then
+            echo "::error::the release artifact still pins :latest"; exit 1
+          fi
           echo "assembled $(wc -l < droste-setup.sh) lines"
+          grep -E '^(DROSTE_VERSION|DROSTE_IMAGE_TAG)=' droste-setup.sh
 
       - name: Attach it to the release
         env:

@@ -28,7 +28,12 @@
 # script to bash. The whole artifact is built and checked before a single byte
 # reaches stdout.
 #
-# Usage: assemble-droste-setup.sh [--ref <branch|tag|sha>]
+# Usage: assemble-droste-setup.sh [--ref <branch|tag|sha>] [--version <X.Y.Z>]
+#
+# --version stamps the artifact as a RELEASE: it fixes the version the installer
+# writes into every config file it creates, and the image line it pins. Without
+# it the artifact is `dev` and tracks `:latest`, which is what a checkout, a dev
+# pipe and CI all want — and what keeps two assemblies byte-identical.
 set -euo pipefail
 
 SELF=$(basename "$0")
@@ -36,12 +41,15 @@ die() { printf '%s: %s\n' "$SELF" "$*" >&2; exit 1; }
 
 REF=""
 REFETCH=1
+VERSION=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --ref)        [[ $# -ge 2 ]] || die "--ref needs a branch, tag or sha"; REF=$2; shift 2 ;;
     --ref=*)      REF=${1#*=}; shift ;;
+    --version)    [[ $# -ge 2 ]] || die "--version needs a version"; VERSION=$2; shift 2 ;;
+    --version=*)  VERSION=${1#*=}; shift ;;
     --no-refetch) REFETCH=0; shift ;;   # internal: set on the re-exec below
-    -h|--help)    sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//' ; exit 0 ;;
+    -h|--help)    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' ; exit 0 ;;
     *)            die "unknown option: $1" ;;
   esac
 done
@@ -169,6 +177,44 @@ for p in "$SRC"/py/*.py; do
     *) die "installer/$rel is embedded by no fragment" ;;
   esac
 done
+
+# ── --version: the release identity, substituted into the artifact ───────────
+# The installer stamps every config file it writes with the version, and pins the
+# image line it installs from. Both are NAMED CONSTANTS in installer/contract.sh
+# carrying their unreleased defaults (`dev` and `latest`); a release substitutes
+# them here, at the one moment the version is actually known.
+#
+# 🚨 SILENCE ON A MISSED LINE WOULD SHIP `dev` IN A RELEASE — a stamp that reads
+# as authoritative and is wrong, and an installer pinned to `latest` while
+# claiming to pin a line. So each substitution asserts EXACTLY ONE matching line
+# before it makes it, and dies naming the constant otherwise.
+# ⚠️ NOTHING RUNS WHEN --version IS ABSENT, which is what keeps CI's "two
+# assemblies are byte-identical" gate meaningful: the version may not come from
+# the clock, the environment or a `git describe`.
+subst_const() {   # NAME VALUE FILE
+  local name=$1 value=$2 file=$3 n
+  n=$(grep -c "^$name=\"" "$file" || true)
+  [[ $n -eq 1 ]] \
+    || die "expected exactly one $name=\" line in the artifact, found $n — installer/contract.sh moved"
+  awk -v n="$name" -v v="$value" '
+    !done && index($0, n "=\"") == 1 { print n "=\"" v "\""; done = 1; next }
+    { print }
+  ' "$file" > "$file.subst" || die "could not substitute $name"
+  mv "$file.subst" "$file"
+}
+
+if [[ -n $VERSION ]]; then
+  V=${VERSION#v}
+  [[ $V =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+    || die "--version '$VERSION' is not X.Y.Z or X.Y.Z-prerelease"
+  # 🚨 A PRE-RELEASE PINS ITS EXACT TAG, NOT ITS X.Y LINE. release.yml moves the
+  # `X.Y` and `X` aliases only for a STABLE tag, leaving them on the last stable
+  # release — so an rc installer pinning `0.7` would install a different build
+  # than the one it shipped beside, or nothing at all if `0.7` does not exist yet.
+  if [[ $V == *-* ]]; then TAG=$V; else TAG=${V%.*}; fi
+  subst_const DROSTE_VERSION   "$V"   "$BUF"
+  subst_const DROSTE_IMAGE_TAG "$TAG" "$BUF"
+fi
 
 # ── Provenance ───────────────────────────────────────────────────────────────
 # A user holding a downloaded droste-setup.sh has no other way to say WHICH one

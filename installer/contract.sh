@@ -210,7 +210,27 @@ declare -A BOX_NOTE=(
 )
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
-IMAGE_SUFFIX="-halo:latest"
+
+# ── THE IMAGE LINE THIS INSTALLER PINS (s77) ─────────────────────────────────
+# 🚨 THE PIN IS A PROPERTY OF THE INSTALLER, FIXED AT PUBLISH — never derived at
+# runtime, and NEVER from a config file. A v0.6.x installer pins the `0.6` image
+# line, and that is what guarantees the installer and the image agree, and
+# therefore that the config files it writes match the image it installs.
+# 📐 `X.Y`, ruled by Jei (s73): "technically there should be no interface changes
+# from X.Y.z for any 'z', so the config should be compatible."
+# ⇒ 🚨 **A PATCH RELEASE MUST NOT CHANGE THE CONFIG SURFACE.** No renamed
+# settings, no retired names, no default that changes behavior. Ordinary semver,
+# but here it is load-bearing because the pin enforces it.
+#
+# ⚠️ `latest` IS THE HONEST ANSWER FOR AN UNRELEASED ASSEMBLY, and it is what
+# keeps working from a checkout unchanged. A release substitutes the real line.
+# ⚠️ A NAMED CONSTANT, not an expression over DROSTE_VERSION. They move together
+# today and a pre-release deliberately breaks that (see the assembler): a tagged
+# rc pins its EXACT tag, because `release.yml` leaves the moving `X.Y` alias on
+# the last stable, so an rc pinning `0.7` would install a DIFFERENT build than
+# the one it was published beside — or nothing at all.
+DROSTE_IMAGE_TAG="latest"
+IMAGE_SUFFIX="-halo:$DROSTE_IMAGE_TAG"
 
 # ── THE VERSION THIS INSTALLER IS (s77) ──────────────────────────────────────
 # Stamped as a comment on the first line of every config file and ini the

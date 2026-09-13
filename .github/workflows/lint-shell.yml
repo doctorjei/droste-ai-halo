@@ -405,6 +405,39 @@ jobs:
           fi
           echo "two consecutive assemblies agree"
 
+      # THE RELEASE PATH, EXERCISED ON EVERY PUSH INSTEAD OF ONCE AT A RELEASE.
+      # `--version` is the flag that turns an assembly into a release artifact:
+      # it fixes the version the installer stamps into every config file it
+      # writes and the image line it pins. Nothing else runs it — release.yml
+      # does, at the one moment where a mistake is most expensive and least
+      # visible — so a broken substitution would first surface as a published
+      # installer stamping `dev` into every config file and pinning `:latest`
+      # while claiming to pin a line.
+      # 📐 A PRE-RELEASE PINS ITS EXACT TAG: release.yml moves the :X.Y and :X
+      # aliases only for a stable tag, so an rc pinning `9.9` would install a
+      # different build than the one it shipped beside.
+      - name: --version substitutes the release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          scripts/assemble-droste-setup.sh --version v9.9.9 > "$out"
+          got_v="$(grep -m1 '^DROSTE_VERSION=' "$out" || true)"
+          got_t="$(grep -m1 '^DROSTE_IMAGE_TAG=' "$out" || true)"
+          [[ "$got_v" == 'DROSTE_VERSION="9.9.9"' ]] || {
+            echo "::error::lint-shell: --version did not set DROSTE_VERSION (got '${got_v}')"; exit 1; }
+          [[ "$got_t" == 'DROSTE_IMAGE_TAG="9.9"' ]] || {
+            echo "::error::lint-shell: --version did not pin the X.Y image line (got '${got_t}')"; exit 1; }
+          scripts/assemble-droste-setup.sh --version 9.9.9-rc1 > "$out"
+          got_t="$(grep -m1 '^DROSTE_IMAGE_TAG=' "$out" || true)"
+          [[ "$got_t" == 'DROSTE_IMAGE_TAG="9.9.9-rc1"' ]] || {
+            echo "::error::lint-shell: a pre-release must pin its EXACT tag, not its X.Y line (got '${got_t}')"; exit 1; }
+          # And a malformed version is refused rather than silently stamped.
+          if scripts/assemble-droste-setup.sh --version 9.9 >/dev/null 2>&1; then
+            echo "::error::lint-shell: a malformed --version was accepted"; exit 1
+          fi
+          echo "--version sets both constants, pre-releases pin exactly, junk is refused"
+
       # THE POINT OF GIVING THE PYTHON ITS OWN FILES. Inside a heredoc it was a
       # string as far as every tool was concerned: a syntax error shipped and
       # surfaced as a failed image pull on a user's machine. Now it compiles here.

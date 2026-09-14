@@ -138,8 +138,8 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches ComfyUI with DROSTE_COMFYUI_PORT from
-# /opt/config/comfyui.cfg, so a baked-in number in the text below (and in
-# start_comfy_ui) would be wrong for every box that changed it.
+# /opt/config/comfyui.cfg, so a baked-in number in the text below would be wrong
+# for every box that changed it.
 # 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
 # droste-owned server.env, which was safe to source; they now live in the USER's
 # own comfyui.cfg, several hundred lines of their settings. So this asks
@@ -232,9 +232,13 @@ serve_addr() {
   printf '%s\n' "$a"
 }
 
-# serve_host — the address to BIND, for the foreground launcher below. Prints a
+# serve_host — the address this box would BIND, read from its own config. Prints a
 # usable IPv4 literal and returns 0; prints NOTHING and returns 1 when the
 # configured one cannot be honored.
+# ⚠️ IT HAS NO CALLER IN THIS FILE SINCE s81, when start_comfy_ui — the foreground
+# launcher it was written for — was removed. It is the banner's only answer to "what
+# would this box bind", the question serve_addr deliberately does not answer, and its
+# siblings on vllm and finetuning still feed a printed recipe with it.
 #
 # 🚨 THIS IS THE OTHER ADDRESS QUESTION AND serve_addr CANNOT ANSWER IT. probe_addr
 # maps the wildcard to loopback because "where do I browse" and "what do I bind"
@@ -246,18 +250,18 @@ serve_addr() {
 # is argued about again.
 #
 # 🚨 A FAILURE IS NEVER RESOLVED TOWARD A WIDER BIND (Jei, s60: "fail"). Until s60
-# this lane hardcoded `--listen 0.0.0.0`, so a user who narrowed their box's bind
-# got EVERY interface back the moment they ran it in the foreground — the same shape
+# the foreground lane hardcoded `--listen 0.0.0.0`, so a user who narrowed their box's
+# bind got EVERY interface back the moment they ran it — the same shape
 # as a certificate with no key: they believe the port is protected and it is not.
 # Absent or blank is our documented default and yields 0.0.0.0; anything we cannot
-# honor returns 1, and the caller declines to launch rather than widening.
+# honor returns 1, and a caller declines rather than widening.
 #
 # The three arms, each chosen rather than fallen into:
 #   no config file      → 0.0.0.0. Nothing to honor, and it is what the server
 #                         lane reads from the same absence.
 #   exists, unreadable  → REFUSE. The setting may narrow the bind and we cannot
 #                         see it; the server lane refuses to serve on this file at
-#                         all, so a foreground that guessed would be the one thing
+#                         all, so an answer that guessed would be the one thing
 #                         on the box ignoring the user's own file.
 #   library unreachable → REFUSE, same reason. Unable to read is not permission to
 #                         widen.
@@ -352,10 +356,13 @@ printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'ComfyUI server: http://%s:%s\n' "$SERVE_ADDR" "$SERVE_PORT"
 if serve_running >/dev/null; then
   printf '  - ALREADY SERVING on port %s. Stop it with: server_stop\n' "$SERVE_PORT"
-  printf '    Logs: tail -f /opt/program/logs/comfyui-serve.log\n'
 else
   printf '  - Not serving right now → start it with: server_start\n'
 fi
+# The log line sits OUTSIDE the branch since s81, when start_comfy_ui was removed:
+# server_start plus this file is the whole of "watch a run" now, so the box names it
+# whether or not something happens to be serving at the moment the user logs in.
+printf '    Logs: tail -f /opt/program/logs/comfyui-serve.log\n'
 printf '  - server_start · server_stop · server_restart · server_status\n'
 printf '    These act on the SERVER, not the box. A stop lasts until the box\n'
 printf '    restarts; for a permanent change set DROSTE_COMFYUI_STARTUP_ENABLED\n'
@@ -368,169 +375,3 @@ printf '  get_wan22.sh · get_qwen_image.sh · get_hunyuan15.sh · get_ltx2.sh\n
 # on the host itself, and `localhost` there answers nothing on a box whose
 # DROSTE_COMFYUI_HOST names one interface.
 printf 'SSH tip: ssh -L %s:%s:%s user@host\n\n' "$SERVE_PORT" "$SERVE_ADDR" "$SERVE_PORT"
-
-# service_argv — the command line the SERVER would run, DERIVED rather than
-# remembered. Prints it NUL-delimited and returns 0; prints NOTHING when this box's
-# configuration cannot be turned into a command line.
-#
-# 🚨 IT REPLACED A HARDCODED SNAPSHOT, AND THE SNAPSHOT HAD ALREADY GONE WRONG (found
-# s73). start_comfy_ui used to type out five flags — --disable-mmap --gpu-only
-# --disable-smart-memory --cache-none --bf16-vae — while the service's line is built
-# by comfyui_argv translating a FOURTEEN-row table plus DROSTE_COMFYUI_CACHE. Two of
-# the five were false in shipped images: --disable-smart-memory has not been on the
-# service line since `9f95652` (MODEL_RESIDENCY's default `cache` emits nothing), and
-# --cache-none is the OPPOSITE of what CACHE's default `ram` emits (--cache-ram).
-# ⭐ AND IT WAS NEVER DRIFT FROM A SHARED COPY — there was no copy. The other NINE
-# settings were not represented here at all, so someone who set VRAM=lowvram and
-# reached for the foreground launcher to find out why their box was slow got
-# --gpu-only anyway. That is the worst shape of failure for the one tool whose whole
-# pitch is "runs it here, in the foreground, which is what you want when you are
-# watching it": a divergence presents as "it works in the foreground", which sends
-# the next hour in the wrong direction.
-# ⭐ THE CURE IS THE ONE ALREADY APPLIED TO THE PORT, ONE FIELD OVER. serve_port
-# stopped being a literal for exactly this reason — "ds4's copy read 8000, which is
-# VLLM's port" — and deriving it meant the two could no longer disagree. The argv is
-# the neighboring value that never got the same treatment.
-#
-# WHAT IT RUNS IS THE SERVER'S OWN SEQUENCE, IN THE SERVER'S ORDER:
-#   serve::read_config     the five serve settings and the refusals that come with
-#                          them (unreadable cfg, a host we cannot honor, a
-#                          half-configured TLS pair). We stop where the server stops.
-#   source the build-spec  COMFYUI_ARGV_HEAD/TAIL, the flag table, comfyui_argv.
-#   droste::cfg_apply      step 6 of resolve::apply_spec — the SAME function both
-#                          doors use, a child shell and an env diff, never a source.
-#   comfyui_argv           step 7's argv-building half, and only that half.
-#   apply_port/host/tls    serve::maybe_launch's last three lines, verbatim, so the
-#                          address and port land in the flags this box spells its own
-#                          way (--listen) without a second table of spellings here.
-#
-# 🚨 comfyui_argv, NOT PRE_LAUNCH, AND THAT IS WHY THIS IS CHEAP. comfyui_pre_launch
-# also syncs the model tree, chmods /opt/ComfyUI/temp and reclaims root-owned files —
-# work that belongs to a container start and wants privileges a login shell does not
-# have. comfyui_argv was split out of it to be callable alone: "Its own function so it
-# can be driven alone (source the spec, call it, print SERVICE) without the mounts,
-# the profile.d source or the model scan."
-# ⚠️ SO A NEW SETTING MUST BE TRANSLATED INSIDE comfyui_argv, NEVER IN PRE_LAUNCH
-# AROUND IT. One emitted outside it would reach the service and not this lane, which
-# is the exact defect this function exists to end.
-#
-# ⚠️ STDERR IS NOT DISCARDED HERE, UNLIKE serve_port / serve_addr / serve_host. Those
-# three run at BANNER time, on every login, where a warning is noise in front of a
-# prompt. This one runs because the user typed a command and is about to watch a
-# server in the foreground, so comfyui_argv's "that value is not valid, using the
-# default" and cfg_apply's own warnings are precisely what they need to read — and
-# they are the same sentences the supervised lane writes to the serve log.
-service_argv() {
-  ( set +e +u +o pipefail
-    [ -r /opt/resources/resolve/droste-serve.sh ] || exit 1
-    # shellcheck disable=SC1091
-    . /opt/resources/resolve/droste-serve.sh >/dev/null </dev/null || exit 1
-    # ⚠️ AGAIN, AFTER THE SOURCE. droste-serve.sh sets -euo pipefail as it loads, so
-    # the options set above are gone by here; droste-healthcheck.sh does the same
-    # `set +e` in the same place and for the same reason.
-    set +e +u +o pipefail
-    serve::read_config
-    # We refuse wherever the SERVER refuses, on its reasons rather than a second set
-    # of ours — and server_status prints the sentence itself, so it is not restated
-    # here in a fourth wording.
-    [ -z "${SERVE_CONFIG_ERR:-}" ] || exit 1
-    [ -n "${SERVE_PORT:-}" ]       || exit 1
-    spec=${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}
-    [ -r "$spec" ] || exit 1
-    # shellcheck disable=SC1090
-    . "$spec" >/dev/null || exit 1
-    droste::cfg_apply "${CFG_FILE:-}" >/dev/null
-    comfyui_argv >/dev/null || exit 1
-    # ⚠️ THE MODEL-PATHS CONFIG IS DROPPED WHEN ITS FILE IS ABSENT, and that guard is
-    # older than this function: the file is seeded by the resolver, so "plain toolbox
-    # has no /opt/config/extra_model_paths.yaml, and ComfyUI's unguarded open() would
-    # crash on the missing file." The SERVICE lane never meets that case (the resolver
-    # seeds the file before anything builds an argv); this lane can, so the guard
-    # stays — but the flag and the path are READ FROM THE SPEC now instead of typed.
-    # ⭐ THE `-eq 2` IS THE ASSUMPTION MADE EXPLICIT, not a length check: the tail is a
-    # flag and its file. If it ever stops being that pair the guard simply does not
-    # fire, and a missing file becomes ComfyUI's own loud open() error — which is what
-    # the service lane already does with it, and far better than dropping two tokens
-    # chosen by position.
-    # 🚨 IT RUNS HERE, BEFORE THE THREE APPLIES, AND THAT ORDER IS LOAD-BEARING. The
-    # tail is the last thing in SERVICE only as comfyui_argv leaves it: serve::apply_tls
-    # APPENDS its two flags (nothing in comfyui_argv emits a certificate, so
-    # serve::_apply_flag finds none to replace), so a drop placed after it removes
-    # `--tls-keyfile <path>` and leaves the model-paths flag it was aiming at. MEASURED,
-    # not reasoned — it was written after the applies and bannerhost's TLS row caught it
-    # on the first run.
-    if [ "${#COMFYUI_ARGV_TAIL[@]}" -eq 2 ] && [ ! -f "${COMFYUI_ARGV_TAIL[1]}" ]; then
-        SERVICE=( "${SERVICE[@]:0:${#SERVICE[@]}-2}" )
-    fi
-    serve::apply_port "$SERVE_PORT"
-    serve::apply_host "$SERVE_HOST"
-    serve::apply_tls
-    printf '%s\0' ${SERVICE[@]+"${SERVICE[@]}"}
-  )
-}
-
-# start_comfy_ui — KEPT AS AN ALIAS, because users may know this name (it predates the
-# verbs). It names the new verb once and then does what it always did: run ComfyUI in
-# the FOREGROUND of this shell, which is still the right tool for watching a run.
-# ⚠️ s45 replaced its refusal text, not its refusal. The s44 version warned and pointed
-# at `kill <pid>` + editing SERVE=0; Jei ruled against warning — "I don't think we should
-# warn the user. I think we should change our box's behavior" — so it now points at the
-# verb that does the thing properly.
-start_comfy_ui() {
-  # REFUSE if the server door already has one up. One container, two doors since
-  # s34: launching here would race the running service for the port, and ComfyUI's
-  # bind failure names neither the other instance nor the door that started it.
-  local state pid port
-  if state=$(serve_running); then
-    read -r pid port <<<"$state"
-    printf 'ComfyUI is ALREADY RUNNING (pid %s) on port %s → http://%s:%s\n' \
-      "$pid" "$port" "$(serve_addr)" "$port"
-    printf '  logs: tail -f /opt/program/logs/comfyui-serve.log\n\n'
-    printf 'To run one here in the foreground instead, stop the server first:\n'
-    printf '  server_stop\n'
-    printf 'That lasts until the box restarts. For a permanent change, set\n'
-    printf 'DROSTE_COMFYUI_STARTUP_ENABLED=no in /opt/config/comfyui.cfg.\n'
-    return 1
-  fi
-  # REFUSE rather than bind wider than asked (Jei, s60). A DROSTE_COMFYUI_HOST we
-  # cannot honor used to be ignored here in favor of 0.0.0.0 — every interface,
-  # on a box with no authentication — which is the one outcome a user narrowing the
-  # bind was trying to avoid. The message names the setting and the file; the
-  # per-value diagnosis (IPv6 vs not-an-address) belongs to serve::read_config and
-  # is printed by the server lane, so it is not restated here in a second wording.
-  # ⚠️ THE VERDICT IS WHAT IS WANTED HERE, NOT THE ADDRESS — service_argv below gets
-  # its own from serve::read_config, which applies serve::_is_ipv4 to the same setting
-  # in the same file and therefore cannot reach a different answer. This gate stays
-  # because it names the LIKELIEST mistake in the user's own terms; the generic
-  # refusal further down would only be able to say "something in the file".
-  if ! serve_host >/dev/null; then
-    printf 'NOT STARTING: DROSTE_COMFYUI_HOST in /opt/config/comfyui.cfg cannot be used\n'
-    printf 'as a bind address, and this shell will not pick a wider one for you.\n'
-    printf '  - put an IPv4 literal there (e.g. 127.0.0.1), or\n'
-    printf '  - delete the line to bind 0.0.0.0, the default.\n'
-    printf 'server_status says the same about the supervised server.\n'
-    return 1
-  fi
-  # The argv, built from this box's config the way the server builds it. NUL-delimited
-  # because a catch-all value may legitimately contain spaces — DROSTE_COMFYUI_EXTRA_ARGS
-  # is tokenized by droste::split_args, which honors quoting, and a newline- or
-  # space-delimited hand-off here would undo that one step before exec.
-  # 🚨 A FAILURE REFUSES; IT DOES NOT FALL BACK TO THE OLD LITERALS. Those literals are
-  # what this function was written to delete, and a fallback to them would be silent,
-  # rare, and wrong in exactly the cases where someone is already debugging. There is
-  # nothing to widen here either — the refusal costs a foreground run, not a bind.
-  local argv=()
-  mapfile -d '' -t argv < <(service_argv)
-  if [ "${#argv[@]}" -eq 0 ]; then
-    printf 'NOT STARTING: the settings in /opt/config/comfyui.cfg could not be turned\n'
-    printf 'into a command line, so there is nothing here that is safe to run.\n'
-    printf 'server_status says what is wrong, in the same words the server uses.\n'
-    return 1
-  fi
-  printf 'Tip: server_start runs ComfyUI in the background, supervised, and\n'
-  printf 'survives you closing this shell. start_comfy_ui runs it here, in the\n'
-  printf 'foreground, which is what you want when you are watching it.\n\n'
-  # The cd is the service lane's too (comfyui_pre_launch ends with it), for any path
-  # ComfyUI resolves relatively; the argv's own main.py is absolute regardless.
-  cd /opt/ComfyUI && "${argv[@]}"
-}

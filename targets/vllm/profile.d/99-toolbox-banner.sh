@@ -358,11 +358,10 @@ printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL
 # applies the rest. Same shape as finetuning's jupyter recipe and the ruled
 # distrobox.ini fixes — point at the lane that honors the config instead of
 # printing one that only half-honors it.
-# ⚠️ DERIVING THE REAL ARGV IS NOT AVAILABLE HERE, unlike comfyui's start_comfy_ui.
-# That lane works because comfyui_argv was split out of comfyui_pre_launch to be
-# callable alone; vllm_pre_launch is one function that also runs vllm_config_guard
-# and the anchored-copy work, so there is nothing a login shell may safely call.
-# Splitting it is a build-spec change, not a banner change.
+# ⚠️ AND NO BOX HAS A FOREGROUND LAUNCHER TO DERIVE ONE FROM ANY MORE. comfyui had
+# the only one, start_comfy_ui, and Jei ruled it out of the tree in s81: server_start
+# plus the serve log is the supported way to watch a run on all five boxes. Do not
+# re-propose a foreground twin for this box or any other.
 if [[ -n "$SERVE_BIND" ]]; then
   printf '  - %-18s → %s\n' "Ad-hoc serve" "vllm serve <model> --host $SERVE_BIND --port $SERVE_PORT"
   printf '  %-20s   %s\n' "" "(plain vllm — vllm_config.yaml and the rest of"

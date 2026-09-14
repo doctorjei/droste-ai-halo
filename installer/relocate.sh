@@ -286,6 +286,116 @@ clear_pcache() {  # box
   return 0
 }
 
+# ── Orphaned overlay copy-up debris ──────────────────────────────────────────
+# WHAT THE DEBRIS IS, and why we manufacture it BY DESIGN. droste-resolve.sh's
+# `resolve::_own_dirs` chowns every DIRECTORY of an overlay's baked lower so the
+# box user can write into it, and that copies the whole directory tree up into
+# the upper as empty shells. While the lower is the SAME lower, that is a
+# perfectly healthy upper — its own comment says so. An image change is what
+# turns it: a shell whose name is gone from the NEW lower stops shadowing
+# anything and starts ADDING a bogus entry. An empty `*.dist-info` is a
+# distribution with no METADATA, so importlib.metadata answers None and
+# transformers refuses to import ("Unable to compare versions for tqdm>=4.27:
+# need=4.27 found=None" — a package that IS installed, named as missing); an
+# empty package directory becomes an implicit namespace package, so the import
+# succeeds and yields an empty module. Measured on Raiju, s79: 32 hollow
+# dist-infos in one box, vllm itself among them in two versions.
+#
+# ⭐⭐ WHY THE TEST IS SAFE BY CONSTRUCTION, WITH NO IMAGE LISTING AT ALL.
+# `_own_dirs` walks DIRECTORIES ONLY, and its own comment forbids ever extending
+# it to files ("that mistake cost 2.7 GB in testing"). So the copy-up can only
+# ever produce EMPTY DIRECTORIES ⇒ every byte in an upper that is not an empty
+# directory was authored by someone. A user's own pip install has .py files in
+# it and can never match; so does a custom node they cloned themselves.
+# ⭐ And it is SELF-HEALING rather than a diff against the image: `_own_dirs`
+# runs at EVERY container start and recreates a shell for every directory the
+# CURRENT image has. The shells this removes come straight back; the orphans do
+# not. No image listing, no version stamp, no set difference.
+# 🏁 VALIDATED ON HARDWARE BEFORE A LINE OF IT WAS WRITTEN HERE (s79): ~210
+# entries removed from a stopped box's upper, `podman start`, the box serves.
+#
+# NOT THE CACHE WIPE, and deliberately not worded like one. That question asks
+# to destroy installations; an empty directory contains nothing to lose, so this
+# asks nothing, and it says nothing at all when it works. The only things it
+# reports are the two that STOP it: a running box, and a removal that failed.
+#
+# ⚠️ IT GOES IN SETUP, NOT IN THE RESOLVER (Jei, s79: "outside of setup is asking
+# for trouble"). A container is bound to an image ID at CREATE time and a
+# `podman pull` does not re-point an existing one, so the image binding changes
+# exactly where setup runs — and a sweep at every container start would make
+# every boot mutate persistent state.
+
+# Recursively empty = holds no NON-directory at any depth. That is the whole
+# test, and `! -type d` is what makes it total: a file, a symlink, a socket or a
+# fifo anywhere inside is content, and content means authored.
+# Takes a path already at the filesystem boundary (its one caller globs it out
+# of an fs_path'd root), and it is deliberately NOT a directory-count test — a
+# package whose top level holds only subdirectories is still the user's.
+# A find that ERRORS (an unreadable directory) answers "not empty": the one
+# wrong answer this may not give is a false positive.
+dir_recursively_empty() {  # dir → 0 when it exists and holds no non-directory
+  local d=$1 hit
+  [[ -n $d ]] || return 1
+  [[ -d $d && ! -L $d ]] || return 1
+  hit=$(find "$d" ! -type d -print -quit 2>/dev/null) || return 1
+  [[ -z $hit ]]
+}
+
+# COLLECT, THEN ACT, because the two halves ask different things of one list: a
+# running box cannot be swept, and saying so is only worth a line when there was
+# something to sweep. Same shape, and the same `box_state` idiom, as the cache
+# clear above it.
+sweep_overlay_debris() {  # box
+  local box=$1 pair label rel root lvl entry n failed=0 noun
+  local -a debris=()
+  for pair in ${BOX_OVERLAY_UPPERS[$box]:-}; do
+    label=${pair%%:*} rel=${pair#*:}
+    root=${PATHS["$box:$label"]:-}
+    [[ -n $root ]] || continue
+    # fs_path AT THE BOUNDARY AND NOWHERE ELSE: the glob, the tests and the
+    # removal are the kernel's business; the stored spelling stays stored.
+    # $rel is unquoted because it is a PATTERN (the interpreter version) — an
+    # unmatched glob comes back literal and the -d test below drops it, which is
+    # why no nullglob is needed and why a box with no venv yet costs nothing.
+    for lvl in "$(fs_path "$root")"/$rel; do
+      [[ -d $lvl ]] || continue
+      # TOP LEVEL ONLY. An empty subdirectory INSIDE a package or a node is
+      # legitimate and is never eligible; dotted entries are in scope because a
+      # hidden orphan is still an orphan.
+      for entry in "$lvl"/* "$lvl"/.[!.]* "$lvl"/..?*; do
+        [[ -d $entry && ! -L $entry ]] || continue
+        dir_recursively_empty "$entry" || continue
+        debris+=("$entry")
+      done
+    done
+  done
+  n=${#debris[@]}
+  [[ $n -gt 0 ]] || return 0
+  noun="directories"
+  if [[ $n -eq 1 ]]; then noun="directory"; fi
+  # THE UPPER CANNOT BE TOUCHED WHILE IT IS MOUNTED — the same constraint, and
+  # the same detection, as the cache clear directly above.
+  if [[ $(box_state "$box") == ACTIVE ]]; then
+    subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to remove $n orphaned overlay $noun."
+    return 0
+  fi
+  # `rmdir`, NOT `rm -rf`, and that is not a stylistic preference: it makes the
+  # guarantee STRUCTURAL instead of merely checked. If dir_recursively_empty were
+  # ever wrong about one of these, rmdir refuses and nothing is lost — where
+  # `rm -rf` would carry out the mistake. `-depth` empties each tree from the
+  # bottom up, which is the only order rmdir can walk.
+  for entry in "${debris[@]}"; do
+    find "$entry" -depth -type d -exec rmdir {} + 2>/dev/null || :
+    if [[ -e $entry ]]; then failed=$((failed + 1)); fi
+  done
+  if [[ $failed -gt 0 ]]; then
+    noun="directories"
+    if [[ $failed -eq 1 ]]; then noun="directory"; fi
+    warn "could not remove $failed orphaned overlay $noun under ${BOX_NAME[$box]}'s overlay uppers $EMD remove the empty ones by hand, then re-run"
+  fi
+  return 0
+}
+
 # The per-box half of the consent. It is asked ONLY when the install-wide
 # question did not already settle it AND this box actually has something stale
 # at the path it just settled on — which is why it can fire even when the

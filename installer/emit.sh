@@ -194,6 +194,12 @@ configure_box() {  # box
   # happens.
   [[ $RELOC_MOVED -eq 1 ]] && emit_ini "$box"
   stale_cache_offer "$box"
+  # UNCONDITIONAL, no question, and silent when it works — an empty directory
+  # contains nothing to lose, so there is no consent to ask for. AFTER the offer
+  # above on purpose: a cleared cache takes the whole venv upper with it and
+  # leaves this nothing to find, while a DECLINED clear (or a box that was never
+  # asked) is exactly the case this exists for.
+  sweep_overlay_debris "$box"
 
   [[ $asked -eq 1 ]] && say ""
   summary_box "$box" "$bw"

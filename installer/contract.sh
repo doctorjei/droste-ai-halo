@@ -149,6 +149,34 @@ declare -A BOX_EXTRA_BINDS=(
   [finetuning]="workspace:/opt/workspace"
 )
 
+# Where each box's OVERLAY UPPERS land on the HOST, said as a BIND LABEL plus a
+# path relative to that bind — never as a host path. Each target's baked
+# build-spec declares its overlays as <upper>:<lower> with the upper on the
+# CONTAINER side ("/opt/program-cache/venv:/opt/venv", and comfyui's
+# "/opt/data/custom_nodes:/opt/ComfyUI/custom_nodes"); this table is the
+# host-side mirror of that declaration, the same relationship BOX_CFG has with
+# each build-spec's CFG_FILE, and it has to keep mirroring it.
+#
+# ⭐ A LABEL, NOT A PATH, IS THE WHOLE POINT: the host root is whatever
+# PATHS[<box>:<label>] settled on THIS RUN, so everything derived from this
+# table follows the answer the user gave rather than restating a layout. Move
+# the root and nothing here changes.
+#
+# THE RELATIVE PART NAMES THE LEVEL WHOSE TOP-LEVEL ENTRIES ARE THE UNIT OF
+# INSTALLATION, which is not the upper's own root: inside a venv that is
+# site-packages (one directory per installed distribution), while comfyui's
+# custom_nodes upper IS that level already (one directory per node). Anything
+# deeper belongs to a package or a node and is its own business.
+# The interpreter version is a GLOB on purpose — the image picks it, and a
+# pinned python3.NN would silently stop matching the first time the base moves.
+declare -A BOX_OVERLAY_UPPERS=(
+  [comfyui]="pcache:venv/lib/python*/site-packages data:custom_nodes"
+  [llama]="pcache:venv/lib/python*/site-packages"
+  [vllm]="pcache:venv/lib/python*/site-packages"
+  [ds4]="pcache:venv/lib/python*/site-packages"
+  [finetuning]="pcache:venv/lib/python*/site-packages"
+)
+
 # OPTIONAL /opt/models bind point (OPTIONAL row; finetuning has none).
 declare -A BOX_HAS_MODELS=(
   [comfyui]=1 [llama]=1 [vllm]=1 [ds4]=1 [finetuning]=0

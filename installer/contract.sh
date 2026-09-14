@@ -65,6 +65,23 @@ set -euo pipefail
 # work out which variable it was asked about), and it is fine when it is set.
 UI_PROG="droste-setup.sh"
 UI_INPUT_VAR="DROSTE_SETUP_INPUT"
+# ── UI_MKDIR — the layer's THIRD declared input (s80) ────────────────────────
+# 🚨 THE LAYER CREATES A DIRECTORY, AND THAT IS THE ONE THING IT DOES THAT THE
+# HOST MAY NEED TO OVERRIDE. `ensure_dir` asks "Create <path>?" and then makes
+# it — and under `--dry-run` this program must not. Calling dry::fs from inside
+# the layer was the obvious fix and is FORBIDDEN by the layer's own rule 2 ("the
+# layer never calls back out"), which check-installer-layering.sh enforces.
+# ⭐ SO IT GOES THROUGH THE SEAM THE LAYER ALREADY HAS, rather than through a
+# hole cut in it: a NAME the host sets, called indirectly, exactly as
+# UI_INPUT_VAR already is. A different host sets it to something that plainly
+# runs `mkdir -p` and the layer lifts out unchanged — which is the whole promise
+# these two lines exist to keep.
+# ⚠️ ADDING A THIRD INPUT IS A REAL COST and is not to be done casually: every
+# entry here is a promise the next host has to keep. It is also the only edit
+# check-installer-layering.sh's own header says a maintainer should ever make to
+# it (its UI_INPUTS list), so the two files move together — if you add a fourth,
+# add it there in the same commit or the layer check goes red.
+UI_MKDIR="ui_mkdir"
 
 # ── Static per-box contract table ────────────────────────────────────────────
 # CANONICAL SOURCE: targets/<box>/build-spec and targets/<box>/distrobox.ini in

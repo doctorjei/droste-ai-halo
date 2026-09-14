@@ -469,3 +469,23 @@ jobs:
           subject="$(mktemp)"
           scripts/assemble-droste-setup.sh > "$subject"
           scripts/check-installer-layering.sh "$subject"
+
+      # 🚨 --dry-run NEVER CHANGES THE DISK, AND THIS IS WHAT MAKES THAT A
+      # PROPERTY RATHER THAN A PROMISE. The installer's interview moves the
+      # user's data, empties their caches and deletes directories, and it does
+      # all of it BEFORE the ladder rung is chosen — so a dry run that misses one
+      # site is this project's own named defect (a knob that looks authoritative
+      # and does nothing) aimed at someone who has just been told nothing will
+      # happen.
+      # ⭐ IT ASSERTS IN TWO WAYS AND THEY CATCH DIFFERENT THINGS: a derivation
+      # over the tree says no mutation escaped the wrappers, and a REAL headless
+      # run in a throwaway HOME says no mutation happened. The second caught an
+      # unguarded NOTES.md write the first was blind to, on its first execution.
+      # ⚠️ The run is offline-tolerant by construction — it queries the registry
+      # for a pull SIZE and prints "size unknown" when that fails — so a runner
+      # with no network egress still exercises every guard.
+      - name: --dry-run cannot change the disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-installer-dryrun.sh

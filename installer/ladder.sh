@@ -13,6 +13,21 @@ is_configured() {  # box → 0 when it is in CONFIGURE
 create_box() {  # box
   local box=$1 name log rc=0 src=0 serve=0 record=0
   name=$(box_ctr "$box")
+  # 🚨 THE DRY BRANCH IS HERE AND NOT INSIDE THE `run_step` CALLS BELOW, and the
+  # reason is not tidiness. `run_step` sends its child's stdout to the step log —
+  # which a dry run resolves to /dev/null — so a wrapper placed inside one would
+  # print its prediction into a black hole and the run would report nothing at
+  # all. ⭐ A PREDICTION THE USER CANNOT SEE IS WORSE THAN NO PREDICTION: the run
+  # still looks like it worked.
+  if dry::on; then
+    dry::would "remove the existing $name container, if there is one"
+    dry::would "create $name from $(ini_file "$box")"
+    if is_configured "$box"; then dry::would "write $name's config files"; fi
+    if [[ $RUNG == a && -n "${CFG_BOXSV[$box]:-}" ]]; then
+      dry::would "start $name"
+    fi
+    return 0
+  fi
   log=$(step_log create "$name")
   : > "$log"
   status_start "$name..."
@@ -103,6 +118,22 @@ clear_box_caches() {  # box log → 0 the consent was honored, 1 it was not
   local box=$1 log=$2 name state stopped=0 rc=0
   name=$(box_ctr "$box")
   state=$(box_state "$box")
+  # 🚨 STOPPING AND STARTING A BOX IS A CHANGE, AND JEI RULED IT OUT OF A DRY RUN
+  # EXPLICITLY (s79): "we really shouldn't stop and start anything in a dry run;
+  # we should see if the empty directories exist, that the permissions are
+  # available, etc — i.e. 'could we do this'." So this says what it would do, in
+  # the order it would do it, and touches neither the container nor the disk.
+  # ⚠️ Same reason as create_box for guarding HERE: the run_step calls below
+  # write to a log a dry run points at /dev/null.
+  if dry::on; then
+    if [[ $state == ACTIVE ]]; then dry::would "stop $name"; fi
+    dry::would "clear the contents of ${PATHS["$box:pcache"]:-its cache dir}"
+    dry::would "remove any orphaned overlay directories under ${BOX_NAME[$box]}'s uppers"
+    if [[ $state == ACTIVE && $RUNG != c && $RUNG != a ]]; then
+      dry::would "start $name again"
+    fi
+    return 0
+  fi
   if [[ $state == ACTIVE ]]; then
     if [[ -z $RUNTIME ]]; then
       printf 'no container runtime, so %s could not be stopped\n' "$name" >>"$log"
@@ -159,6 +190,18 @@ clear_caches() {  # box...
 host_unit_step() {  # box log → 0 ok
   local box=$1 log=$2 unit rc=0
   unit=$(unit_name "$box")
+  # Both arms write: one creates a unit and enables it, the other disables one
+  # and deletes the file. Said whole rather than wrapped call by call, because
+  # `systemctl enable` without the file it names is not half of the action, it
+  # is a different one — and because these too are redirected into the log.
+  if dry::on; then
+    if [[ -n "${CFG_HSTSV[$box]:-}" ]]; then
+      dry::would "write $(unit_file "$box") and enable $unit"
+    elif [[ -f $(unit_file "$box") ]]; then
+      dry::would "disable $unit and remove $(unit_file "$box")"
+    fi
+    return 0
+  fi
   if [[ -n "${CFG_HSTSV[$box]:-}" ]]; then
     write_host_unit "$box" || { printf 'could not write %s\n' "$(unit_file "$box")" >>"$log"; return 1; }
     systemctl --user daemon-reload >>"$log" 2>&1 || rc=1

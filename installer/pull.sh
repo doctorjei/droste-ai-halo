@@ -9,7 +9,37 @@
 PULL_SOCK=""
 PULL_SVC_PID=""
 
+# " (4.7 GB)" from the blob map py/pull_manifest.py already returns, or "" when
+# it returned nothing. ⚠️ IT IS THE DOWNLOAD SIZE, NOT THE ON-DISK SIZE: layers
+# are compressed in the registry and are not once unpacked, so the sentence says
+# "pull", which is the number this is true of.
+dry_pull_size() {   # blob-map-json → " (N.N GB)" or ""
+  local n
+  n=$(printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    b = json.load(sys.stdin)
+    t = sum(v for v in b.values() if isinstance(v, int))
+except Exception:
+    sys.exit(0)
+if t <= 0:
+    sys.exit(0)
+for unit in ("bytes", "KB", "MB", "GB"):
+    if t < 1024 or unit == "GB":
+        break
+    t /= 1024.0
+sys.stdout.write("%.1f %s" % (t, unit) if unit != "bytes" else "%d bytes" % t)
+' 2>/dev/null) || n=""
+  [[ -n $n ]] && printf ' (%s)' "$n"
+  return 0
+}
+
 pull_service_stop() {
+  # Nothing to stop and no socket to remove: pull_service_start never ran. The
+  # emptiness tests below already made this true, but saying it outright is what
+  # lets the checker see it — an invariant only a human can follow is one the
+  # next edit breaks silently.
+  dry::on && return 0
   [[ -n $PULL_SVC_PID ]] && kill "$PULL_SVC_PID" 2>/dev/null
   [[ -n $PULL_SOCK ]] && rm -f "$PULL_SOCK" 2>/dev/null
   PULL_SVC_PID="" PULL_SOCK=""
@@ -19,6 +49,12 @@ pull_service_stop() {
 # Unique socket per run, in the runtime dir (never /tmp when we can help it).
 pull_service_start() {   # log → 0 once the socket is live
   local log=$1 i
+  # The API service exists ONLY to carry a pull's byte stream, and a dry run
+  # performs no pull — so it starts no service and creates no socket. Returning
+  # success is right: the caller reads this as "the pull mechanism is available",
+  # and a dry run that reported it broken would send the user chasing a failure
+  # that is not there.
+  dry::on && return 0
   PULL_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/droste-pull-$$.sock
   rm -f "$PULL_SOCK" 2>/dev/null || :
   "${RUNTIME:-podman}" system service --time=0 "unix://$PULL_SOCK" >>"$log" 2>&1 &
@@ -95,6 +131,33 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   short=${repo##*/}
   log=$(step_log pull "$box")
   : > "$log"
+  # 🏁 A DRY RUN NEVER PULLS — IT QUERIES (Jei, s79, amending his own earlier
+  # "pull only if needed" minutes later: "could we avoid pulling an image
+  # entirely with a dry run?"). A pull writes ~14 GB, which is exactly the
+  # surprise this flag exists to prevent; the manifest answers existence and
+  # size for a few KB of HTTP.
+  # ⭐ THE QUERY IS THE ONE ALREADY IN THIS FILE. py/pull_manifest.py resolves the
+  # index, picks this machine's architecture and hands back digest→size for every
+  # blob — which is a pull size, summed. Building a second manifest reader beside
+  # it is the mistake s78 and s79 each made once.
+  # ⚠️ NOT ANSWERED HERE, AND SAID RATHER THAN GUESSED: whether the LOCAL copy is
+  # behind the registry's. That needs the resolved manifest digest, which this
+  # helper does not print (it returns blob sizes, by design, for the progress
+  # bar). Reporting "up to date" without comparing digests would be the
+  # overclaim §0 forbids. → plans/installer-dry-run-s75.md §7.2.
+  if dry::on; then
+    manifest=$(python3 -c "$(_pull_manifest_py)" "$repo" "$tag" 2>/dev/null) \
+      || manifest=""
+    if [[ -n $manifest ]]; then
+      dry::would "pull $img$(dry_pull_size "$manifest")"
+    else
+      dry::would "pull $img (the registry did not answer, so its size is unknown)"
+    fi
+    if [[ -n ${RUNTIME:-} ]] && "$RUNTIME" image exists "$img" 2>/dev/null; then
+      dry::sim "a copy of $img as already present locally (not compared with the registry)"
+    fi
+    return 0
+  fi
   # Ask the registry how big this image is before asking podman to fetch it, so
   # the bar has a denominator that does not move. It is allowed to come back
   # empty (offline, private repo, a registry in a mood) — that is the estimating

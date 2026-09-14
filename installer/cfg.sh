@@ -549,6 +549,20 @@ cfg_set() {  # NAME VALUE FILE → 0 written or unchanged, 1 not written
   fi
   new="$CFG_LINE_INDENT$CFG_LINE_PREFIX$name=$CFG_QUOTED$CFG_LINE_TAIL"
 
+  # ⭐ PLACED HERE, AFTER THE NO-OP SHORT-CIRCUIT AND AFTER THE LINE IS BUILT, so
+  # a dry run reports exactly what a real run would DO: a value that already
+  # matches returned above and says nothing, and this line is the one that would
+  # actually be written, comment-prefix and trailing comment included. §5's
+  # "name the settings that would change, not a diff of the file" — this is the
+  # merge knowing precisely which key it touches, which is the whole reason a
+  # diff is not owed here.
+  # ⚠️ It must stay BELOW the duplicate-assignment warning: that reports a
+  # property of the USER'S file, is owed whether or not anything is written, and
+  # a dry run that suppressed it would hide a real defect in a real file.
+  if dry::on; then
+    dry::would "change $name in $file to: $new"
+    return 0
+  fi
   dir=$(dirname "$file")
   tmp=$(mktemp "$dir/.droste-cfg.XXXXXX" 2>/dev/null) || {
     warn "could not write in $dir $EMD $name was not recorded in $file"; return 1; }
@@ -774,6 +788,12 @@ cfg_manifest() {  # templates-dir → 0 + CFG_SEED_SRC/DEST, 1 when there is non
 # stamp cannot move the surface comparison either.
 cfg_seed_file() {  # src dest → 0 written, 1 not
   local src=$1 dst=$2 dir tmp
+  # Unreachable in a dry run today — write_box_cfg is its only route and that
+  # returns early — but guarded anyway, because "unreachable" is a fact about
+  # THIS WEEK'S call graph and this function writes a file the user then owns.
+  # ⭐ A guard costs a line; discovering later that a second caller appeared
+  # costs a user their config.
+  dry::skip "write $dst" && return 0
   dir=$(dirname "$dst")
   if [[ ! -d $dir ]]; then
     warn "$dir does not exist $EMD $(basename "$dst") was not written"; return 1

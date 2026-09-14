@@ -13,6 +13,10 @@
 # order-free. These five are not, and re-ordering the list must not break them:
 #
 #   1. `set -euo pipefail` comes first                            [contract]
+#   1b. `dryrun` sits ABOVE `ui` — the UI layer's path prompts CREATE a
+#      directory, so they are mutation sites inside a layer whose rule 2
+#      forbids calling anything defined BELOW it. Above, they are reachable by
+#      the same allowance usage() already uses.            [dryrun before ui]
 #   2. the display mode settles BEFORE the option loop — usage() and the
 #      unknown-option error are themselves output, so the --ascii pre-pass and
 #      the typography atoms have to exist before the loop that consumes argv
@@ -23,7 +27,7 @@
 #      suites do `source <(sed '$d' "$SETUP")` and the whole in-shell test
 #      idiom rests on it                                          [main]
 #
-# ── Why these fourteen ────────────────────────────────────────────────────────
+# ── Why these fifteen ────────────────────────────────────────────────────────
 # Each fragment is one or more CONTIGUOUS `# ── ` sections of the original file,
 # grouped by what changes together. The one boundary that rests on a
 # MEASUREMENT rather than on taste is `ui`: the display/prompt layer was
@@ -36,6 +40,7 @@
 # ladder rungs that drive it, and a fragment is a contiguous range.
 
 contract.sh
+dryrun.sh
 ui.sh
 state.sh
 preflight.sh

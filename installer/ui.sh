@@ -27,6 +27,10 @@ mode; only \r is withheld without --repaint.
   --ansi | --no-ansi       escape sequences. unicode ⇒ ansi
 Defaults end to end: piped is --ascii --no-ansi; a terminal is --unicode --ansi.
 Any flag given is honored exactly, whatever the sink.
+  --dry-run  ask every question, change nothing. No file is written, moved or
+             deleted, no box is created, started or stopped, and NO IMAGE IS
+             PULLED - the registry is queried instead, so you are told what a
+             pull would fetch and how big it is without fetching it.
   -h, --help show this help
 
 Safe to re-run: existing setups are detected and never clobbered.
@@ -44,7 +48,11 @@ EOF
 #
 #   1. Nothing in here may name a box, a bind, an emit dir, an action, or any
 #      other global belonging to this program. The layer's inputs are its
-#      arguments plus the two UI_* values set at the top of the file; its
+#      arguments plus the three UI_* values set at the top of the file — the
+#      third, UI_MKDIR, arrived in s80 and is the NAME of the routine that
+#      creates a directory, because that is the one thing this layer DOES to
+#      the world and a host may need to intercept it (droste's does, for
+#      `--dry-run`); its
 #      outputs are the globals it defines itself (ASCII, the palette, ANS and
 #      its ANS_* siblings). It does not read droste's model, ever.
 #   2. Nothing in here may call a function defined below it. Calls go one way
@@ -373,6 +381,13 @@ fi
 # The options themselves. --ascii was already read above; it is matched again
 # here only so it does not fall through to the box list.
 ARG_BOXES=()
+# ⚠️ ASSIGNED HERE AND NOWHERE ELSE, AND THAT IS A LAYERING CONSTRAINT RATHER
+# than a preference. check-installer-layering.sh derives its forbidden set as
+# "every SHOUTING-CASE name the program assigns OUTSIDE this layer", so a flag
+# assigned in dryrun.sh would become a name this loop may not touch. Written
+# here and read below is the allowed direction — the same shape, and the same
+# admitted wart, as ARG_BOXES directly above.
+ARG_DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     # Already consumed by the mode pass above; accepted here so they are not
@@ -382,6 +397,7 @@ for arg in "$@"; do
     --tty|--piped|--repaint|--no-repaint) ;;
     --full|--simple) ;;
     --unicode|--ascii|--ansi|--no-ansi) ;;
+    --dry-run) ARG_DRY_RUN=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) printf '%s: unknown option: %s\n' "$UI_PROG" "$arg" >&2; usage >&2; exit 2 ;;
     *) ARG_BOXES+=("$arg") ;;
@@ -1260,7 +1276,12 @@ ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
   real=$(fs_path "$p")
   [[ -d $real ]] && return 0
   if [[ $CREATE_ALL -eq 1 ]]; then
-    mkdir -p "$real" 2>/dev/null && return 0
+    # ⚠️ THROUGH THE HOST'S NAME, NOT A bare `mkdir`, and not a call to anything
+    # of droste's either — rule 2 above forbids the layer calling out, and this
+    # is the one action in here a host may need to intercept. UI_MKDIR is a
+    # declared input like UI_PROG; a host that has nothing to intercept points it
+    # at something that runs `mkdir -p`.
+    "$UI_MKDIR" "$p" "$real" && return 0
     warn "could not create $p"
     return 1
   fi
@@ -1274,7 +1295,7 @@ ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
     [[ $ANS_YN -eq 1 ]] && CREATE_ALL=1
   fi
   if [[ $yn -eq 1 ]]; then
-    mkdir -p "$real" 2>/dev/null && return 0
+    "$UI_MKDIR" "$p" "$real" && return 0
     warn "could not create $p $EMD pick another location"
   fi
   return 1

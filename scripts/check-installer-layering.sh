@@ -42,7 +42,13 @@ SETUP=${1:-$SCRIPT_DIR/../droste-setup.sh}
 # The layer's declared inputs. This list is the ONLY thing a maintainer should
 # ever have to edit here, and every entry is a promise that the layer can be
 # lifted as long as the new host sets it too.
-UI_INPUTS='UI_PROG UI_INPUT_VAR'
+# ⚠️ UI_MKDIR JOINED IN s80 AND IT IS THE FIRST ENTRY THAT IS A BEHAVIOUR RATHER
+# THAN A VALUE — the NAME of the routine that creates a directory. It exists
+# because `--dry-run` must stop `ensure_dir` making one, and the obvious fix
+# (calling droste's dry-run wrapper from inside the layer) is exactly what rule
+# B forbids. ⭐ Going through the seam kept the rule intact; cutting a hole in it
+# would have cost the property this whole script exists to protect.
+UI_INPUTS='UI_PROG UI_INPUT_VAR UI_MKDIR'
 
 pass=0
 fail=0

@@ -367,6 +367,20 @@ clear_pcache() {  # box → 0 cleared, 1 declined
     return 1
   fi
   real=$(fs_path "$dir")
+  # ⭐ ONE LINE FOR THE WHOLE ROOT, not one per entry, and it names the ROOT the
+  # user was asked about rather than the scratch directories inside it — that
+  # question was about a place, so the prediction is about the same place.
+  # ⚠️ THE EXCLUSION STILL HAS TO BE SAID: a dry run that reported "clear
+  # <root>" would be predicting the deletion of a retired venv upper that the
+  # real run deliberately spares, which is the one prediction here that could
+  # frighten a user into doing something worse by hand.
+  if dry::on; then
+    dry::would "clear the contents of $dir"
+    if holds_retired_upper "$box" pcache "$dir"; then
+      dry::sim "an overlay upper an older layout left there as kept, not cleared"
+    fi
+    return 0
+  fi
   for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
     [[ -e $p || -L $p ]] || continue
     if retired_upper_entry "$box" pcache "${p##*/}"; then continue; fi
@@ -475,6 +489,13 @@ sweep_overlay_debris() {  # box
   # ever wrong about one of these, rmdir refuses and nothing is lost — where
   # `rm -rf` would carry out the mistake. `-depth` empties each tree from the
   # bottom up, which is the only order rmdir can walk.
+  # Counted above, so a dry run has the honest number and says it once. This is
+  # also the ONE prediction here a reader can check by hand afterwards, which is
+  # why the count is the message and the paths are not.
+  if dry::on; then
+    dry::would "remove $n orphaned overlay $noun under ${BOX_NAME[$box]}'s overlay uppers"
+    return 0
+  fi
   for entry in "${debris[@]}"; do
     find "$entry" -depth -type d -exec rmdir {} + 2>/dev/null || :
     if [[ -e $entry ]]; then failed=$((failed + 1)); fi
@@ -720,10 +741,22 @@ same_device() {  # a b → 0 when both live on one filesystem
 }
 
 MV_ERR=""
+# THE ONE PLACE THIS PROGRAM MOVES A BYTE OF THE USER'S DATA, which is why the
+# dry-run guard sits here and not at the three call sites: a fourth caller gets
+# it for free, and the checker can say so.
+# ⚠️ A DRY RUN MODELS THE MOVE AS HAVING SUCCEEDED (MV_ERR cleared, status 0).
+# That is deliberate and it is the §4 divergence in its purest form: the caller
+# goes on to report where the box now reads, which is exactly what a real run
+# would have done. What a dry run must never do is model a FAILURE it did not
+# observe — a predicted error is a prediction nobody can act on.
 run_mv() {  # src dst → 0 on success; MV_ERR = mv's own message
   local src dst
   src=$(fs_path "$1") dst=$(fs_path "$2")
   MV_ERR=""
+  if dry::on; then
+    dry::would "move $1 to $2"
+    return 0
+  fi
   if MV_ERR=$(mv -T -- "$src" "$dst" 2>&1); then return 0; fi
   return 1
 }
@@ -751,9 +784,26 @@ mv_said() {
 MERGE_MOVED=0
 MERGE_KEPT=0
 merge_into() {  # src dst → 0 when every entry landed
-  local src=$1 dst=$2 p name real
+  local src=$1 dst=$2 p name real n=0
   MERGE_MOVED=0 MERGE_KEPT=0
   real=$(fs_path "$src")
+  # ⭐ A DRY RUN COUNTS AND SAYS IT ONCE, rather than letting run_mv narrate
+  # every entry. A model tree is hundreds of files, and hundreds of identical
+  # WOULD DO lines bury the three lines that matter — the plan's §5 rule ("not
+  # a diff of every file") applied to the move pass.
+  # ⚠️ MERGE_MOVED IS SET TO THE REAL COUNT, not left at 0: the caller reads it
+  # as "did anything move", and a 0 there would make the dry run predict the
+  # box staying put — the opposite of what a real run would report.
+  if dry::on; then
+    for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
+      [[ -e $p || -L $p ]] || continue
+      n=$((n + 1))
+    done
+    dry::would "merge $n $( [[ $n -eq 1 ]] && printf entry || printf entries ) from $src into $dst"
+    MERGE_MOVED=$n
+    dry::sim "$src as emptied and removed"
+    return 0
+  fi
   for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
     [[ -e $p || -L $p ]] || continue
     name=${p##*/}
@@ -814,7 +864,8 @@ old_pcache_offer() {  # box old-dir
   ask_yn "Delete the old program cache dir" Y
   [[ $ANS_YN -eq 1 ]] || return 0
   real=$(fs_path "$old")
-  rm -rf -- "$real" || warn "could not delete $old $EMD remove it by hand"
+  dry::fs "delete $old" -- rm -rf -- "$real" \
+    || warn "could not delete $old $EMD remove it by hand"
   return 0
 }
 
@@ -1046,7 +1097,7 @@ move_one() {  # box label old new mode(plain|m|r) → 0 = the box may take new
   dstreal=$(fs_path "$new")
   # The parent has to exist for a rename to land in it; creating it is implied
   # by the move that was just accepted, and by nothing else.
-  mkdir -p -- "${dstreal%/*}" 2>/dev/null || :
+  dry::fs "create ${new%/*}" -- mkdir -p -- "${dstreal%/*}" 2>/dev/null || :
   case "$mode" in
     m)
       merge_into "$old" "$new" || :
@@ -1062,7 +1113,7 @@ move_one() {  # box label old new mode(plain|m|r) → 0 = the box may take new
       case "$dstreal" in
         /|"$HOME") subnote "refusing to remove the data at $new"; return 1 ;;
       esac
-      if ! rm -rf -- "$dstreal"; then
+      if ! dry::fs "remove everything at $new" -- rm -rf -- "$dstreal"; then
         warn "could not empty $new $EMD left where it is"
         return 1
       fi ;;

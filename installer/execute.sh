@@ -170,6 +170,18 @@ status_err() {   # name log-path
 run_step() {   # phase log command...
   local phase=$1 log=$2 pid rc=0 t0 el shown=-1 col _w
   shift 2
+  # 🚨 NOTHING IS RUN THROUGH HERE IN A DRY RUN. Every phase that drives a step
+  # describes itself and returns before reaching one, so this is unreachable —
+  # and it is guarded anyway, because "unreachable" is a property of today's
+  # callers and this function executes an ARBITRARY command with the caller's
+  # privileges. ⭐ It is also what lets check-installer-dryrun.sh see that the
+  # two `>>"$log"` redirects below cannot fire: the log comes in as a PARAMETER,
+  # so the checker cannot trace it back to step_log's /dev/null the way it can
+  # everywhere else.
+  # ⚠️ SILENT ON PURPOSE: the phase above already printed its own WOULD DO line,
+  # and a second one here would describe the same action twice in the installer's
+  # own vocabulary ("creating", "stopping") rather than the user's.
+  dry::on && return 0
   if [[ $REPAINT -eq 0 ]]; then
     # cannot redraw in place: announce the phase on its own line, no ticker. Same column as
     # the repainting mode uses, so the two read alike.
@@ -216,6 +228,17 @@ run_step() {   # phase log command...
 # resource path back on the front for the one line that shows one.
 step_log() {   # step name → path
   local d
+  # 🚨 /dev/null UNDER A DRY RUN, AND THIS IS THE ONE PLACE THE RULE WOULD HAVE
+  # LEAKED. This directory is under $EMIT_DIR — the USER'S resource path, not
+  # invisible /tmp scratch — so a dry run that created it would leave files
+  # exactly where the user would notice, on a run that promised to change
+  # nothing. ⭐ Handing back /dev/null rather than adding a carve-out keeps every
+  # caller unchanged: `: > "$log"`, `>>"$log"` and `tail` all behave, and the
+  # checker never has to learn about an exempt writer. A list of exemptions is
+  # what rots; there is no list.
+  # ⚠️ Nothing is lost by it: a dry run runs no step, so there is no output a
+  # step log could have captured.
+  if dry::on; then printf '/dev/null'; return 0; fi
   d=$(fs_path "$EMIT_DIR")/logs
   mkdir -p "$d" 2>/dev/null || d=${TMPDIR:-/tmp}
   printf '%s/%s-%s.log' "$d" "$1" "$2"

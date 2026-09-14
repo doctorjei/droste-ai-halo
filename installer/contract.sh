@@ -112,7 +112,12 @@ declare -A BOX_NAME=(
   [comfyui]="ComfyUI" [llama]="llama.cpp" [vllm]="vLLM" [ds4]="DwarfStar 4" [finetuning]="Finetuning"
 )
 
-# Human-readable titles for each prompted bind family (used in the path prompt).
+# 🚨 THE ONE PLACE A BIND LEAF IS NAMED. Every user-facing form of a leaf's name
+# derives from this table: the path prompt lowercases it mid-sentence, bind_row
+# below hands it to the summary box, and leaf_word lowercases it for the move
+# sentences. The two shorter forms are EXCEPTION LISTS over this one, not copies
+# of it — a leaf spelled out in three tables is a leaf whose three spellings
+# drift, and nothing was keeping these in step until s81.
 # ⚠️ `program` WAS SPELLED `data` UNTIL s79, while both of its user-facing strings
 # already said "Program Data" — the internal/external divergence Jei's own rule
 # forbids, and the reason the rename cost nothing on screen.
@@ -121,14 +126,27 @@ declare -A BIND_TITLE=(
   [input]="Input Files" [output]="Output Files" [workspace]="Workspace"
 )
 
-# Summary-box row headers for the same families (shorter — the box is narrow).
+# Summary-box row headers, and ONLY for the families whose title does not fit
+# there — the box is narrow. Everything else falls back to BIND_TITLE through
+# bind_row(), so `program` and `workspace` (which said their titles verbatim)
+# are gone from here: an entry that repeats its title is a copy waiting to
+# disagree, and a new leaf gets a row header by existing.
 # ⚠️ `Config`, NOT `Configuration`: SUM_HDR_W is 14 columns and "Configuration:"
 # fills it exactly, so the value would sit flush against the colon with no space
-# between them. The row headers are the SHORT forms for exactly this reason.
+# between them. That is what this table is FOR — every entry here earns its line
+# by being shorter than the title, and none of them may merely restate it.
 declare -A BIND_ROW=(
-  [program]="Program Data" [config]="Config" [user]="Workflows"
-  [input]="Input" [output]="Output" [workspace]="Workspace"
+  [config]="Config" [user]="Workflows"
+  [input]="Input" [output]="Output"
 )
+
+# The row header for a leaf: its short form when it needs one, its title when it
+# does not. One reader for the fallback, so no call site has to remember it.
+# ⚠️ A leaf with NO title is a bug, and it stays loud: `set -u` aborts on the
+# inner expansion rather than inventing a name from the label.
+bind_row() {   # label → summary-box row header
+  printf '%s' "${BIND_ROW[$1]:-${BIND_TITLE[$1]}}"
+}
 
 # A bind whose prompt is written OUT, instead of composed as "Path for <Box>
 # <bind title>". The program-cache dir is the case: what the answer places is a

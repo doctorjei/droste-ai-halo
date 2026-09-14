@@ -309,16 +309,27 @@ family_base() {   # leaf...
   return 0
 }
 
-# The label as the note says it out loud. "pcache" is this script's word for
-# them, not the reader's.
+# The label as the note says it out loud, DERIVED from BIND_TITLE: a leaf is
+# named once (contract.sh) and its mid-sentence form is that name, lowercased.
+# "pcache" is this script's word for them, not the reader's.
+#
+# ⚠️ THE ARMS BELOW ARE THE EXCEPTIONS, and they are listed so they READ as
+# exceptions rather than as three more copies of a name:
+#   pcache  has no title at all — its prompt is written out (BIND_PROMPT), so
+#           there is nothing to lowercase and the word is given here.
+#   input   "input files" / "output files" name a CATEGORY at a prompt and read
+#   output  as clutter in a sentence ("Input for comfyui will be moved to …").
+# Anything else is its title in lower case, and a leaf with no title is a bug
+# that `set -u` reports rather than papering over with the label.
 leaf_word() {  # label → display word
+  local title
   case "$1" in
-    pcache)  printf 'program cache' ;;
-    program) printf 'program data' ;;
-    config)  printf 'configuration' ;;
-    user)    printf 'saved workflows' ;;
-    *)       printf '%s' "$1" ;;
+    pcache) printf 'program cache'; return 0 ;;
+    input)  printf 'input';         return 0 ;;
+    output) printf 'output';        return 0 ;;
   esac
+  title=${BIND_TITLE[$1]}
+  printf '%s' "${title,,}"
 }
 
 # 🗑️ `leaf_dir` LIVED HERE AND WAS DELETED IN s79. It translated exactly one

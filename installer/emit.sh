@@ -266,10 +266,10 @@ summary_box() {  # box banner-width
   keys+=("Paths") vals+=("") kind+=(g)
   # Verbatim: kept from the ini, typed at the prompt or derived from the
   # resource path, PATHS holds the spelling that was chosen for it.
-  keys+=("${BIND_ROW[program]}:") vals+=("${PATHS["$box:program"]}") kind+=(v)
+  keys+=("$(bind_row program):") vals+=("${PATHS["$box:program"]}") kind+=(v)
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
-    keys+=("${BIND_ROW[$label]}:") vals+=("${PATHS["$box:$label"]}") kind+=(v)
+    keys+=("$(bind_row "$label"):") vals+=("${PATHS["$box:$label"]}") kind+=(v)
   done
   # One blank line between the groups (Jei) — pushed only when the Paths group
   # actually produced rows, so a box with nothing above it grows no leading gap.

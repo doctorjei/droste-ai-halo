@@ -350,16 +350,21 @@ stale_clearable() {  # box → 0 when the box has stale caches this may clear
 # DELETES must agree about the population, and the only way to guarantee that is
 # for both to ask the same question.
 #
-# A RUNNING box is left alone: the box's overlay work dirs are under this dir,
-# emptying it out from under a live mount repairs nothing, and the box has to be
-# restarted for any fix to take anyway.
-clear_pcache() {  # box
+# A RUNNING box is still refused here, but that is now a BACKSTOP rather than
+# the design: stopping the box is the caller's job (clear_box_caches), because
+# the user was told the box would be stopped and started again before they
+# answered. Reaching this branch therefore means the stop did not take, and the
+# caller reports that — so this says why it declined and returns NON-ZERO, where
+# until s80 it printed a subnote and returned success. ⭐ THAT RETURN IS THE
+# WHOLE s79 G4 DEFECT IN ONE LINE: a decline that reads as success is how a yes
+# became nothing while the run finished green.
+clear_pcache() {  # box → 0 cleared, 1 declined
   local box=$1
   local dir=${PATHS["$box:pcache"]:-} p real
   stale_clearable "$box" || return 0
   if [[ $(box_state "$box") == ACTIVE ]]; then
-    subnote "$(box_ctr "$box") is running $EMD stop it, then re-run to clear its caches."
-    return 0
+    say "$(box_ctr "$box") is running, so its caches were left alone"
+    return 1
   fi
   real=$(fs_path "$dir")
   for p in "$real"/* "$real"/.[!.]* "$real"/..?*; do
@@ -367,7 +372,7 @@ clear_pcache() {  # box
     if retired_upper_entry "$box" pcache "${p##*/}"; then continue; fi
     rm -rf "$p" && continue
     warn "could not clear $dir $EMD empty it by hand, then re-run"
-    return 0
+    return 1
   done
   return 0
 }
@@ -572,16 +577,54 @@ report_retired_configs() {  # box
 # at the path it just settled on — which is why it can fire even when the
 # install-wide question never appeared: a path typed here may hold leftovers
 # the default path did not. Nothing is ever cleared without one of the two
-# answers, and the wipe happens the moment consent is given (s36 precedent),
-# while the path it applies to is the one on screen.
+# answers, and it is asked HERE because this is where the path it applies to is
+# on screen.
+#
+# 🚨 IT RECORDS THE ANSWER AND CLEARS NOTHING (s80). Until then the wipe happened
+# the moment consent was given (the s36 precedent), which put it in the INTERVIEW
+# — and a running box cannot be cleared, so the one case the question exists for
+# was the one case it could not act on. Jei answered Y, three gates declined, and
+# the run reported success.
+# ⭐ SO CONSENT AND ACTION ARE DELIBERATELY SEPARATED IN TIME NOW: asked here,
+# carried out by clear_box_caches in the execute phase, where the box can be
+# stopped and started again. ⚠️ THAT SEPARATION IS ITSELF A RISK — an answer that
+# travels can be dropped — which is why CLEAR_UNDONE exists and why every run
+# ends by naming a consent it could not honor.
 stale_cache_offer() {  # box
   local box=$1
   stale_clearable "$box" || return 0
   if [[ $CLEAR_STALE_ALL -eq 0 ]]; then
+    # ⚠️ THE RESTART IS NAMED BEFORE THE QUESTION IS ANSWERED (Jei, s79: "we
+    # should mention the restart in the text / prompt"). A prompt does not
+    # silently acquire the power to bounce a box; it acquires it by saying so.
+    # ⭐ In its own prose line rather than inside the question, for two reasons:
+    # the question's wording is Jei's and does not need rewriting to carry this,
+    # and prose FOLDS to the terminal — a clause this long appended to a
+    # question would run off a narrow screen.
+    prose "*A box that is running will be stopped, cleared, and started again." "$C_QTXT"
     ask_yn_caution "Stale caches cause unpredictable behavior." "Clear stale caches" Y
     [[ $ANS_YN -eq 1 ]] || return 0
   fi
-  clear_pcache "$box"
+  CLEAR_WANT[$box]=1
+  return 0
+}
+
+# Is a consented clear still outstanding for this box? Re-tested at the moment of
+# action rather than trusted from the interview, because the answer is minutes
+# old by then — and re-tested SILENTLY: stale_clearable's warning about a shared
+# cache root was already printed when the question was asked, and saying it twice
+# would report one condition as two.
+clear_pending() {  # box → 0 when a consented clear is still outstanding
+  # TWO `local`s, as everywhere else that reads PATHS by box: an assignment in
+  # the SAME `local` has not taken effect when the next one on the line is
+  # expanded, so $box would be empty here and the lookup would miss every time.
+  # ⚠️ That is not a style point — it would have made this function answer "no
+  # consent outstanding" always, which is the exact defect it exists to close.
+  local box=$1
+  local dir=${PATHS["$box:pcache"]:-}
+  [[ ${CLEAR_WANT[$box]:-0} -eq 1 ]] || return 1
+  stale_pcache "$box" "$dir" || return 1
+  pcache_wipe_safe "$dir" || return 1
   return 0
 }
 

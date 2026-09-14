@@ -572,8 +572,41 @@ dash_recreate() {   # title
   return 0
 }
 
+# ── What the run was told to do and could not ────────────────────────────────
+# 🚨 THE SECOND HALF OF s79's G4, AND THE HALF THAT SURVIVES EVERYTHING ELSE
+# GOING WRONG. Consent is taken in the interview and acted on in the execute
+# phase, so the two are minutes and a screenful apart; the failure report the
+# action prints is true, and it scrolls away under a pull bar and a dashboard.
+# ⭐ AN UNHONORED YES IS THE ONE OUTCOME THE USER MUST ACT ON THEMSELVES, so it
+# is said again at the end, where a reader is looking, and it names the box and
+# the remedy rather than the fact that something went wrong.
+# ⚠️ It says nothing at all when there is nothing outstanding. A report that
+# prints "all consents honored" on every run is a line people stop reading, and
+# then stop seeing on the run where it says something else.
+dash_outstanding() {
+  local box first=1
+  for box in "${SELECTED[@]}"; do
+    [[ ${CLEAR_UNDONE[$box]:-0} -eq 1 ]] || continue
+    if [[ $first -eq 1 ]]; then
+      first=0
+      printf '%s%s%s\n' "$C_NOTB" "Still outstanding:" "$RESET"
+    fi
+    printf '  %s%s%s\n' "$C_TEXT" \
+      "you asked to clear ${BOX_NAME[$box]}'s stale caches and that did not happen $EMD stop the box and re-run droste-setup.sh" \
+      "$RESET"
+  done
+  [[ $first -eq 1 ]] || say ""
+  return 0
+}
+
 # The final pointer, the one line every run ends on.
+# ⚠️ THE OUTSTANDING BLOCK IS EMITTED FROM HERE, and that is not laziness about
+# where to put a call: this function is reached by all three dashboard shapes
+# (including rung [w], which returns before every other block), so hanging it
+# here is what makes "every run reports an unhonored consent" true by
+# construction rather than by three call sites staying in step.
 dash_pointer() {
+  dash_outstanding
   printf '%s%s%s%s%s\n' "$C_ARROW" "$ARROW_G" "$C_TEXT" \
     "Definitions + full guide: $EMIT_DIR (ini, NOTES.md)" \
     "$RESET"

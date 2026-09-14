@@ -14,6 +14,15 @@ declare -A EX_INI EX_CTR     # detection (1/"" ; EX_CTR = container state)
 declare -A EXD_PATH          # "box:label" → host path from the old ini, as spelled
 declare -A EXD_PORT EXD_BOXSV EXD_HSTSV EXD_MODE   # parsed defaults
 declare -A SESSION_STATE     # box → ACTIVE|STOPPED (what this run did)
+# ── The cache clear's consent, and what became of it ─────────────────────────
+# Consent is taken in the INTERVIEW, where the path it applies to is on screen,
+# and acted on in the EXECUTE phase, where the box may be stopped. Those are two
+# different moments, so the answer has to be carried between them — and the fact
+# that it was NOT honored has to be carried past the action to the end of the
+# run. A yes that quietly did nothing is the defect this whole pair exists to
+# close; it must be impossible for one to evaporate in silence.
+declare -A CLEAR_WANT        # box → 1 when the user said yes to clearing it
+declare -A CLEAR_UNDONE      # box → 1 when that yes could NOT be carried out
 SELECTED=()                  # chosen boxes, canonical order
 CONFIGURE=()                 # SELECTED minus keeps (definitions (re)generated)
 KEEP=()                      # kept boxes (untouched files; ladder still offered)

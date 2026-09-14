@@ -644,6 +644,10 @@ general_setup() {
   # YES — a stale cache is the box's most common cause of "it starts but
   # misbehaves", and nothing in one is authored.
   if stale_any; then
+    # The same disclosure the per-box offer makes, for the same reason: this one
+    # answer authorizes the clear for every box, so it authorizes bouncing every
+    # box that is running, and it has to say so before it is answered (Jei, s79).
+    prose "*A box that is running will be stopped, cleared, and started again." "$C_QTXT"
     ask_yn "Stale caches often cause malfunctions. Clear all old / stale caches" Y
     CLEAR_STALE_ALL=$ANS_YN
   fi

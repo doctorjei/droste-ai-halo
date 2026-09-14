@@ -75,6 +75,85 @@ create_box() {  # box
   return 0
 }
 
+# ── The consented cache clear, carried out ───────────────────────────────────
+# WHY IT IS HERE AND NOT WHERE IT IS ASKED (s80, closing s79's G4). The clear
+# needs the box STOPPED — its overlay work dirs and the server's state dir are
+# under the root being emptied — and the interview is not a moment at which a box
+# may be bounced: the paths are still being settled and nothing has been written.
+# So the question stays in the interview, where the path it applies to is on
+# screen, and the action happens here, where stopping a container is already what
+# this section does.
+# 🚨 THE DEFECT THIS CLOSES: Jei answered Y, the box was running, the clear
+# declined, and the run finished green. A knob that swallows a word and does
+# nothing is worse than one that rejects it.
+#
+# ⭐ AND THE SWEEP RIDES THIS WINDOW, deliberately. sweep_overlay_debris runs in
+# the interview too, where it can only act on a box that is already stopped; a
+# box we have just stopped is its second and better chance, and it is idempotent
+# — it re-globs and finds nothing when the first pass already cleaned. Its own
+# running-box note is what makes the first pass honest; this is what makes the
+# note rare.
+#
+# ⚠️ THE RESTART IS CONDITIONAL, AND NOT OUT OF CAUTION. At rungs [c] and [a] the
+# create rung removes and rebuilds this container within seconds, so starting it
+# here would start a box in order to destroy it — and for vllm that start is ~116
+# seconds of weight loading thrown away. A box already STOPPED stays stopped
+# (ruled): we restore the state we found, we do not impose one.
+clear_box_caches() {  # box log → 0 the consent was honored, 1 it was not
+  local box=$1 log=$2 name state stopped=0 rc=0
+  name=$(box_ctr "$box")
+  state=$(box_state "$box")
+  if [[ $state == ACTIVE ]]; then
+    if [[ -z $RUNTIME ]]; then
+      printf 'no container runtime, so %s could not be stopped\n' "$name" >>"$log"
+      return 1
+    fi
+    run_step "stopping" "$log" "$RUNTIME" stop "$name" || {
+      printf 'could not stop %s, so its caches were left alone\n' "$name" >>"$log"
+      return 1; }
+    stopped=1
+    SESSION_STATE[$box]=STOPPED
+  fi
+  run_step "clearing" "$log" clear_pcache "$box" || rc=1
+  # NEVER gates the restart: the sweep is unconsented housekeeping, and a box the
+  # user is owed back must come back whether or not it found anything to remove.
+  run_step "sweeping" "$log" sweep_overlay_debris "$box" || :
+  if [[ $stopped -eq 1 && $RUNG != c && $RUNG != a ]]; then
+    run_step "starting" "$log" "$RUNTIME" start "$name" || {
+      printf 'caches cleared, but %s could not be started again\n' "$name" >>"$log"
+      return 1; }
+    SESSION_STATE[$box]=ACTIVE
+  fi
+  return $rc
+}
+
+# The Executing group that owns it. It runs at EVERY rung, including [w]: the
+# consent is an answer about this box's storage, not a step on the build ladder,
+# and gating it on a rung is how it would go missing again.
+clear_caches() {  # box...
+  local box log rc
+  local -a boxes=("$@")
+  [[ ${#boxes[@]} -gt 0 ]] || return 0
+  exec_hdr "Clearing Caches"
+  for box in "${boxes[@]}"; do
+    log=$(step_log clear "$box")
+    : > "$log"
+    status_start "$(box_ctr "$box")..."
+    rc=0
+    clear_box_caches "$box" "$log" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      status_ok "$(box_ctr "$box")..."
+    else
+      status_err "$(box_ctr "$box")..." "$log"
+      # The failure is on screen already, but it scrolls. This is what survives
+      # to the end of the run, because an unhonored yes is the one outcome the
+      # user has to act on themselves.
+      CLEAR_UNDONE[$box]=1
+    fi
+  done
+  return 0
+}
+
 # One box's host-boot enablement (or its removal). Returns non-zero when the
 # unit could not be put in the state the user asked for.
 host_unit_step() {  # box log → 0 ok
@@ -137,7 +216,7 @@ host_boot_units() {  # box...
 }
 
 execute() {
-  local box b ladder=() units=() all_names=() svc_log rc=0
+  local box b ladder=() units=() clears=() all_names=() svc_log rc=0
   section "Executing"
   # Ladder acts on (re)configured boxes AND kept boxes (kept = pull/create/
   # start from their existing, un-rewritten definitions), in canonical order.
@@ -171,12 +250,25 @@ execute() {
       units+=("$box")
     fi
   done
+  # CONFIGURE only, and only where there is still something to remove. A KEPT box
+  # was never asked (its paths were not settled this run), and a box whose cache
+  # root has nothing clearable in it would be a status line about no work.
+  for box in "${CONFIGURE[@]}"; do
+    clear_pending "$box" && clears+=("$box")
+  done
   # ONE column for the whole section: every status line the run will print is
   # measured before the first of them is drawn.
   if [[ ${#ladder[@]} -gt 0 ]]; then
     for box in "${ladder[@]}"; do
       [[ $RUNG != w ]] && all_names+=("$(img_disp "$box")...")
       [[ $RUNG == c || $RUNG == a ]] && all_names+=("$(box_ctr "$box")...")
+    done
+    # The clear group draws a status line per box at EVERY rung, so its names
+    # have to be measured here too — at [w] and [p] nothing else contributes a
+    # container name, and a name wider than the column would push its own tag
+    # off the end of the line.
+    for box in ${clears[@]+"${clears[@]}"}; do
+      all_names+=("$(box_ctr "$box")...")
     done
     for box in ${units[@]+"${units[@]}"}; do
       all_names+=("$(unit_name "$box")...")
@@ -195,6 +287,12 @@ execute() {
       STATUS_W=53
     fi
   fi
+  # BEFORE the pull and the create, because it is maintenance on the state those
+  # two are about to build on: a container created against a cache root the user
+  # asked to have emptied should find it emptied. It is also the only group that
+  # may leave a box running when it found one running, which the create rung
+  # would then have to undo.
+  clear_caches ${clears[@]+"${clears[@]}"}
   if [[ $RUNG != w && ${#ladder[@]} -gt 0 ]]; then
     exec_hdr "Pulling Images"
     svc_log=$(step_log pull service)

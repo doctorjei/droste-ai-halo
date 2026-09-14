@@ -363,10 +363,6 @@ droste::cfg_apply() {
     fi
     for name in "${!now[@]}"; do
         case " $ignore " in *" $name "*) continue ;; esac
-        if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            serve::warn "$file produced a variable named '$name', which is not a name a shell can carry — skipping it."
-            continue
-        fi
         # Unchanged from what this box already had: nothing to do, and saying so keeps
         # the applied count meaningful.
         if [ "${base[$name]+isset}" = isset ] && [ "${base[$name]}" = "${now[$name]}" ]; then
@@ -402,6 +398,18 @@ droste::cfg_apply() {
         # covers the CONFIG FILE, which is the route we ship; that helper covers a
         # set-and-empty arriving by a route this function cannot see — a create-time
         # `--env` in additional_flags, or an `export` typed inside `distrobox enter`.
+        # ⭐ HERE, AND NOT EARLIER, FOR EXACTLY THE REASON THE ARM ~50 LINES DOWN GIVES:
+        # `now` holds the child's WHOLE environment, so a name this file never wrote
+        # reaches this loop too. Above the unchanged-skip, this blamed $file for a name
+        # it never produced — an exported bash function arrives as `BASH_FUNC_f%%`, which
+        # is not a shell identifier, and `export -f` is the standard idiom for driving a
+        # helper under `xargs -P N`. Only a name the file INTRODUCED or CHANGED gets here.
+        # ⚠️ IT MUST STAY ABOVE droste::cfg_is_passthrough, which interpolates $name and
+        # relies on it having been validated first.
+        if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            serve::warn "$file produced a variable named '$name', which is not a name a shell can carry — skipping it."
+            continue
+        fi
         if [ "${base[$name]+isset}" != isset ] && [ -z "${now[$name]}" ] \
            && droste::cfg_is_passthrough "$file" "$name"; then
             kept=$(( kept + 1 ))

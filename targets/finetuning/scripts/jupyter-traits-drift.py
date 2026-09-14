@@ -12,7 +12,8 @@ build says so: the file still parses, the server still starts, the trait still e
 There is a second failure it catches, and it is the quieter one. A trait upstream has
 RENAMED or REMOVED does not fail — traitlets only WARNS about an unknown trait in a
 config file, and the server comes up healthy with the setting ignored. On a box whose
-service log goes to /opt/data/.droste-serve.log rather than `podman logs`, nobody sees it.
+service log goes to /opt/program/logs/finetuning-serve.log rather than `podman logs`,
+nobody sees it.
 
 ⚠️ RUN IT WHEN A PIN MOVES, not on a schedule. The pins are in
 targets/Container.finetuning: jupyter_core, jupyterlab, jupyter_server, jupyterlab_server,

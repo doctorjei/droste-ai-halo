@@ -8,7 +8,8 @@
 # (droste-entrypoint.sh) sources droste-resolve.sh, sources this file, then runs
 # resolve::apply_spec in this EXACT order:
 #
-#   ensure /opt/data (auto-vol + warn) + /opt/program-cache (warn if unbound)
+#   ensure /opt/config (warn if unbound) + /opt/program (auto-vol + warn)
+#          + /opt/program-cache (warn if unbound)
 #     -> SURFACES + OVERLAYS + CACHES   (mounted; server lane only, no-op in distrobox)
 #     -> CRITICAL                       (hard-error if unbound + ALLOW_EPHEMERAL escape)
 #     -> OPTIONAL                       (INFO once + create marker file)
@@ -30,28 +31,39 @@
 # APPLIES the app settings through a child shell; `droste::cfg_get` PARSES a single
 # serve setting and never sources. The serve settings are read the second way, so
 # the wiring must never reach for $DROSTE_<APP>_PORT and friends in the environment.
-# (The retired /opt/data/server.env, and its single SERVE=1 knob, are both gone.)
+# (The retired server.env, and its single SERVE=1 knob, are both gone.)
 #
 # All content SEEDING (default files/dirs) is owned by templates.yaml, NOT this file.
 # There is deliberately no DEFAULTS row. Every path below is EXPLICIT and ABSOLUTE.
 #
 # ── WHICH ROOT A ROW USES IS ITS CLASS DECLARATION ───────────────────────────
-# Three container-side roots; the prefix of a src/upper is the whole classification,
-# so nothing downstream has to guess from a path's contents (see droste-resolve.sh):
-#   /opt/data           PERSISTENT, per box, backed up. Configs (<box>.cfg,
-#                       vllm_config.yaml, comfyui extra_model_paths.yaml), comfyui
-#                       user/ + custom_nodes upper + model-tree, ds4 sessions/ +
-#                       cockpit/, finetuning workspace.
-#   /opt/program-cache  PROGRAM CACHE, per box, re-obtainable: the venv upper (and
-#                       its .work sibling), copy-mode materializations, tmp, llama
-#                       slots, ds4 kv-disk, the compute-cache fallback under
-#                       compute/. The installer may
-#                       empty this ROOT WHOLE with the user's consent — so never put
-#                       anything here that a user would miss.
+# Four container-side roots; the prefix of a src/upper is the whole classification,
+# so nothing downstream has to guess from a path's contents (see droste-resolve.sh).
+# THE QUESTION THAT PICKS ONE IS "WHAT GETS IT BACK?" (Jei, s79):
+#   /opt/config         THE CONFIG SURFACE, per box — NOTHING gets it back. <box>.cfg
+#                       and its .example, vllm_config.yaml, jupyter_server_config.py,
+#                       comfyui's extra_model_paths.yaml. The most hand-authored
+#                       artifacts in the project. Never wiped, never overwritten.
+#                       ⚠️ NO ROW TYPE BELOW PLACES ANYTHING HERE. The INSTALLER
+#                       writes these files, from this port's templates.yaml
+#                       `if_missing` section; a spec only NAMES one, via CFG_FILE.
+#   /opt/program        PROGRAM DATA, per box — a REINSTALL or a RE-RUN gets it back,
+#                       at a cost. The venv upper (and its .work sibling), comfyui's
+#                       custom_nodes upper + model-tree + datasets, ds4 internal/ +
+#                       cockpit/, logs/. NOTHING WE SHIP EVER EMPTIES THIS ROOT OR
+#                       OFFERS TO (ruled, s79).
+#   /opt/program-cache  PROGRAM CACHE, per box — FREE regen, the program rebuilds it
+#                       unasked: copy-mode materializations, tmp, llama slots, ds4
+#                       kv-disk, the state/ server dir, the compute-cache fallback
+#                       under compute/. The installer may empty this ROOT WHOLE with
+#                       the user's consent — so never put anything here that a user
+#                       would miss.
 #   /opt/caches         SHARED compute caches across boxes; never written to by a
 #                       spec directly, only reached by the CACHES rewrite below.
 # A .work dir is ALWAYS a sibling of its own upper (kernel: workdir and upperdir must
 # share a filesystem), so it follows that upper's root — not the class table.
+# ⚠️ THE VENV UPPER WAS ON /opt/program-cache UNTIL s79, i.e. on the one root the
+# installer wipes, and that cost a working box. Do not move it back.
 
 # ── SERVICE (required) ───────────────────────────────────────────────────────
 # The service argv. Bash array; exec'd verbatim unless the user passes a command.
@@ -84,15 +96,19 @@ HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE (optional) ──────────────────────────────────────────────────────
 # Absolute path to a file sourced right before PRE_LAUNCH. Used by llama/ds4 whose
-# config is an env file — written into /opt/data on the HOST by the installer, from
+# config is an env file — written onto /opt/config on the HOST by the installer, from
 # the `if_missing` entries of this port's templates.yaml, before the box has ever run.
+# ⚠️ ITS BASENAME IS THE BOX'S NAME, BY CONTRACT: the file is named for the BOX
+# (`<box>.cfg`) while the settings inside it are named for the APPLICATION. That is
+# what droste::box_name derives the two log names from, so a spec whose CFG_FILE is
+# not `<box>.cfg` silently renames this box's logs.
 # The image does not create it; serve::read_config reports an absent one.
 # The resolver sources it under `set -a`, so plain VAR= lines are EXPORTED and
 # survive the exec into the service (ports may still belt-and-braces re-export in
 # PRE_LAUNCH so the spec stays self-sufficient under other callers).
 # Leave "" if unused.
 CFG_FILE=""
-# CFG_FILE="/opt/data/llama.cfg"
+# CFG_FILE="/opt/config/llama.cfg"
 
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Kernel overlayfs mounted OVER the baked <lower> dir; user writes land in <upper>
@@ -100,23 +116,26 @@ CFG_FILE=""
 # load-bearing (the whole venv, comfyui custom_nodes). upper = volume side,
 # lower = baked app dir. Overlay the WHOLE venv (captures bin/ entry-points too and
 # avoids pinning a pythonX.Y path), not just site-packages.
-# CLASS: the venv upper is PROGRAM CACHE — a pip install is re-runnable, and a
-# half-copied one poisons the baked stack, which is why the installer is allowed to
-# empty it. custom_nodes is DATA: those are the user's own node picks and edits.
+# CLASS: BOTH uppers are PROGRAM — a pip install is re-runnable at a COST, which is
+# not the same as free, and the user's own node picks and edits are the same kind of
+# thing one step further from free. Neither root is ever emptied by the installer.
 OVERLAYS=(
-    "/opt/program-cache/venv:/opt/venv"
-    "/opt/data/custom_nodes:/opt/ComfyUI/custom_nodes"
+    "/opt/program/venv:/opt/venv"
+    "/opt/program/custom_nodes:/opt/ComfyUI/custom_nodes"
 )
 
 # ── SURFACES (optional) — <src>:<dest> ───────────────────────────────────────
 # Plain bind of a volume subpath (src) onto an app-side path (dest). Server lane
 # only. Use for container-specific state with no baked content to preserve (e.g.
-# comfyui user/ and the scanner model-tree). src created if absent.
-# CLASS: state surfaces come off /opt/data; a scratch surface (e.g. a tmp dir the
+# the scanner model-tree). src created if absent.
+# CLASS: state surfaces come off /opt/program; a scratch surface (e.g. a tmp dir the
 # app fills and never re-reads) comes off /opt/program-cache instead.
+# ⚠️ A SURFACE IS THE WRONG SHAPE FOR ANYTHING THE USER MAY WANT TO PLACE THEMSELVES.
+# comfyui's user/ was one of these until s79 and is a BIND now, asked about by name
+# like input/ and output/ — a surface hides a directory inside another bind, where
+# the installer cannot offer it a path of its own.
 SURFACES=(
-    "/opt/data/user:/opt/ComfyUI/user"
-    "/opt/data/model-tree:/opt/ComfyUI/models"
+    "/opt/program/model-tree:/opt/ComfyUI/models"
 )
 
 # ── CACHES (optional) — <src>:<dest> ─────────────────────────────────────────
@@ -197,7 +216,7 @@ PRE_LAUNCH=""
 # array in PRE_LAUNCH, which runs AFTER the env file is sourced:
 #
 #   SERVICE=( llama-server )                       # placeholder argv
-#   CFG_FILE="/opt/data/llama.cfg"
+#   CFG_FILE="/opt/config/llama.cfg"
 #   PRE_LAUNCH="port_pre_launch"
 #   port_pre_launch() {
 #       # belt-and-braces: re-export the vars the binary reads from its

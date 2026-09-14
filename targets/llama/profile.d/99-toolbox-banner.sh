@@ -134,7 +134,7 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches llama-server with DROSTE_LLAMA_PORT from
-# /opt/data/llama.cfg (appended as --port, which wins over LLAMA_ARG_PORT), so a
+# /opt/config/llama.cfg (appended as --port, which wins over LLAMA_ARG_PORT), so a
 # baked-in number in the text below would be wrong for every box that changed it.
 # 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
 # droste-owned server.env, which was safe to source; they now live in the USER's
@@ -160,7 +160,7 @@ PY
 # the one thing it re-derives by hand. ⚠️ If the grep fails the value stays EMPTY and
 # the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def file="${DROSTE_SERVE_ENV:-/opt/data/llama.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/config/llama.cfg}" pv=""
   def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
         /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
@@ -319,7 +319,7 @@ printf 'Image : ghcr.io/doctorjei/droste-llama-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
 printf '  - %-18s → %s\n' "llama-server" "starts with the box (port $SERVE_PORT)"
-printf '  - %-18s → %s\n' "config" "/opt/data/llama.cfg (LLAMA_ARG_* lines + DROSTE_LLAMA_EXTRA_ARGS)"
+printf '  - %-18s → %s\n' "config" "/opt/config/llama.cfg (LLAMA_ARG_* lines + DROSTE_LLAMA_EXTRA_ARGS)"
 printf '  - %-18s → %s\n' "models" "-hf downloads land in the shared HF cache (~/.cache/huggingface)"
 printf '  - %-18s → %s\n' "local GGUFs" "bind read-only at /opt/models"
 printf '  - %-18s → %s\n' "VRAM helper" "gguf-vram-estimator.py <model>.gguf"
@@ -329,7 +329,7 @@ printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
 printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
 printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
-printf '  - %-18s → %s\n' "at box start" "DROSTE_LLAMA_STARTUP_ENABLED in /opt/data/llama.cfg"
+printf '  - %-18s → %s\n' "at box start" "DROSTE_LLAMA_STARTUP_ENABLED in /opt/config/llama.cfg"
 echo
 # The middle field is the address the FORWARD lands on at the far end, so it has
 # to be the one the server actually bound: with host networking the listener is

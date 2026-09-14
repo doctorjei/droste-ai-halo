@@ -20,9 +20,11 @@ HEALTH_PATH="/v1/models"
 HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from templates/ds4.cfg (templates.yaml if_missing); carries active
-# DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
-CFG_FILE="/opt/data/ds4.cfg"
+# Written from templates/ds4.cfg by the installer (templates.yaml if_missing); carries
+# active DROSTE_DS4_* values + the commented full flag list + native DS4_* passthroughs.
+# ⚠️ THE BASENAME IS THE BOX'S NAME, BY CONTRACT — droste::box_name reads it out of
+# this row to name the box's two logs. See base/resolve/build-spec.example.
+CFG_FILE="/opt/config/ds4.cfg"
 
 # ── SERVE — the row droste-serve.sh reads out of this spec ───────────────────
 # The SERVE settings live in the same CFG_FILE as everything else, under the prefix
@@ -64,29 +66,33 @@ SERVE_PORT_DEFAULT=8001
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). ds4-server is a compiled HIP binary;
 # the overlay serves cockpit/hf-CLI/user pip installs (whole venv, so console
-# scripts in bin/ persist too). The upper is CACHE class (a pip install is
-# re-runnable) → /opt/program-cache, which the installer may empty.
+# scripts in bin/ persist too). The upper is PROGRAM class — a pip install is
+# re-runnable at a COST, which is not the same as free — → /opt/program, which the
+# installer never empties and never offers to.
+# ⚠️ IT WAS ON /opt/program-cache UNTIL s79, i.e. on the one root the installer
+# offers to wipe. It cost a working box. Do not move it back.
 OVERLAYS=(
-    "/opt/program-cache/venv:/opt/venv"
+    "/opt/program/venv:/opt/venv"
 )
 
 # ── SURFACES ─────────────────────────────────────────────────────────────────
-# Whole ~/.ds4 from /opt/data/internal (saved sessions kvcache/ + browser/
-# profile + anything future). On the DATA root, not the program-cache one —
+# Whole ~/.ds4 from /opt/program/internal (saved sessions kvcache/ + browser/
+# profile + anything future). On the PROGRAM root, not the program-cache one —
 # sessions are user WORK, and this dir is never in the installer's wipe.
 #
 # ⭐ NAMED `internal`, NOT `ds4` (Jei, s47). The source is named for the app's
 # dot-dir everywhere else in this file, but on THIS box that collides with the
-# box's own name: /opt/data is <data base>/<box>/program, so a source called
+# box's own name: /opt/program is <data base>/<box>/program, so a source called
 # `ds4` reads `~/droste/data/ds4/program/ds4` on the host — and on a pre-s41
-# box, where /opt/data IS <data base>/<box>, it reads `~/droste/data/ds4/ds4`
-# and looks like something created the directory twice. The dest (~/.ds4) is
-# what the app dictates; the source name is ours, so it is the one that moves.
-# ⚠️ EXISTING BOXES: sessions are at /opt/data/ds4 and this row no longer looks
+# box, where the program root IS <data base>/<box>, it reads
+# `~/droste/data/ds4/ds4` and looks like something created the directory twice.
+# The dest (~/.ds4) is what the app dictates; the source name is ours, so it is
+# the one that moves.
+# ⚠️ EXISTING BOXES: sessions are at <program dir>/ds4 and this row no longer looks
 # there. Same volume, same filesystem, so the fix is one in-place rename on the
-# host — `mv <data path>/ds4 <data path>/internal` with the box stopped.
+# host — `mv <program path>/ds4 <program path>/internal` with the box stopped.
 SURFACES=(
-    "/opt/data/internal:$HOME/.ds4"
+    "/opt/program/internal:$HOME/.ds4"
 )
 
 # ── CACHES ───────────────────────────────────────────────────────────────────
@@ -512,12 +518,12 @@ ds4_pre_launch() {
     fi
 
     # Cockpit state: ~/.ds4-cockpit.conf is a FILE (not a dir) → persist it at
-    # /opt/data/cockpit/ via a symlink (writes through the link land there).
+    # /opt/program/cockpit/ via a symlink (writes through the link land there).
     # SERVER lane only: under distrobox $HOME is the REAL host home — cockpit
     # state rides it natively there, and the link would dangle on the host.
     if [ "${DROSTE_LANE:-server}" = server ]; then
-        mkdir -p /opt/data/cockpit
-        ln -sf /opt/data/cockpit/ds4-cockpit.conf "$HOME/.ds4-cockpit.conf"
+        mkdir -p /opt/program/cockpit
+        ln -sf /opt/program/cockpit/ds4-cockpit.conf "$HOME/.ds4-cockpit.conf"
     fi
 
     # Translate DROSTE_DS4_* → argv. Native DS4_* untouched (binary reads them).

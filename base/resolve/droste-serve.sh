@@ -24,7 +24,7 @@
 #       updates and container recreation.
 #
 # ── THE FIVE SERVE SETTINGS ─────────────────────────────────────────────────
-# They live in /opt/data/<box>.cfg — the SAME file the user edits for every other
+# They live in /opt/config/<box>.cfg — the SAME file the user edits for every other
 # setting this box has, beside them and in the same namespace. There is no second
 # config file: `server.env` was deleted in s60 precisely because a user should not
 # have to learn that the port lives somewhere other than everything else.
@@ -139,13 +139,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfgapply.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 
 # ── Config (override via env before sourcing) ───────────────────────────────
-# Two per-box roots, same names and defaults as droste-resolve.sh (this library is
+# The per-box roots, same names and defaults as droste-resolve.sh (this library is
 # sourced on its own by droste-healthcheck.sh, so it cannot rely on that one having
-# set them). Class split, per the storage taxonomy: the settings file and the
-# service log are DATA (user-edited / read exactly when something broke), the pid
-# record is PROGRAM CACHE (bookkeeping about a process that no longer exists once
-# the box is recreated).
-: "${DROSTE_DATA_DIR:=/opt/data}"
+# set them). Class split, per the storage taxonomy: the settings file is CONFIG
+# (hand-authored, nothing gets it back), the service log is PROGRAM (machine-written,
+# read exactly when something broke, and worth no more than the launch it describes),
+# the pid record is PROGRAM CACHE (bookkeeping about a process that no longer exists
+# once the box is recreated).
+: "${DROSTE_CONFIG_DIR:=/opt/config}"
+: "${DROSTE_PROGRAM_DIR:=/opt/program}"
 : "${DROSTE_PCACHE_DIR:=/opt/program-cache}"
 # ⚠️ NO LITERAL DEFAULT FOR THE CONFIG FILE ANY MORE, and that is the point: there is
 # no one path that is right for all five boxes now that the serve settings live in the
@@ -177,7 +179,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${DROSTE_SERVE_SUP_RECORD:=$DROSTE_SERVE_STATE_DIR/supervisor}"  # its pid + start
 : "${DROSTE_SERVE_MEM_RECORD:=$DROSTE_SERVE_STATE_DIR/.MEM_AT_LAUNCH}"  # MemAvailable kB
 : "${DROSTE_SERVE_REQ_WAIT:=60}"   # seconds a verb waits for the supervisor's launch
-: "${DROSTE_SERVE_LOG:=$DROSTE_DATA_DIR/.droste-serve.log}"
+# ⚠️ NO DROSTE_SERVE_LOG DEFAULT HERE. Its name carries the box's own name, which is
+# derived from the build-spec's CFG_FILE — and that row is not read until
+# serve::_read_serve_spec runs, further down this file. The default is applied there,
+# at the first moment it can be true. An override set before sourcing still wins.
 # ── The four flags this library puts on the command line ────────────────────
 # 🚨 EVERY BOX GETS A COMMAND-LINE FLAG, AND NO BOX GETS AN ENVIRONMENT VARIABLE OR A
 # CONFIG KEY (ruled s60). A CLI flag outranks an env var (llama's LLAMA_ARG_*), a YAML
@@ -341,7 +346,7 @@ serve::_own_dirs() {
 # which PORT it falls back to. All three answers are baked, per box, in
 # /opt/resources/build-spec:
 #
-#       CFG_FILE="/opt/data/llama.cfg"
+#       CFG_FILE="/opt/config/llama.cfg"
 #       SERVE_CFG_PREFIX="DROSTE_LLAMA_"
 #       SERVE_PORT_DEFAULT=8080
 #
@@ -391,6 +396,32 @@ serve::_read_serve_spec() {
 # read_config repeats it because a harness may swap the spec between calls; it is a file
 # read in a subshell either way, and it happens once per probe, not once per line.
 serve::_read_serve_spec || true
+
+# ── The service log, named for the box (s79) ────────────────────────────────
+# `<box>-serve.log` under $DROSTE_PROGRAM_DIR/logs/, and BOTH halves of that are
+# deliberate:
+#   - THE DIRECTORY. It was `$DROSTE_DATA_DIR/.droste-serve.log`, a dotfile at the top
+#     of the box's data dir. Logs are machine-written and worth a re-run, not a
+#     rescue, so they sit with the rest of the program tier — and in a `logs/` dir,
+#     where someone looking for a log looks, rather than hidden by a leading dot.
+#   - THE NAME. Derived from the build-spec's CFG_FILE (droste::box_name), never
+#     restated: a literal per box would be five copies of a fact one row already
+#     carries. On the host these files land under `<data>/<box>/program/logs/`, so
+#     the box's name is redundant there — until a log is copied somewhere it is not,
+#     which is exactly when a log is being read.
+# ⚠️ THE ROTATION IS UNCHANGED: serve::launch moves the previous file to `.prev`
+# beside it, so one launch back is always still there.
+# `:=` NOT `=`, and an explicit empty value is treated as absent: a harness that
+# exports DROSTE_SERVE_LOG= means "you pick", which is what every other path here
+# means by a blank.
+if [ -z "${DROSTE_SERVE_LOG:-}" ]; then
+    _droste_serve_box=$(droste::box_name "${DROSTE_SERVE_ENV:-}") || _droste_serve_box=""
+    # No spec, no CFG_FILE row, or a path that is not a `.cfg`: a lab or a harness,
+    # not a box. It still gets a log, under a name that claims nothing it cannot back.
+    [ -n "$_droste_serve_box" ] || _droste_serve_box=droste
+    DROSTE_SERVE_LOG="$DROSTE_PROGRAM_DIR/logs/$_droste_serve_box-serve.log"
+    unset _droste_serve_box
+fi
 
 # _is_ipv4 — is this string a dotted-quad IPv4 LITERAL? Nothing else is accepted as a
 # bind address (§5, ruled s59/s60): a hostname would have to be resolved, and the

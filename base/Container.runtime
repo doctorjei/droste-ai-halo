@@ -192,5 +192,9 @@ RUN for v in server_start server_stop server_restart server_status; do \
 ENV PATH=/opt/resources/resolve:$PATH
 
 # The one container-specific volume, shared by all ports: auto-anonymous-volume when
-# unbound (entrypoint warns), user binds -v <host>:/opt/data to persist.
-VOLUME /opt/data
+# unbound (entrypoint warns), user binds -v <host>:/opt/program to persist.
+# ⚠️ NO `VOLUME /opt/config` BESIDE IT, ON PURPOSE (s79): an anonymous volume is
+# exactly what must NOT silently appear under the config surface — a box that comes
+# up with settings nobody can find and that vanish at the next recreate is the
+# failure resolve::ensure_config exists to say out loud.
+VOLUME /opt/program

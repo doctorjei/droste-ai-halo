@@ -16,8 +16,8 @@
 if_empty:
   workspace: /opt/workspace
 
-# The box's CONFIG SURFACE, in two halves — the user's own edits, so DATA class
-# (/opt/data, never in the installer's wipe) and never overwritten once seeded.
+# The box's CONFIG SURFACE, in two halves — the user's own edits, so CONFIG class
+# (/opt/config, never in the installer's wipe) and never overwritten once written.
 #
 # finetuning.cfg carries the environment variables; it is this box's CFG_FILE.
 # jupyter_server_config.py carries the ~220 traits, and is only ON JUPYTER'S
@@ -25,5 +25,5 @@ if_empty:
 # below. The two are a pair: seeding the trait file without the env file would
 # put it somewhere Jupyter never looks.
 if_missing:
-  finetuning.cfg: /opt/data/finetuning.cfg
-  jupyter_server_config.py: /opt/data/jupyter_server_config.py
+  finetuning.cfg: /opt/config/finetuning.cfg
+  jupyter_server_config.py: /opt/config/jupyter_server_config.py

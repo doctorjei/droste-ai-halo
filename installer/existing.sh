@@ -6,15 +6,29 @@ box_ctr()   { printf 'droste-%s-halo' "$1"; }
 ini_file()  { printf '%s/%s-halo.ini' "$EMIT_DIR" "$1"; }
 unit_name() { printf 'droste-%s.service' "$1"; }
 unit_file() { printf '%s/.config/systemd/user/%s' "$HOME" "$(unit_name "$1")"; }
-# The box's settings file on the HOST side of its data bind: /opt/data/<box>.cfg
-# inside the box is <data dir>/<box>.cfg here. It is the one file that carries
-# the serve settings the box reads at EVERY start (P1's droste-serve.sh) AND the
-# several hundred application settings the box seeded for the user — which is
-# why the installer only ever MERGES single lines into it (cfg_set), and never
-# creates it.
-box_cfg_file() {  # box → path ("" when the data dir is not known yet)
-  local d=${PATHS["$1:data"]:-${EXD_PATH["$1:data"]:-}}
+# The box's settings file on the HOST side of its CONFIG bind:
+# /opt/config/<box>.cfg inside the box is <config dir>/<box>.cfg here. It is the
+# one file that carries the serve settings the box reads at EVERY start (P1's
+# droste-serve.sh) AND the several hundred application settings the installer
+# wrote for the user — which is why the installer only ever MERGES single lines
+# into it (cfg_set), and never creates it.
+# ⚠️ IT CAME OFF THE `data` BIND UNTIL s79. An ini written before that records no
+# `config` bind at all, so EXD_PATH has nothing here and the derived path is a
+# directory that has never held a config file — which is precisely the case
+# report_retired_configs and cfg_write_seeds' retired-path guard exist for.
+box_cfg_file() {  # box → path ("" when the config dir is not known yet)
+  local d=${PATHS["$1:config"]:-${EXD_PATH["$1:config"]:-}}
   [[ -n $d ]] && printf '%s/%s' "$d" "${BOX_CFG[$1]}"
+}
+
+# Where a box's config files USED TO live: the box's program bind, which an ini
+# written before s79 records as the `/opt/data` volume. Used only to DETECT and
+# REPORT a config left behind — nothing here moves or deletes anything.
+# ⭐ EXD_PATH, NEVER PATHS: the question is where the PREVIOUS run put them, and
+# PATHS holds where THIS run will. On a fresh box there is no answer and there is
+# nothing to have been left behind, which is the same thing.
+box_retired_cfg_dir() {  # box → path ("" when no previous run recorded one)
+  printf '%s' "${EXD_PATH["$1:program"]:-}"
 }
 
 # The name of one of the five serve settings for a box: DROSTE_<APP>_<KEY>.
@@ -28,8 +42,19 @@ dest_to_label() {  # box dest → label ("" if unknown)
   # the SHARED compute one — one letter apart on the container side, and two
   # different host roots. An ini written before s38 has no /opt/program-cache
   # bind at all; that is not an error, it just means nothing seeds `pcache`.
+  #
+  # 🚨 TWO DESTS MAP TO `program`, AND THAT IS READ-TOLERANTLY BY DESIGN (s79).
+  # The box's program volume was mounted at /opt/data until the config surface
+  # moved out of it; the HOST side of that bind did not move at all (it has been
+  # spelled `<base>/<box>/program` since s41), so an old ini's /opt/data line
+  # names exactly the directory this run calls `program`. Reading it as anything
+  # else would lose the box's model tree, its custom nodes and its ds4 sessions.
+  # ⚠️ /opt/config is the NEW per-box root and an ini written before it has none
+  # — which is exactly the shape report_retired_configs reads, so an unseeded
+  # `config` is a fact this parser must hand on rather than paper over.
   case "$dest" in
-    /opt/data) printf 'data'; return 0 ;;
+    /opt/program|/opt/data) printf 'program'; return 0 ;;
+    /opt/config) printf 'config'; return 0 ;;
     /opt/program-cache) printf 'pcache'; return 0 ;;
     /opt/models) printf 'models'; return 0 ;;
     /opt/caches) printf 'caches'; return 0 ;;
@@ -138,10 +163,23 @@ parse_existing_ini() {  # box
 # overrides it. The old code assigned EXD_BOXSV="" on anything non-truthy,
 # which turned "the file says nothing" into "the user said no".
 parse_box_cfg() {  # box
-  local box=$1 f v
+  local box=$1 f v old
   f=$(box_cfg_file "$box") || return 0
   [[ -n $f ]] || return 0
-  f=$(fs_path "$f")      # a data dir the user spelled with ~ is still a dir
+  f=$(fs_path "$f")      # a config dir the user spelled with ~ is still a dir
+  # 🚨 READ THE RETIRED PATH WHEN THE CURRENT ONE HAS NOTHING (s79). The config
+  # surface moved off the program bind, so on a box set up before that the file
+  # this run will read does not exist yet and the user's own port and box-start
+  # answers are in the old one. Reading them is how the prompts go on offering
+  # the user their own settings instead of silently proposing the factory ones.
+  # ⚠️ A READ, AND ONLY A READ. Nothing here moves, writes or deletes anything —
+  # the current path still WINS whenever a file is there, so this can never
+  # resurrect a stale answer over a live file.
+  if [[ ! -f $f || ! -r $f ]]; then
+    old=$(box_retired_cfg_dir "$box")
+    [[ -n $old ]] || return 0
+    f=$(fs_path "$old")/${BOX_CFG[$box]}
+  fi
   [[ -f $f && -r $f ]] || return 0
   # STARTUP_ENABLED's vocabulary is {yes, no} — that is what the file's own menu
   # shows and what cfg_set writes. Read TOLERANTLY anyway (the box's droste::bool

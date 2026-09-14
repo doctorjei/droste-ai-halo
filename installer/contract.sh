@@ -96,13 +96,21 @@ declare -A BOX_NAME=(
 )
 
 # Human-readable titles for each prompted bind family (used in the path prompt).
+# ⚠️ `program` WAS SPELLED `data` UNTIL s79, while both of its user-facing strings
+# already said "Program Data" — the internal/external divergence Jei's own rule
+# forbids, and the reason the rename cost nothing on screen.
 declare -A BIND_TITLE=(
-  [data]="Program Data" [input]="Input Files" [output]="Output Files" [workspace]="Workspace"
+  [program]="Program Data" [config]="Configuration" [user]="Saved Workflows"
+  [input]="Input Files" [output]="Output Files" [workspace]="Workspace"
 )
 
 # Summary-box row headers for the same families (shorter — the box is narrow).
+# ⚠️ `Config`, NOT `Configuration`: SUM_HDR_W is 14 columns and "Configuration:"
+# fills it exactly, so the value would sit flush against the colon with no space
+# between them. The row headers are the SHORT forms for exactly this reason.
 declare -A BIND_ROW=(
-  [data]="Program Data" [input]="Input" [output]="Output" [workspace]="Workspace"
+  [program]="Program Data" [config]="Config" [user]="Workflows"
+  [input]="Input" [output]="Output" [workspace]="Workspace"
 )
 
 # A bind whose prompt is written OUT, instead of composed as "Path for <Box>
@@ -137,23 +145,36 @@ declare -A BOX_DESC=(
   [finetuning]="unsloth/HF finetuning"
 )
 
-# Extra CRITICAL binds beyond /opt/data + the shared HF cache (CRITICAL rows):
+# Extra CRITICAL binds beyond /opt/program + the shared HF cache (CRITICAL rows):
 # space-separated "label:container-dest". These hold irreplaceable user work.
 # ORDER IS DISPLAY ORDER: it drives both the path prompts and the summary box
 # rows, so comfyui lists output before input (Jei's mockup, both places).
+#
+# 🚨 `config` IS ON EVERY BOX (s79) AND IS FIRST. It is the one thing here that
+# nothing gets back — the box's hand-edited settings — and it was a directory
+# INSIDE the program bind until s79, where the user could not be offered a path
+# for it. ⚠️ Its label is also what dest_to_label hands cfg_write_seeds, so this
+# row is what makes the config files land anywhere at all.
+# 🚨 comfyui's `user` JOINED THEM in the same change, for the same reason: it was
+# a SURFACE out of the program bind, and a surface is a directory the installer
+# cannot place. It holds the user's saved workflows.
+#
+# ⚠️ NEITHER IS EVER ASKED WHEN THE DATA ELECTION WAS ACCEPTED — auto_label puts
+# every data-family bind under <base>/<box>/<label> without a prompt, so the
+# ordinary run gains no questions from either.
 declare -A BOX_EXTRA_BINDS=(
-  [comfyui]="output:/opt/ComfyUI/output input:/opt/ComfyUI/input"
-  [llama]=""
-  [vllm]=""
-  [ds4]=""
-  [finetuning]="workspace:/opt/workspace"
+  [comfyui]="config:/opt/config user:/opt/ComfyUI/user output:/opt/ComfyUI/output input:/opt/ComfyUI/input"
+  [llama]="config:/opt/config"
+  [vllm]="config:/opt/config"
+  [ds4]="config:/opt/config"
+  [finetuning]="config:/opt/config workspace:/opt/workspace"
 )
 
 # Where each box's OVERLAY UPPERS land on the HOST, said as a BIND LABEL plus a
 # path relative to that bind — never as a host path. Each target's baked
 # build-spec declares its overlays as <upper>:<lower> with the upper on the
-# CONTAINER side ("/opt/program-cache/venv:/opt/venv", and comfyui's
-# "/opt/data/custom_nodes:/opt/ComfyUI/custom_nodes"); this table is the
+# CONTAINER side ("/opt/program/venv:/opt/venv", and comfyui's
+# "/opt/program/custom_nodes:/opt/ComfyUI/custom_nodes"); this table is the
 # host-side mirror of that declaration, the same relationship BOX_CFG has with
 # each build-spec's CFG_FILE, and it has to keep mirroring it.
 #
@@ -170,11 +191,32 @@ declare -A BOX_EXTRA_BINDS=(
 # The interpreter version is a GLOB on purpose — the image picks it, and a
 # pinned python3.NN would silently stop matching the first time the base moves.
 declare -A BOX_OVERLAY_UPPERS=(
-  [comfyui]="pcache:venv/lib/python*/site-packages data:custom_nodes"
-  [llama]="pcache:venv/lib/python*/site-packages"
-  [vllm]="pcache:venv/lib/python*/site-packages"
-  [ds4]="pcache:venv/lib/python*/site-packages"
-  [finetuning]="pcache:venv/lib/python*/site-packages"
+  [comfyui]="program:venv/lib/python*/site-packages program:custom_nodes"
+  [llama]="program:venv/lib/python*/site-packages"
+  [vllm]="program:venv/lib/python*/site-packages"
+  [ds4]="program:venv/lib/python*/site-packages"
+  [finetuning]="program:venv/lib/python*/site-packages"
+)
+
+# WHERE AN UPPER USED TO LIVE, label to label — one row per LABEL in the table
+# above whose ROOT has moved. The venv upper sat on the program-cache root until
+# s79, which is the root the installer offers to empty: a box set up before the
+# move has its owner's `pip install`s under a path the box no longer reads, and
+# the two things owed to that owner are that the wipe LEAVES THEM ALONE and that
+# the run SAYS WHERE THEY ARE.
+#
+# ⭐ A MAP, NOT A SECOND PATH TABLE: everything derived from it still comes out of
+# PATHS/EXD_PATH, so the report and the wipe exclusion follow whatever the roots
+# settled on rather than restating a layout. A row retires the day no box in the
+# field can still be in the old shape.
+# ⚠️ NO MIGRATION (s41's precedent, "I can manually fix my boxes"): nothing here
+# moves a byte, and nothing offers to delete one.
+# ⚠️ ONE ROW PER LABEL, NOT PER UPPER. comfyui has two uppers under `program` and
+# only the venv arrived from `pcache`; retired_upper_entry intersects this map
+# with what is ACTUALLY on the old root, so a custom_nodes dir that was never
+# there matches nothing and the row costs nothing.
+declare -A OVERLAY_UPPER_WAS=(
+  [program]="pcache"
 )
 
 # OPTIONAL /opt/models bind point (OPTIONAL row; finetuning has none).
@@ -182,15 +224,15 @@ declare -A BOX_HAS_MODELS=(
   [comfyui]=1 [llama]=1 [vllm]=1 [ds4]=1 [finetuning]=0
 )
 
-# The box's SETTINGS FILE, written onto /opt/data by THIS INSTALLER when it is
+# The box's SETTINGS FILE, written onto /opt/config by THIS INSTALLER when it is
 # absent — before the box has ever started (s77) — and owned by the user from the
-# moment it exists. ⚠️ The image still carries the same template and still seeds
-# it `if_missing`, which is why landing the installer's write first was safe: the
-# seeder finds the file present and skips. This is the file the five
-# serve settings live in, so this map is what the installer writes through — it
-# MIRRORS `CFG_FILE` in each target's baked build-spec (/opt/data/<box>.cfg) and
-# has to keep mirroring it. The name follows the BOX; the settings inside it
-# follow the APPLICATION (see BOX_APP).
+# moment it exists. This is the file the five serve settings live in, so this map
+# is what the installer writes through — it MIRRORS `CFG_FILE` in each target's
+# baked build-spec (/opt/config/<box>.cfg) and has to keep mirroring it.
+# 🚨 THE NAME FOLLOWS THE BOX; THE SETTINGS INSIDE IT FOLLOW THE APPLICATION (see
+# BOX_APP) — and that is not merely a convention any more: droste::box_name
+# derives the box's own name from CFG_FILE's basename, so a box whose file were
+# named for its application would silently rename its two log files.
 declare -A BOX_CFG=(
   [comfyui]="comfyui.cfg"
   [llama]="llama.cfg"
@@ -225,19 +267,24 @@ declare -A BOX_APP=(
 # what each prompted bind actually holds.
 # shellcheck disable=SC2034
 declare -A BIND_DESC=(
-  [data]="venv overlay upper, caches, seeded config"
+  [config]="the settings files you edit - nothing gets these back"
+  [program]="the venv + custom-node overlay uppers, model tree, logs"
+  [pcache]="scratch, slots, kv-disk, the per-box compute-cache fallback"
+  [user]="your saved ComfyUI workflows + its own UI settings"
   [input]="source files you feed ComfyUI"
   [output]="generated images/videos"
   [workspace]="notebooks + trained adapters - your work"
 )
 
-# The ONE pre-first-use action (dashboard Notes column; @DATA@ substituted).
+# The ONE pre-first-use action (dashboard Notes column). TWO placeholders since
+# s79, because the two roots they name are two different questions: @CONFIG@ is
+# where the user goes to TYPE something, @PROGRAM@ where the box WROTE something.
 declare -A BOX_NOTE=(
   [comfyui]=""
-  [llama]="Model: @DATA@/llama.cfg"
-  [vllm]="Model: @DATA@/vllm_config.yaml"
-  [ds4]="Model: @DATA@/ds4.cfg"
-  [finetuning]="Token: @DATA@/.droste-serve.log (grep token=)"
+  [llama]="Model: @CONFIG@/llama.cfg"
+  [vllm]="Model: @CONFIG@/vllm_config.yaml"
+  [ds4]="Model: @CONFIG@/ds4.cfg"
+  [finetuning]="Token: @PROGRAM@/logs/finetuning-serve.log (grep token=)"
 )
 
 IMAGE_PREFIX="ghcr.io/doctorjei/droste-"   # + <box> + "-halo:" + tag
@@ -376,7 +423,7 @@ declare -A BOX_HEALTH_START=(
 STOP_TIMEOUT=20
 
 # ── Copy-mode size + fuse speed constants ────────────────────────────────────
-# Rough size of the baked content copy-mode would duplicate onto /opt/data
+# Rough size of the baked content copy-mode would duplicate onto /opt/program-cache
 # (mostly the venv; torch-stack boxes are multi-GB, llama/ds4 are compiled
 # binaries with a small venv). TODO(Jei-tune): replace with measured numbers
 # from `podman image inspect` / du on a real host; same for the fuse ballpark.

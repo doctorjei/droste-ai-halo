@@ -138,7 +138,7 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches ComfyUI with DROSTE_COMFYUI_PORT from
-# /opt/data/comfyui.cfg, so a baked-in number in the text below (and in
+# /opt/config/comfyui.cfg, so a baked-in number in the text below (and in
 # start_comfy_ui) would be wrong for every box that changed it.
 # 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
 # droste-owned server.env, which was safe to source; they now live in the USER's
@@ -164,7 +164,7 @@ PY
 # Deriving it means the two cannot disagree. ⚠️ If the grep fails the value stays EMPTY
 # and the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/config/comfyui.cfg}" pv=""
   def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
         /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
@@ -266,7 +266,7 @@ serve_addr() {
 # assignment runs after the substitution and silences nothing), and the library's
 # serve:: namespace left in there rather than in a user's interactive shell.
 serve_host() {
-  local h file="${DROSTE_SERVE_ENV:-/opt/data/comfyui.cfg}"
+  local h file="${DROSTE_SERVE_ENV:-/opt/config/comfyui.cfg}"
   [ -f "$file" ] || { printf '0.0.0.0\n'; return 0; }
   [ -r "$file" ] || return 1
   h=$(
@@ -352,14 +352,14 @@ printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'ComfyUI server: http://%s:%s\n' "$SERVE_ADDR" "$SERVE_PORT"
 if serve_running >/dev/null; then
   printf '  - ALREADY SERVING on port %s. Stop it with: server_stop\n' "$SERVE_PORT"
-  printf '    Logs: tail -f /opt/data/.droste-serve.log\n'
+  printf '    Logs: tail -f /opt/program/logs/comfyui-serve.log\n'
 else
   printf '  - Not serving right now → start it with: server_start\n'
 fi
 printf '  - server_start · server_stop · server_restart · server_status\n'
 printf '    These act on the SERVER, not the box. A stop lasts until the box\n'
 printf '    restarts; for a permanent change set DROSTE_COMFYUI_STARTUP_ENABLED\n'
-printf '    in /opt/data/comfyui.cfg.\n'
+printf '    in /opt/config/comfyui.cfg.\n'
 echo
 printf 'Model downloaders (shared HF cache; scanner links them in at start):\n'
 printf '  get_wan22.sh · get_qwen_image.sh · get_hunyuan15.sh · get_ltx2.sh\n\n'
@@ -443,7 +443,7 @@ service_argv() {
     comfyui_argv >/dev/null || exit 1
     # ⚠️ THE MODEL-PATHS CONFIG IS DROPPED WHEN ITS FILE IS ABSENT, and that guard is
     # older than this function: the file is seeded by the resolver, so "plain toolbox
-    # has no /opt/data/extra_model_paths.yaml, and ComfyUI's unguarded open() would
+    # has no /opt/config/extra_model_paths.yaml, and ComfyUI's unguarded open() would
     # crash on the missing file." The SERVICE lane never meets that case (the resolver
     # seeds the file before anything builds an argv); this lane can, so the guard
     # stays — but the flag and the path are READ FROM THE SPEC now instead of typed.
@@ -485,11 +485,11 @@ start_comfy_ui() {
     read -r pid port <<<"$state"
     printf 'ComfyUI is ALREADY RUNNING (pid %s) on port %s → http://%s:%s\n' \
       "$pid" "$port" "$(serve_addr)" "$port"
-    printf '  logs: tail -f /opt/data/.droste-serve.log\n\n'
+    printf '  logs: tail -f /opt/program/logs/comfyui-serve.log\n\n'
     printf 'To run one here in the foreground instead, stop the server first:\n'
     printf '  server_stop\n'
     printf 'That lasts until the box restarts. For a permanent change, set\n'
-    printf 'DROSTE_COMFYUI_STARTUP_ENABLED=no in /opt/data/comfyui.cfg.\n'
+    printf 'DROSTE_COMFYUI_STARTUP_ENABLED=no in /opt/config/comfyui.cfg.\n'
     return 1
   fi
   # REFUSE rather than bind wider than asked (Jei, s60). A DROSTE_COMFYUI_HOST we
@@ -504,7 +504,7 @@ start_comfy_ui() {
   # because it names the LIKELIEST mistake in the user's own terms; the generic
   # refusal further down would only be able to say "something in the file".
   if ! serve_host >/dev/null; then
-    printf 'NOT STARTING: DROSTE_COMFYUI_HOST in /opt/data/comfyui.cfg cannot be used\n'
+    printf 'NOT STARTING: DROSTE_COMFYUI_HOST in /opt/config/comfyui.cfg cannot be used\n'
     printf 'as a bind address, and this shell will not pick a wider one for you.\n'
     printf '  - put an IPv4 literal there (e.g. 127.0.0.1), or\n'
     printf '  - delete the line to bind 0.0.0.0, the default.\n'
@@ -522,7 +522,7 @@ start_comfy_ui() {
   local argv=()
   mapfile -d '' -t argv < <(service_argv)
   if [ "${#argv[@]}" -eq 0 ]; then
-    printf 'NOT STARTING: the settings in /opt/data/comfyui.cfg could not be turned\n'
+    printf 'NOT STARTING: the settings in /opt/config/comfyui.cfg could not be turned\n'
     printf 'into a command line, so there is nothing here that is safe to run.\n'
     printf 'server_status says what is wrong, in the same words the server uses.\n'
     return 1

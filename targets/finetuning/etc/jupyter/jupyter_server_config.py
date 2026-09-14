@@ -1,8 +1,9 @@
 # jupyter_server_config.py — DROSTE'S BAKED TRAIT DEFAULTS. Installed by
 # targets/Container.finetuning to /etc/jupyter/jupyter_server_config.py.
 #
-# ⭐ THIS IS NOT THE USER'S FILE. The user's file is /opt/data/jupyter_server_config.py,
-# seeded once from targets/finetuning/templates/jupyter_server_config.py. This one is
+# ⭐ THIS IS NOT THE USER'S FILE. The user's file is /opt/config/jupyter_server_config.py,
+# written once by the installer from targets/finetuning/templates/jupyter_server_config.py.
+# This one is
 # BAKED INTO THE IMAGE and the user never sees it in their data directory.
 #
 # ⭐ WHY BAKED AND NOT SEEDED (N1a, the trait half). A seeded file is written
@@ -33,7 +34,7 @@
 # leaves the search path entirely when platform dirs are on, and nothing in the image can
 # put it back: a local override placed there stops being read, silently. So the promise in
 # the paragraph above is CONDITIONAL on that setting being off. With it on, an override
-# that must beat droste belongs in the user's JUPYTER_CONFIG_DIR file (/opt/data), which
+# that must beat droste belongs in the user's JUPYTER_CONFIG_DIR file (/opt/config), which
 # loads last on either path.
 #
 # 🚨 BAKING CONVERTS A TRACKING DEFAULT INTO A PINNED ONE. Every value below equals the

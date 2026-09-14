@@ -212,8 +212,8 @@ hydrate_keep() {  # box
   CFG_HSTSV[$box]=${EXD_HSTSV[$box]:-}
   CFG_MODE[$box]=${EXD_MODE[$box]:-}
   CFG_FS[$box]=${CFG_FS[$box]:-?}
-  [[ -n "${EXD_PATH["$box:data"]:-}" ]] && PATHS["$box:data"]=${EXD_PATH["$box:data"]}
-  # The program-cache root gets the same treatment as the data one: it is not a
+  [[ -n "${EXD_PATH["$box:program"]:-}" ]] && PATHS["$box:program"]=${EXD_PATH["$box:program"]}
+  # The program-cache root gets the same treatment as the program one: it is not a
   # BOX_EXTRA_BIND (emit_ini writes its bind on its own), so the loop below
   # would never reach it, and a kept box that cannot name its cache dir cannot
   # be described in NOTES/the dashboard. An ini from before s38 records none,
@@ -268,10 +268,11 @@ seed_sources() {
 #
 # The program cache root puts the box directly under the base (<base>/<box> IS
 # the cache dir); every data-family bind is a leaf beside its siblings
-# (<base>/<box>/<program|input|output|workspace>).
+# (<base>/<box>/<config|program|user|input|output|workspace>), and since s79 the
+# leaf's directory name IS its label.
 #
-# READ TOLERANTLY, WRITE STRICTLY: a data path recorded as <base>/<box> is the
-# pre-s41 layout, from before the data dir became a `program` sibling of the
+# READ TOLERANTLY, WRITE STRICTLY: a program path recorded as <base>/<box> is the
+# pre-s41 layout, from before the program dir became a `program` sibling of the
 # others. It still names a base, and saying otherwise would report "these do not
 # share a common base" about a set of paths that plainly do. The path is not
 # rewritten for it — an old box keeps what its ini says until its owner moves
@@ -282,9 +283,9 @@ shape_base() {  # box leaf path → base | "-"
     if [[ $p == */"$box" ]]; then printf '%s' "${p%/"$box"}"; else printf '-'; fi
     return 0
   fi
-  d=$(leaf_dir "$leaf")
+  d=$leaf
   if [[ $p == */"$box"/"$d" ]]; then printf '%s' "${p%/"$box"/"$d"}"; return 0; fi
-  if [[ $leaf == data && $p == */"$box" ]]; then printf '%s' "${p%/"$box"}"; return 0; fi
+  if [[ $leaf == program && $p == */"$box" ]]; then printf '%s' "${p%/"$box"}"; return 0; fi
   printf '-'
   return 0
 }
@@ -312,33 +313,33 @@ family_base() {   # leaf...
 # them, not the reader's.
 leaf_word() {  # label → display word
   case "$1" in
-    pcache) printf 'program cache' ;;
-    data)   printf 'program data' ;;
-    *)      printf '%s' "$1" ;;
+    pcache)  printf 'program cache' ;;
+    program) printf 'program data' ;;
+    config)  printf 'configuration' ;;
+    user)    printf 'saved workflows' ;;
+    *)       printf '%s' "$1" ;;
   esac
 }
 
-# The DIRECTORY a bind takes under the box's own dir. The data bind is spelled
-# `program` there — short for "program data", which is what its prompt has
-# always called it ("Path for ComfyUI program data").
+# 🗑️ `leaf_dir` LIVED HERE AND WAS DELETED IN s79. It translated exactly one
+# label — `data` into a `program` directory — while both of that label's
+# user-facing strings already read "Program Data". The label was renamed to
+# `program` instead, so the leaf IS the label and there is nothing to translate.
+# ⭐ RULED (Jei, s41): THE NESTING WAS AN OVERSIGHT, and that layout is unchanged.
+# The box's data dir used to BE <base>/<box>, with input/output living INSIDE it;
+# they are siblings now, under a box directory that is not itself a bind:
 #
-# ⭐ RULED (Jei, s41): THE NESTING WAS AN OVERSIGHT. The box's data dir used to
-# BE <base>/<box>, with input/output living INSIDE it; the three are siblings
-# now, under a box directory that is not itself a bind:
-#
-#     <data base>/<box>/program   → /opt/data
+#     <data base>/<box>/config    → /opt/config      (s79)
+#     <data base>/<box>/program   → /opt/program     (was /opt/data)
+#     <data base>/<box>/user      → /opt/ComfyUI/user (s79, comfyui)
 #     <data base>/<box>/input     → /opt/ComfyUI/input
 #     <data base>/<box>/output    → /opt/ComfyUI/output
 #
-# Host side only — no container path changes. NO MIGRATION: existing boxes keep
-# the paths their ini records (Jei: "I can manually fix my boxes"), and only new
-# placements take the new shape.
-leaf_dir() {  # label → directory name
-  case "$1" in
-    data) printf 'program' ;;
-    *)    printf '%s' "$1" ;;
-  esac
-}
+# NO MIGRATION for the leaf layout: existing boxes keep the paths their ini
+# records (Jei: "I can manually fix my boxes"), and only new placements take the
+# new shape. ⚠️ THE CONFIG SPLIT IS NOT COVERED BY THAT, because the CONTAINER
+# side moved too and an old box's config files sit where the box can no longer
+# read them — see report_retired_configs and cfg_write_seeds' retired-path guard.
 
 # What EXPLAINS a "-" from family_base, in terms the reader can act on. TWO
 # different things produce that "-", and they do not have the same answer:
@@ -495,14 +496,14 @@ seed_globals() {
   # default has to MATCH THE FILE (he refused a "(recorded)" marker: the value
   # itself has to be right). Saying yes here now lands the family where most of
   # it already is, and the outliers meet the move question in their own section.
-  base=$(family_base data input output workspace)
+  base=$(family_base program config user input output workspace)
   if [[ -n $base ]]; then
     if [[ $base == "-" ]]; then
       SEED_DATA_Q=N
-      SEED_NOBASE_DATA=$(family_example data input output workspace)
+      SEED_NOBASE_DATA=$(family_example program config user input output workspace)
       # `if`, not `[[ … ]] &&`: a false test as the last command of a branch is
       # the status of the whole compound, and this script runs under `set -e`.
-      base=$(family_dominant data input output workspace)
+      base=$(family_dominant program config user input output workspace)
       if [[ -n $base ]]; then SEED_DATA_BASE=$base; fi
     else
       SEED_DATA_BASE=$base

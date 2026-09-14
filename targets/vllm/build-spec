@@ -8,8 +8,8 @@
 # vLLM serves the model named in the config file. $DROSTE_VLLM_CONFIG is a deliberate
 # env knob (a config-file SELECTOR with a smart default — not a raw path the user must
 # know); $DROSTE_VLLM_EXTRA_ARGS (folded in by PRE_LAUNCH below) is the other. Default =
-# the persisted /opt/data copy that templates.yaml seeds (if_missing) from the shipped
-# template. User may point it elsewhere.
+# the persisted /opt/config copy the installer writes (templates.yaml if_missing) from
+# the shipped template. User may point it elsewhere.
 #
 # ⚠️ IT IS OURS, NOT UPSTREAM'S — it is not in vllm/envs.py, and argparse_utils.py
 # reads only the `--config` FLAG. So it carries the DROSTE_ prefix like every other
@@ -51,7 +51,7 @@
 # ⭐ THE DEFAULT IS A NAMED CONSTANT because it has TWO users: the `:=` here, and the
 # blank guard in PRE_LAUNCH that catches the same setting arriving from the user's file
 # AFTER this line has already run. Two spellings of one path is how they drift apart.
-VLLM_CONFIG_DEFAULT=/opt/data/vllm_config.yaml
+VLLM_CONFIG_DEFAULT=/opt/config/vllm_config.yaml
 : "${DROSTE_VLLM_CONFIG:=$VLLM_CONFIG_DEFAULT}"
 export DROSTE_VLLM_CONFIG
 # 🚨 `--host 0.0.0.0` IS A DROSTE DEFAULT, NOT A CONSTANT, AND IT WAS THE ONE TOKEN THIS
@@ -136,7 +136,9 @@ HEALTH_ACCEPT="ok"
 # Every `VLLM_FOO=bar` a user uncomments is exported by the resolver itself. Only
 # the DROSTE_VLLM_* names below need translating — they are the settings where
 # passing the user's word through unprocessed would be wrong or fatal.
-CFG_FILE="/opt/data/vllm.cfg"
+# ⚠️ THE BASENAME IS THE BOX'S NAME, BY CONTRACT — droste::box_name reads it out of
+# this row to name the box's two logs. See base/resolve/build-spec.example.
+CFG_FILE="/opt/config/vllm.cfg"
 
 # ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
 # The five SERVE settings live in vllm.cfg, under the prefix below:
@@ -188,10 +190,13 @@ SERVE_TLS_KEY_FLAG=--ssl-keyfile
 # ── OVERLAYS (optional) — <upper>:<lower> ────────────────────────────────────
 # Overlay the persisted upper over the WHOLE baked venv (captures bin/ console
 # scripts too and avoids pinning a pythonX.Y path) so user pip installs persist
-# without shadowing the baked torch/vllm stack. The upper is CACHE class (a pip
-# install is re-runnable) → /opt/program-cache, which the installer may empty.
+# without shadowing the baked torch/vllm stack. The upper is PROGRAM class — a pip
+# install is re-runnable at a COST, which is not the same as free — → /opt/program,
+# which the installer never empties and never offers to.
+# ⚠️ IT WAS ON /opt/program-cache UNTIL s79, i.e. on the one root the installer
+# offers to wipe. It cost a working box. Do not move it back.
 OVERLAYS=(
-    "/opt/program-cache/venv:/opt/venv"
+    "/opt/program/venv:/opt/venv"
 )
 
 # ── SURFACES (optional) — <src>:<dest> ───────────────────────────────────────
@@ -1371,7 +1376,7 @@ vllm_pre_launch() {
     # at all. A non-empty value still wins, exactly as before; only the empty case
     # changes, and an empty case was never a value.
     if [ -n "${DROSTE_VLLM_CONFIG+set}" ] && [ -z "$DROSTE_VLLM_CONFIG" ]; then
-        DROSTE_VLLM_CONFIG=${VLLM_CONFIG_DEFAULT:-/opt/data/vllm_config.yaml}
+        DROSTE_VLLM_CONFIG=${VLLM_CONFIG_DEFAULT:-/opt/config/vllm_config.yaml}
         export DROSTE_VLLM_CONFIG
         serve::err "DROSTE_VLLM_CONFIG is set but empty in $CFG_FILE, and vLLM cannot be started without a config file — using $DROSTE_VLLM_CONFIG instead. Give it a path or comment the line out, and restart the box."
     fi

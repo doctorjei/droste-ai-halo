@@ -5,4 +5,4 @@
 # written iff it is absent, never overwritten. apply_templates.py PARSES this section
 # and does not act on it: the installer is the single writer.
 if_missing:
-  ds4.cfg: /opt/data/ds4.cfg
+  ds4.cfg: /opt/config/ds4.cfg

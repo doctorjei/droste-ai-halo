@@ -233,19 +233,19 @@ RUN chmod 0644 /etc/profile.d/*.sh \
 RUN /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/opt/venv
 
 # Droste's OWN Jupyter trait defaults, BAKED (N1a, the trait half).
-# ⭐ BAKED, NOT SEEDED. templates.yaml seeds the user's jupyter_server_config.py to
-# /opt/data `if_missing`, so a default living there reaches NEW boxes only. This file
-# ships with the image and therefore reaches EXISTING ones on the next pull, while still
-# LOSING to the user's file: jupyter_config_path() returns directories in descending
-# priority and traitlets loads them backwards (application.py:904), so the system dirs
-# load first and /opt/data loads last.
+# ⭐ BAKED, NOT SEEDED. templates.yaml names /opt/config as the user's
+# jupyter_server_config.py dest `if_missing`, so a default living there reaches NEW boxes
+# only. This file ships with the image and therefore reaches EXISTING ones on the next
+# pull, while still LOSING to the user's file: jupyter_config_path() returns directories
+# in descending priority and traitlets loads them backwards (application.py:904), so the
+# system dirs load first and /opt/config loads last.
 # 📐 /etc/jupyter, the LOWER-priority of the two Linux system dirs
 # (SYSTEM_CONFIG_PATH = ["/usr/local/etc/jupyter", "/etc/jupyter"], jupyter_core/paths.py:
 # 358-362) — /usr/local/etc/jupyter stays free for a local override that must beat droste,
 # WHILE DROSTE_JUPYTER_PLATFORM_DIRS IS OFF, WHICH IS THE DEFAULT. With it on, that
 # directory is off the search path altogether and the symlink below cannot bring it back:
 # the symlink restores DROSTE's own defaults, not the override lane. An override that must
-# beat droste then belongs in the user's JUPYTER_CONFIG_DIR file (/opt/data), which loads
+# beat droste then belongs in the user's JUPYTER_CONFIG_DIR file (/opt/config), which loads
 # last on either path.
 COPY etc/jupyter/jupyter_server_config.py /etc/jupyter/jupyter_server_config.py
 # 🚨 AND THE SECOND PATH, BECAUSE A DOCUMENTED KNOB MOVES THE FIRST ONE OUT FROM UNDER US.

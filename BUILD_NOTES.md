@@ -129,7 +129,8 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   "2026-08-14 — one container, two doors" below.
 - `droste-entrypoint.sh` — the server-lane ENTRYPOINT for every port. Sources the
   library + the port's `/opt/resources/build-spec`, runs `resolve::apply_spec` in
-  the fixed design order (ensure `/opt/data` → SURFACES/OVERLAYS/CACHES → CRITICAL
+  the fixed design order (ensure `/opt/config` + `/opt/program` + `/opt/program-cache`
+  → SURFACES/OVERLAYS/CACHES → CRITICAL
   → OPTIONAL → templates → CFG_FILE → PRE_LAUNCH), then execs SERVICE — unless the
   user passed a command, which wins (`podman run IMAGE bash` still works).
 - `droste-init-hook.sh` — the distrobox-lane counterpart, invoked from
@@ -143,7 +144,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   `serve::exec_service` (server lane: the same foreground `exec "${SERVICE[@]}"`
   as always) and `serve::maybe_launch` (distrobox lane: the "server door" of the
   merged one-container shape). maybe_launch reads the box's OWN config surface,
-  `/opt/data/<box>.cfg` (the path is the build-spec's `CFG_FILE` row), for the five
+  `/opt/config/<box>.cfg` (the path is the build-spec's `CFG_FILE` row), for the five
   serve settings: `DROSTE_<APP>_{STARTUP_ENABLED,HOST,PORT,TLS_CERT,TLS_KEY}`, the
   prefix coming from the spec's `SERVE_CFG_PREFIX` row and naming the APPLICATION,
   not the box (`DROSTE_JUPYTER_*` on finetuning). `STARTUP_ENABLED` takes
@@ -163,8 +164,10 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   The `status` field (`running` | `refused` | `failed`) is rewritten by every
   outcome of every start — including the refusals that launch nothing — and is
   what the healthcheck reads as PROOF OF OWNERSHIP; a refusal is also appended to
-  `.droste-serve.log` (created at launch, so a start that never launched used to
-  leave no log at all, which reads as "nothing ran").
+  the serve log, `<program dir>/logs/<box>-serve.log` (created at launch, so a start
+  that never launched used to leave no log at all, which reads as "nothing ran").
+  Its name is DERIVED from the spec's `CFG_FILE` basename (`droste::box_name`), and it
+  lost its leading dot in 2026-09-14.
   **A setting can REFUSE the start outright**: no usable `PORT` on a box asked to
   serve at startup, and — ruled s60 — a `HOST` that is not an IPv4 literal or a
   TLS pair with only one half set. Those last two do NOT fall back: a fallback is
@@ -212,7 +215,7 @@ into servers-by-default with ONE shared runtime mechanism. The moving parts:
   so the watcher wants to be looking already. The daemon holds ONE private fd (9), opened
   `>>` on `/proc/1/fd/2` while still root — an open file description is not
   re-permission-checked after the uid change, and that stream IS `podman logs <box>`,
-  which is the ruled output surface. **Not the service log** (`.droste-serve.log`): the
+  which is the ruled output surface. **Not the service log** (`<box>-serve.log`): the
   container log is the only stream that exists before the service does, which is the whole
   point — the healthcheck returns early for a non-serving box, so a long first download is
   exactly the window in which nothing else can speak.
@@ -331,15 +334,20 @@ the shared `/opt/caches` volume; see the 2026-07-09 shared compute-cache
 entry). There is deliberately no DEFAULTS row — ALL content
 seeding is owned by templates.yaml. Contract doc: `base/resolve/build-spec.example`.
 
-**Which root a row uses IS its class declaration (2026-08-15).** There are
-three container-side roots, and the prefix of a src/upper carries the whole
-classification, so nothing downstream has to guess from a path's contents:
-`/opt/data` = per-box PERSISTENT, `/opt/program-cache` = per-box PROGRAM CACHE
-(re-obtainable, and the one root the installer may empty whole), `/opt/caches`
-= the SHARED compute caches, which no spec writes to directly — it is reached
-only by the CACHES rewrite. The single exception to the table is a `.work`
-dir, which follows its own upper's root instead (kernel: workdir and upperdir
-must share a filesystem). See the 2026-08-15 storage-taxonomy entry below.
+**Which root a row uses IS its class declaration (2026-08-15, amended
+2026-09-14).** There are FOUR container-side roots, and the prefix of a src/upper
+carries the whole classification, so nothing downstream has to guess from a
+path's contents. The question that separates the three per-box roots is *what
+gets it back*: `/opt/config` = the CONFIG SURFACE (nothing gets it back; no spec
+row ever places anything here — the INSTALLER writes those files, and a spec only
+NAMES one via `CFG_FILE`), `/opt/program` = per-box PROGRAM DATA (a reinstall or
+a re-run gets it back, at a cost — both overlay uppers, the model tree, `logs/`),
+`/opt/program-cache` = per-box PROGRAM CACHE (free regen, and the one root the
+installer may empty whole), `/opt/caches` = the SHARED compute caches, which no
+spec writes to directly — it is reached only by the CACHES rewrite. The single
+exception to the table is a `.work` dir, which follows its own upper's root
+instead (kernel: workdir and upperdir must share a filesystem). See the
+2026-08-15 storage-taxonomy entry below and its 2026-09-14 amendment.
 
 ### Templates (first-run seeding)
 🚨 **THE INSTALLER IS THE SINGLE WRITER OF EVERY CONFIG FILE.** `droste-setup.sh`
@@ -508,7 +516,7 @@ prefix rules.
   `clean-cache` verb was REMOVED — it would `rm -rf` the SHARED store. The
   benchmark helpers keep their private port-8000 assumption (they drive their own
   private instance). PRE_LAUNCH runs the model scanner (`model_scanner.py sync`)
-  to refresh `/opt/data/model-tree`; a scanner failure logs and continues (stale
+  to refresh `/opt/program/model-tree`; a scanner failure logs and continues (stale
   tree, never a blocked server).
 - **finetuning** — `chmod -R a+rwX /opt` RETIRED: the venv overlay + the user's
   workspace bind provide all needed writability. The multi-node worker's CWD vs
@@ -933,6 +941,73 @@ data path and hands the box a factory program-cache path), so a modify run is
 not a re-typing exercise. The one sharp edge is the compute-cache prompt, whose
 default seeds from the old ini's `/opt/caches` host path — which under the new
 names is the program-cache ROOT, and wants re-pointing at `compute-caches`.
+
+### 2026-09-14 — the taxonomy gets its third tier (config out, the venv upper in)
+
+The 2026-08-15 split gave the box two per-box roots and asked one question of
+them: *is this re-obtainable?* That question has three answers, not two, and the
+middle one is where the damage was. The venv overlay upper — every `pip install`
+a user does inside the box — sat on `/opt/program-cache`, the ONE root
+`droste-setup.sh` offers to empty, with a default of Y. Emptying it is not free:
+it costs a reinstall. That prompt cost a working box.
+
+**The question is now "what GETS IT BACK", and it has three answers:**
+
+- **`/opt/config`** (`~/droste/data/<box>/config`) — NOTHING gets it back. The
+  box's `<box>.cfg` and its `.example`, vllm's `vllm_config.yaml`, finetuning's
+  `jupyter_server_config.py`, comfyui's `extra_model_paths.yaml`. Written once
+  when absent, never overwritten, never deleted. No `VOLUME` directive.
+- **`/opt/program`** (`~/droste/data/<box>/program`, and the SAME host directory
+  `/opt/data` was bound to — only the container-side name moved) — a REINSTALL or
+  a RE-RUN gets it back. BOTH overlay uppers (venv and comfyui `custom_nodes`),
+  the model tree and registry, `datasets/`, ds4's `internal/` and `cockpit/`, and
+  the new `logs/`. Nothing we ship ever empties it or offers to.
+- **`/opt/program-cache`** (`~/droste/caches/<box>`) — FREE regen. `tmp`, llama's
+  slots, ds4's kv-disk, the `state/` dir, the overlay `.work` dirs, the compute
+  fallback. The clear-prompt's promise is finally true as written, which is what
+  lets it keep its default of Y.
+
+⭐ **NO FOURTH ROOT WAS BUILT.** The first design of this added one (`store/`) and
+moved the venv onto it. The `program` leaf already WAS the middle tier — the few
+things in it that were dominant-tier were the config files and comfyui's `user/`
+— so moving those OUT was the cheaper and truer change.
+
+**Two things stopped being what they were.** comfyui's `user/` was a SURFACE out
+of the program bind; a surface is a directory the installer cannot offer the user
+a path for, and saved workflows deserve one, so it is a BIND now (and CRITICAL,
+beside `input`/`output`). And the two logs left their dotfile names: the serve log
+is `<program>/logs/<box>-serve.log` and the resolver's is
+`<program>/logs/<box>-resolve.log`. Both names are DERIVED — `droste::box_name`
+reads the box's own name out of the build-spec's `CFG_FILE` basename, which is
+the one place that fact is already written down.
+
+**Migration — DETECT AND REPORT, MOVE NOTHING** (s41's standing precedent). Two
+reports, and they are not the same kind of problem:
+
+- The venv upper at its retired location. `OVERLAY_UPPER_WAS` maps the label, the
+  wipe DERIVES its exclusion from it (so a retired upper is never deleted and
+  never offered for deletion), and the run says where the installs are. The box
+  comes up either way — the image's own venv is the overlay's LOWER.
+- 🚨 **The config files, which is the half that can hurt.** Their CONTAINER path
+  moved, so the box cannot read the old ones. Writing a fresh default at the new
+  path would leave the user's tuned file orphaned, the box serving stock defaults,
+  and the absent-config alert SILENT — because a file would now exist. So
+  `cfg_write_seeds` REFUSES to write a seed whose retired counterpart is on disk,
+  names both paths and the `mv`, and `report_retired_configs` says the same thing
+  in the interview before anything has been created. The box then starts with no
+  config, which `serve::read_config` already reports by name. **A loud absence
+  beats a quiet wrong answer.**
+
+⚠️ **THE HOST SIDE OF THE PROGRAM BIND DID NOT MOVE**, which is why a re-run of an
+existing box is not a re-typing exercise: `dest_to_label` reads BOTH `/opt/data`
+and `/opt/program` as `program`, and the host path an old ini records is exactly
+the directory this layout calls `program`. `parse_box_cfg` also READS the retired
+config path when the current one is empty, so the user's own port and box-start
+answers still seed their prompts.
+
+📐 The installer's internal label for that bind went `data` → `program` in the
+same change. Both of its user-facing strings already read "Program Data", so the
+rename deleted a translation (`leaf_dir`) rather than adding one.
 
 ### 2026-08-17 — the spelling the user typed (and the ini's two path lines)
 
@@ -1493,9 +1568,11 @@ exactly once and compiled artifacts ABI-match the runtime libs shipped here.
   `ROCM_PATH` from the stable `/opt/rocm` symlink, then the HIP/PATH/LD env for
   interactive shells.
 - Bakes the shared runtime contract: `/opt/resources/resolve/` (resolver +
-  entrypoint + init hook + templates applier, on PATH) and `VOLUME /opt/data`
-  (auto-anonymous-volume when unbound; the resolver warns). See "Runtime
-  contract" above.
+  entrypoint + init hook + templates applier, on PATH) and `VOLUME /opt/program`
+  (auto-anonymous-volume when unbound; the resolver warns). There is deliberately
+  NO `VOLUME /opt/config` beside it: an anonymous volume under the config surface
+  is exactly the silent appear-and-vanish this root exists to prevent. See
+  "Runtime contract" above.
 - No `CMD` and no base `ENTRYPOINT` (ports opt in to `droste-entrypoint.sh`).
 
 ### base/Container.build
@@ -2151,8 +2228,9 @@ contract (bucket B).
   `/opt/resources/scripts/` (PATH + PYTHONPATH); API-format workflows at
   `/opt/resources/api_workflows/`; `build-spec` + `templates/` (demo inputs, UI
   workflow set, extra_model_paths.yaml, /opt/models marker body) baked under
-  `/opt/resources/`. The baked `user/` ships EMPTY (surfaced from
-  `/opt/data/user`, seeded if_empty).
+  `/opt/resources/`. The baked `user/` ships EMPTY (a BIND since 2026-09-14 —
+  it was surfaced from the program volume until then — and still seeded
+  if_empty after the mount).
 - Interactive login-shell wiring (see cross-cutting): adds torch/AOTriton env,
   the login banner, a PATH-last guard, and core-dump suppression; the Fedora
   `venv.sh` is intentionally NOT ported (base already writes rocm.sh).

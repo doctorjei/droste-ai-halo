@@ -11,8 +11,8 @@
 #   distrobox           — distrobox init_hooks source this lib, set DROSTE_LANE=distrobox,
 #                         and call the SAME primitives. Since lane unification the mounts
 #                         run in-box too: container-lifecycle events must never destroy
-#                         user state (custom-node installs land on /opt/data, venv installs
-#                         on /opt/program-cache, neither in the container layer). Needs
+#                         user state (custom-node installs and venv installs both land on
+#                         /opt/program, neither in the container layer). Needs
 #                         CAP_SYS_ADMIN in the box — ini:
 #                         additional_flags="--cap-add sys_admin --device /dev/fuse".
 #                         Deliberate lane DEVIATIONS, each commented at its site:
@@ -41,35 +41,54 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-common.sh"
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/droste-cfgapply.sh"
 
-# ── THREE ROOTS (storage taxonomy) ──────────────────────────────────────────
+# ── FOUR ROOTS (storage taxonomy) ───────────────────────────────────────────
 # Mount points are CLASS boundaries — what a thing IS decides where it lives, so
-# neither the installer nor a wipe has to guess from a path's contents:
-#   /opt/data          PER-BOX PERSISTENT DATA. Irreplaceable-if-lost: configs
-#                      (<box>.cfg, vllm_config.yaml), comfyui user/ +
-#                      custom_nodes upper + model-tree, ds4 sessions/ + cockpit/,
-#                      finetuning workspace, the .droste-*.log files. Backed up.
-#   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable by construction: the
-#                      venv upper, overlay .work dirs, copy-mode materializations,
-#                      per-box compute-cache fallback, tmp, llama slots, ds4
-#                      kv-disk, the state/ server dir. The installer may
-#                      empty this whole root with the user's consent; nothing here
-#                      is ever backed up, and NOTHING outside it is ever wiped.
+# neither the installer nor a wipe has to guess from a path's contents. THE
+# QUESTION THAT SEPARATES THE THREE PER-BOX ROOTS IS "WHAT GETS IT BACK?" (Jei,
+# s79): nothing, at the top; a reinstall or a re-run, in the middle; the program
+# rebuilds it unasked, at the bottom.
+#   /opt/config        PER-BOX CONFIG SURFACE, and nothing else. The most
+#                      hand-authored artifacts in the project: <box>.cfg, its
+#                      .example, vllm_config.yaml, jupyter_server_config.py,
+#                      comfyui's extra_model_paths.yaml. NOTHING gets these back.
+#                      Never wiped, never overwritten once written.
+#   /opt/program       PER-BOX PROGRAM DATA — user-CAUSED, machine-written, and
+#                      regenerable at a COST: the venv overlay upper (every in-box
+#                      `pip install`), comfyui's custom_nodes upper + model-tree +
+#                      model-registry.yaml + datasets, ds4's internal/ + cockpit/,
+#                      and logs/. A reinstall or a re-run gets this back, which is
+#                      not the same as free — NOTHING WE SHIP EVER DELETES THIS
+#                      ROOT OR OFFERS TO (ruled, s79).
+#   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable FOR FREE: overlay .work
+#                      dirs, copy-mode materializations, per-box compute-cache
+#                      fallback, tmp, llama slots, ds4 kv-disk, the state/ server
+#                      dir. The installer may empty this whole root with the
+#                      user's consent; nothing here is ever backed up, and NOTHING
+#                      outside it is ever wiped.
 #   /opt/caches        OPTIONAL SHARED compute caches ACROSS boxes (MIOpen /
 #                      Triton / torch / vLLM kernels) — see cache_bind below.
-# Host defaults are ~/droste/data/<box>, ~/droste/caches/<box> and
-# ~/droste/compute-caches respectively; any host path works, the container-side
-# names above are what the specs are written against.
+# Host defaults are ~/droste/data/<box>/config, ~/droste/data/<box>/program,
+# ~/droste/caches/<box> and ~/droste/compute-caches respectively; any host path
+# works, the container-side names above are what the specs are written against.
+# ⚠️ THE VENV UPPER WAS ON /opt/program-cache UNTIL s79 — the one root the wipe
+# reaches — and that cost a working box. A box created before the move still has
+# its owner's installs under the old path; the installer reports that and excludes
+# them from the wipe. Nothing migrates them. Do not move the upper back.
+# ⚠️ /opt/program WAS CALLED /opt/data UNTIL s79, when the config surface moved out
+# of it. The name follows what is left: the host side has spelled this leaf
+# `program` since s41, and the two now agree.
 #
 # ── Config (override via env before sourcing) ───────────────────────────────
 : "${DROSTE_LANE:=server}"
-: "${DROSTE_DATA_DIR:=/opt/data}"
+: "${DROSTE_CONFIG_DIR:=/opt/config}"   # per-box CONFIG SURFACE volume (see above)
+: "${DROSTE_PROGRAM_DIR:=/opt/program}"
 : "${DROSTE_PCACHE_DIR:=/opt/program-cache}"   # per-box PROGRAM-CACHE volume (see above)
 : "${DROSTE_CACHES_DIR:=/opt/caches}"   # optional SHARED compute-cache volume (see cache_bind)
 : "${RESOLVE_TEMPLATES_DIR:=/opt/resources/templates}"
 : "${RESOLVE_APPLY_TEMPLATES:=/opt/resources/resolve/apply_templates.py}"
 : "${DROSTE_OVERLAY_MODE:=auto}"   # auto (kernel→fuse→copy) | kernel | fuse | copy (non-auto = forced, no fallback)
 # 🚨 NO DROSTE_SERVE_ENV DEFAULT HERE, AND THAT ABSENCE IS LOAD-BEARING (s60). This
-# library used to seed it to a single literal ($DROSTE_DATA_DIR/server.env) so both
+# library used to seed it to a single literal ($DROSTE_PROGRAM_DIR/server.env) so both
 # libraries named one file. server.env is gone: the serve settings now live in the box's
 # own <box>.cfg, whose path is PER BOX and is declared by the build-spec's CFG_FILE row,
 # so droste-serve.sh is the one place that resolves it.
@@ -124,7 +143,7 @@ resolve::_mount_err_is_eperm() {
 }
 # FEATURE shape: kernel overlayfs requires the upperdir fs to support O_TMPFILE +
 # RENAME_WHITEOUT; ecryptfs/NFS/virtiofs-class filesystems under either upper-bearing
-# root (/opt/program-cache for the venv, /opt/data for custom_nodes) don't, and mount
+# root (/opt/program, which carries both the venv and custom_nodes uppers) don't, and mount
 # reports the generic "wrong fs type, bad option, bad superblock" line.
 resolve::_mount_err_is_feature() {
     local e=${RESOLVE_MOUNT_ERR,,}
@@ -164,7 +183,7 @@ resolve::_mountinfo() {
 # is_bound — lane-agnostic bind detection via ANCESTOR-WALK. A `-v` bind (server) and a
 # distrobox `volume=` bind look identical here; so does an ancestor bind (e.g. the whole
 # distrobox `$HOME`). We find the LONGEST mountinfo mount-point (field 5) that is a
-# whole-path-component prefix of <target> (so /opt/data does NOT match /opt/database):
+# whole-path-component prefix of <target> (so /opt/config does NOT match /opt/configs):
 #   longest prefix is the container rootfs "/"  → UNBOUND (nothing covers it)
 #   any deeper mount covers the path            → BOUND
 # This makes a critical path UNDER an ancestor bind (distrobox $HOME/.cache/huggingface)
@@ -189,7 +208,7 @@ resolve::is_bound() {
 }
 
 # _anon_volume — is <target> mounted on a container-runtime ANONYMOUS volume?
-# `VOLUME /opt/data` makes the runtime auto-mount one whenever the user binds
+# `VOLUME /opt/program` makes the runtime auto-mount one whenever the user binds
 # nothing, so is_bound alone can't catch a forgotten -v. Anonymous podman/docker
 # volumes materialize in the volume store as .../volumes/<64-hex-name>/_data
 # (named volumes carry the human-readable name there instead). Check the exact
@@ -318,10 +337,13 @@ resolve::_own_dirs() {
 #
 # WHAT IS LEFT TO CATCH is a HAND-MADE one. The generation that produced this
 # wholesale — a pre-merge data dir holding an entire environment at
-# $DROSTE_DATA_DIR/venv — is out of reach now that the venv upper lives on
-# $DROSTE_PCACHE_DIR, a root the installer offers to clear whenever it finds
-# stale caches in it. So this is no longer a trap with a cure to explain: it is
-# a cheap sanity check on a directory someone put an environment into by hand.
+# $DROSTE_PROGRAM_DIR/venv — has become the venv upper's OWN path since s79, so
+# this check now looks at exactly the directory that generation produced. It is
+# not a trap with a cure to explain: it is a cheap sanity check on a directory
+# someone put a whole environment into rather than a layer over one.
+# ⚠️ AND THE CURE IT NAMES IS THE ONLY ONE THERE IS: the installer's cache wipe
+# does not reach the program root, and is forbidden to offer to (ruled, s79).
+# "Empty it from the host with the box stopped" is a hand operation, deliberately.
 # ONE warning line, ungated (there is no opt-out key and no report gate), fired
 # before the mount is attempted and therefore in every overlay mode — the dir is
 # the wrong shape whether it ends up layered, fused or copied past.
@@ -355,9 +377,9 @@ resolve::_upper_is_env() {
 
 # ── Primitive: overlay (BOTH lanes since lane unification) ──────────────────
 # entry form: <upper>:<lower>  (upper = the CLASS-appropriate root, lower = baked app dir)
-# The upper's ROOT is the spec's class declaration: the venv upper lives on
-# $DROSTE_PCACHE_DIR (re-obtainable), comfyui's custom_nodes upper on
-# $DROSTE_DATA_DIR (the user's own node picks and edits).
+# The upper's ROOT is the spec's class declaration: BOTH uppers live on
+# $DROSTE_PROGRAM_DIR since s79 — the venv upper (re-obtainable by REINSTALLING
+# it) and comfyui's custom_nodes upper (the user's own node picks and edits).
 # Mounts a writable layer OVER the baked lower. Strategy = DROSTE_OVERLAY_MODE:
 #   kernel — mount -t overlay: lowerdir=<lower>, upperdir=<upper>,
 #            workdir=<dirname upper>/.work/<basename upper>.
@@ -540,8 +562,8 @@ resolve::_overlay_copy() {
 # ── Primitive: surface (plain bind, BOTH lanes since lane unification) ──────
 # entry form: <src>:<dest>  (src = volume side, dest = app-side path)
 # Binds a volume subpath onto the path the tool expects; creates src if absent. The
-# src's ROOT carries the class, as everywhere else: state surfaces (comfyui user/,
-# model-tree, ds4 ~/.ds4) come off $DROSTE_DATA_DIR, scratch ones (a tmp dir) off
+# src's ROOT carries the class, as everywhere else: state surfaces (model-tree,
+# datasets, ds4 ~/.ds4) come off $DROSTE_PROGRAM_DIR, scratch ones (a tmp dir) off
 # $DROSTE_PCACHE_DIR. The primitive itself never rewrites a src — see cache_bind.
 # Distrobox deviations: /root/ dest remap (_lane_dest), box-user chown (_mkuserdir),
 # exact-mountpoint re-entry skip (_is_mountpoint) — rationale at each helper.
@@ -719,13 +741,39 @@ resolve::optional() {
     fi
 }
 
-# ── /opt/data handling (both lanes) ─────────────────────────────────────────
-# The Containerfile-level `VOLUME /opt/data` gives auto-anonymous-volume behavior; from
+# ── /opt/config handling (both lanes) ───────────────────────────────────────
+# The per-box CONFIG SURFACE root, split out of the program root in s79. It holds the
+# files nothing gets back — the ones the user hand-edits — so an unbound one is the
+# expensive silence this function exists to break: the box comes up, the installer's
+# config file is nowhere the box can read, and every setting the user wrote is gone at
+# the next recreate. Deliberately NO `VOLUME /opt/config` directive in any
+# Containerfile: an anonymous volume would hide exactly that, which is the opposite of
+# what this root is for.
+# WARN ONLY, never fatal: a box with no config file still starts, and droste-serve.sh's
+# own read_config is what reports the consequence (SERVE_CONFIG_ERR) in the one place a
+# user is looking when the server does not come up. Two messages for one condition,
+# said to two different readers, would be one message too many here — this one is about
+# the BIND, that one about the FILE.
+resolve::ensure_config() {
+    local dir=${1:-$DROSTE_CONFIG_DIR}
+    resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_program
+    if ! resolve::is_bound "$dir"; then
+        resolve::warn "$dir is not a bound volume — this box's config files will live in the container's writable layer, so every setting you edit is LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/data/<box>/config:$dir\")."
+    elif resolve::_anon_volume "$dir"; then
+        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so your edited settings go with it. Bind a host dir (-v ~/droste/data/<box>/config:$dir) or a NAMED volume (-v myconfig:$dir) instead."
+    fi
+}
+
+# ── /opt/program handling (both lanes) ──────────────────────────────────────
+# The Containerfile-level `VOLUME /opt/program` gives auto-anonymous-volume behavior; from
 # inside all we can do is warn if the user did not bind it (state won't survive recreate).
 # Because of that VOLUME directive the dir is virtually ALWAYS a mount — the real
 # forgot-to-bind signal is the ANONYMOUS-volume shape (_anon_volume), warned on below.
-resolve::ensure_data() {
-    local dir=${1:-$DROSTE_DATA_DIR}
+# ⚠️ SINCE s79 THIS ROOT ALSO CARRIES THE VENV OVERLAY UPPER, i.e. every in-box
+# `pip install`. It was on /opt/program-cache — the one root the installer offers to
+# empty — and that cost a working box. Do not move it back.
+resolve::ensure_program() {
+    local dir=${1:-$DROSTE_PROGRAM_DIR}
     # _mkuserdir, not a bare mkdir: this root is created here whenever it is NOT bound
     # (an anonymous volume, or a plain dir in the container layer), and the distrobox
     # hook is root — a root-owned root is one the box user cannot write the volume's own
@@ -734,29 +782,32 @@ resolve::ensure_data() {
     if ! resolve::is_bound "$dir"; then
         resolve::warn "$dir is not a bound volume — using an image-provided (anonymous) volume; bind it with -v <host>:$dir to persist across container recreation."
     elif resolve::_anon_volume "$dir"; then
-        resolve::warn "$dir state is on an ANONYMOUS volume (auto-created by the image's VOLUME directive) — it will NOT survive container removal. Bind a host dir (-v /host/data:$dir) or a NAMED volume (-v mydata:$dir) to persist. (This is a warning only — ALLOW_EPHEMERAL is NOT needed for it.)"
+        resolve::warn "$dir state is on an ANONYMOUS volume (auto-created by the image's VOLUME directive) — it will NOT survive container removal, so everything you pip install in this box goes with it. Bind a host dir (-v /host/data/<box>/program:$dir) or a NAMED volume (-v myprogram:$dir) to persist. (This is a warning only — ALLOW_EPHEMERAL is NOT needed for it.)"
     fi
 }
 
 # ── /opt/program-cache handling (both lanes) ────────────────────────────────
-# The per-box PROGRAM-CACHE root, and since the taxonomy split it is where the venv
-# overlay upper lives — so an unbound one is worth saying out loud even though nothing
-# on it is irreplaceable. Deliberately NO `VOLUME /opt/program-cache` directive in any
+# The per-box PROGRAM-CACHE root: overlay .work dirs, copy-mode materializations, tmp,
+# llama slots, ds4 kv-disk, the state/ server dir, the per-box compute-cache fallback.
+# An unbound one costs nothing irreplaceable — everything here is rebuilt on demand —
+# but it is still worth saying out loud, because the box then rebuilds all of it at
+# every recreate. Deliberately NO `VOLUME /opt/program-cache` directive in any
 # Containerfile (same stance as the shared /opt/caches): an auto-created anonymous
-# volume would silently hoard multi-GB venv uppers under a name nobody goes looking
-# for. Unbound therefore means a plain directory in the CONTAINER's writable layer —
-# in-box installs still work, but they die with the container and fatten that layer
-# until they do.
+# volume would silently hoard multi-GB trees under a name nobody goes looking for.
 # WARN ONLY, never fatal, and never ALLOW_EPHEMERAL's business: everything on this
 # root is re-obtainable by construction (resolve::critical is for the paths that are
 # not). The anonymous-volume branch stays for the user who binds one by hand.
+# ⚠️ A BOX CREATED BEFORE s79 HAS ITS VENV UPPER HERE. Nothing in this file treats that
+# specially — the upper is wherever the build-spec says it is, and an old box binds an
+# old ini. The HOST-side consequence (the installer's wipe must leave that upper alone)
+# is the installer's to handle, and it does.
 resolve::ensure_pcache() {
     local dir=${1:-$DROSTE_PCACHE_DIR}
-    resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_data
+    resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_program
     if ! resolve::is_bound "$dir"; then
-        resolve::warn "$dir is not a bound volume — the venv overlay upper and the box's other program caches will live in the container's writable layer, so in-box installs are LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/caches/<box>:$dir\")."
+        resolve::warn "$dir is not a bound volume — the box's program caches (scratch, slots, KV disk, overlay work dirs, server state) will live in the container's writable layer and be rebuilt at every recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/caches/<box>:$dir\")."
     elif resolve::_anon_volume "$dir"; then
-        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so in-box installs go with it. Bind a host dir (-v ~/droste/caches/<box>:$dir) or a NAMED volume (-v mycache:$dir) instead."
+        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so the box rebuilds its caches after every recreate. Bind a host dir (-v ~/droste/caches/<box>:$dir) or a NAMED volume (-v mycache:$dir) instead."
     fi
 }
 
@@ -798,9 +849,13 @@ resolve::apply_templates() {
 resolve::apply_spec() {
     local entry rest label path marker
 
-    # 1) ensure the two per-box roots: /opt/data (auto-vol + warn) and
-    #    /opt/program-cache (warn if unbound — it holds the venv upper)
-    resolve::ensure_data "$DROSTE_DATA_DIR"
+    # 1) ensure the three per-box roots, MOST PRECIOUS FIRST — which is also the
+    #    order a reader meets them in: /opt/config (warn if unbound — nothing gets
+    #    its contents back), /opt/program (auto-vol + warn — it holds the venv and
+    #    custom_nodes uppers) and /opt/program-cache (warn if unbound — everything
+    #    on it is rebuilt on demand).
+    resolve::ensure_config "$DROSTE_CONFIG_DIR"
+    resolve::ensure_program "$DROSTE_PROGRAM_DIR"
     resolve::ensure_pcache "$DROSTE_PCACHE_DIR"
 
     # 2) SURFACES + OVERLAYS + CACHES (BOTH lanes since lane unification —

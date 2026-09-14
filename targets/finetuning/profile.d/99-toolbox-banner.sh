@@ -138,7 +138,7 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches JupyterLab with DROSTE_JUPYTER_PORT from
-# /opt/data/finetuning.cfg, so a baked-in number in the text below would be wrong
+# /opt/config/finetuning.cfg, so a baked-in number in the text below would be wrong
 # for every box that changed it.
 # ⚠️ THE SETTING PREFIX IS THE APPLICATION, NOT THE BOX: this box's settings are
 # DROSTE_JUPYTER_*, and it is the only one of the five where the two names differ
@@ -168,7 +168,7 @@ PY
 # Deriving it means the two cannot disagree. ⚠️ If the grep fails the value stays EMPTY
 # and the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def file="${DROSTE_SERVE_ENV:-/opt/data/finetuning.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/config/finetuning.cfg}" pv=""
   def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
         /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
@@ -268,7 +268,7 @@ serve_addr() {
 # assignment runs after the substitution and silences nothing), and the library's
 # serve:: namespace left in there rather than in a user's interactive shell.
 serve_host() {
-  local h file="${DROSTE_SERVE_ENV:-/opt/data/finetuning.cfg}"
+  local h file="${DROSTE_SERVE_ENV:-/opt/config/finetuning.cfg}"
   [ -f "$file" ] || { printf '0.0.0.0\n'; return 0; }
   [ -r "$file" ] || return 1
   h=$(
@@ -325,7 +325,7 @@ printf 'Repo     : https://github.com/doctorjei/droste-ai-halo\n'
 printf 'Based on : github.com/kyuz0/amd-strix-halo-llm-finetuning\n\n'
 printf 'JupyterLab starts with the box on http://%s:%s\n' "$SERVE_ADDR" "$SERVE_PORT"
 printf '  (token: run `jupyter server list`; it rerolls on every restart)\n'
-printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
+printf '  (fix it, and 220 more settings: /opt/config/finetuning.cfg)\n'
 # The --ip is DROSTE_JUPYTER_HOST, not the display address above: this line is a
 # command the user will run, so it must bind what the box was configured to bind.
 # When that setting cannot be honored the recipe is WITHHELD (Jei, s60: "fail") —
@@ -333,7 +333,7 @@ printf '  (fix it, and 220 more settings: /opt/data/finetuning.cfg)\n'
 # bind ends up on every interface, with a Jupyter whose token is the only thing in
 # front of it.
 #
-# 🚨 AND IT NO LONGER PRINTS `set -a; . /opt/data/finetuning.cfg; set +a`. That line
+# 🚨 AND IT NO LONGER PRINTS `set -a; . /opt/config/finetuning.cfg; set +a`. That line
 # was captioned "your settings, this shell" and was not that: sourcing the file by
 # hand is precisely the raw read the resolver stopped doing. It skips
 # droste::blank_is_unset (IPYTHONDIR, QT_API, JUPYTER_DEFAULT_PROVISIONER_NAME,
@@ -358,7 +358,7 @@ if [[ -n "$SERVE_BIND" ]]; then
   printf '   what server_start does. Edit the file, then server_restart.)\n\n'
 else
   printf 'No ad-hoc jupyter command is shown here: DROSTE_JUPYTER_HOST in\n'
-  printf '/opt/data/finetuning.cfg cannot be used as a bind address, and a recipe that\n'
+  printf '/opt/config/finetuning.cfg cannot be used as a bind address, and a recipe that\n'
   printf 'ignored it would listen on every interface instead of the one you asked for.\n'
   printf 'Put an IPv4 literal there, or delete the line to bind 0.0.0.0, the default.\n\n'
 fi
@@ -370,7 +370,7 @@ printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
 printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
 printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
-printf '  - %-18s → %s\n' "at box start" "DROSTE_JUPYTER_STARTUP_ENABLED in /opt/data/finetuning.cfg"
+printf '  - %-18s → %s\n' "at box start" "DROSTE_JUPYTER_STARTUP_ENABLED in /opt/config/finetuning.cfg"
 echo
 # The middle field is the address the FORWARD lands on at the far end, so it has
 # to be the one the server actually bound: with host networking the listener is

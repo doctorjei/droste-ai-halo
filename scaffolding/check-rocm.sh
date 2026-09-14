@@ -8,7 +8,7 @@
 # The shared resolver entrypoint performs in-container mounts (overlays/surfaces/caches),
 # which need CAP_SYS_ADMIN — this script adds --cap-add sys_admin itself (under rootless
 # podman the capability is namespaced to the container's user namespace, not host
-# privilege). Probes also get a tmpfs at /opt/data so results never depend on the host
+# privilege). Probes also get a tmpfs at /opt/program so results never depend on the host
 # filesystem under the volume store (anonymous volumes may land on overlay-hostile
 # filesystems like ecryptfs); it is ephemeral by design and pairs with ALLOW_EPHEMERAL.
 #
@@ -59,7 +59,7 @@ REQUIREMENTS:
   this script adds --group-add keep-groups + --security-opt seccomp=unconfined for podman.
   The resolver entrypoint performs in-container mounts and needs CAP_SYS_ADMIN; this
   script adds --cap-add sys_admin (rootless podman: namespaced to the container's user
-  namespace, not host privilege). Probes mount a tmpfs at /opt/data — ephemeral by
+  namespace, not host privilege). Probes mount a tmpfs at /opt/program — ephemeral by
   design, pairing with the ALLOW_EPHEMERAL=1 the probes already set.
 
 EXIT: non-zero if any check fails; a summary is printed at the end.
@@ -87,9 +87,9 @@ command -v "$RUNTIME" >/dev/null 2>&1 || { echo "ERROR: '$RUNTIME' not found on 
 [[ -e /dev/dri ]] || echo "WARNING: /dev/dri missing — no render node; checks will fail." >&2
 
 # --cap-add sys_admin: the resolver entrypoint mounts inside the container (see header).
-# tmpfs /opt/data: keeps probes host-filesystem-agnostic (and ephemeral, as intended).
+# tmpfs /opt/program: keeps probes host-filesystem-agnostic (and ephemeral, as intended).
 DEVICE_ARGS=(--rm --device /dev/kfd --device /dev/dri
-             --cap-add sys_admin --mount type=tmpfs,destination=/opt/data)
+             --cap-add sys_admin --mount type=tmpfs,destination=/opt/program)
 if [[ "$RUNTIME" == "podman" ]]; then
   DEVICE_ARGS+=(--group-add keep-groups --security-opt seccomp=unconfined)
 fi

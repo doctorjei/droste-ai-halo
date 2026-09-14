@@ -85,7 +85,7 @@ fi
 # 🚨 AND A FALLBACK WOULD BE WORSE THAN THE GAP, which is the real reason and would hold
 # even if a lane did appear:
 #   - _own CHANGES OWNERSHIP ON DISK. A no-op fallback trades a LOUD failure (127, naming
-#     the missing function) for a QUIET one: /opt/data/model-registry.yaml stays owned by
+#     the missing function) for a QUIET one: /opt/program/model-registry.yaml stays owned by
 #     container root while the service runs as the box user, and the next sync fails
 #     somewhere nobody traces back to here. A helper that is present but inert looks
 #     authoritative and does nothing — the same defect as an inert config knob.
@@ -194,6 +194,35 @@ droste::split_list() {
         [ -n "$item" ] && out+=( "$item" )
     done < <(printf '%s%s' "$s" "$sep")
     [ ${#out[@]} -eq 0 ] || printf '%s\0' "${out[@]}"
+}
+
+# ── droste::box_name — THE BOX'S OWN NAME, DERIVED, NEVER RESTATED (s79) ────
+# Usage:  name=$(droste::box_name "$CFG_FILE") || name=""
+#
+# ⭐ DERIVE A NAME, NEVER INHERIT ONE. Nothing baked in an image says "this is the
+# comfyui box" — but the build-spec's CFG_FILE does, by contract: the settings file
+# is named for the BOX (`<box>.cfg`), while the settings inside it are named for the
+# APPLICATION. That is exactly why finetuning's file is `finetuning.cfg` and every
+# setting in it is DROSTE_JUPYTER_*, and it is what makes this derivation sound
+# rather than a coincidence of four boxes out of five.
+#
+# ⚠️ ONE DEFINITION, TWO CALLERS, on purpose: droste-serve.sh names the service log
+# with it and droste-init-hook.sh names the resolver log with it. A second copy would
+# misbehave years later, when one of them is fixed and the other is not — the same
+# reasoning that keeps DROSTE_SERVE_ESC_SED a single definition.
+#
+# Returns 1 (and prints nothing) when there is no CFG_FILE to read or it is not a
+# `.cfg` — a lab, a harness, or a box whose spec declares no config file. The caller
+# decides what an unnamed box is called; this function does not guess.
+droste::box_name() {
+    local cfg=${1-} base
+    [ -n "$cfg" ] || return 1
+    base=${cfg##*/}
+    case "$base" in
+        ?*.cfg) ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "${base%.cfg}"
 }
 
 # ── droste::arg_value — read a flag's value out of an already-split argv ─────

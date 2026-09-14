@@ -350,7 +350,7 @@ droste::cfg_apply() {
     # Where the CURRENT list of this box's settings lives, so the warning below can
     # point at it rather than describing it. The image bakes each port's templates
     # under one directory and the seeded copy keeps the template's own basename
-    # (targets/*/templates/templates.yaml map <box>.cfg to /opt/data/<box>.cfg), so
+    # (targets/*/templates/templates.yaml map <box>.cfg to /opt/config/<box>.cfg), so
     # the current example for this file is that name in the templates directory.
     # ⚠️ Mentioned ONLY if it is really there: a sentence pointing at a path that
     # does not exist is worse than the shorter sentence. The `!=` guard keeps a

@@ -143,7 +143,7 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches `vllm serve` with DROSTE_VLLM_PORT from
-# /opt/data/vllm.cfg (appended as --port, which outranks the `port:` key in
+# /opt/config/vllm.cfg (appended as --port, which outranks the `port:` key in
 # vllm_config.yaml), so a baked-in number in the text below would be wrong for
 # every box that changed it.
 # 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
@@ -170,7 +170,7 @@ PY
 # Deriving it means the two cannot disagree. ⚠️ If the grep fails the value stays EMPTY
 # and the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def file="${DROSTE_SERVE_ENV:-/opt/data/vllm.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/config/vllm.cfg}" pv=""
   def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
         /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
@@ -272,7 +272,7 @@ serve_addr() {
 # assignment runs after the substitution and silences nothing), and the library's
 # serve:: namespace left in there rather than in a user's interactive shell.
 serve_host() {
-  local h file="${DROSTE_SERVE_ENV:-/opt/data/vllm.cfg}"
+  local h file="${DROSTE_SERVE_ENV:-/opt/config/vllm.cfg}"
   [ -f "$file" ] || { printf '0.0.0.0\n'; return 0; }
   [ -r "$file" ] || return 1
   h=$(
@@ -327,10 +327,10 @@ printf 'GPU    : %s\n\n' "$GPU"
 printf 'Image : ghcr.io/doctorjei/droste-vllm-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'This box runs an OpenAI-compatible vLLM server on port %s when it starts.\n' "$SERVE_PORT"
-printf 'Config file: /opt/data/vllm_config.yaml  (vllm serve --config).\n'
+printf 'Config file: /opt/config/vllm_config.yaml  (vllm serve --config).\n'
 printf 'REQUIRED: with no model: set there, vLLM exits with "No model specified!".\n\n'
 printf 'Usage:\n'
-printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/data/vllm_config.yaml"
+printf '  - %-18s → %s\n' "Pick a model" "edit model: in /opt/config/vllm_config.yaml"
 printf '  - %-18s → %s\n' "vLLM server"  "starts with the box; commented MODEL_TABLE stanzas in the config"
 # The --host is DROSTE_VLLM_HOST, not the display address above: this row is a
 # command the user will run, so it must bind what the box was configured to bind.
@@ -369,7 +369,7 @@ if [[ -n "$SERVE_BIND" ]]; then
   printf '  %-20s   %s\n' "" "vllm.cfg are NOT applied here; server_start is the"
   printf '  %-20s   %s\n' "" "lane that does. Edit the file, then server_restart.)"
 else
-  printf '  - %-18s → %s\n' "Ad-hoc serve" "not shown: fix DROSTE_VLLM_HOST in /opt/data/vllm.cfg"
+  printf '  - %-18s → %s\n' "Ad-hoc serve" "not shown: fix DROSTE_VLLM_HOST in /opt/config/vllm.cfg"
   printf '  %-20s   %s\n' "" "(an IPv4 literal, or delete the line to bind 0.0.0.0)"
 fi
 printf '  - %-18s → %s\n' "API test"     "curl $SERVE_ADDR:$SERVE_PORT/v1/chat/completions"
@@ -378,7 +378,7 @@ printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
 printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
 printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
-printf '  - %-18s → %s\n' "at box start" "DROSTE_VLLM_STARTUP_ENABLED in /opt/data/vllm.cfg"
+printf '  - %-18s → %s\n' "at box start" "DROSTE_VLLM_STARTUP_ENABLED in /opt/config/vllm.cfg"
 echo
 # The middle field is the address the FORWARD lands on at the far end, so it has
 # to be the one the server actually bound: with host networking the listener is

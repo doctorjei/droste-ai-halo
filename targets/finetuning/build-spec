@@ -67,7 +67,8 @@ HEALTH_PATH="/"
 HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from templates/finetuning.cfg (templates.yaml if_missing). Both resolvers
+# Written from templates/finetuning.cfg by the installer (templates.yaml if_missing).
+# Both resolvers
 # source it under `set -a`, so every assignment reaches the JupyterLab process —
 # and that is the ONLY mechanism that can act before Jupyter reads any config,
 # which is what makes JUPYTER_CONFIG_DIR (and therefore the seeded trait file)
@@ -81,7 +82,11 @@ HEALTH_ACCEPT="ok"
 #
 # ⚠️ Until this existed, JUPYTER_TOKEN was advertised in two places and honored
 # in neither — a knob present but inert, which is worse than an absent one.
-CFG_FILE="/opt/data/finetuning.cfg"
+# ⚠️ THE BASENAME IS THE BOX'S NAME, BY CONTRACT, AND THIS IS THE BOX THAT PROVES IT:
+# the FILE is named for the box (finetuning) while every setting in it is named for the
+# APPLICATION (DROSTE_JUPYTER_*). droste::box_name reads this row to name the box's two
+# logs. See base/resolve/build-spec.example.
+CFG_FILE="/opt/config/finetuning.cfg"
 
 # ── SERVE — the four rows droste-serve.sh reads out of this spec ─────────────
 # The five SERVE settings live in the same CFG_FILE as everything else, under the
@@ -124,17 +129,20 @@ SERVE_TLS_CERT_FLAG=--certfile
 SERVE_TLS_KEY_FLAG=--keyfile
 
 # ── OVERLAYS — <upper>:<lower> ───────────────────────────────────────────────
-# venv overlay (universal): user pip installs land on /opt/program-cache (CACHE
-# class — a pip install is re-runnable, so the installer may empty that root),
-# the baked torch/unsloth/flash-attn stack stays pristine underneath. This (plus
-# the workspace user bind) is what retires the old `chmod -R a+rwX /opt` hack.
+# venv overlay (universal): user pip installs land on /opt/program (PROGRAM class —
+# a pip install is re-runnable at a COST, which is not the same as free, so that root
+# is one the installer never empties and never offers to), and the baked
+# torch/unsloth/flash-attn stack stays pristine underneath. This (plus the workspace
+# user bind) is what retires the old `chmod -R a+rwX /opt` hack.
+# ⚠️ IT WAS ON /opt/program-cache UNTIL s79, i.e. on the one root the installer
+# offers to wipe. It cost a working box. Do not move it back.
 OVERLAYS=(
-    "/opt/program-cache/venv:/opt/venv"
+    "/opt/program/venv:/opt/venv"
 )
 
 # ── SURFACES — <src>:<dest> ──────────────────────────────────────────────────
 # None: the workspace is the USER'S bind (CRITICAL below), not container state
-# surfaced from /opt/data.
+# surfaced from /opt/program.
 SURFACES=()
 
 # ── CACHES — <src>:<dest> ────────────────────────────────────────────────────
@@ -462,22 +470,28 @@ jupyter_env() {
     # Every other setting on this box agrees with its package's own default, so the
     # wiring says nothing at all unless the user does.
     # 🚨 WITHOUT THE FIRST OF THESE THE WHOLE TRAIT FILE IS INERT, SILENTLY.
-    # templates.yaml seeds jupyter_server_config.py to /opt/data/, beside this box's
-    # CFG_FILE, and that directory is on Jupyter's config search path ONLY because
+    # templates.yaml names jupyter_server_config.py's dest as /opt/config/, beside this
+    # box's CFG_FILE, and that directory is on Jupyter's config search path ONLY because
     # JUPYTER_CONFIG_DIR names it (jupyter_core/paths.py:156-157).
     # ⭐ FLAT ON PURPOSE (Jei, s56): the two halves of the config surface sit
-    # together where a user looks for them. /opt/data holds nothing else but
-    # droste's own .droste-serve.log — /opt/workspace is a separate bind and
-    # OPTIONAL is empty — so what Jupyter itself writes into a config dir
-    # (jupyter_server_config.json from `jupyter server password`,
-    # jupyter_server_config.d/, the frontend config dir) lands among config,
-    # not among the user's data. An active line in finetuning.cfg
-    # cannot supply this: the file is seeded if_missing, so it would reach NEW
-    # boxes only and every existing box would start with ~130 traits sitting at
-    # their defaults, no warning, server healthy.
+    # together where a user looks for them. Since s79 that directory is the CONFIG
+    # ROOT and holds NOTHING BUT config — so what Jupyter itself writes into a config
+    # dir (jupyter_server_config.json from `jupyter server password`,
+    # jupyter_server_config.d/, the frontend config dir) lands among config, not among
+    # the user's data. ⭐ THAT IS THE s56 ARGUMENT ARRIVING AT ITS OWN CONCLUSION: it
+    # asked for a directory that was config and nothing else, and got one by
+    # enumerating what /opt/data happened not to hold. It is a root now.
+    # An active line in finetuning.cfg cannot supply this default: the file is written
+    # only when absent, so it would reach NEW boxes only and every existing box would
+    # start with ~130 traits sitting at their defaults, no warning, server healthy.
     # ✅ Blank is a real off-state, not a broken one: paths.py:156 tests
     # truthiness, so JUPYTER_CONFIG_DIR= falls through to Jupyter's own location.
-    : "${JUPYTER_CONFIG_DIR=/opt/data}"
+    # ⚠️ finetuning.cfg's own commented `# JUPYTER_CONFIG_DIR=` line MUST KEEP NAMING
+    # THIS SAME DIRECTORY (it was `/opt/data` before s79 and was corrected with the
+    # file's owner's approval). It is a commented DEFAULT, so it is read as documentation
+    # of what the wiring already does — and a user who uncomments a stale one verbatim
+    # points Jupyter at a directory holding no traits, silently.
+    : "${JUPYTER_CONFIG_DIR=/opt/config}"
     export JUPYTER_CONFIG_DIR
     # ⚠️ SECOND DEFAULT, AND IT IS PINNED ON PURPOSE RATHER THAN INHERITED.
     # finetuning.cfg documents `{yes, no}` and SHOWS
@@ -518,7 +532,7 @@ jupyter_env() {
     # depending on this one flag: paths.py:322 for the DATA path, paths.py:421 for
     # the CONFIG path. "env" is the VENV — /opt/venv/etc/jupyter and
     # /opt/venv/share/jupyter (paths.py:340, :249, both str(Path(sys.prefix, …))).
-    # "user" is jupyter_config_dir() / jupyter_data_dir(), i.e. /opt/data here,
+    # "user" is jupyter_config_dir() / jupyter_data_dir(), i.e. /opt/config here,
     # plus the per-user site dirs. Traitlets loads that list REVERSED
     # (application.py:904), so the FIRST entry is the one that wins.
     #   JUPYTER_CONFIG_DIR names WHICH directory the user level IS.
@@ -526,7 +540,7 @@ jupyter_env() {
     # And it has no CONFIG_DIR analogue on the other half at all: jupyter_path()
     # — the DATA SEARCH path, i.e. kernelspecs and labextensions — is ordered by
     # this flag alone. So the setting is REAL, not cosmetic — with it on, a
-    # stray /opt/venv/etc/jupyter file would outrank the user's own /opt/data.
+    # stray /opt/venv/etc/jupyter file would outrank the user's own /opt/config.
     # ⭐ DROSTE'S DEFAULT IS `no` (wire `0`) — prefer the USER's dirs. /opt/venv is a
     # baked overlay LOWER; the user's answer is the one that should win. It is
     # PINNED rather than inherited, and this is the whole reason the row exists:
@@ -608,7 +622,7 @@ jupyter_env() {
 # places that outrank each other in a fixed order — the baked
 # /etc/jupyter/jupyter_server_config.py (droste's copy, which ships
 # `c.ServerApp.base_url = "/"`), the user's own jupyter_server_config.py in
-# JUPYTER_CONFIG_DIR (/opt/data), and a --ServerApp.base_url on the command line,
+# JUPYTER_CONFIG_DIR (/opt/config), and a --ServerApp.base_url on the command line,
 # which beats both. Only Jupyter knows which one won, and `--show-config-json`
 # dumps the MERGED config, so we run the app and read its answer. That is the same
 # "declare, do not detect" bargain droste::set_health_prefix documents: a prefix is

@@ -41,7 +41,7 @@
 
 # ── SERVICE ──────────────────────────────────────────────────────────────────
 # Placeholder argv; llama_pre_launch REBUILDS it after CFG_FILE is sourced so
-# DROSTE_LLAMA_EXTRA_ARGS (from /opt/data/llama.cfg) can join the command line —
+# DROSTE_LLAMA_EXTRA_ARGS (from /opt/config/llama.cfg) can join the command line —
 # SERVICE would otherwise be expanded at spec-source time, before the env file.
 SERVICE=( llama-server )
 
@@ -53,7 +53,7 @@ HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
 # ── CFG_FILE ─────────────────────────────────────────────────────────────────
-# Seeded from the BUILD-GENERATED template (templates.yaml if_missing); carries
+# Written by the installer from the shipped template (templates.yaml if_missing); carries
 # LLAMA_ARG_* lines (llama-server reads them natively), the 74 DROSTE_LLAMA_* settings
 # the tables below translate — 71 into argv, 3 into the environment — and
 # DROSTE_LLAMA_EXTRA_ARGS.
@@ -63,7 +63,9 @@ HEALTH_ACCEPT="ok"
 # SHELL STATE it builds (a cd, a function, a trap) dies with the child and only the
 # variables it leaves behind reach us. Not a sandbox: a filesystem write in there still
 # happens, because the child is a real shell.
-CFG_FILE="/opt/data/llama.cfg"
+# ⚠️ THE BASENAME IS THE BOX'S NAME, BY CONTRACT — droste::box_name reads it out of
+# this row to name the box's two logs. See base/resolve/build-spec.example.
+CFG_FILE="/opt/config/llama.cfg"
 
 # ── SERVE — the rows droste-serve.sh reads out of this spec ──────────────────
 # The five SERVE settings live in the same CFG_FILE as everything else, under the
@@ -124,10 +126,13 @@ SERVE_TLS_KEY_FLAG=--ssl-key-file
 # ── OVERLAYS ─────────────────────────────────────────────────────────────────
 # venv overlay is universal (per design). llama-server itself is a compiled
 # binary — the overlay serves the user's own pip installs (whole venv, so
-# console scripts in bin/ persist too). The upper is CACHE class (a pip install
-# is re-runnable) → /opt/program-cache, which the installer may empty.
+# console scripts in bin/ persist too). The upper is PROGRAM class — a pip install
+# is re-runnable at a COST, which is not the same as free — → /opt/program, which
+# the installer never empties and never offers to.
+# ⚠️ IT WAS ON /opt/program-cache UNTIL s79, i.e. on the one root the installer
+# offers to wipe. It cost a working box. Do not move it back.
 OVERLAYS=(
-    "/opt/program-cache/venv:/opt/venv"
+    "/opt/program/venv:/opt/venv"
 )
 
 # ── SURFACES ─────────────────────────────────────────────────────────────────

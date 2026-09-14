@@ -8,10 +8,10 @@
 # shown in the commented example line and are derived from this image's pinned
 # JupyterLab version. Settings reach the server three ways:
 #
-#   ENVIRONMENT VARIABLES  (/opt/data/finetuning.cfg)
+#   ENVIRONMENT VARIABLES  (/opt/config/finetuning.cfg)
 #   This is the only way to assing settings before Jupyter reads any config.
 #
-#   TRAITS  (/opt/data/jupyter_server_config.py, this file)
+#   TRAITS  (/opt/config/jupyter_server_config.py, this file)
 #   ServerApp/LabApp settings are in the Python config file. JUPYTER_CONFIG_DIR
 #   alerts Jupyter to search the file's path.
 #
@@ -31,7 +31,7 @@
 # are likely to break the box boot, services, and/or functionality.
 #
 # c.ServerApp.ip / .port / .open_browser -- set on the command line by Droste;
-#   the port comes from PORT in /opt/data/server.env.
+#   the port comes from DROSTE_JUPYTER_PORT in /opt/config/finetuning.cfg.
 # c.ServerApp.root_dir = "/opt/workspace"    # OVERRIDDEN by --notebook-dir
 
 c = get_config()  # noqa: F821  (injected by traitlets)
@@ -89,8 +89,8 @@ c = get_config()  # noqa: F821  (injected by traitlets)
 
 # JupyterLab UI State
 # -------------------
-# c.LabApp.user_settings_dir = "/opt/data/lab/user-settings"
-# c.LabApp.workspaces_dir = "/opt/data/lab/workspaces"
+# c.LabApp.user_settings_dir = "/opt/program/lab/user-settings"
+# c.LabApp.workspaces_dir = "/opt/program/lab/workspaces"
 # c.LabApp.default_url = "/lab"
 # c.LabApp.extra_labextensions_path = []
 # c.ServerApp.file_to_run = ""                     # open a notebook on start

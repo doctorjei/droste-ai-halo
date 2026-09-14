@@ -152,10 +152,15 @@ configure_box() {  # box
   fi
 
   # ── <Box> Paths ───────────────────────────────────────────────────────────
-  # The data dir (+ fs probe / overlay mitigation), then the other CRITICAL
-  # binds. /opt/data is where the box seeds <box>.cfg, so this path is what
-  # decides where the box reads its settings from — and where the installer
-  # merges the port and box-start answers after the first start.
+  # The program dir FIRST (+ fs probe / overlay mitigation), then the other
+  # CRITICAL binds — `config` among them since s79, and first in that list.
+  # ⭐ WHY THE PROGRAM DIR LEADS EVEN THOUGH CONFIG IS THE MORE PRECIOUS ROOT:
+  # path_derived hangs every other data-family bind off the PARENT of the settled
+  # program dir, and the overlay-filesystem question is asked about the root that
+  # carries the uppers. Both of those are the program dir's, so it has to be
+  # answered before anything can be derived from it.
+  # /opt/config is where the box reads its settings from, and where the installer
+  # merges the port and box-start answers before the box has ever started.
   if [[ ${#todo[@]} -gt 0 ]]; then
     if [[ $asked -eq 0 ]]; then
       asked=1
@@ -164,7 +169,7 @@ configure_box() {  # box
     subhdr "${BOX_NAME[$box]} Paths"
     PATHS_HDR=1
   fi
-  set_bind_path "$box" data
+  set_bind_path "$box" program
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*} dest=${pair#*:}
     : "$dest"          # the container side is the emitters' business, not ours
@@ -193,6 +198,15 @@ configure_box() {  # box
   # "optimised" away: this write exists to be there when the later one never
   # happens.
   [[ $RELOC_MOVED -eq 1 ]] && emit_ini "$box"
+  # BEFORE the cache question, deliberately: on a box from before s79 the two are
+  # about the SAME directory — one says where that box's own installs are, the
+  # other asks whether to empty the root they sit on — and the statement has to
+  # land before the question, not after it.
+  report_moved_uppers "$box"
+  # And before anything at all is written: a config left at the retired path is
+  # the one failure here that is silent, so it is said while the run can still be
+  # stopped with ^C and nothing has been created.
+  report_retired_configs "$box"
   stale_cache_offer "$box"
   # UNCONDITIONAL, no question, and silent when it works — an empty directory
   # contains nothing to lose, so there is no consent to ask for. AFTER the offer
@@ -231,7 +245,7 @@ predict_card_inner() {  # box → inner width, capped at the screen
   # will be OFFERED, since the card and the prompt show the one stored string.
   # A ~ is four columns narrower than the home it stands for, so measuring an
   # expansion would have mis-sized the card the moment either could differ.
-  vals+=("$(path_default "$box" data)")
+  vals+=("$(path_default "$box" program)")
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
     vals+=("$(path_default "$box" "$label")")
@@ -252,7 +266,7 @@ summary_box() {  # box banner-width
   keys+=("Paths") vals+=("") kind+=(g)
   # Verbatim: kept from the ini, typed at the prompt or derived from the
   # resource path, PATHS holds the spelling that was chosen for it.
-  keys+=("${BIND_ROW[data]}:") vals+=("${PATHS["$box:data"]}") kind+=(v)
+  keys+=("${BIND_ROW[program]}:") vals+=("${PATHS["$box:program"]}") kind+=(v)
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}
     keys+=("${BIND_ROW[$label]}:") vals+=("${PATHS["$box:$label"]}") kind+=(v)
@@ -384,7 +398,7 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
   local box=$1 f base pair label dest vols spell flags data
   f=$(ini_file "$box")
   base=$(basename "$f")     # resolved OUTSIDE the redirect (it names the file)
-  data=${PATHS["$box:data"]}
+  data=${PATHS["$box:program"]}
   {
     # 📐 THE VERSION STAMP, FIRST LINE, SAME SPELLING AS EVERY CONFIG FILE THIS
     # INSTALLER WRITES (ruled s73: "Its own line is best"). ⚠️ NOT folded into the
@@ -450,17 +464,29 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     # last expansion, which is what makes "move home, re-run" land the binds in
     # the new one — podman bakes the source absolutely at create time, so a run
     # is the only moment a ~ can be re-read.
-    vols="$(fs_path "$data"):/opt/data"
-    spell="$data:/opt/data"
-    # The box's PROGRAM CACHE root, right behind its data dir: the venv overlay
-    # upper lives here, so without this bind the environment a `pip install`
-    # writes lands in the container layer and dies with the next recreate. It is
-    # not a BOX_EXTRA_BIND (nobody is asked about it as a work dir), so the bind
-    # is written here, by name, for every box.
+    # 📐 THE THREE ROOTS LEAD, IN TAXONOMY ORDER — config, program, cache — which
+    # is the order resolve::apply_spec ensures them in, the order NOTES.md explains
+    # them in, and the order every shipped targets/<box>/distrobox.ini writes them
+    # in. ⚠️ emitguard compares this list against those samples POSITION BY
+    # POSITION, so the three are not free to drift apart.
+    # ⚠️ `config` IS a BOX_EXTRA_BIND (it is prompted and summarised like one), so
+    # the loop below has to skip it or it would be written twice. That skip is the
+    # price of leading with it, and it is cheaper than a second table.
+    vols="$(fs_path "${PATHS["$box:config"]}"):/opt/config"
+    spell="${PATHS["$box:config"]}:/opt/config"
+    vols="$vols $(fs_path "$data"):/opt/program"
+    spell="$spell $data:/opt/program"
+    # The box's PROGRAM CACHE root, right behind its program dir: the overlay
+    # WORK dirs and every copy-mode materialization live here, and so does the
+    # server's per-start state. It is not a BOX_EXTRA_BIND (nobody is asked about
+    # it as a work dir), so the bind is written here, by name, for every box.
+    # ⚠️ THE VENV UPPER LEFT THIS ROOT IN s79. It is under the program dir above,
+    # which is the root nothing here ever offers to empty.
     vols="$vols $(fs_path "${PATHS["$box:pcache"]}"):/opt/program-cache"
     spell="$spell ${PATHS["$box:pcache"]}:/opt/program-cache"
     for pair in ${BOX_EXTRA_BINDS[$box]}; do
       label=${pair%%:*} dest=${pair#*:}
+      [[ $label == config ]] && continue      # already written, above
       vols="$vols $(fs_path "${PATHS["$box:$label"]}"):$dest"
       spell="$spell ${PATHS["$box:$label"]}:$dest"
     done
@@ -485,10 +511,14 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
       vols="$vols $(fs_path "$MODELS_DIR"):/opt/models:ro"
       spell="$spell $MODELS_DIR:/opt/models:ro"
     fi
-    printf '# /opt/data = this box%s PERSISTENT state (your work and the seeded\n' "'s"
-    printf '# configs, %s among them) — never wiped. /opt/program-cache\n' "${BOX_CFG[$box]}"
-    printf '# = its PROGRAM CACHE (venv upper, scratch, per-box caches) — the\n'
-    printf '# installer offers to empty it when it finds an older generation there.\n'
+    printf '# /opt/config = this box%s CONFIG SURFACE (%s and nothing\n' "'s" "${BOX_CFG[$box]}"
+    printf '# else of its kind) — never wiped, never overwritten, and nothing\n'
+    printf '# gets it back. /opt/program = its PROGRAM DATA (the venv overlay\n'
+    printf '# upper, i.e. what YOU installed in the box, plus its model tree and\n'
+    printf '# logs) — a reinstall would get it back, and nothing here ever offers\n'
+    printf '# to delete it. /opt/program-cache = its PROGRAM CACHE (scratch,\n'
+    printf '# slots, server state, overlay work dirs) — the installer offers to\n'
+    printf '# empty that one when it finds an older generation there.\n'
     printf '# Shared compute caches across ALL droste boxes are folded into the\n'
     printf '# single volume= value below (distrobox reads only the LAST volume=).\n'
     printf 'volume="%s"\n' "$vols"

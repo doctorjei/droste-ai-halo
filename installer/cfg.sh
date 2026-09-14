@@ -804,8 +804,25 @@ cfg_seed_file() {  # src dest → 0 written, 1 not
 # whose directory is not a bind this box has (or has not been given a path yet)
 # is a config file the user will not get; saying nothing would be a box that
 # comes up on stock defaults with nothing to edit and no explanation.
+#
+# 🚨 AND SO IS A FILE THAT IS ALREADY THE USER'S, AT THE PATH THIS LAYOUT RETIRED
+# (s79). The config surface moved out of the program bind, so on a box set up
+# before that every one of these files exists — at a path the box can no longer
+# read. Writing a fresh default at the NEW path would leave the user's tuned file
+# orphaned, the box serving stock defaults, and s78's absent-config alert SILENT,
+# because a file would now exist. ⭐ That is the worst shape a failure can take:
+# nothing is destroyed, so there is no wreckage to notice.
+# ⇒ THE SEED IS REFUSED AND BOTH PATHS ARE NAMED. Nothing is moved and nothing is
+# deleted — NO MIGRATION is s41's standing precedent and these are the most
+# hand-authored files in the project — so the box comes up with no config, which
+# serve::read_config already reports by name. A loud absence beats a quiet wrong
+# answer.
+# ⭐ COMPLETE BY CONSTRUCTION, WHICH report_retired_configs CANNOT BE: this walks
+# the image's own manifest, so it covers every file the box seeds rather than the
+# one the installer happens to have a table for.
 cfg_write_seeds() {  # box templates-dir → 0 all good, 1 something was not written
-  local box=$1 dir=$2 i n src dest label hostdir spelled dst rc=0
+  local box=$1 dir=$2 i n src dest label hostdir spelled dst old rc=0
+  old=$(box_retired_cfg_dir "$box")
   if ! cfg_manifest "$dir"; then
     warn "no template manifest in $dir $EMD this box's config files were not written"
     return 1
@@ -838,6 +855,15 @@ cfg_write_seeds() {  # box templates-dir → 0 all good, 1 something was not wri
     hostdir=$(fs_path "$spelled")
     dst="$hostdir/$(basename "$dest")"
     if [[ -e $dst ]]; then continue; fi
+    # The retired path, checked ONLY for a dest this run would otherwise create,
+    # and only for a label whose directory actually moved. `config` is the one
+    # that did; a manifest entry landing anywhere else compares a directory with
+    # itself and the same_dir below stops it.
+    if [[ -n $old ]] && ! same_dir "$old" "$spelled" \
+       && [[ -e "$(fs_path "$old")/$(basename "$dest")" ]]; then
+      warn "$old/$(basename "$dest") is yours and this box now reads $spelled/$(basename "$dest") $EMD nothing was written and nothing was moved, so move it by hand with the box stopped (mv $old/$(basename "$dest") $spelled/) or this box will start with no settings"
+      rc=1; continue
+    fi
     if cfg_seed_file "$dir/$src" "$dst"; then
       # The SPELLED path, not the resolved one: what the user typed is what we
       # show them (the path spelling contract).

@@ -144,11 +144,21 @@ now change it.
 
 Mount contract (all ports):
 
-- **`/opt/data`** — the box's PERSISTENT volume: the seeded config file you
-  edit, comfyui's model tree + `user/` + its custom-node overlay upper, ds4's
-  saved sessions, the finetuning workspace. Nothing on it is ever deleted by
-  anything we ship. Unbound → anonymous volume + a warning. Because
-  overlay uppers live here — and on `/opt/program-cache` below — the backing
+- **`/opt/config`** — the box's CONFIG SURFACE and nothing else: `<box>.cfg`,
+  its `.example`, vllm's `vllm_config.yaml`, finetuning's
+  `jupyter_server_config.py`, comfyui's `extra_model_paths.yaml`. NOTHING gets
+  these back, so nothing we ship ever deletes one or overwrites one.
+  `droste-setup.sh` writes each of them once, when it is absent, before the box
+  has ever run. Unbound → a warning (deliberately NO anonymous volume: a config
+  surface that silently appears and silently vanishes is the failure this root
+  exists to prevent).
+- **`/opt/program`** — the box's PROGRAM DATA volume: the venv overlay upper
+  (every in-box `pip install`), comfyui's model tree and custom-node overlay
+  upper, ds4's saved sessions, the box's `logs/`. A reinstall or a re-run gets
+  this back, at a cost; nothing on it is ever deleted by anything we ship.
+  Unbound → anonymous volume + a warning. Because
+  overlay uppers live here — and their `.work` siblings on `/opt/program-cache`
+  below — the backing
   filesystem must be ext4/btrfs/xfs-class (tmpfs also works) — **not** ecryptfs
   (encrypted homes), NFS, or virtiofs, which kernel overlayfs rejects as an
   upper. On such hosts the resolver falls back to fuse-overlayfs automatically
@@ -177,7 +187,7 @@ Mount contract (all ports):
 - **`/opt/caches`** — the shared compute-cache store (MIOpen / Triton /
   torch-hub). The story is TWO shared stores plus the two per-box roots above:
   models live in the HF cache, compute caches live here, and everything
-  box-private stays on `/opt/data` or `/opt/program-cache`. Bind the same host
+  box-private stays on `/opt/config`, `/opt/program` or `/opt/program-cache`. Bind the same host
   dir (default `~/droste/compute-caches`; any dir you like) into every
   container/box and kernels tuned or JIT-compiled by one are warm for the
   rest. Optional: unbound → the resolver degrades
@@ -218,8 +228,10 @@ host-networked box, which binds its port directly:
 ```bash
 podman run -d -p 8188:8188 --device /dev/kfd --device /dev/dri \
   --cap-add sys_admin --group-add keep-groups \
-  -v ~/droste/data/comfyui:/opt/data \
+  -v ~/droste/data/comfyui/config:/opt/config \
+  -v ~/droste/data/comfyui/program:/opt/program \
   -v ~/droste/caches/comfyui:/opt/program-cache \
+  -v ~/droste/data/comfyui/user:/opt/ComfyUI/user \
   -v ~/droste/data/comfyui/input:/opt/ComfyUI/input \
   -v ~/droste/data/comfyui/output:/opt/ComfyUI/output \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -243,7 +255,7 @@ and the ones `droste-setup.sh` emits — carries `--cap-add sys_admin` and
 
 comfyui additionally runs a pre-launch **model scanner**: it classifies everything
 in the HF cache (+ `/opt/models`) and maintains a ComfyUI-friendly symlink tree
-(`/opt/data/model-tree`, surfaced at `/opt/ComfyUI/models`) — models any port
+(`/opt/program/model-tree`, surfaced at `/opt/ComfyUI/models`) — models any port
 pulls into the shared cache appear in ComfyUI's pickers automatically.
 
 The scanner reads the files themselves wherever it can — safetensors headers,
@@ -304,7 +316,7 @@ toolboxes, and that is not a second container. Each app is ONE container,
   `--health-on-failure=restart`) that requires the box's OWN service to be
   the thing answering — if something else already holds the port, the box
   refuses to start a second listener, appends the refusal to its serve log
-  (`/opt/data/.droste-serve.log`) and reports UNHEALTHY rather than claiming
+  (`/opt/program/logs/<box>-serve.log`) and reports UNHEALTHY rather than claiming
   a stranger's port. When a server dies, the box now **relaunches just the
   server first** and only restarts the whole container if that does not work
   — so a crash no longer closes the shell of anyone working in the box.
@@ -318,13 +330,13 @@ Both doors are the SAME environment: a `pip install` you do interactively is
 what the served process runs. The init hook performs the **same resolver
 mounts as the server entrypoint** — the overlays (venv, comfyui
 custom_nodes; kernel→fuse→copy fallback included), the surfaces (including
-comfyui's model tree and `user/`, so the ini no longer carries its own volume
+comfyui's model tree and datasets, so the ini no longer carries its own volume
 lines for those), and the cache binds (the inis carry the same shared
 `~/droste/compute-caches` → `/opt/caches` volume). The payoff is the whole
 point of this project: in-box changes **survive box deletion/recreation**
 instead of dying with the container layer — a `pip install` into `/opt/venv`
-rides the venv overlay on `/opt/program-cache`, custom nodes their own overlay
-on `/opt/data`. Consequently the inis carry `additional_flags` with
+rides the venv overlay on `/opt/program`, custom nodes their own overlay
+beside it. Consequently the inis carry `additional_flags` with
 `--cap-add sys_admin` and `--device /dev/fuse`, and the overlay filesystem
 rule above (with its automatic fallback) applies to a box too. Deliberate
 deviations from a directly-run container: the HF cache gets no bind (the
@@ -338,7 +350,7 @@ A model arrives at the moment a box can least tell you about it: the server is
 still starting, nothing is listening yet, and the healthcheck has nothing to
 report. So every box starts a small watcher at container start that announces
 downloads to the **container log** — `podman logs droste-<port>-halo` — and
-not to the service's own log (`/opt/data/.droste-serve.log`). That split is
+not to the service's own log (`/opt/program/logs/<box>-serve.log`). That split is
 deliberate: the container log is the one stream that exists before the service
 does, and it is where a box that is busy rather than broken can say so.
 
@@ -711,7 +723,7 @@ scaffolding/check-rocm.sh --help       # all options
 ```
 
 The sweep is host-filesystem-agnostic: it self-carries `--cap-add sys_admin` and a
-tmpfs `/opt/data` for its probes (tmpfs is always a valid overlay upper), plus
+tmpfs `/opt/program` for its probes (tmpfs is always a valid overlay upper), plus
 `--group-add keep-groups` for rootless GPU access.
 
 

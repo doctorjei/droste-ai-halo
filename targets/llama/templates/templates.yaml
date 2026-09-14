@@ -13,4 +13,4 @@
 #   scripts/llama-options.sh       what has CHANGED that we might want to expose?
 #                                  (runs the binary, needs a GPU)
 if_missing:
-  llama.cfg: /opt/data/llama.cfg
+  llama.cfg: /opt/config/llama.cfg

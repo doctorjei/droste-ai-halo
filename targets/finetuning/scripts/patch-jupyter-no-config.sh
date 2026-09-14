@@ -7,7 +7,7 @@
 # short-circuits on JUPYTER_NO_CONFIG:
 #
 #   paths.py:153  jupyter_config_dir()  -> a throwaway temp dir. This is the one that
-#                 excludes the USER'S /opt/data/jupyter_server_config.py, and it is
+#                 excludes the USER'S /opt/config/jupyter_server_config.py, and it is
 #                 exactly what the setting is supposed to do. LEAVE IT ALONE.
 #   paths.py:392  jupyter_config_path() -> `return [jupyter_config_dir()]`, i.e. the
 #                 whole search path collapses to that temp dir. That also throws away

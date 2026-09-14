@@ -134,7 +134,7 @@ PY
 
 # The port this box's service ACTUALLY listens on. In the merged (distrobox)
 # lane the init hook launches ds4-server with DROSTE_DS4_PORT from
-# /opt/data/ds4.cfg, so a baked-in number in the text below would be wrong for
+# /opt/config/ds4.cfg, so a baked-in number in the text below would be wrong for
 # every box that changed it (this box's installer default is 8001, not 8000).
 # 🚨 PARSED, NEVER SOURCED (s60). The two serve keys used to live in a
 # droste-owned server.env, which was safe to source; they now live in the USER's
@@ -160,7 +160,7 @@ PY
 # Deriving it means the two cannot disagree. ⚠️ If the grep fails the value stays EMPTY
 # and the range test below rejects it, so a missing spec prints nothing rather than a lie.
 serve_port() {
-  local def file="${DROSTE_SERVE_ENV:-/opt/data/ds4.cfg}" pv=""
+  local def file="${DROSTE_SERVE_ENV:-/opt/config/ds4.cfg}" pv=""
   def=$(sed -n 's/^SERVE_PORT_DEFAULT=\([0-9]\{1,5\}\).*/\1/p' \
         /opt/resources/build-spec 2>/dev/null | head -1)
   if [[ -f "$file" && -r "$file" ]]; then
@@ -255,7 +255,7 @@ printf 'Image : ghcr.io/doctorjei/droste-ds4-halo\n'
 printf 'Repo  : https://github.com/doctorjei/droste-ai-halo\n\n'
 printf 'Included:\n'
 printf '  - %-18s → %s\n' "ds4-server" "starts with the box (port $SERVE_PORT)"
-printf '  - %-18s → %s\n' "config" "/opt/data/ds4.cfg (DROSTE_DS4_* + native DS4_* vars)"
+printf '  - %-18s → %s\n' "config" "/opt/config/ds4.cfg (DROSTE_DS4_* + native DS4_* vars)"
 printf '  - %-18s → %s\n' "get a model" "download_model.sh q2-imatrix  (easy way; prints the path for DROSTE_DS4_MODEL)"
 printf '  - %-18s → %s\n' "ds4-cockpit" "TUI: model manager + server runner"
 printf '  - %-18s → %s\n' "ds4 / ds4-bench" "interactive CLI / benchmark"
@@ -265,7 +265,7 @@ printf 'Server control (acts on the SERVER, not the box):\n'
 printf '  - %-18s → %s\n' "server_status" "what the box wants, and what is really true"
 printf '  - %-18s → %s\n' "server_start" "start it now; server_stop / server_restart too"
 printf '  - %-18s → %s\n' "server_stop" "lasts until the box restarts, not beyond"
-printf '  - %-18s → %s\n' "at box start" "DROSTE_DS4_STARTUP_ENABLED in /opt/data/ds4.cfg"
+printf '  - %-18s → %s\n' "at box start" "DROSTE_DS4_STARTUP_ENABLED in /opt/config/ds4.cfg"
 echo
 # The middle field is the address the FORWARD lands on at the far end, so it has
 # to be the one the server actually bound: with host networking the listener is

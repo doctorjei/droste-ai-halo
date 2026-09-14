@@ -4,7 +4,7 @@
 # Bind a host directory of models to make them available, e.g.
 #   podman run … -v /host/models:/opt/models:ro …
 #   (distrobox.ini:  volume=/host/models:/opt/models:ro)
-# then point vLLM at a model via /opt/data/vllm_config.yaml:
+# then point vLLM at a model via /opt/config/vllm_config.yaml:
 #   model: /opt/models/<model-dir-or-file>
 #
 # Models named by HF repo id in the config download into the shared HF cache

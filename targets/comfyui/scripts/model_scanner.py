@@ -4,7 +4,7 @@
 Runs at every container start (from the entrypoint, before ComfyUI launches). Walks the
 shared HuggingFace hub cache plus an optional local models dir, CLASSIFIES every weight
 file it finds, and maintains a ComfyUI-friendly symlink tree (default
-/opt/data/model-tree, bind-mounted onto /opt/ComfyUI/models). Links point at the resolved
+/opt/program/model-tree, bind-mounted onto /opt/ComfyUI/models). Links point at the resolved
 blob (realpath) so they survive HF repo revision bumps. Steady state (nothing changed)
 does no heavy I/O: known identities skip classification entirely and go straight to a
 cheap link-verify.
@@ -44,7 +44,7 @@ regular files too, and `status` is never told which mode built the tree.
 
 DESIGN NOTES / REGISTRY SCHEMA
 ==============================
-One YAML store (default /opt/data/model-registry.yaml) plays TWO roles:
+One YAML store (default /opt/program/model-registry.yaml) plays TWO roles:
 
 1. Classification cache -- keyed by CONTENT IDENTITY so we never re-inspect a file we
    have already seen:
@@ -237,10 +237,10 @@ HEURISTICS_VERSION = 15
 
 DEFAULT_CACHE_DIR = "~/.cache/huggingface/hub"
 DEFAULT_MODELS_DIR = "/opt/models"
-DEFAULT_TREE = "/opt/data/model-tree"
-DEFAULT_REGISTRY = "/opt/data/model-registry.yaml"
+DEFAULT_TREE = "/opt/program/model-tree"
+DEFAULT_REGISTRY = "/opt/program/model-registry.yaml"
 # The NAME-IS-API table ships BESIDE the scanner (both are baked into the image by
-# Container.comfyui), so it is found relative to this file rather than under /opt/data:
+# Container.comfyui), so it is found relative to this file rather than under /opt/program:
 # it is authored data, not runtime state, and an operator editing it edits the image's
 # copy knowingly. Absent file == empty table, never an error (see load_name_api_blacklist).
 DEFAULT_NAME_API_BLACKLIST = Path(__file__).resolve().parent / "name-api-blacklist.yaml"

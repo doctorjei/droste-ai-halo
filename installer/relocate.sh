@@ -589,7 +589,7 @@ report_retired_configs() {  # box
   same_dir "$old" "$new" && return 0
   [[ -f "$(fs_path "$old")/$cfg" ]] || return 0
   say ""
-  prose "${BOX_NAME[$box]}'s settings file is at $old/$cfg, and this box will now read $new/$cfg. Its other config files are in that same old directory. Nothing is moved and nothing is overwritten: $UI_PROG will NOT write a fresh $cfg while yours is sitting there, so until you move them this box starts without settings and does not serve. Move them with the box stopped: mv $old/$cfg $new/ (and the same for any other config file beside it)."
+  prose "${BOX_NAME[$box]}'s configuration file is at $old/$cfg, and this box will now read $new/$cfg. Its other configuration files are in that same old directory. Nothing is moved and nothing is overwritten: $UI_PROG will NOT write a fresh $cfg while yours is sitting there, so until you move them this box starts without configuration and does not serve. Move them with the box stopped: mv $old/$cfg $new/ (and the same for any other configuration file beside it)."
   return 0
 }
 

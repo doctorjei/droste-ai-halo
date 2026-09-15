@@ -156,7 +156,7 @@ set_bind_path() {  # box label [force-prompt]
       return 0
     fi
     rc=0
-    mitigate_path "$ANS_PATH" nested || rc=$?
+    mitigate_path "$ANS_PATH" || rc=$?
     if [[ $rc -eq 2 ]]; then
       # "new path": this one gets asked explicitly, whatever settled it before.
       force=1

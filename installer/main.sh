@@ -18,10 +18,8 @@ main() {
   # so this is the config root and nothing more.
   # ⭐ AND THE QUESTION ITSELF LIVES IN ask_config_root, WHICH IS THE ONLY PLACE
   # IT IS AUTHORED — prompt, default and the DROSTE_CONFIG rule that can answer it
-  # without asking. Data Mapping's re-ask calls the same function. `open` says
-  # this is the call that opens the run, so a pinned root is announced and settled
-  # here rather than refused.
-  ask_config_root open
+  # without asking.
+  ask_config_root
   # The config path is what makes the old definition files findable, so this
   # is the first moment they can be parsed at all.
   detect_existing
@@ -36,10 +34,11 @@ main() {
   if [[ ${#CONFIGURE[@]} -gt 0 || ${#KEEP[@]} -gt 0 ]]; then
     local box
     if [[ ${#CONFIGURE[@]} -gt 0 ]]; then
+      # 🗄️ A global_mitigation() call stood here, walking every path General Setup
+      # had collected to find the one to raise the filesystem question on. Each of
+      # those paths settles its own filesystem at the moment it is answered now
+      # (ask_path_settled), so there is nothing left for a later pass to find.
       general_setup
-      # Every writable path chosen so far is known now, so the filesystem
-      # question can be asked once, for the most primary of them.
-      global_mitigation
       for box in "${CONFIGURE[@]}"; do
         configure_box "$box"
       done
@@ -63,10 +62,13 @@ main() {
     printf '%sNo boxes selected.%s\n' "$C_TEXT" "$RESET"
   fi
 
-  # ⭐ LAST, BECAUSE THIS IS THE FIRST MOMENT THE CONFIG PATH IS FINAL. Data
-  # Mapping can re-ask it (reask_slot rc), so an offer made beside the original
-  # prompt could persist a path this run then stopped using — and a stale export
-  # written into the user's own startup file is worse than no export at all.
+  # ⭐ LAST, AND IT NO LONGER HAS TO BE. The config path was re-askable by Data
+  # Mapping until 0.7.0, so an offer made beside the original prompt could persist
+  # a path this run then stopped using — and a stale export in the user's own
+  # startup file is worse than no export at all. That path is gone: the answer is
+  # final the moment it is given. What keeps the offer HERE is the second reason —
+  # it writes to a file we do not own, and it belongs with the run's other
+  # mutations rather than in the middle of the interview.
   # ⚠️ OUTSIDE the selection branch on purpose: a run that selects no box still
   # answered the config question, and the answer is just as unfindable next time.
   offer_config_export

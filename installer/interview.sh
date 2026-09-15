@@ -570,9 +570,9 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
 # 🚨 EVERY ONE OF THEM WAS AUTHORED TWICE AND THAT WAS THE DEFECT (Jei: "it's not
 # asking twice, it should just be a single question. why would there be a second
 # copy of the same question?"). Each prompt stood once where it is first asked and
-# again inside reask_slot — the Data Mapping "new path" answer — differing only in
-# the default it offered. One question, two authorings, nothing keeping them in
-# step: the G11 shape.
+# again inside the Data Mapping "new path" re-ask — a later pass, since deleted —
+# differing only in the default it offered. One question, two authorings, nothing
+# keeping them in step: the G11 shape.
 #
 # 🚨 AND TWO OF THE FIVE HAD ALREADY DRIFTED, IN THE TREE, UNNOTICED:
 #
@@ -589,12 +589,15 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
 # it from "droste resource storage" to "droste config" had to be done twice, and a
 # reader who found one copy had no reason to look for the other.
 #
-# ⭐ ONE RULE FOR THE DEFAULT, FIVE TIMES, AND IT NEEDS NO MODE FLAG: THE VALUE
-# ALREADY IN HAND, ELSE THE SEED. `${HF_CACHE:-$SEED_HF}` is the whole of it — the
-# variable is empty until the question is answered and holds the answer forever
-# after, so the STATE says which call this is and no caller has to be trusted to.
-# That is the same shape as port_default / path_default: one prompt, a default
-# that varies with where in the run it is asked.
+# ⭐ ONE RULE FOR THE DEFAULT, AND IT NEEDS NO MODE FLAG: THE VALUE ALREADY IN
+# HAND, ELSE THE SEED. `${HF_CACHE:-$SEED_HF}` is the whole of it — the variable is
+# empty until the question is answered and holds the answer forever after, so the
+# STATE says which call this is and no caller has to be trusted to. That is the
+# same shape as port_default / path_default: one prompt, a default that varies with
+# where in the run it is asked.
+# ⭐ THE RE-ASK OBEYS THE SAME RULE FROM INSIDE ask_path_settled, which carries the
+# answer forward as the next default — the variable here is not written until the
+# path has settled, so the loop is the only thing that can know the value in hand.
 # ⚠️ THE SEEDS ARE NOT DEFAULTED WITH `:-` HERE. An unset SEED_* is a bug (it
 # means a prompt ran before seed_globals), and `set -u` reporting it is worth more
 # than a prompt that quietly offers an empty bracket.
@@ -605,21 +608,25 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
 # (the "common base path" yes/no), because that is a different question with a
 # different answer.
 #
-# 🏁 COMING, AND NOTHING HERE IS DESIGNED AGAINST IT: Jei wants the hostile-
-# filesystem probe to happen AT THE MOMENT a path is answered, so the re-ask
-# happens in place and the later pass disappears. That change builds on these
-# five functions; do not fold them back into their call sites.
+# 🏁 THE PROBE NOW HAPPENS AT THE MOMENT THE PATH IS ANSWERED (Jei: "if a question
+# is to be re-asked, we should re-ask it AS SOON AS we get the first answer. We
+# should check right then and there, and never need to again."). Each of these
+# asks through ask_path_settled — ONE routine, below, beside the probe it calls —
+# so the re-ask happens in place and no later pass exists to need a second copy of
+# anything. ⚠️ Do not fold these back into their call sites: what each one owns is
+# a question, and ask_path_settled owns what happens to the answer.
 
 # ⭐ THE CONFIG ROOT IS THE ONE WITH A SECOND WAY TO BE ANSWERED, and the rule
-# lives in its asker for the same reason the prompt text does — so both call sites
-# inherit it.
+# lives in its asker for the same reason the prompt text does — the one call site
+# inherits it, and so would a second.
+# ⭐ IT IS ALSO THE ONE THAT DOES NOT SETTLE A FILESYSTEM, because nothing droste
+# overlays can land in it — see THE FOUR SETTLED PATHS, below.
 # 🚨 DROSTE_CONFIG PINS THE ROOT, SO THE PROMPT DOES NOT FIRE (Jei: "if
 # DROSTE_CONFIG is set already at load, we need to skip the prompt for the config
 # directory" · "check if DROSTE_CONFIG is set, and if not, ask the question"). The
 # environment has already named where droste's definition files live; asking for a
 # path on top of that offers a choice the user made elsewhere and leaves one root
-# with two answers. ⚠️ That includes the mitigation re-ask, which IS the very
-# question he said to skip.
+# with two answers.
 #
 # ⭐ THIS IS ALSO WHAT MAKES step_log_root's LITERAL READING OF THE VARIABLE
 # COHERENT, and the two only make sense together: you cannot TYPE a config root
@@ -645,19 +652,14 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
 # another is the one way forward that does not end the run. The refusal is not
 # overridden and nothing is created behind it.
 #
-# open  = the question as the run opens; a pinned root is announced, confirmed if
-#         it has to be created, and settled. ALWAYS returns 0 — one way or
-#         another this call leaves EMIT_DIR holding a root.
-# reask = Data Mapping's "new path" answer for the config root. Returns 1 WITHOUT
-#         asking when the environment pins the root, because a path typed there
-#         could not outlive the run: the variable would still name the old one at
-#         the next start. The CALLER reports that, because the reason it matters
-#         (an overlay-hostile filesystem) is the caller's fact, not this one's.
-ask_config_root() {   # open|reask → EMIT_DIR; 1 when the environment answered it
-  local mode=$1 def
+# 🗄️ IT TOOK AN open|reask MODE UNTIL 0.7.0, because Data Mapping could re-ask the
+# config root and a pinned root had to refuse there. Neither exists now: this root
+# is not probed, so there is one call and one behavior. ALWAYS returns 0 — one way
+# or another this call leaves EMIT_DIR holding a root.
+ask_config_root() {   # → EMIT_DIR
+  local def
   def=${EMIT_DIR:-$(factory_root config)}
   if [[ -n ${DROSTE_CONFIG:-} ]]; then
-    [[ $mode == open ]] || return 1
     # abs_path for the reason every other path input gets it: a RELATIVE spelling
     # cannot be resolved later without the directory it was written against. An
     # absolute or ~ spelling comes through exactly as the environment wrote it.
@@ -677,25 +679,25 @@ ask_config_root() {   # open|reask → EMIT_DIR; 1 when the environment answered
 }
 
 ask_data_root() {   # → DATA_ROOT
-  ask_path_as "Persistent data base path" "${DATA_ROOT:-$SEED_DATA_BASE}"
+  ask_path_settled "Persistent data base path" "${DATA_ROOT:-$SEED_DATA_BASE}"
   DATA_ROOT=$ANS_PATH
   return 0
 }
 
 ask_pcache_root() {   # → PCACHE_ROOT
-  ask_path_as "Program caches base path" "${PCACHE_ROOT:-$SEED_PCACHE_BASE}"
+  ask_path_settled "Program caches base path" "${PCACHE_ROOT:-$SEED_PCACHE_BASE}"
   PCACHE_ROOT=$ANS_PATH
   return 0
 }
 
 ask_compute_cache() {   # → COMPUTE_CACHE
-  ask_path_as "Compute caches (MIOpen/Triton/torch)" "${COMPUTE_CACHE:-$SEED_COMPUTE}"
+  ask_path_settled "Compute caches (MIOpen/Triton/torch)" "${COMPUTE_CACHE:-$SEED_COMPUTE}"
   COMPUTE_CACHE=$ANS_PATH
   return 0
 }
 
 ask_hf_cache() {   # → HF_CACHE
-  ask_path_as "HuggingFace models (\"cache\", never wiped)" "${HF_CACHE:-$SEED_HF}"
+  ask_path_settled "HuggingFace models (\"cache\", never wiped)" "${HF_CACHE:-$SEED_HF}"
   HF_CACHE=$ANS_PATH
   return 0
 }
@@ -818,14 +820,9 @@ probe_fstype() {  # dir → FSTYPE
 MIT_ALL=""        # ""=unset, else fuse|copy|ignore applied to all later paths
 MIT_ASKED=0
 MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
-# 1 once the config root has been REPORTED as pinned by DROSTE_CONFIG and hostile.
-# ⚠️ IT IS SET AFTER THE REPORT, NEVER INSTEAD OF ONE, and it is the difference
-# between dropping a slot and finishing with it: the menu still opens on that
-# path, the user still hears which filesystem it is on and what to change, and
-# only THEN does the slot stop being offered — because the loop re-probes the most
-# primary hostile path every pass, and a root nothing in this run can move would
-# otherwise be raised forever.
-RC_PINNED=0
+# Directories already settled, in the spelling they were answered in. A user who
+# answers two questions with ONE directory is asked about it once.
+MIT_SEEN=()
 
 # One continuous block of prose, word-wrapped to the screen and indented two.
 # The color is a parameter because two voices use this same block: body text
@@ -840,13 +837,15 @@ prose() {   # text [color]
   return 0
 }
 
-# The Data Mapping section: shown for the FIRST writable path that lands on a
-# filesystem kernel overlayfs will not take, and again later for any path still
-# unaccounted for (the "apply to all" answer is what stops the repeats).
-# "nested" = shown from inside a per-box section, which wants a blank line above.
-data_mapping_menu() {  # dir [nested] → ANS_CH in {f,c,n,i}
-  local dir=$1 nested=${2:-} letters="Fcni"
-  [[ $nested == nested ]] && say ""
+# The Data Mapping section: shown for a writable path that lands on a filesystem
+# kernel overlayfs will not take, at the moment that path is answered, and again
+# for the next such path (the "apply to all" answer is what stops the repeats).
+# 🗄️ IT TOOK A "nested" FLAG for the blank line above, back when one caller stood
+# between sections and the other inside one. Every caller is inside a section now,
+# so the line is unconditional — a flag two callers always pass is not a choice.
+data_mapping_menu() {  # dir → ANS_CH in {f,c,n,i}
+  local dir=$1 letters="Fcni"
+  say ""
   section "Data Mapping"
   say ""
   prose "The filesystem for $dir is incompatible with droste's default tool, Linux's overlayfs. Note: if ignored, filesystem must be changed before any containers can load."
@@ -868,8 +867,8 @@ data_mapping_menu() {  # dir [nested] → ANS_CH in {f,c,n,i}
 #   return 2               the user asked for a NEW PATH — the caller re-asks
 # The first hostile path opens the menu; "Apply this decision to all paths" is
 # offered exactly once and, when accepted, silences every later path.
-mitigate_path() {  # dir [nested]
-  local dir=$1 nested=${2:-}
+mitigate_path() {  # dir
+  local dir=$1
   MIT_MODE=""
   probe_fstype "$dir"
   overlay_hostile_fs "$FSTYPE" || return 0
@@ -877,7 +876,7 @@ mitigate_path() {  # dir [nested]
     MIT_MODE=$MIT_ALL
     return 0
   fi
-  data_mapping_menu "$dir" "$nested"
+  data_mapping_menu "$dir"
   case "$ANS_CH" in
     f) MIT_MODE=fuse ;;
     c) MIT_MODE=copy ;;
@@ -892,120 +891,103 @@ mitigate_path() {  # dir [nested]
   return 0
 }
 
-# The paths that exist before any box section, most primary first. "Already
-# answered for" is same_dir, not ==: a root typed as ~/droste and a config
-# path typed as /home/you/droste are one directory and one question.
+# ── THE FOUR SETTLED PATHS ───────────────────────────────────────────────────
+# Every path that can carry an overlay upper, or sit under one, settles its
+# filesystem AT THE MOMENT IT IS ANSWERED: the data root and the program-cache
+# root (where the uppers and their work dirs land), the compute cache and the HF
+# cache. Each asks through ask_path_settled, so a "new path" answer re-asks the
+# question that was just asked, in place, in the same words.
 #
+# 🚨 THE CONFIG ROOT IS NOT ONE OF THEM, AND THAT IS A 0.7.0 CONSEQUENCE (ruled
+# s83). It was probed while it was the PARENT the data and cache roots defaulted
+# under — a hostile filesystem there placed every overlay droste mounts. The three
+# roots are independent now, and this one holds the inis, NOTES.md and, in one
+# branch, the installer's own logs: text files, on whatever filesystem the user
+# keeps their config on. ⭐ Nothing droste overlays can land in it, so there is
+# nothing for overlayfs to refuse, and a Data Mapping menu over a directory of
+# text files is a question with no consequence.
+# ⚠️ WHAT WOULD PUT IT BACK: a bind whose source lands under the config root. The
+# test is not "is it ours", it is "can an overlay upper land there".
+#
+# ⭐ AND THE PRIORITY LIST DISSOLVED WITH THE LATER PASS. `rc data pcache compute
+# hf` decided which path "opened the section" while the probe ran after every
+# answer was already in. Checking at the answer makes FIRST mean first answered,
+# which is the ask order — no list has to say so.
+#
+# 🚨 EVERY HOSTILE PATH RAISES IT, NOT JUST ONE (Jei, s83: "what if someone never
+# answers 'do the same'? Wouldn't it re-ask in that case? And if not, then yes,
+# that's a bug."). The old pass returned after a single settled answer, so a user
+# who declined "apply to all" was never asked about the rest — and the compute
+# cache and the HF cache are not per-box binds, so no box section brought them
+# back either: they were raised once in the run or not at all. ⭐ "Apply this
+# decision to all paths" is what stops the repeats; declining it is a request to
+# decide path by path.
+
+mit_seen() {  # dir → 0 when a directory already settled is this same directory
+  local d
+  # `if`, not `[[ … ]] &&`: an empty list is the ORDINARY case at the first path,
+  # and this script runs under `set -e`.
+  if [[ ${#MIT_SEEN[@]} -eq 0 ]]; then return 1; fi
+  for d in "${MIT_SEEN[@]}"; do
+    same_dir "$d" "$1" && return 0
+  done
+  return 1
+}
+
 # ⭐ THE DE-DUPLICATION IS STILL SAME_DIR, AND IT IS STILL EARNING ITS KEEP
-# (0.7.0). The four roots no longer NEST — the old defaults put data and caches
-# inside the resource path, and the new ones put them under three unrelated XDG
-# directories — so these comparisons fire far less often than they used to. What
-# they catch is unchanged and is the only thing they ever caught: a user who
-# ANSWERS two of the questions with one directory. That still costs one probe
-# and one mitigation question instead of two or three, and a `==` here would
-# still miss it the moment the two answers were spelled differently.
-mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
-  case "$1" in
-    # "Not in play" for the config root means one thing only: it is pinned by
-    # DROSTE_CONFIG, it is hostile, and the run has ALREADY said so (reask_slot).
-    # ⚠️ The slot is never skipped before that report — the menu opens on this
-    # path exactly as it always did.
-    rc)      [[ $RC_PINNED -eq 0 ]] && printf '%s' "$EMIT_DIR" ;;
-    data)    [[ -n $DATA_ROOT ]] && ! same_dir "$DATA_ROOT" "$EMIT_DIR" \
-               && printf '%s' "$DATA_ROOT" ;;
-    # The program-cache root is where the venv upper lands, so it has to accept
-    # an overlay upper in its own right (P0 choice C) — probed unless it is one
-    # of the paths already answered for.
-    pcache)  [[ -n $PCACHE_ROOT ]] && ! same_dir "$PCACHE_ROOT" "$EMIT_DIR" \
-               && ! same_dir "$PCACHE_ROOT" "$(data_root)" \
-               && printf '%s' "$PCACHE_ROOT" ;;
-    compute) printf '%s' "$COMPUTE_CACHE" ;;
-    hf)      printf '%s' "$HF_CACHE" ;;
-  esac
+# (0.7.0). The roots no longer NEST — the old defaults put data and caches inside
+# the resource path, and the new ones put them under three unrelated XDG
+# directories — so it fires far less often than it used to. What it catches is
+# unchanged and is the only thing it ever caught: a user who ANSWERS two of the
+# questions with one directory. That still costs one probe and one mitigation
+# question instead of two, and a `==` would still miss it the moment the two
+# answers were spelled differently.
+# ⭐ A LIST, NOT A RULE PER PATH. The old form asked, by hand, whether the program
+# cache was the config root and whether it was the data root — one comparison per
+# pair, and none at all for the two paths nobody had written a rule for. What has
+# already settled answers it for every path, including those two.
+mit_settle() {  # dir → 0 settled · 2 the user asked for a new path
+  local rc=0
+  mit_seen "$1" && return 0
+  mitigate_path "$1" || rc=$?
+  if [[ $rc -eq 2 ]]; then return 2; fi
+  MIT_SEEN+=("$1")
   return 0
 }
 
-# Re-ask ONE of those paths (the "new path" answer) and take the new value.
-# ⭐ EVERY ARM IS NOW A CALL TO THE ONE ASKER THAT OWNS THAT QUESTION. Five
-# literal prompt strings stood here, each a second authoring of a question asked
-# above, and two of them had already drifted from the original — see THE FIVE PATH
-# QUESTIONS. What is left in each arm is the only thing that ever belonged to the
-# re-ask: what the NEW answer invalidates.
-reask_slot() {  # slot → 0 when re-asked
-  case "$1" in
-    rc)
-      # 🚨 A ROOT PINNED BY DROSTE_CONFIG CANNOT BE RE-ASKED, AND THE RUN SAYS SO
-      # RATHER THAN GOING QUIET. A path typed here could not outlive the run — the
-      # variable would still name this one at the next start — so the offer would
-      # be a prompt whose answer is discarded. The menu still opened on this path
-      # and the report below names the filesystem and names the thing to change.
-      if ! ask_config_root reask; then
-        say ""
-        prose "The config path comes from DROSTE_CONFIG, so it cannot be changed here $EMD a path typed now would be forgotten at the end of this run, while your environment would still name $EMIT_DIR. Point DROSTE_CONFIG at a directory on another filesystem ($FSTYPE is the one it is on now) and run droste-setup.sh again, or choose one of the other options above." \
-          "$C_NOTB"
-        say ""
-        # Reported, and only now retired from the probe loop: the loop re-picks
-        # the most primary hostile path every pass, so a root this run cannot move
-        # would be raised again and again.
-        RC_PINNED=1
-        return 0
-      fi
-      # ⭐ MOVING THE CONFIG PATH NO LONGER MOVES ANYTHING ELSE (0.7.0). Two
-      # lines stood here that re-derived the data and program-cache roots —
-      # "a root that merely tracked the resource path keeps tracking it" — and
-      # they were right while those roots DEFAULTED to <resource path>/data and
-      # /caches. The three roots are independent now, each with its own XDG
-      # default, so a root the user has already settled stays settled: re-asking
-      # where the .ini files live is not an answer about where the data lives.
-      # ⚠️ Deleting them, rather than re-pointing them at the new factory roots,
-      # is the point: those values are ANSWERS by the time this runs (General
-      # Setup is over), and re-deriving an answer the user gave is the defect,
-      # not the fix.
-      #
-      # Everything the old config path implied has to be re-derived: which
-      # boxes already exist there, and what the user wants done about them.
-      EX_INI=() EX_CTR=() EXD_PATH=()
-      EXD_PORT=() EXD_BOXSV=() EXD_HSTSV=() EXD_MODE=()
-      detect_existing
-      existing_settings
-      seed_globals
-      ;;
-    data)    ask_data_root ;;
-    pcache)  ask_pcache_root ;;
-    compute) ask_compute_cache ;;
-    hf)      ask_hf_cache ;;
-    *) return 1 ;;
-  esac
-  return 0
-}
-
-# Data Mapping over the paths chosen BEFORE any box section. Only the FIRST /
-# most primary hostile one opens the section (Jei's spec); whatever the user
-# answers there either covers every path that follows ("apply to all") or leaves
-# the remaining paths to raise it again where they arise, box paths included.
-global_mitigation() {
-  local slot dir rc
+# ⭐ ONE ROUTINE, NOT A LOOP IN EVERY ASKER (Jei, s83: "why not make that a
+# routine?"). What an asker owns is the QUESTION — its wording, its default, and
+# the variable the answer lands in. What happens to an ANSWER is the same for all
+# four, so it is written once, here, beside the probe it calls.
+# ⚠️ THE RE-ASK OFFERS THE PATH JUST REJECTED AS ITS DEFAULT, deliberately: it is
+# the value in hand, which is the rule every one of these prompts already follows,
+# and a user correcting one component of a long path should not retype the rest.
+ask_path_settled() {  # "prompt label" default → ANS_PATH (settled)
+  local prompt=$1 def=$2 rc
   while :; do
-    dir=""
-    for slot in rc data pcache compute hf; do
-      dir=$(mitigation_slot_path "$slot")
-      [[ -n $dir ]] || continue
-      probe_fstype "$dir"
-      overlay_hostile_fs "$FSTYPE" && break
-      dir=""
-    done
-    [[ -z $dir ]] && return 0
+    ask_path_as "$prompt" "$def"
     rc=0
-    mitigate_path "$dir" || rc=$?
-    if [[ $rc -ne 2 ]]; then
-      # Close the section the way a per-box section closes, so the banner
-      # below it keeps the same two-line gap as every other banner.
-      say ""
-      return 0
-    fi
-    reask_slot "$slot" || return 0
+    mit_settle "$ANS_PATH" || rc=$?
+    if [[ $rc -ne 2 ]]; then return 0; fi
+    def=$ANS_PATH
   done
 }
+
+# 🗄️ WHAT STOOD HERE, AND WHY IT IS GONE (0.7.0, s83): reask_slot carried a second
+# authoring of all five path prompts, and global_mitigation walked a priority list
+# after the interview to decide which one to raise. Both existed only because the
+# check ran LATER than the answer.
+# ⭐⭐ NONE OF THE THREE ENCODED A DECISION. They re-identified a value that had
+# left the place which knew what it was — a slot name standing in for a path, a
+# priority list standing in for "which answer came first", a second copy of a
+# prompt standing in for the question that had already been asked. Ask at the
+# moment of the answer and every one of them has nothing left to do.
+# 🗄️ AND TWO THINGS WENT WITH THEM, both of which only ever existed to serve the
+# later pass: the pinned-config-root refusal (a root DROSTE_CONFIG names could not
+# be re-asked, so the run explained itself instead of offering a prompt whose
+# answer it would discard), and the detect_existing / existing_settings /
+# seed_globals re-run that a moved config root forced — the config root is
+# answered before anything has been detected, so there is nothing to invalidate.
 
 
 # ── Remembering the config root (the DROSTE_CONFIG export) ───────────────────

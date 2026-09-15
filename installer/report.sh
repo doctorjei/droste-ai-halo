@@ -79,12 +79,12 @@ write_notes() {
     printf '\n## Four places your files live\n\n'
     printf 'Every box reads four host directories, and what separates them is\n'
     printf 'what it would cost you to lose one:\n\n'
-    printf -- '- **Config dir** (`data/<box>/config` by default) — YOUR SETTINGS,\n'
+    printf -- '- **Config dir** (`~/.local/share/droste/<box>/config` by default) — YOUR SETTINGS,\n'
     printf '  and nothing else: `<box>.cfg`, its `.example`, and any other\n'
     printf '  configuration file this box has. NOTHING gets these back. They are\n'
     printf '  written once, when they are absent, and are yours from then on —\n'
     printf '  droste-setup.sh never overwrites one and never deletes one.\n'
-    printf -- '- **Program dir** (`data/<box>/program` by default) — what the box\n'
+    printf -- '- **Program dir** (`~/.local/share/droste/<box>/program` by default) — what the box\n'
     printf '  BUILT for you: the Python environment overlay (where a `pip install`\n'
     printf '  you run inside the box actually lands), ComfyUI%s custom nodes and\n' "'s"
     printf '  model tree, ds4%s saved sessions, the box%s logs. Losing it is not\n' "'s" "'s"
@@ -92,10 +92,10 @@ write_notes() {
     printf '  so nothing droste-setup.sh does will ever offer to delete it. (The\n'
     printf '  HuggingFace cache belongs to this class too, despite its name; it\n'
     printf '  keeps its standard location and is never wiped either.)\n'
-    printf -- '- **Cache dir** (`caches/<box>` by default) — PROGRAM CACHES, and\n'
+    printf -- '- **Cache dir** (`~/.cache/droste/program/<box>` by default) — PROGRAM CACHES, and\n'
     printf '  nothing else: scratch temp, llama%s saved-prompt slots, ds4%s KV\n' \
       "'s" "'s"
-    printf '  disk, the overlay work dirs, and the server state dir. Nothing in\n'
+    printf '  disk, and the server state dir. Nothing in\n'
     printf '  here is authored and nothing is irreplaceable — droste-setup.sh\n'
     printf '  offers to EMPTY it when it finds leftovers from an older\n'
     printf '  generation, and the box rebuilds what it needs at the next start.\n'
@@ -110,7 +110,7 @@ write_notes() {
     printf '  has something in it — and that question names the directory first.\n'
     printf -- '- **Compute caches** (`%s`) — the compiled GPU\n' "$COMPUTE_CACHE"
     printf '  kernels, SHARED by every box because their content is keyed by\n'
-    printf '  version and architecture. compute-caches is safe to delete anytime;\n'
+    printf '  version and architecture. That directory is safe to delete anytime;\n'
     printf '  kernels rebuild on next start. The installer never touches it.\n'
     printf '\n## Day-to-day commands\n\n'
     printf '    podman start <name>        # start the box (+ its server)\n'

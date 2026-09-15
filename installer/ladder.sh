@@ -92,7 +92,7 @@ create_box() {  # box
 
 # ── The consented cache clear, carried out ───────────────────────────────────
 # WHY IT IS HERE AND NOT WHERE IT IS ASKED (s80, closing s79's G4). The clear
-# needs the box STOPPED — its overlay work dirs and the server's state dir are
+# needs the box STOPPED — the server's state dir is
 # under the root being emptied — and the interview is not a moment at which a box
 # may be bounced: the paths are still being settled and nothing has been written.
 # So the question stays in the interview, where the path it applies to is on

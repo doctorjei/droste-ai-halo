@@ -59,17 +59,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfgapply.sh"
 #                      and logs/. A reinstall or a re-run gets this back, which is
 #                      not the same as free — NOTHING WE SHIP EVER DELETES THIS
 #                      ROOT OR OFFERS TO (ruled, s79).
-#   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable FOR FREE: overlay .work
-#                      dirs, copy-mode materializations, per-box compute-cache
+#   /opt/program-cache PER-BOX PROGRAM CACHE, re-obtainable FOR FREE: copy-mode
+#                      materializations, per-box compute-cache
 #                      fallback, tmp, llama slots, ds4 kv-disk, the state/ server
 #                      dir. The installer may empty this whole root with the
 #                      user's consent; nothing here is ever backed up, and NOTHING
 #                      outside it is ever wiped.
 #   /opt/caches        OPTIONAL SHARED compute caches ACROSS boxes (MIOpen /
 #                      Triton / torch / vLLM kernels) — see cache_bind below.
-# Host defaults are ~/droste/data/<box>/config, ~/droste/data/<box>/program,
-# ~/droste/caches/<box> and ~/droste/compute-caches respectively; any host path
-# works, the container-side names above are what the specs are written against.
+# Host defaults are ~/.local/share/droste/<box>/config and .../program,
+# ~/.cache/droste/program/<box> and ~/.cache/droste/compute respectively; any host
+# path works, the container-side names above are what the specs are written against.
 # ⚠️ THE VENV UPPER WAS ON /opt/program-cache UNTIL s79 — the one root the wipe
 # reaches — and that cost a working box. A box created before the move still has
 # its owner's installs under the old path; the installer reports that and excludes
@@ -585,7 +585,7 @@ resolve::surface() {
 
 # ── Shared compute-cache volume ($DROSTE_CACHES_DIR, both lanes) ────────────
 # OPTIONAL cross-container cache store: bind ONE host dir (default host path
-# ~/droste/compute-caches — a default only, any path works) onto /opt/caches and every
+# ~/.cache/droste/compute — a default only, any path works) onto /opt/caches and every
 # CACHES row whose src lives under $DROSTE_PCACHE_DIR/compute/ is rewritten to source
 # from the shared dir instead, so all droste boxes share one MIOpen/Triton/torch/vLLM
 # kernel-cache store. Unbound => graceful degrade to per-box
@@ -608,7 +608,7 @@ resolve::_shared_caches() {
             RESOLVE_SHARED_CACHES=y
         else
             RESOLVE_SHARED_CACHES=n
-            resolve::info "$DROSTE_CACHES_DIR is not bound — compute caches stay per-box under $DROSTE_PCACHE_DIR/compute/. Bind one shared host dir (e.g. server: -v ~/droste/compute-caches:$DROSTE_CACHES_DIR; distrobox ini: volume=\"~/droste/compute-caches:$DROSTE_CACHES_DIR\") to share kernel caches across all droste boxes."
+            resolve::info "$DROSTE_CACHES_DIR is not bound — compute caches stay per-box under $DROSTE_PCACHE_DIR/compute/. Bind one shared host dir (e.g. server: -v ~/.cache/droste/compute:$DROSTE_CACHES_DIR; distrobox ini: volume=\"<host>:$DROSTE_CACHES_DIR\", host side spelled ABSOLUTE — a leading ~ there names a volume instead of binding one) to share kernel caches across all droste boxes."
         fi
     fi
     [ "$RESOLVE_SHARED_CACHES" = y ]
@@ -758,9 +758,9 @@ resolve::ensure_config() {
     local dir=${1:-$DROSTE_CONFIG_DIR}
     resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_program
     if ! resolve::is_bound "$dir"; then
-        resolve::warn "$dir is not a bound volume — this box's config files will live in the container's writable layer, so every setting you edit is LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/data/<box>/config:$dir\")."
+        resolve::warn "$dir is not a bound volume — this box's config files will live in the container's writable layer, so every setting you edit is LOST on container recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"<host>:$dir\", host side spelled ABSOLUTE — a leading ~ there names a volume instead of binding one)."
     elif resolve::_anon_volume "$dir"; then
-        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so your edited settings go with it. Bind a host dir (-v ~/droste/data/<box>/config:$dir) or a NAMED volume (-v myconfig:$dir) instead."
+        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so your edited settings go with it. Bind a host dir (-v ~/.local/share/droste/<box>/config:$dir) or a NAMED volume (-v myconfig:$dir) instead."
     fi
 }
 
@@ -787,7 +787,7 @@ resolve::ensure_program() {
 }
 
 # ── /opt/program-cache handling (both lanes) ────────────────────────────────
-# The per-box PROGRAM-CACHE root: overlay .work dirs, copy-mode materializations, tmp,
+# The per-box PROGRAM-CACHE root: copy-mode materializations, tmp,
 # llama slots, ds4 kv-disk, the state/ server dir, the per-box compute-cache fallback.
 # An unbound one costs nothing irreplaceable — everything here is rebuilt on demand —
 # but it is still worth saying out loud, because the box then rebuilds all of it at
@@ -805,9 +805,9 @@ resolve::ensure_pcache() {
     local dir=${1:-$DROSTE_PCACHE_DIR}
     resolve::_mkuserdir "$dir"   # box-user owned when we create it — see ensure_program
     if ! resolve::is_bound "$dir"; then
-        resolve::warn "$dir is not a bound volume — the box's program caches (scratch, slots, KV disk, overlay work dirs, server state) will live in the container's writable layer and be rebuilt at every recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"~/droste/caches/<box>:$dir\")."
+        resolve::warn "$dir is not a bound volume — the box's program caches (scratch, slots, KV disk, server state) will live in the container's writable layer and be rebuilt at every recreation. Bind a host dir with -v <host>:$dir (distrobox ini: volume=\"<host>:$dir\", host side spelled ABSOLUTE — a leading ~ there names a volume instead of binding one)."
     elif resolve::_anon_volume "$dir"; then
-        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so the box rebuilds its caches after every recreate. Bind a host dir (-v ~/droste/caches/<box>:$dir) or a NAMED volume (-v mycache:$dir) instead."
+        resolve::warn "$dir is on an ANONYMOUS volume — it will NOT survive container removal, so the box rebuilds its caches after every recreate. Bind a host dir (-v ~/.cache/droste/program/<box>:$dir) or a NAMED volume (-v mycache:$dir) instead."
     fi
 }
 

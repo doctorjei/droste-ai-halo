@@ -23,9 +23,9 @@ config file per box, and one guide for the install:
 
 | File | What it is |
 |---|---|
-| `~/droste/<box>-halo.ini` | that box's whole definition — `distrobox assemble create --file` it to rebuild |
+| `~/.config/droste/<box>-halo.ini` | that box's whole definition — `distrobox assemble create --file` it to rebuild |
 | `<box>.cfg` (in the box's data dir) | the box's own settings file; your startup and port answers are merged into it a line at a time, and it is re-read at every start |
-| `~/droste/NOTES.md` | one guide for the whole install, with your own paths in it |
+| `~/.config/droste/NOTES.md` | one guide for the whole install, with your own paths in it |
 
 Re-run the installer whenever you like — it reads back what you chose last
 time, so you only answer what you want to change. Full documentation of it,
@@ -157,8 +157,8 @@ Mount contract (all ports):
   upper, ds4's saved sessions, the box's `logs/`. A reinstall or a re-run gets
   this back, at a cost; nothing on it is ever deleted by anything we ship.
   Unbound → anonymous volume + a warning. Because
-  overlay uppers live here — and their `.work` siblings on `/opt/program-cache`
-  below — the backing
+  overlay uppers live here — and their `.work` siblings beside them, which
+  kernel overlayfs requires — the backing
   filesystem must be ext4/btrfs/xfs-class (tmpfs also works) — **not** ecryptfs
   (encrypted homes), NFS, or virtiofs, which kernel overlayfs rejects as an
   upper. On such hosts the resolver falls back to fuse-overlayfs automatically
@@ -169,16 +169,15 @@ Mount contract (all ports):
   Plain binds (HF cache, `/opt/caches`, input/output, workspace) have no
   filesystem requirement.
 - **`/opt/program-cache`** — the box's PROGRAM-CACHE volume: everything it can
-  re-obtain by itself. The venv overlay upper (and its `.work` sibling),
-  comfyui's scratch `temp/`, llama's
+  re-obtain by itself. comfyui's scratch `temp/`, llama's
   slot store, ds4's KV disk, the server state dir `state/`, and
   the per-box compute-cache fallback under `compute/`. This root is the only
   thing `droste-setup.sh` ever empties, and only when you say yes to a question
   that names it. There is deliberately **no `VOLUME` declaration** for it in
-  the images — an anonymous volume would silently hoard multi-GB venv uppers
+  the images — an anonymous volume would silently hoard multi-GB cache trees
   under a name nobody goes looking for — so the bind in the ini (or the `-v`
-  below) is the only thing keeping your in-box `pip install`s off the container
-  layer. Unbound → a warning, never an error.
+  below) is the only thing keeping them off the container layer.
+  Unbound → a warning, never an error.
 - **Critical binds** — hard-error at start unless bound; `ALLOW_EPHEMERAL=1`
   downgrades that to a warning. Always the **HF cache** (`~/.cache/huggingface` —
   the SINGLE model store, shared across all five ports; bind the same host dir
@@ -188,7 +187,7 @@ Mount contract (all ports):
   torch-hub). The story is TWO shared stores plus the two per-box roots above:
   models live in the HF cache, compute caches live here, and everything
   box-private stays on `/opt/config`, `/opt/program` or `/opt/program-cache`. Bind the same host
-  dir (default `~/droste/compute-caches`; any dir you like) into every
+  dir (default `~/.cache/droste/compute`; any dir you like) into every
   container/box and kernels tuned or JIT-compiled by one are warm for the
   rest. Optional: unbound → the resolver degrades
   gracefully to the box's own `/opt/program-cache/compute/` with an INFO, never
@@ -202,21 +201,21 @@ Mount contract (all ports):
 Those container paths come off **three host roots**, and what separates them is
 what may be thrown away:
 
-- **`~/droste/data/<box>/program`** — persistent, per box. Your work and
+- **`~/.local/share/droste/<box>/program`** — persistent, per box. Your work and
   everything you authored; `droste-setup.sh` deletes nothing here unasked — the
   one way it ever does is the `remove data at new path` answer to a move
   question, which names
   the directory before offering it. It sits under a per-box directory
   **beside** its siblings, not above them: comfyui's `input` and `output` and
-  the finetuning `workspace` are `~/droste/data/<box>/input` and so on. (Boxes
-  set up before this shape have their program data at `~/droste/data/<box>`
+  the finetuning `workspace` are `~/.local/share/droste/<box>/input` and so on.
+  (Boxes set up before this shape have their program data at `~/droste/data/<box>`
   itself, with the others inside it; nothing rewrites them, and the installer
   keeps using the paths their ini records.)
-- **`~/droste/caches/<box>`** — that box's program caches and nothing else: the
-  venv overlay, llama's slots, ds4's KV disk, scratch temp. Emptied only on
+- **`~/.cache/droste/program/<box>`** — that box's program caches and nothing
+  else: llama's slots, ds4's KV disk, scratch temp. Emptied only on
   consent, at the installer's stale-cache question; every one of those is
   re-seeded or rebuilt at the next box start.
-- **`~/droste/compute-caches`** — the compiled GPU kernels, shared by every box
+- **`~/.cache/droste/compute`** — the compiled GPU kernels, shared by every box
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.
 
@@ -228,14 +227,14 @@ host-networked box, which binds its port directly:
 ```bash
 podman run -d -p 8188:8188 --device /dev/kfd --device /dev/dri \
   --cap-add sys_admin --group-add keep-groups \
-  -v ~/droste/data/comfyui/config:/opt/config \
-  -v ~/droste/data/comfyui/program:/opt/program \
-  -v ~/droste/caches/comfyui:/opt/program-cache \
-  -v ~/droste/data/comfyui/user:/opt/ComfyUI/user \
-  -v ~/droste/data/comfyui/input:/opt/ComfyUI/input \
-  -v ~/droste/data/comfyui/output:/opt/ComfyUI/output \
+  -v ~/.local/share/droste/comfyui/config:/opt/config \
+  -v ~/.local/share/droste/comfyui/program:/opt/program \
+  -v ~/.cache/droste/program/comfyui:/opt/program-cache \
+  -v ~/.local/share/droste/comfyui/user:/opt/ComfyUI/user \
+  -v ~/.local/share/droste/comfyui/input:/opt/ComfyUI/input \
+  -v ~/.local/share/droste/comfyui/output:/opt/ComfyUI/output \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  -v ~/droste/compute-caches:/opt/caches \
+  -v ~/.cache/droste/compute:/opt/caches \
   ghcr.io/doctorjei/droste-comfyui-halo:latest
 ```
 
@@ -332,7 +331,7 @@ mounts as the server entrypoint** — the overlays (venv, comfyui
 custom_nodes; kernel→fuse→copy fallback included), the surfaces (including
 comfyui's model tree and datasets, so the ini no longer carries its own volume
 lines for those), and the cache binds (the inis carry the same shared
-`~/droste/compute-caches` → `/opt/caches` volume). The payoff is the whole
+`~/.cache/droste/compute` → `/opt/caches` volume). The payoff is the whole
 point of this project: in-box changes **survive box deletion/recreation**
 instead of dying with the container layer — a `pip install` into `/opt/venv`
 rides the venv overlay on `/opt/program`, custom nodes their own overlay
@@ -424,8 +423,9 @@ Everything the boxes fetch on their own lands in one of those two.
 
 ## Host Tools
 
-Three helpers ship with the repo — `droste-setup.sh` at the root, the two adopt
-tools invoked from `scripts/`. They run on the **host** (plain bash /
+Three helpers come with droste — `droste-setup.sh`, which is assembled from
+`installer/` and published as a release asset rather than checked in, and the
+two adopt tools invoked from `scripts/`. They run on the **host** (plain bash /
 python3, stdlib only — no container, no pip installs) and feed the mount
 contract above: `droste-setup.sh` writes the run records; the two `*-adopt` tools
 populate the shared model stores the containers mount. The adopt tools
@@ -451,7 +451,7 @@ whether each box serves when it starts and whether it starts at host boot. It
 **probes each data dir's filesystem** and, on an overlay-hostile one
 (ecryptfs/NFS/…, see Troubleshooting), offers another location, the
 fuse-overlayfs fallback, or copy-mode. It then emits per-box **recreation
-records** into `~/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
+records** into `~/.config/droste/` — `<box>-halo.ini` (the single `distrobox assemble`
 definition for that box, healthcheck flags and all) and a `NOTES.md` guide
 with your real paths baked in — and can pull images, create boxes, and start
 servers. Your startup and port answers do not go into a file of droste's; they

@@ -15,6 +15,8 @@ curl -fsSL https://github.com/doctorjei/droste-ai-halo/releases/latest/download/
 
 Images can also be directly pulled from `ghcr.io/doctorjei/droste-<name>-halo`.
 
+Deeper documentation — the mount contract, the configuration system, the installer walkthrough, and the host tools — is in [DETAILS.md](DETAILS.md).
+
 <br />
 
 ## End-User Images

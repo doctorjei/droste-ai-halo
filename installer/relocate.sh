@@ -10,7 +10,7 @@
 
 # Base path for the PERSISTENT DATA family (the box's own directory, holding
 # config/ program/ input/ output/ workspace/ user/ as SIBLINGS) and for the
-# PROGRAM CACHE family (tmp, slots, kv-disk, overlay work dirs — everything the
+# PROGRAM CACHE family (tmp, slots, kv-disk — everything the
 # installer may wipe). The compute and HuggingFace caches are deliberately in
 # neither: they are shared by every box, keyed by content, and were asked
 # separately.
@@ -201,7 +201,7 @@ set_bind_path() {  # box label [force-prompt]
 
 # ── Stale program caches ─────────────────────────────────────────────────────
 # A box's program-cache dir holds nothing but FREE REGEN: tmp, slots, kv-disk,
-# the serve state dir, the per-box compute-cache fallback, the overlay work dirs.
+# the serve state dir, and the per-box compute-cache fallback.
 # Nothing in it is authored and nothing in it is data — the taxonomy
 # classifies BY LOCATION, which is exactly what makes this test cheap and
 # honest: anything in there at all is a previous generation's leftovers, and an

@@ -9,16 +9,27 @@
 PULL_SOCK=""
 PULL_SVC_PID=""
 
+# ── What a dry run may say about the registry, and what it may not ──────────
+# Three readers of ONE query, all of them dry-run-only: the size of the pull, the
+# digests the registry resolved, and the verdict on the copy already here.
+# ⚠️ THE SUBJECT IS `py/pull_manifest.py … digests`, ITS SECOND OUTPUT SHAPE —
+# a mode the real pull path never asks for, precisely so that path keeps reading
+# the bare blob map it always read. Nothing below may be called from it.
+# 🚨 AND EVERY FAILURE STAYS SILENT, on the 8s budget the query already had. A
+# registry in a mood must not fail a dry run and must not hang one; the answer is
+# then "not compared", which is a true sentence, and never "behind", which would
+# not be.
+
 # " (4.7 GB)" from the blob map py/pull_manifest.py already returns, or "" when
 # it returned nothing. ⚠️ IT IS THE DOWNLOAD SIZE, NOT THE ON-DISK SIZE: layers
 # are compressed in the registry and are not once unpacked, so the sentence says
 # "pull", which is the number this is true of.
-dry_pull_size() {   # blob-map-json → " (N.N GB)" or ""
+dry_pull_size() {   # dry-manifest-json → " (N.N GB)" or ""
   local n
   n=$(printf '%s' "$1" | python3 -c '
 import json, sys
 try:
-    b = json.load(sys.stdin)
+    b = json.load(sys.stdin)["blobs"]
     t = sum(v for v in b.values() if isinstance(v, int))
 except Exception:
     sys.exit(0)
@@ -32,6 +43,58 @@ sys.stdout.write("%.1f %s" % (t, unit) if unit != "bytes" else "%d bytes" % t)
 ' 2>/dev/null) || n=""
   [[ -n $n ]] && printf ' (%s)' "$n"
   return 0
+}
+
+# The registry-side digests, one per line, or nothing at all.
+dry_pull_digests() {   # dry-manifest-json → sha256:… per line
+  printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)["digests"]
+except Exception:
+    sys.exit(0)
+for x in d:
+    if isinstance(x, str) and x:
+        sys.stdout.write(x + "\n")
+' 2>/dev/null || :
+  return 0
+}
+
+# ── Is the copy on this machine current? (the one piece of §7.2 that was named
+#    rather than faked until s84) ────────────────────────────────────────────
+# 🚨 THE ANSWER IS THREE-WAY, AND THE THIRD VALUE IS THE WHOLE POINT. "Behind" is
+# a claim about the user's disk that sends them into a multi-GB download, so it
+# is said only when BOTH sides produced a digest and none of them matched.
+# Anything else — the registry did not answer, the runtime reports no digest, the
+# image is not here — is NOT COMPARED, which is what this said before it could
+# compare at all. ⭐ A false "your copy is behind" is exactly the overclaim §0 of
+# the plan forbids, and the failure mode is silent: nothing breaks, the user just
+# re-downloads what they already had.
+# ⭐ IT ASKS FOR EVERY DIGEST THE LOCAL COPY REPORTS AND ACCEPTS A MATCH ON ANY OF
+# THEM. A multi-arch repo resolves to an INDEX digest and to this machine's
+# SUB-MANIFEST digest; `.Digest` and `RepoDigests` are two different answers a
+# runtime may hold, and which one is recorded is not ours to predict. Matching on
+# any is right because the question is "did this copy come from what the tag
+# names now", and any single agreement answers it yes.
+# ⚠️ `image inspect` IS A READ and must stay unwrapped — a rehearsal that cannot
+# look at the world cannot rehearse. It is also the only podman call here: this
+# never pulls, and it never asks the registry a second time.
+dry_local_current() {   # img dry-manifest-json → 0 current, 1 behind, 2 not compared
+  local raw tok want bag=""
+  raw=$("$RUNTIME" image inspect --format \
+        '{{.Digest}}{{range .RepoDigests}} {{.}}{{end}}' "$1" 2>/dev/null) || raw=""
+  # RepoDigests are spelled `repo@sha256:…` and .Digest is the bare digest, so
+  # the tail after an @ is the token in both cases.
+  for tok in $raw; do
+    case "$tok" in *sha256:*) bag="$bag ${tok##*@}" ;; esac
+  done
+  [[ -n $bag ]] || return 2
+  want=$(dry_pull_digests "$2")
+  [[ -n $want ]] || return 2
+  while IFS= read -r tok; do
+    if [[ -n $tok && " $bag " == *" $tok "* ]]; then return 0; fi
+  done <<<"$want"
+  return 1
 }
 
 pull_service_stop() {
@@ -118,7 +181,7 @@ PY
 }
 
 pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
-  local box=$1 img repo tag short log manifest colf col rc=0
+  local box=$1 img repo tag short log manifest colf col cur rc=0
   img="${IMAGE_PREFIX}${box}${IMAGE_SUFFIX}"
   repo=${img%:*} tag=${img##*:}
   # The bar is labelled with the image, not with the registry and owner that
@@ -140,13 +203,16 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
   # index, picks this machine's architecture and hands back digest→size for every
   # blob — which is a pull size, summed. Building a second manifest reader beside
   # it is the mistake s78 and s79 each made once.
-  # ⚠️ NOT ANSWERED HERE, AND SAID RATHER THAN GUESSED: whether the LOCAL copy is
-  # behind the registry's. That needs the resolved manifest digest, which this
-  # helper does not print (it returns blob sizes, by design, for the progress
-  # bar). Reporting "up to date" without comparing digests would be the
+  # ✅ AND IT ANSWERS THE LOCAL-COPY QUESTION TOO, AS OF s84 — the last piece of
+  # §7.2, which until then was NAMED rather than faked. The helper prints the
+  # resolved digests when asked for them (`digests`, a mode the real pull path
+  # never passes), and they are compared against every digest this machine's copy
+  # reports. ⚠️ THE COMPARISON REFUSES TO GUESS: it says "behind" only when both
+  # sides produced a digest and none agreed, and "not compared" otherwise — a
+  # false "your copy is behind" is a multi-GB download nobody needed, which is the
   # overclaim §0 forbids. → plans/installer-dry-run-s75.md §7.2.
   if dry::on; then
-    manifest=$(python3 -c "$(_pull_manifest_py)" "$repo" "$tag" 2>/dev/null) \
+    manifest=$(python3 -c "$(_pull_manifest_py)" "$repo" "$tag" digests 2>/dev/null) \
       || manifest=""
     if [[ -n $manifest ]]; then
       dry::would "pull $img$(dry_pull_size "$manifest")"
@@ -154,7 +220,12 @@ pull_image() {   # box → 0 on success (draws the bar; caller draws the status)
       dry::would "pull $img (the registry did not answer, so its size is unknown)"
     fi
     if [[ -n ${RUNTIME:-} ]] && "$RUNTIME" image exists "$img" 2>/dev/null; then
-      dry::sim "a copy of $img as already present locally (not compared with the registry)"
+      cur=0; dry_local_current "$img" "$manifest" || cur=$?
+      case $cur in
+        0) dry::sim "a copy of $img as already present locally (it appears current)" ;;
+        1) dry::sim "a copy of $img as already present locally (it appears to be behind the registry, so a real pull would fetch a newer image)" ;;
+        *) dry::sim "a copy of $img as already present locally (not compared with the registry)" ;;
+      esac
     fi
     return 0
   fi

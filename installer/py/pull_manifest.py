@@ -1,5 +1,15 @@
-import json, platform, re, sys, time
+import hashlib, json, platform, re, sys, time
 import urllib.error, urllib.parse, urllib.request
+
+# ── TWO OUTPUT SHAPES, AND THE DEFAULT ONE IS FROZEN ────────────────────────
+# argv[3] == "digests" adds the resolved manifest DIGESTS beside the blob map;
+# no third argument means the bare blob map, byte for byte as before.
+# 🚨 THE DEFAULT SHAPE IS NOT OURS TO RESHAPE. This program's stdout is handed
+# VERBATIM to py/pull_progress.py as an argument, and the suites assert a real
+# pull is byte-identical to one without --dry-run. A second consumer wanting a
+# second field is not a reason to change what the first one reads; it is a reason
+# to give it a mode of its own, which nothing on the real pull path ever asks for.
+MODE = sys.argv[3] if len(sys.argv) > 3 else ""
 
 # Both index kinds first, so a multi-arch repo hands back the list rather than
 # whichever image the registry guesses we want, then both single-manifest kinds.
@@ -60,24 +70,44 @@ def bearer(host, name, challenge):
     return body.get("token") or body.get("access_token") or ""
 
 
+def read(resp):
+    """The document, and EVERY digest this response lets us name for it.
+
+    ⭐ TWO SOURCES ON PURPOSE, AND IT IS ROBUSTNESS RATHER THAN BELT-AND-BRACES.
+    A manifest's digest IS the sha256 of the bytes it is served as, so computing
+    it needs no header and cannot be withheld; Docker-Content-Digest is the
+    registry's own assertion of the same thing, and a registry that re-serialises
+    a manifest would make the two differ. The caller only ever asks "is any of
+    these the one the local copy reports", so handing back both can turn a false
+    'behind' into a correct 'current' and can never do the reverse."""
+    raw = resp.read()
+    seen = ["sha256:" + hashlib.sha256(raw).hexdigest()]
+    stated = resp.headers.get("Docker-Content-Digest") or ""
+    if stated and stated not in seen:
+        seen.append(stated)
+    return json.loads(raw.decode("utf-8")), seen
+
+
 def manifest(host, name, ref, token):
     """One manifest by tag or by digest, acquiring a token if asked to."""
     url = "https://%s/v2/%s/manifests/%s" % (
         host, name, urllib.parse.quote(ref, safe=":@"))
     try:
         with fetch(url, token) as resp:
-            return json.loads(resp.read().decode("utf-8")), token
+            doc, seen = read(resp)
+        return doc, token, seen
     except urllib.error.HTTPError as exc:
         if exc.code != 401 or token:
             raise
         token = bearer(host, name, exc.headers.get("WWW-Authenticate") or "")
     with fetch(url, token) as resp:
-        return json.loads(resp.read().decode("utf-8")), token
+        doc, seen = read(resp)
+    return doc, token, seen
 
 
 try:
     host, name = split(sys.argv[1])
-    doc, token = manifest(host, name, sys.argv[2], "")
+    doc, token, digests = manifest(host, name, sys.argv[2], "")
     if doc.get("manifests"):
         # An index: pick the entry for the machine doing the pulling. Signature
         # and attestation entries live here too, and are filtered out by the
@@ -91,7 +121,16 @@ try:
                 break
         if not pick:
             raise RuntimeError("no linux/%s entry in the index" % want)
-        doc, token = manifest(host, name, pick, token)
+        # 🚨 A MULTI-ARCH REPO HAS TWO DIGESTS THAT MATTER AND A RUNTIME MAY HAVE
+        # RECORDED EITHER — the INDEX digest (what the tag resolves to) and THIS
+        # MACHINE'S sub-manifest digest (what was actually pulled). Both are
+        # carried, plus the index's own assertion of the second, because the
+        # caller asks only whether the local copy reports ANY of them: a digest
+        # too many costs nothing, and a digest missing reads as "behind" — which
+        # is the overclaim this must not make.
+        doc, token, seen = manifest(host, name, pick, token)
+        digests.append(pick)
+        digests.extend(d for d in seen if d not in digests)
     blobs = {}
     for blob in (doc.get("layers") or []) + [doc.get("config") or {}]:
         # The config blob is in here on purpose: it is a blob like any other and
@@ -101,7 +140,10 @@ try:
             blobs[blob["digest"]] = blob["size"]
     if not blobs:
         raise RuntimeError("manifest carries no blob sizes")
-    sys.stdout.write(json.dumps(blobs))
+    if MODE == "digests":
+        sys.stdout.write(json.dumps({"blobs": blobs, "digests": digests}))
+    else:
+        sys.stdout.write(json.dumps(blobs))
 except Exception as exc:                       # never the reason a pull fails
     sys.stderr.write("pull manifest: %s\n" % exc)
 sys.exit(0)

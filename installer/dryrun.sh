@@ -47,7 +47,17 @@
 # forbidden to touch. Assigned in the loop and only READ here, it is a layer
 # output — the same shape, and the same wart, as `ARG_BOXES`.
 # ⚠️ The palette (`C_TEXT`, `C_NOTB`, `RESET`) is read at CALL time, long after
-# `ui.sh` has run. Nothing here may call a ui.sh FUNCTION.
+# `ui.sh` has run — and so is `path_within`, the ONE ui.sh function this file
+# calls. ⭐ THAT IS THE WHOLE LICENCE AND IT IS EXACTLY AS NARROW AS THE PALETTE
+# ONE: a name written here is resolved when the call HAPPENS, not when the file
+# is read, and nothing in this file runs during sourcing. What is forbidden is
+# reaching a ui.sh definition at SOURCE time, which no line here does.
+# 🚨 AND THE EXCEPTION IS NOT AN ARBITRARY PICK — IT IS THE PATH SPELLING
+# CONTRACT. That contract says to compare directories with `same_dir` /
+# `path_within` and NEVER with `==`, because two spellings of one directory must
+# not read as two places. A second comparator written HERE to dodge the forward
+# reference would be a FORK of the contract's own comparator, which is a worse
+# outcome than the reference by every measure this project uses.
 
 # Is this a dry run? Every guard in the program asks it this way rather than
 # testing the variable, so the one place that decides can grow a second
@@ -121,6 +131,76 @@ dry::dir_sim() {   # spelled resolved
   return 0
 }
 
+# ── The modelled directory set — what this run has already said it would make ─
+# 🚨 A DRY RUN THAT RE-ASKS IS WRONG, NOT UNSURE, AND THE DIFFERENCE DECIDES THE
+# FIX. `ensure_dir` opens with an existence test; under a dry run the directory
+# it just announced was never made, so a SECOND question about that same path
+# re-reads the filesystem, finds nothing, and asks "Create X?" where a real run
+# passes in silence. ⭐ Nothing there is unknowable — the run KNOWS it said it
+# would create that path — so the answer is a record the existence test consults,
+# not the §4 hedging line kind. (`WOULD PROBABLY DO` is for what CANNOT be
+# modeled, Jei has not ruled on it, and this is not a case for it.)
+#
+# ⭐ IT ANSWERS SILENTLY, ON PURPOSE. A real run prints nothing at the second
+# question, so a dry run must not either. The `DRY RUN: simulating …` line was
+# already printed beside the FIRST create, which is where the assumption was
+# injected; announcing it again would report one assumption twice and invite the
+# reader to think two directories were involved.
+#
+# 🚨 KEYED ON THE SPELLED PATH — NEVER ON AN fs_path RESULT, AND NEVER COMPARED
+# WITH `==`. The path spelling contract says an fs_path result is never stored
+# and never compared against a stored value, and that two spellings of one
+# directory must not read as two places: on a host whose $HOME is reached through
+# a link, `~/models` and `/srv/models` are ONE directory and `==` says they are
+# two. The recorded spelling is what `ensure_dir` was handed, which is what
+# `abs_path` produced, which is what every other path in this program stores.
+# ⭐ CONTAINMENT RATHER THAN EQUALITY, AND IT IS EXACT RATHER THAN GENEROUS:
+# `mkdir -p` creates every missing ANCESTOR too, so a path that HOLDS a modelled
+# path would also be there by now. `path_within child parent` is that question
+# with the recorded path as the child, and it already answers equality as well
+# ("a directory is within itself here, deliberately").
+# ⚠️ AND IT WORKS ON PATHS THAT DO NOT EXIST, WHICH IS THE WHOLE POPULATION HERE:
+# both comparators normalize with `realpath -m`, whose documented contract is
+# that no component need exist. Measured before this was built — two spellings of
+# one absent path compare SAME, an absent path under a symlinked existing
+# ancestor compares SAME against its resolved twin, and two genuinely different
+# absent paths compare DIFFERENT.
+DRY_DIRS=()
+
+dry::modelled() {   # spelled → 0 when this run has already put it there
+  local d
+  dry::on || return 1
+  for d in ${DRY_DIRS[@]+"${DRY_DIRS[@]}"}; do
+    path_within "$d" "$1" && return 0
+  done
+  return 1
+}
+
+# Recorded beside the announcement, never instead of it: the WOULD DO line says
+# what would be done and this says what the rest of the run may now assume.
+# A no-op in a real run, where the kernel is keeping the same record for us.
+dry::model_dir() {   # spelled → record a directory this run would have created
+  dry::on || return 0
+  dry::modelled "$1" && return 0
+  DRY_DIRS+=("$1")
+  return 0
+}
+
+# ── ui_dir_exists — what the UI layer asks instead of `[[ -d ]]` (UI_DIR_EXISTS)
+# 🚨 THE SECOND HALF OF THE UI_MKDIR SEAM, AND IT EXISTS FOR THE SAME REASON. The
+# layer creates a directory (ui_mkdir) and the layer TESTS for one, and the test
+# is exactly as intercept-worthy as the create: a host that models the create
+# must model the test, or its own model is invisible to the code that needs it.
+# ⭐ Cutting a hole in the layer to call `dry::modelled` from `ensure_dir` would
+# cost the property check-installer-layering.sh protects; a fourth declared input
+# goes through the seam the layer already has, exactly as UI_MKDIR did in s80.
+# ⚠️ A host with no dry run points UI_DIR_EXISTS at something that runs
+# `[[ -d $2 ]]`, and the layer never knows the difference.
+ui_dir_exists() {   # spelled resolved → 0 when the directory is there, or would be
+  [[ -d $2 ]] && return 0
+  dry::modelled "$1"
+}
+
 # ── ui_mkdir — what the UI layer calls instead of mkdir (the UI_MKDIR seam) ──
 # 🚨 THE LAYER MAY NOT CALL dry::fs, AND THAT IS NOT A TECHNICALITY. Its rule 2
 # is "the layer never calls back out", check-installer-layering.sh enforces it,
@@ -136,6 +216,7 @@ dry::dir_sim() {   # spelled resolved
 ui_mkdir() {   # spelled resolved → 0 when the directory is there (or would be)
   local p=$1 real=$2
   dry::fs "create $p" -- mkdir -p "$real" 2>/dev/null || return 1
+  dry::model_dir "$p"
   dry::dir_sim "$p" "$real"
   return 0
 }

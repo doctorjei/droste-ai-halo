@@ -386,6 +386,135 @@ else
   bad "step_log has no dry:: guard, so every write to a step log is a real write"
 fi
 
+# ── The modelled directory set: what the run SAID it would create (s84) ──────
+# 🚨 A GUARD STOPS THE WRITE; IT DOES NOT STOP THE RUN BELIEVING ITS OWN EYES.
+# `ensure_dir` opened with `[[ -d $real ]]`, so a SECOND question about a path
+# this run had already announced re-read the filesystem, found nothing, and asked
+# "Create X?" — where a real run passes in silence. ⭐ That is a WRONG answer, not
+# an unknown one, so the rows below assert a deterministic model rather than a
+# hedge: what would have been created is recorded, and the existence test asks the
+# record. ⚠️ They are STRUCTURAL. The BEHAVIOUR — one path, one question — is
+# `g1lab/unit.sh` s84 A–F, which can drive `ensure_dir` in-shell; this file can
+# only say the seam is wired, and a seam that is wired is what that suite needs.
+for fn in dry::modelled dry::model_dir ui_dir_exists; do
+  if grep -q "^${fn}() {" "$SRC/dryrun.sh"; then
+    ok "$fn is defined"
+  else
+    bad "$fn is missing from installer/dryrun.sh"
+  fi
+done
+
+# THROUGH THE SEAM, NOT THROUGH A HOLE IN IT. `ensure_dir` is inside the UI layer
+# and rule 2 forbids the layer calling out, so the test goes through a NAME the
+# host sets — exactly as the create does. A bare `-d` back in that function is the
+# whole defect returning.
+ensure_body=$(sed -n '/^ensure_dir() {/,/^}/p' "$SRC/ui.sh")
+if grep -q 'UI_DIR_EXISTS' <<<"$ensure_body"; then
+  ok "ensure_dir asks the host's name for the existence test"
+else
+  bad "ensure_dir does not call UI_DIR_EXISTS, so no host can model a create"
+fi
+if grep -qE '\[\[ *! *-d |\[\[ *-d ' <<<"$ensure_body"; then
+  bad "ensure_dir still reads the filesystem directly — a dry run re-asks"
+else
+  ok "and it reads the filesystem nowhere else"
+fi
+
+# The layer's declared inputs live in TWO files by design, and the layering
+# checker's own header says they move together. A name added to one and not the
+# other is either a red layer check or an undeclared input; assert the pair.
+if grep -q '^UI_DIR_EXISTS=' "$SRC/contract.sh"; then
+  ok "UI_DIR_EXISTS is declared beside the layer's other inputs"
+else
+  bad "UI_DIR_EXISTS is not set in installer/contract.sh"
+fi
+if grep -q "^UI_INPUTS=.*UI_DIR_EXISTS" "$SCRIPT_DIR/check-installer-layering.sh"; then
+  ok "and it is declared to the layering checker too"
+else
+  bad "UI_DIR_EXISTS is not in check-installer-layering.sh's UI_INPUTS"
+fi
+
+# 🚨 THE COMPARISON IS THE PATH SPELLING CONTRACT'S, NOT `==`. Two spellings of
+# one directory must not read as two places — on a host whose $HOME is reached
+# through a link, ~/models and /srv/models are one directory and a string compare
+# says they are two, so the model would miss exactly the case it exists for.
+modelled_body=$(sed -n '/^dry::modelled() {/,/^}/p' "$SRC/dryrun.sh")
+if grep -q 'path_within' <<<"$modelled_body"; then
+  ok "dry::modelled compares with the path contract's comparator"
+else
+  bad "dry::modelled does not use path_within — two spellings would read as two places"
+fi
+if grep -qE '== *"?\$' <<<"$modelled_body"; then
+  bad "dry::modelled compares paths with == , which the path contract forbids"
+else
+  ok "and not with a string compare"
+fi
+
+# ⭐ DERIVED FROM THE TREE, NOT LISTED: every `dry::fs` that wraps a `mkdir` is an
+# announced directory create, and an announced create that is not RECORDED is a
+# question this run will ask twice. The set is found by what the line DOES (a
+# dry::fs in front of a mkdir), so a site added next year is covered without
+# touching this script.
+MODEL_REPORT=$(SRC="$SRC" python3 - <<'PY'
+import os, re, glob
+
+src = os.environ['SRC']
+DEF = re.compile(r'^([A-Za-z_][A-Za-z0-9_:]*)\s*\(\)\s*\{')
+sites, missing = 0, []
+for path in sorted(glob.glob(os.path.join(src, '*.sh'))):
+    base = os.path.basename(path)
+    lines = open(path, encoding='utf-8').read().split('\n')
+    extents, i = {}, 0
+    while i < len(lines):
+        m = DEF.match(lines[i])
+        if m:
+            depth = lines[i].count('{') - lines[i].count('}')
+            j = i
+            while depth > 0 and j + 1 < len(lines):
+                j += 1
+                depth += lines[j].count('{') - lines[j].count('}')
+            extents[m.group(1)] = (i, j)
+            i = j + 1
+        else:
+            i += 1
+    for k, raw in enumerate(lines):
+        if raw.lstrip().startswith('#'):
+            continue
+        if 'dry::fs' not in raw:
+            continue
+        if not re.search(r'dry::fs\b.*\bmkdir\b', raw):
+            continue
+        sites += 1
+        fn = None
+        for name, (a, b) in extents.items():
+            if a <= k <= b and (fn is None or a > extents[fn][0]):
+                fn = name
+        body = '\n'.join(lines[extents[fn][0]:extents[fn][1] + 1]) if fn else ''
+        if 'dry::model_dir' not in body:
+            missing.append('%s:%s' % (base, fn or '<top level>'))
+print('SITES|%d' % sites)
+print('MISSING|%d|%s' % (len(missing), ','.join(missing)))
+PY
+) || { bad "the modelled-create derivation itself failed"; MODEL_REPORT='SITES|0
+MISSING|0|'; }
+
+m_sites=$(printf '%s\n' "$MODEL_REPORT" | sed -n 's/^SITES|//p')
+IFS='|' read -r _ m_n m_list <<<"$(printf '%s\n' "$MODEL_REPORT" | grep '^MISSING|')"
+if [[ ${m_n:-1} -eq 0 ]]; then
+  ok "every announced directory create records it in the modelled set ($m_sites sites)"
+else
+  bad "$m_n announced create(s) record nothing, so a dry run re-asks about them: $m_list"
+fi
+# ⚠️ THE FLOOR, AND IT IS NOT A FORMALITY: the row above reads IDENTICALLY on an
+# empty derivation and on a clean one, so an anchor that stops matching would
+# report success forever. Two sites today — ui_mkdir and move_one's destination
+# parent. Lower this only when a site is deliberately removed.
+if [[ ${m_sites:-0} -ge 2 ]]; then
+  ok "and the derivation found the creates at all ($m_sites, floor 2)"
+else
+  bad "only $m_sites announced create(s) derived — the anchor is broken, not the tree"
+fi
+
 # ── The assertion that cannot be fooled: RUN IT ──────────────────────────────
 # ⭐⭐ A STATIC CHECK SAYS NO MUTATION ESCAPED THE WRAPPERS. THIS SAYS NO MUTATION
 # HAPPENED. Neither implies the other, and only the second is the promise made

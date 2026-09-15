@@ -82,6 +82,26 @@ UI_INPUT_VAR="DROSTE_SETUP_INPUT"
 # it (its UI_INPUTS list), so the two files move together — if you add a fourth,
 # add it there in the same commit or the layer check goes red.
 UI_MKDIR="ui_mkdir"
+# ── UI_DIR_EXISTS — the layer's FOURTH declared input (s84) ──────────────────
+# 🚨 THE LAYER ALSO ASKS WHETHER A DIRECTORY IS THERE, AND UNDER `--dry-run` THE
+# FILESYSTEM IS THE WRONG PLACE TO ASK. `ensure_dir` opened with `[[ -d $real ]]`
+# — true of a real run, wrong of a dry one, because the directory this program
+# announced it would create was deliberately never made. The second question
+# about one path then re-asks "Create X?" where a real run says nothing.
+# ⭐ IT IS THE SAME SEAM AS UI_MKDIR AND THE SAME ARGUMENT, ONE STEP ON: a host
+# that intercepts the CREATE has to be able to intercept the TEST, or its model
+# of what it created is invisible to the only code that would consult it. Adding
+# the test to the layer's declared inputs keeps rule 2 intact; calling droste's
+# `dry::modelled` from inside `ensure_dir` would not.
+# ⚠️ A HOST WITH NOTHING TO MODEL POINTS IT AT `[[ -d $2 ]]` and the layer lifts
+# out unchanged. ⚠️ AND IT TAKES BOTH SPELLINGS, in UI_MKDIR's order and for
+# UI_MKDIR's reason: the SPELLED path is what a model is keyed on (the path
+# spelling contract forbids storing the resolved one), the RESOLVED path is what
+# the kernel is asked about.
+# ⚠️ A FOURTH INPUT IS A FOURTH PROMISE THE NEXT HOST HAS TO KEEP — and it must
+# be added to check-installer-layering.sh's UI_INPUTS in the same commit, or the
+# layer check goes red naming it.
+UI_DIR_EXISTS="ui_dir_exists"
 
 # ── The factory roots: XDG, and the one override ─────────────────────────────
 # FOUR ROOTS, AND THEY ARE INDEPENDENT OF ONE ANOTHER (0.7.0, Jei). Until now

@@ -48,7 +48,13 @@ SETUP=${1:-$SCRIPT_DIR/../droste-setup.sh}
 # (calling droste's dry-run wrapper from inside the layer) is exactly what rule
 # B forbids. ⭐ Going through the seam kept the rule intact; cutting a hole in it
 # would have cost the property this whole script exists to protect.
-UI_INPUTS='UI_PROG UI_INPUT_VAR UI_MKDIR'
+# ⚠️ UI_DIR_EXISTS JOINED IN s84 AND IT IS UI_MKDIR'S OTHER HALF — the NAME of the
+# routine that answers whether a directory is THERE. `ensure_dir` tested the
+# filesystem directly, which is the right answer for a real run and the wrong one
+# for a dry run that deliberately created nothing; a host that intercepts the
+# CREATE must be able to answer for what it modelled, or the model is invisible
+# to the only code that would consult it.
+UI_INPUTS='UI_PROG UI_INPUT_VAR UI_MKDIR UI_DIR_EXISTS'
 
 pass=0
 fail=0

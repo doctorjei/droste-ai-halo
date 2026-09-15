@@ -48,11 +48,13 @@ EOF
 #
 #   1. Nothing in here may name a box, a bind, an emit dir, an action, or any
 #      other global belonging to this program. The layer's inputs are its
-#      arguments plus the three UI_* values set at the top of the file — the
+#      arguments plus the four UI_* values set at the top of the file — the
 #      third, UI_MKDIR, arrived in s80 and is the NAME of the routine that
 #      creates a directory, because that is the one thing this layer DOES to
 #      the world and a host may need to intercept it (droste's does, for
-#      `--dry-run`); its
+#      `--dry-run`); the fourth, UI_DIR_EXISTS, arrived in s84 and is the NAME
+#      of the routine that answers whether a directory is THERE, because a host
+#      that models the create must be able to answer for what it modelled; its
 #      outputs are the globals it defines itself (ASCII, the palette, ANS and
 #      its ANS_* siblings). It does not read droste's model, ever.
 #   2. Nothing in here may call a function defined below it. Calls go one way
@@ -1298,10 +1300,17 @@ CREATE_ASKED=0
 # needs no exception: a relative answer was already absolutized on the way in
 # (that is the one class of answer whose spelling would have hidden where it
 # lands), and every other answer is shown back the way it was written.
+#
+# ⚠️ THE EXISTENCE TEST GOES THROUGH THE HOST'S NAME TOO, and for the same reason
+# the create does: a host that intercepts UI_MKDIR has a model of what it made,
+# and a bare `[[ -d $real ]]` here cannot see it — so the second question about
+# one path would re-ask where the first one already answered. UI_DIR_EXISTS is
+# handed BOTH spellings, in UI_MKDIR's order; a host with nothing to model points
+# it at something that runs `[[ -d $2 ]]`.
 ensure_dir() {   # path → 0 when it exists (or was created), 1 otherwise
   local p=$1 yn real
   real=$(fs_path "$p")
-  [[ -d $real ]] && return 0
+  "$UI_DIR_EXISTS" "$p" "$real" && return 0
   if [[ $CREATE_ALL -eq 1 ]]; then
     # ⚠️ THROUGH THE HOST'S NAME, NOT A bare `mkdir`, and not a call to anything
     # of droste's either — rule 2 above forbids the layer calling out, and this

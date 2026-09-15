@@ -1104,6 +1104,11 @@ move_one() {  # box label old new mode(plain|m|r) → 0 = the box may take new
   # The parent has to exist for a rename to land in it; creating it is implied
   # by the move that was just accepted, and by nothing else.
   dry::fs "create ${new%/*}" -- mkdir -p -- "${dstreal%/*}" 2>/dev/null || :
+  # Recorded in the modelled set beside the announcement, for the same reason
+  # ui_mkdir records what IT would have created: a later "Create <path>?" about
+  # this directory would otherwise be asked by a dry run and by nobody else.
+  # A no-op in a real run — there the kernel is keeping the record.
+  dry::model_dir "${new%/*}"
   case "$mode" in
     m)
       merge_into "$old" "$new" || :

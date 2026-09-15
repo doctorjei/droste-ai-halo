@@ -990,6 +990,33 @@ same_dir() {  # a b → 0 when both spellings resolve to one directory
   [[ $a == "$b" ]]
 }
 
+# same_dir's containment half, and it resolves both sides for exactly the same
+# reason: "is this directory under that one" is a machine decision, so it cannot
+# depend on how either side was spelled.
+#
+# 🚨 A BARE PREFIX TEST IS WRONG AND LOOKS RIGHT. `[[ $c == "$p"* ]]` calls
+# /foo/barbaz a child of /foo/bar, because a string prefix knows nothing about
+# where a path COMPONENT ends. The separator is therefore part of the pattern —
+# `"$p"/*` — which can only match at a component boundary, and the two spellings
+# are normalized first so a stray `..` or `//` cannot smuggle one past it.
+#
+# ⭐ A DIRECTORY IS WITHIN ITSELF HERE, DELIBERATELY. The callers ask "does this
+# belong to that tree", and a tree contains its own root; a caller that wants the
+# strict reading has same_dir to subtract with.
+#
+# ⚠️ THE `${p%/}` IS FOR ONE PATH AND IT IS NOT HYPOTHETICAL: realpath normalizes
+# every trailing slash away EXCEPT the root's own, so an unstripped p of "/" would
+# build the pattern "//*" and report that nothing on the filesystem is under /.
+# The `:-/` puts it back for the equality arm, which still has to see "/".
+path_within() {  # child parent → 0 when child IS parent or lies under it
+  local c p
+  c=$(fs_path "$1"); p=$(fs_path "$2")
+  c=$(realpath -m -- "$c" 2>/dev/null) || c=$(fs_path "$1")
+  p=$(realpath -m -- "$p" 2>/dev/null) || p=$(fs_path "$2")
+  p=${p%/}
+  [[ $c == "${p:-/}" || $c == "$p"/* ]]
+}
+
 # ── Prompt plumbing (curl|bash-safe: /dev/tty, or the scripted-input hook) ───
 ASK_FD=""
 SCRIPTED=0

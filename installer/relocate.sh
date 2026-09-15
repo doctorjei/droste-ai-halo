@@ -1,7 +1,12 @@
 # ── Where the two host roots live ────────────────────────────────────────────
 # Both are settled up front in General Setup; the old "would you like this
 # pattern applied to everything?" follow-up (PATTERN_ROOT) is retired with it.
-DEFAULT_ROOT=""  # emit dir (default ~/droste)
+#
+# 🗄️ DEFAULT_ROOT IS GONE (0.7.0). It held the config path so that an UNANSWERED
+# root could fall back to <config path>/data and <config path>/caches, which is
+# exactly the nesting the XDG roots replaced. The fallback is factory_root now —
+# the same reader the seeds use — so the derivation has ONE source and a config
+# path typed somewhere unusual cannot drag a declined family along with it.
 
 # Base path for the PERSISTENT DATA family (the box's own directory, holding
 # config/ program/ input/ output/ workspace/ user/ as SIBLINGS) and for the
@@ -12,17 +17,17 @@ DEFAULT_ROOT=""  # emit dir (default ~/droste)
 # ⚠️ THE VENV OVERLAY UPPER LEFT THE CACHE FAMILY IN s79 and is under the box's
 # `program` leaf now. It is the one thing here that was ever on the wrong side of
 # the wipe, and it cost a working box.
-DATA_ROOT=""     # "" = <resource path>/data
+DATA_ROOT=""     # "" = factory_root data   ($XDG_DATA_HOME/droste)
 DATA_AUTO=0      # 1 = every box's data dir is <base>/<box>, never asked
-PCACHE_ROOT=""   # "" = <resource path>/caches
+PCACHE_ROOT=""   # "" = factory_root pcache ($XDG_CACHE_HOME/droste/program)
 PCACHE_AUTO=0    # 1 = every box's program-cache dir is <base>/<box>, never asked
 PORTS_DEFAULT=0  # 1 = every box takes the default host port, never asked
 SERVE_MODE=n     # y|n|c — serve at box start, install-wide (c = ask per box)
 HOST_MODE=n      # y|n|c — start at host boot, install-wide (c = ask per box)
 CLEAR_STALE_ALL=0  # 1 = stale program caches are cleared for every box, never asked
 
-data_root()   { printf '%s' "${DATA_ROOT:-$DEFAULT_ROOT/data}"; }
-pcache_root() { printf '%s' "${PCACHE_ROOT:-$DEFAULT_ROOT/caches}"; }
+data_root()   { printf '%s' "${DATA_ROOT:-$(factory_root data)}"; }
+pcache_root() { printf '%s' "${PCACHE_ROOT:-$(factory_root pcache)}"; }
 
 # 1 when this label needs no question (General Setup already placed it).
 # Every data-family bind — config, program, user, input, output, workspace — sits
@@ -71,9 +76,10 @@ path_derived() {  # box label → derived path
 # path_derived instead, so an answer always beats a memory.
 #
 # Both branches hand back a spelling somebody chose: the recorded branch the
-# user's own, the derived one the resource path's (path_derived hangs the box
-# off a root that was itself typed or accepted). Nothing here needs a display
-# conversion, and nothing here may be handed to the filesystem without fs_path.
+# user's own, the derived one the data root's (path_derived hangs the box off a
+# root that was itself typed, accepted, or — when the election was declined —
+# spelled by factory_root). Nothing here needs a display conversion, and nothing
+# here may be handed to the filesystem without fs_path.
 path_default() {  # box label → default path (existing value > family base)
   local box=$1 label=$2
   if [[ ${ACTION[$box]} == modify && -n "${EXD_PATH["$box:$label"]:-}" ]]; then

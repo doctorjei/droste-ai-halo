@@ -219,18 +219,27 @@ run_step() {   # phase log command...
   return $rc
 }
 
-# Per-step capture file under the resource path (whose stated purpose is
-# "(re)creation records, logs, & data"). Falls back to the temp dir if that
-# directory cannot be made, so a failed pull still has somewhere to say why.
+# Per-step capture file in `sys_logs` under step_log_root — the elected data
+# base if there is one, else the data root while $DROSTE_CONFIG sits inside the
+# XDG config tree, else $DROSTE_CONFIG itself. ⚠️ IT WAS "$EMIT_DIR/logs" AND
+# THAT BECAME WRONG THE DAY THE ROOTS SPLIT: with a default config root of
+# ~/.config/droste it spelled ~/.config/droste/logs, and logs are not config.
+# ⭐ `sys_logs`, NOT `logs`: a box's own serve log is <program>/logs/<box>-serve.log,
+# and two droste-owned directories both called `logs` is a question the path
+# itself should answer. The rule and its reasons live on step_log_root in the
+# contract section; this is only its first caller.
+# Falls back to the temp dir if that directory cannot be made, so a failed pull
+# still has somewhere to say why.
 # The log is the installer's OWN artifact and is opened by a dozen writers, so
 # this hands back a RESOLVED path — the one place a stored spelling is
-# deliberately left behind. emit_spelled puts the user's spelling of the
-# resource path back on the front for the one line that shows one.
+# deliberately left behind. emit_spelled puts the user's spelling of that root
+# back on the front for the one line that shows one.
 step_log() {   # step name → path
   local d
   # 🚨 /dev/null UNDER A DRY RUN, AND THIS IS THE ONE PLACE THE RULE WOULD HAVE
-  # LEAKED. This directory is under $EMIT_DIR — the USER'S resource path, not
-  # invisible /tmp scratch — so a dry run that created it would leave files
+  # LEAKED. This directory is under a root the USER named or the basedir spec
+  # chose — not invisible /tmp scratch — so a dry run that created it would
+  # leave files
   # exactly where the user would notice, on a run that promised to change
   # nothing. ⭐ Handing back /dev/null rather than adding a carve-out keeps every
   # caller unchanged: `: > "$log"`, `>>"$log"` and `tail` all behave, and the
@@ -239,15 +248,21 @@ step_log() {   # step name → path
   # ⚠️ Nothing is lost by it: a dry run runs no step, so there is no output a
   # step log could have captured.
   if dry::on; then printf '/dev/null'; return 0; fi
-  d=$(fs_path "$EMIT_DIR")/logs
+  d=$(fs_path "$(step_log_root)")/sys_logs
   mkdir -p "$d" 2>/dev/null || d=${TMPDIR:-/tmp}
   printf '%s/%s-%s.log' "$d" "$1" "$2"
 }
 
-emit_spelled() {   # resolved path under the resource dir → the user's spelling
-  local p=$1 real
-  real=$(fs_path "$EMIT_DIR")
-  if [[ $p == "$real"/* ]]; then printf '%s/%s' "$EMIT_DIR" "${p#"$real"/}"
+# ⚠️ THE NAME PREDATES THE SPLIT: it says "emit" because the step logs used to
+# live under the emit dir, and its one caller has always been the failed-step
+# line that shows a log path. Renaming it is a rename, and a rename never rides
+# along with a behavior change — so the body follows step_log_root and the name
+# waits for a commit of its own.
+emit_spelled() {   # resolved path under the step-log root → the user's spelling
+  local p=$1 real root
+  root=$(step_log_root)
+  real=$(fs_path "$root")
+  if [[ $p == "$real"/* ]]; then printf '%s/%s' "$root" "${p#"$real"/}"
   else printf '%s' "$p"; fi
 }
 

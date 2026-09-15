@@ -7,16 +7,22 @@ main() {
   quit_notice
 
   section "Box Selection & Setup" intro
-  sub "Box configuration, settings, logs, & other resources" intro
+  sub "Droste configuration files" intro
   # A typo here fans out into every emitted file — ask_path_as confirms before
   # creating (and re-asks if the user declines or the create fails). The factory
-  # spelling is a literal ~ (see seed_globals): every path derived from the
-  # answer inherits whatever spelling the answer has.
-  # shellcheck disable=SC2088  # a LITERAL ~, resolved by fs_path at use
-  ask_path_as "Identify a path for droste resource storage" "~/droste"
-  EMIT_DIR=$ANS_PATH
-  DEFAULT_ROOT=$EMIT_DIR
-  # The resource path is what makes the old definition files findable, so this
+  # spelling comes from factory_root (a literal ~ unless XDG or DROSTE_CONFIG
+  # named a directory), and every file written here inherits the answer's
+  # spelling.
+  # ⭐ THIS ANSWER NO LONGER PLACES ANYTHING ELSE (0.7.0). The data and cache
+  # roots are asked in General Setup and default from their own XDG variables,
+  # so this is the config root and nothing more.
+  # ⭐ AND THE QUESTION ITSELF LIVES IN ask_config_root, WHICH IS THE ONLY PLACE
+  # IT IS AUTHORED — prompt, default and the DROSTE_CONFIG rule that can answer it
+  # without asking. Data Mapping's re-ask calls the same function. `open` says
+  # this is the call that opens the run, so a pinned root is announced and settled
+  # here rather than refused.
+  ask_config_root open
+  # The config path is what makes the old definition files findable, so this
   # is the first moment they can be parsed at all.
   detect_existing
   detected_block
@@ -57,6 +63,13 @@ main() {
     printf '%sNo boxes selected.%s\n' "$C_TEXT" "$RESET"
   fi
 
+  # ⭐ LAST, BECAUSE THIS IS THE FIRST MOMENT THE CONFIG PATH IS FINAL. Data
+  # Mapping can re-ask it (reask_slot rc), so an offer made beside the original
+  # prompt could persist a path this run then stopped using — and a stale export
+  # written into the user's own startup file is worse than no export at all.
+  # ⚠️ OUTSIDE the selection branch on purpose: a run that selects no box still
+  # answered the config question, and the answer is just as unfindable next time.
+  offer_config_export
   dashboard
   return 0
 }

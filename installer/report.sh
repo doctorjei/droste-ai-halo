@@ -288,7 +288,7 @@ write_notes() {
     printf 'with `/` or `./` is read as the NAME of a named volume, so a `~`\n'
     printf 'there would quietly stop being a bind at all.\n\n'
     printf 'Underneath it sits a record line, shaped like this:\n\n'
-    printf '    # droste-setup: spelled="~/droste/data/<box>/program:/opt/program ..."\n\n'
+    printf '    # droste-setup: spelled="~/.local/share/droste/<box>/program:/opt/program ..."\n\n'
     printf 'That is the same list of binds in the spelling you typed. It is what\n'
     printf 'lets droste-setup.sh show you your own paths on the next run rather\n'
     printf 'than a reconstruction of them, and it is rewritten from your answers\n'
@@ -523,10 +523,17 @@ dash_table() {   # with-on(0|1)
     dw=$(( pcol + ${#port} ))
     n=$(( ncol - dw )); [[ $n -lt 0 ]] && n=0
     row+=$(printf '%*s' "$n" "")
+    # ⭐ THE LAST RESORT IS DERIVED, NOT A LITERAL (0.7.0). These two used to
+    # fall back to a written-out ~/droste/data/<box>/… — a spelling of a layout
+    # that no longer exists, and one that would have had to be re-typed here
+    # every time a root moved. path_derived answers from the roots this run
+    # actually settled, so the note names a directory the box will really read.
     data="${PATHS["$box:program"]:-${EXD_PATH["$box:program"]:-}}"
     conf="${PATHS["$box:config"]:-${EXD_PATH["$box:config"]:-}}"
-    note=${BOX_NOTE[$box]//@PROGRAM@/${data:-~/droste/data/$box/program}}
-    note=${note//@CONFIG@/${conf:-~/droste/data/$box/config}}
+    [[ -n $data ]] || data=$(path_derived "$box" program)
+    [[ -n $conf ]] || conf=$(path_derived "$box" config)
+    note=${BOX_NOTE[$box]//@PROGRAM@/$data}
+    note=${note//@CONFIG@/$conf}
     [[ -n $note ]] && row+=$C_TEXT$(fit_note "$note" "$budget")
     printf '%s%s\n' "$row" "$RESET"
   done

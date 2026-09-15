@@ -15,7 +15,7 @@
 # It guides every bind in the mount contract, host ports, whether each box
 # serves at box start / at host boot, and overlay-hostile-filesystem
 # mitigation; then it EMITS per-box recreation records into an emit dir
-# (default ~/droste/):
+# ($DROSTE_CONFIG, else $XDG_CONFIG_HOME/droste, else ~/.config/droste):
 #   <box>-halo.ini                   (distrobox assemble record — the ONE
 #                                     container definition, healthcheck flags
 #                                     and all)
@@ -82,6 +82,162 @@ UI_INPUT_VAR="DROSTE_SETUP_INPUT"
 # it (its UI_INPUTS list), so the two files move together — if you add a fourth,
 # add it there in the same commit or the layer check goes red.
 UI_MKDIR="ui_mkdir"
+
+# ── The factory roots: XDG, and the one override ─────────────────────────────
+# FOUR ROOTS, AND THEY ARE INDEPENDENT OF ONE ANOTHER (0.7.0, Jei). Until now
+# there was ONE "droste resource storage" path and everything else hung off it,
+# so moving it moved the data and the caches too. Now each family lives where
+# its own kind of file belongs: the .ini files and NOTES.md under the CONFIG
+# root, the per-box data under the DATA root, and the two cache families under
+# the CACHE root. Answering one of the four questions no longer moves any of
+# the other three.
+#
+#   config   $DROSTE_CONFIG | $XDG_CONFIG_HOME/droste | ~/.config/droste
+#   data     $XDG_DATA_HOME/droste                    | ~/.local/share/droste
+#   pcache   $XDG_CACHE_HOME/droste/program           | ~/.cache/droste/program
+#   compute  $XDG_CACHE_HOME/droste/compute           | ~/.cache/droste/compute
+#
+# 🚨 THE ASYMMETRY IS THE WHOLE OF IT, AND READING IT BACKWARDS BREAKS THE
+# OVERRIDE SILENTLY. DROSTE_CONFIG IS THE CONFIG ROOT ITSELF — DROSTE_CONFIG=/foo
+# means /foo, NOT /foo/droste. The XDG variables are PARENTS (that is what the
+# basedir spec says they are: the directory user-specific files are stored
+# RELATIVE TO), so they get /droste appended. One says "here"; the others say
+# "under here".
+#
+# ⚠️ `:-`, NOT `-`, ON EVERY NAME HERE, AND IT IS NOT A HOUSE-STYLE SLIP. The
+# XDG basedir spec defines its fallback on "either not set or empty", so an
+# exported-but-empty XDG_CONFIG_HOME MUST read as absent — and DROSTE_CONFIG
+# follows this project's own rule, which says the same thing in its own words: a
+# blank must behave exactly as if the setting were absent. Do not "correct"
+# these to the plain `-` form; that would make `DROSTE_CONFIG=` mean "the root
+# is the empty string".
+#
+# ⚠️ A FALLBACK IS A LITERAL ~, resolved by fs_path at use — the same spelling
+# contract every other factory path keeps, so a default the user accepts is
+# shown and stored the way the installer would have written it. A variable that
+# IS set is taken exactly as it stands: XDG requires an absolute path, and
+# abs_path absolutizes one that (against the spec) is not.
+#
+# ⭐ ONE READER, so no call site has to remember any of the above. The seeds in
+# seed_globals, the config-path prompt in main, and the data_root/pcache_root
+# fallbacks all ask this function.
+
+# The XDG CONFIG PARENT on its own, spec default and all. Two callers need it and
+# they need it for different things — factory_root builds the config root UNDER
+# it, step_log_root asks whether the config root lies WITHIN it — so it is
+# spelled ONCE, here, and neither of them carries a second copy of `~/.config`
+# that could rot out of step with this one.
+# ⚠️ `:-`, for the reason given above: the basedir spec's fallback is "either not
+# set or empty", so an exported-but-empty variable reads as absent.
+xdg_config_home() {  # → $XDG_CONFIG_HOME, or the basedir spec's default for it
+  # shellcheck disable=SC2088  # LITERAL ~, resolved by fs_path at use (see above)
+  if [[ -n ${XDG_CONFIG_HOME:-} ]]; then printf '%s' "$XDG_CONFIG_HOME"
+  else printf '%s' '~/.config'; fi
+}
+
+factory_root() {  # config|data|pcache|compute → the root droste offers by default
+  # shellcheck disable=SC2088  # LITERAL ~, resolved by fs_path at use (see above)
+  case "$1" in
+    config)
+      if [[ -n ${DROSTE_CONFIG:-} ]]; then printf '%s' "$DROSTE_CONFIG"
+      else printf '%s/droste' "$(xdg_config_home)"; fi ;;
+    data)
+      if [[ -n ${XDG_DATA_HOME:-} ]]; then printf '%s/droste' "$XDG_DATA_HOME"
+      else printf '%s' '~/.local/share/droste'; fi ;;
+    pcache)
+      if [[ -n ${XDG_CACHE_HOME:-} ]]; then printf '%s/droste/program' "$XDG_CACHE_HOME"
+      else printf '%s' '~/.cache/droste/program'; fi ;;
+    compute)
+      if [[ -n ${XDG_CACHE_HOME:-} ]]; then printf '%s/droste/compute' "$XDG_CACHE_HOME"
+      else printf '%s' '~/.cache/droste/compute'; fi ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# ── Where the installer's OWN logs go ────────────────────────────────────────
+# 🚨 LOGS ARE NOT CONFIG, AND THE XDG DEFAULT IS WHAT MADE THAT VISIBLE. The step
+# logs sat at "$EMIT_DIR/logs" back when the config root was a single "droste
+# resource storage" path whose stated purpose was "(re)creation records, logs, &
+# data". With the four roots split apart, that same expression spells
+# ~/.config/droste/logs — and a rotating capture of podman's chatter is not
+# configuration under any reading.
+#
+# 🏁 THE RULE (Jei's final spec) — THREE BRANCHES, FIRST MATCH WINS:
+#
+#   1. the user ELECTED a common persistent data path → <elected base>/sys_logs
+#   2. else $DROSTE_CONFIG is WITHIN $XDG_CONFIG_HOME → <data root>/sys_logs
+#   3. else                                           → $DROSTE_CONFIG/sys_logs
+#
+# where $DROSTE_CONFIG is the variable itself when it has a value and
+# $XDG_CONFIG_HOME/droste when it does not — i.e. exactly `factory_root config`.
+#
+# ⭐ THE LEAF IS `sys_logs`, NOT `logs`, AND THE NAME IS DOING WORK. A box's own
+# serve log is `<program>/logs/<box>-serve.log`; these are the INSTALLER'S logs,
+# written on the host by a different writer at a different time. Two directories
+# both called `logs` under two droste-owned roots is a question every reader has
+# to re-answer, and `sys_logs` answers it once, in the path itself.
+#
+# 🗄️ BRANCH 1 REPLACES AN EARLIER READING, AND THE REVERSAL IS THE POINT (Jei).
+# This function used to reach for `factory_root data` — the FACTORY data root —
+# and argue that the installer's own logs are not box data, so the user's answer
+# to "Persistent data base path" should not move them. Jei OVERRULED that: an
+# elected common base is the user saying where droste's bulk lives on this
+# machine, and the logs go with it. Do not re-derive the old argument; it was
+# heard and decided.
+#
+# ⭐ AND BRANCH 2 IS "WITHIN", NOT "EQUALS". DROSTE_CONFIG=~/.config/mydroste is a
+# config root the user moved WITHIN the XDG config tree — still config, still no
+# place for a rotating capture of podman's chatter — so it takes the data root
+# exactly as the default ~/.config/droste does. An equality test would have sent that one case
+# to branch 3 and written logs under $XDG_CONFIG_HOME after all, which is the one
+# outcome this whole rule exists to prevent.
+# 🚨 WITHIN INCLUDES THE DEFAULT, WHICH IS THE COMMON CASE: $XDG_CONFIG_HOME/droste
+# IS a child of $XDG_CONFIG_HOME, so branch 2 is what an untouched machine gets.
+# 🚨 AND IT IS A COMPONENT-WISE TEST, NEVER A STRING PREFIX — /tmp/cfgx/droste is
+# NOT within /tmp/cfg and must fall to branch 3. path_within owns that trap.
+#
+# 🚨 THE CONFIG ROOT HERE IS $DROSTE_CONFIG — THE ENVIRONMENT VARIABLE, LITERALLY,
+# NOT $EMIT_DIR. That is what the spec says and it is what Jei ruled when it was
+# put to him: `factory_root config` is the whole of it, so an exported root is
+# read and an unset one falls to $XDG_CONFIG_HOME/droste.
+# 🗄️ IT READ $EMIT_DIR FIRST, AND THE ARGUMENT FOR THAT WAS OVERRULED. It said a
+# path TYPED at the prompt counts as much as an exported one, since naming a root
+# is naming a root. Do not re-derive it.
+# ⭐ WHAT MAKES THE LITERAL READING COHERENT IS THAT THE PROMPT DOES NOT FIRE WHEN
+# THE VARIABLE IS SET (main, `ask_config_root`). The environment pins the config
+# root outright, so in every run where DROSTE_CONFIG has a value, $EMIT_DIR IS
+# that value and the two readings cannot disagree. They part company only in the
+# other direction — variable unset, root TYPED — and there branch 2 sends the logs
+# to the data root, which is where an untouched machine puts them anyway.
+#
+# ⭐ AND NO DEFAULT IS SPELLED OUT TWICE: factory_root and xdg_config_home own
+# those strings, so there is no second copy here to rot — and no copy of the blank
+# rule either, since `factory_root config` already reads DROSTE_CONFIG= as unset.
+#
+# ⚠️ NOT THE BOX'S SERVE LOGS. Those are <program>/logs/<box>-serve.log, written
+# inside the container by droste-serve.sh from the box's own config. Different
+# writer, different file, and nothing here touches them.
+step_log_root() {   # → the root the installer's own step logs live under
+  local cfg
+  # BRANCH 1. DATA_AUTO is the election itself — it is set nowhere but the yes
+  # arm of "Store persistent data at common base path" — and the `-n` beside it
+  # is not belt-and-braces: "" is not a place, and a root of "" would compose a
+  # log path rooted at /.
+  if [[ ${DATA_AUTO:-0} -eq 1 && -n ${DATA_ROOT:-} ]]; then
+    printf '%s' "$DATA_ROOT"
+    return 0
+  fi
+  # The ENVIRONMENT's config root, never the answered one — see above. It is also
+  # why this function is safe to call at any point in the run: it depends on
+  # nothing the interview has or has not asked yet.
+  cfg=$(factory_root config)
+  if path_within "$cfg" "$(xdg_config_home)"; then
+    factory_root data          # BRANCH 2
+  else
+    printf '%s' "$cfg"         # BRANCH 3
+  fi
+}
 
 # ── Static per-box contract table ────────────────────────────────────────────
 # CANONICAL SOURCE: targets/<box>/build-spec and targets/<box>/distrobox.ini in

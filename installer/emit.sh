@@ -265,7 +265,7 @@ summary_box() {  # box banner-width
   local -a keys=() vals=() kind=()
   keys+=("Paths") vals+=("") kind+=(g)
   # Verbatim: kept from the ini, typed at the prompt or derived from the
-  # resource path, PATHS holds the spelling that was chosen for it.
+  # data root, PATHS holds the spelling that was chosen for it.
   keys+=("$(bind_row program):") vals+=("${PATHS["$box:program"]}") kind+=(v)
   for pair in ${BOX_EXTRA_BINDS[$box]}; do
     label=${pair%%:*}

@@ -231,7 +231,7 @@ hydrate_keep() {  # box
 }
 
 # ── Global default seeding (K/m/r is known; the files are parsed) ────────────
-# EVERY question except the resource-path one (which has to come first — until
+# EVERY question except the config-path one (which has to come first — until
 # it is answered no file can be found) takes its default from what the old
 # definition files say, paths AND toggles, install-wide questions included.
 #
@@ -436,20 +436,21 @@ seed_globals() {
   # A FACTORY DEFAULT IS SPELLED THE WAY THE INSTALLER WOULD WRITE IT: ~, not
   # an expansion of it. Nobody authored this path, so there is no other
   # spelling owed to anyone — and the moment it is offered and accepted, ~ is
-  # what the user chose, which is what every later line shows. (The other
-  # factory paths hang off the resource path and inherit ITS spelling, so a
-  # typed /srv/droste never grows a ~ anywhere below it.)
+  # what the user chose, which is what every later line shows. (An XDG variable
+  # that IS set is already absolute and is used as it stands — see factory_root.)
   # shellcheck disable=SC2088  # a LITERAL ~, resolved by fs_path at use
   SEED_HF="~/.cache/huggingface"
   # The compute cache is SHARED by every box (kernels are content-keyed), so it
-  # sits beside the two per-box roots rather than inside either of them.
-  SEED_COMPUTE=$EMIT_DIR/compute-caches
+  # sits beside the per-box program caches rather than inside any of them.
+  SEED_COMPUTE=$(factory_root compute)
   # No model collection until a path is typed (s38): the prompt's default is
   # the word "None", not a directory the installer would go and create.
   SEED_MODELS=""
-  # The two host roots, both derived from the resource path.
-  SEED_DATA_BASE=$EMIT_DIR/data
-  SEED_PCACHE_BASE=$EMIT_DIR/caches
+  # ⭐ THE TWO HOST ROOTS NO LONGER HANG OFF THE CONFIG PATH (0.7.0). Each has
+  # its own XDG variable and its own factory spelling, so a config path typed
+  # somewhere unusual leaves the data and the caches exactly where they were.
+  SEED_DATA_BASE=$(factory_root data)
+  SEED_PCACHE_BASE=$(factory_root pcache)
   [[ ${#SEED_SRC[@]} -eq 0 ]] && return 0
   # Each seed is the recorded path AS RECORDED — the prompt below offers that
   # string, and an empty answer hands the same string back to abs_path, so a
@@ -565,6 +566,140 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
   return 0
 }
 
+# ── THE FIVE PATH QUESTIONS — ONE ASKER EACH ─────────────────────────────────
+# 🚨 EVERY ONE OF THEM WAS AUTHORED TWICE AND THAT WAS THE DEFECT (Jei: "it's not
+# asking twice, it should just be a single question. why would there be a second
+# copy of the same question?"). Each prompt stood once where it is first asked and
+# again inside reask_slot — the Data Mapping "new path" answer — differing only in
+# the default it offered. One question, two authorings, nothing keeping them in
+# step: the G11 shape.
+#
+# 🚨 AND TWO OF THE FIVE HAD ALREADY DRIFTED, IN THE TREE, UNNOTICED:
+#
+#   initial ask                                   re-ask copy
+#   HuggingFace models ("cache", never wiped)     …("cache" - never wiped)
+#   Program caches base path                      Program cache base path
+#
+# ⭐ NOBODY SAW IT BECAUSE THE SECOND COPY ONLY EVER RENDERS ON AN OVERLAY-HOSTILE
+# FILESYSTEM — a screen almost no run reaches, which is exactly the kind of copy
+# that rots silently. THE INITIAL ASK'S WORDING IS THE SURVIVOR in both cases: it
+# is the one every user sees, and a third spelling invented here would be one more
+# thing to keep in step.
+# 🗄️ The config prompt had already paid the same toll the other way — relabelling
+# it from "droste resource storage" to "droste config" had to be done twice, and a
+# reader who found one copy had no reason to look for the other.
+#
+# ⭐ ONE RULE FOR THE DEFAULT, FIVE TIMES, AND IT NEEDS NO MODE FLAG: THE VALUE
+# ALREADY IN HAND, ELSE THE SEED. `${HF_CACHE:-$SEED_HF}` is the whole of it — the
+# variable is empty until the question is answered and holds the answer forever
+# after, so the STATE says which call this is and no caller has to be trusted to.
+# That is the same shape as port_default / path_default: one prompt, a default
+# that varies with where in the run it is asked.
+# ⚠️ THE SEEDS ARE NOT DEFAULTED WITH `:-` HERE. An unset SEED_* is a bug (it
+# means a prompt ran before seed_globals), and `set -u` reporting it is worth more
+# than a prompt that quietly offers an empty bracket.
+#
+# ⚠️ WHAT AN ASKER OWNS IS THE QUESTION AND ITS ANSWER — the prompt text, the
+# default, and the one variable the answer lands in. It does NOT own what the
+# answer IMPLIES: DATA_AUTO / PCACHE_AUTO stay at the election that sets them
+# (the "common base path" yes/no), because that is a different question with a
+# different answer.
+#
+# 🏁 COMING, AND NOTHING HERE IS DESIGNED AGAINST IT: Jei wants the hostile-
+# filesystem probe to happen AT THE MOMENT a path is answered, so the re-ask
+# happens in place and the later pass disappears. That change builds on these
+# five functions; do not fold them back into their call sites.
+
+# ⭐ THE CONFIG ROOT IS THE ONE WITH A SECOND WAY TO BE ANSWERED, and the rule
+# lives in its asker for the same reason the prompt text does — so both call sites
+# inherit it.
+# 🚨 DROSTE_CONFIG PINS THE ROOT, SO THE PROMPT DOES NOT FIRE (Jei: "if
+# DROSTE_CONFIG is set already at load, we need to skip the prompt for the config
+# directory" · "check if DROSTE_CONFIG is set, and if not, ask the question"). The
+# environment has already named where droste's definition files live; asking for a
+# path on top of that offers a choice the user made elsewhere and leaves one root
+# with two answers. ⚠️ That includes the mitigation re-ask, which IS the very
+# question he said to skip.
+#
+# ⭐ THIS IS ALSO WHAT MAKES step_log_root's LITERAL READING OF THE VARIABLE
+# COHERENT, and the two only make sense together: you cannot TYPE a config root
+# when the prompt does not fire, so in every run where DROSTE_CONFIG has a value,
+# $EMIT_DIR is that value and "the variable" and "the answer" cannot disagree.
+#
+# ⚠️ A BLANK IS ABSENT, AND THAT IS THE PROJECT'S STANDING RULE RATHER THAN A
+# COURTESY HERE: DROSTE_CONFIG= asks the question, with the factory default in the
+# bracket, exactly as an unset variable does. `factory_root config` already reads
+# it that way, so this tests the same `-n` and keeps no second copy of the rule.
+#
+# 🚨 SKIPPING A QUESTION IS NOT GOING SILENT. The run still says which root it is
+# using and that the environment is what chose it — a reader who never saw the
+# path cannot tell where droste is reading, and a root pinned by a variable set
+# months ago in a startup file is the case where they are LEAST likely to know.
+#
+# ⭐ THE CREATE CONFIRMATION STAYS, because it answers a different question.
+# Skipping the prompt settles WHICH directory; making one that is not there yet is
+# a mutation, and this installer confirms mutations — the same ensure_dir, and the
+# same "Create <path> [Y/n]?", the prompt path would have reached.
+# ⚠️ AND A DECLINED CREATE FALLS THROUGH TO THE PROMPT, at the opening call only:
+# the environment named a directory the user has just refused to make, and naming
+# another is the one way forward that does not end the run. The refusal is not
+# overridden and nothing is created behind it.
+#
+# open  = the question as the run opens; a pinned root is announced, confirmed if
+#         it has to be created, and settled. ALWAYS returns 0 — one way or
+#         another this call leaves EMIT_DIR holding a root.
+# reask = Data Mapping's "new path" answer for the config root. Returns 1 WITHOUT
+#         asking when the environment pins the root, because a path typed there
+#         could not outlive the run: the variable would still name the old one at
+#         the next start. The CALLER reports that, because the reason it matters
+#         (an overlay-hostile filesystem) is the caller's fact, not this one's.
+ask_config_root() {   # open|reask → EMIT_DIR; 1 when the environment answered it
+  local mode=$1 def
+  def=${EMIT_DIR:-$(factory_root config)}
+  if [[ -n ${DROSTE_CONFIG:-} ]]; then
+    [[ $mode == open ]] || return 1
+    # abs_path for the reason every other path input gets it: a RELATIVE spelling
+    # cannot be resolved later without the directory it was written against. An
+    # absolute or ~ spelling comes through exactly as the environment wrote it.
+    def=$(abs_path "$DROSTE_CONFIG")
+    prose "DROSTE_CONFIG is set, so that is the config path and it is not asked for:" \
+      "$C_QTXT"
+    printf '    %s%s%s\n' "$C_FILE" "$def" "$RESET"
+    if ensure_dir "$def"; then
+      EMIT_DIR=$def
+      return 0
+    fi
+    subnote "Not created $EMD name a config path to use instead."
+  fi
+  ask_path_as "Identify a path for droste config" "$def"
+  EMIT_DIR=$ANS_PATH
+  return 0
+}
+
+ask_data_root() {   # → DATA_ROOT
+  ask_path_as "Persistent data base path" "${DATA_ROOT:-$SEED_DATA_BASE}"
+  DATA_ROOT=$ANS_PATH
+  return 0
+}
+
+ask_pcache_root() {   # → PCACHE_ROOT
+  ask_path_as "Program caches base path" "${PCACHE_ROOT:-$SEED_PCACHE_BASE}"
+  PCACHE_ROOT=$ANS_PATH
+  return 0
+}
+
+ask_compute_cache() {   # → COMPUTE_CACHE
+  ask_path_as "Compute caches (MIOpen/Triton/torch)" "${COMPUTE_CACHE:-$SEED_COMPUTE}"
+  COMPUTE_CACHE=$ANS_PATH
+  return 0
+}
+
+ask_hf_cache() {   # → HF_CACHE
+  ask_path_as "HuggingFace models (\"cache\", never wiped)" "${HF_CACHE:-$SEED_HF}"
+  HF_CACHE=$ANS_PATH
+  return 0
+}
+
 # ── General Setup ────────────────────────────────────────────────────────────
 # Everything that can be settled ONCE for the whole install: the two networking
 # questions that would otherwise repeat per box (ports, and when a box's server
@@ -625,8 +760,7 @@ general_setup() {
   # the box's own section instead.
   if [[ $data_common -eq 1 ]]; then
     prose "*Data will be stored at <base>/<box>." "$C_QTXT"
-    ask_path_as "Persistent data base path" "$SEED_DATA_BASE"
-    DATA_ROOT=$ANS_PATH
+    ask_data_root
     DATA_AUTO=1
   fi
   # The optional read-only model share — a path-or-None prompt, so the bind and
@@ -634,20 +768,17 @@ general_setup() {
   # HF cache, which is a MODEL STORE and never wiped, whatever its name says.
   ask_path_or_none "Path to bind as read-only share /opt/models" "$SEED_MODELS"
   MODELS_DIR=$ANS_OPT_PATH
-  ask_path_as "HuggingFace models (\"cache\", never wiped)" "$SEED_HF"
-  HF_CACHE=$ANS_PATH
+  ask_hf_cache
 
   subhdr "Host Cache Paths"
   if [[ $pcache_common -eq 1 ]]; then
     prose "*Caches will be stored at <base>/<box>." "$C_QTXT"
-    ask_path_as "Program caches base path" "$SEED_PCACHE_BASE"
-    PCACHE_ROOT=$ANS_PATH
+    ask_pcache_root
     PCACHE_AUTO=1
   fi
   # Shared by every box (kernels are content-keyed), which is why it sits here
   # rather than inside either per-box root.
-  ask_path_as "Compute caches (MIOpen/Triton/torch)" "$SEED_COMPUTE"
-  COMPUTE_CACHE=$ANS_PATH
+  ask_compute_cache
   # THE STALE-CACHE QUESTION, install-wide and last in its own block: it is
   # about the caches the answers above just placed, and it is asked ONLY when
   # there is something to clear. One YES settles every box; a NO hands the
@@ -687,6 +818,14 @@ probe_fstype() {  # dir → FSTYPE
 MIT_ALL=""        # ""=unset, else fuse|copy|ignore applied to all later paths
 MIT_ASKED=0
 MIT_MODE=""       # result of the last mitigate_path call ("" = nothing needed)
+# 1 once the config root has been REPORTED as pinned by DROSTE_CONFIG and hostile.
+# ⚠️ IT IS SET AFTER THE REPORT, NEVER INSTEAD OF ONE, and it is the difference
+# between dropping a slot and finishing with it: the menu still opens on that
+# path, the user still hears which filesystem it is on and what to change, and
+# only THEN does the slot stop being offered — because the loop re-probes the most
+# primary hostile path every pass, and a root nothing in this run can move would
+# otherwise be raised forever.
+RC_PINNED=0
 
 # One continuous block of prose, word-wrapped to the screen and indented two.
 # The color is a parameter because two voices use this same block: body text
@@ -754,11 +893,24 @@ mitigate_path() {  # dir [nested]
 }
 
 # The paths that exist before any box section, most primary first. "Already
-# answered for" is same_dir, not ==: a root typed as ~/droste and a resource
+# answered for" is same_dir, not ==: a root typed as ~/droste and a config
 # path typed as /home/you/droste are one directory and one question.
+#
+# ⭐ THE DE-DUPLICATION IS STILL SAME_DIR, AND IT IS STILL EARNING ITS KEEP
+# (0.7.0). The four roots no longer NEST — the old defaults put data and caches
+# inside the resource path, and the new ones put them under three unrelated XDG
+# directories — so these comparisons fire far less often than they used to. What
+# they catch is unchanged and is the only thing they ever caught: a user who
+# ANSWERS two of the questions with one directory. That still costs one probe
+# and one mitigation question instead of two or three, and a `==` here would
+# still miss it the moment the two answers were spelled differently.
 mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
   case "$1" in
-    rc)      printf '%s' "$EMIT_DIR" ;;
+    # "Not in play" for the config root means one thing only: it is pinned by
+    # DROSTE_CONFIG, it is hostile, and the run has ALREADY said so (reask_slot).
+    # ⚠️ The slot is never skipped before that report — the menu opens on this
+    # path exactly as it always did.
+    rc)      [[ $RC_PINNED -eq 0 ]] && printf '%s' "$EMIT_DIR" ;;
     data)    [[ -n $DATA_ROOT ]] && ! same_dir "$DATA_ROOT" "$EMIT_DIR" \
                && printf '%s' "$DATA_ROOT" ;;
     # The program-cache root is where the venv upper lands, so it has to accept
@@ -774,16 +926,43 @@ mitigation_slot_path() {  # slot → path ("" when that slot is not in play)
 }
 
 # Re-ask ONE of those paths (the "new path" answer) and take the new value.
+# ⭐ EVERY ARM IS NOW A CALL TO THE ONE ASKER THAT OWNS THAT QUESTION. Five
+# literal prompt strings stood here, each a second authoring of a question asked
+# above, and two of them had already drifted from the original — see THE FIVE PATH
+# QUESTIONS. What is left in each arm is the only thing that ever belonged to the
+# re-ask: what the NEW answer invalidates.
 reask_slot() {  # slot → 0 when re-asked
   case "$1" in
     rc)
-      ask_path_as "Identify a path for droste resource storage" "$EMIT_DIR"
-      # A root that merely tracked the resource path keeps tracking it.
-      [[ $DATA_ROOT == "$EMIT_DIR/data" ]] && DATA_ROOT=""
-      [[ $PCACHE_ROOT == "$EMIT_DIR/caches" ]] && PCACHE_ROOT=""
-      EMIT_DIR=$ANS_PATH
-      DEFAULT_ROOT=$EMIT_DIR
-      # Everything the old resource path implied has to be re-derived: which
+      # 🚨 A ROOT PINNED BY DROSTE_CONFIG CANNOT BE RE-ASKED, AND THE RUN SAYS SO
+      # RATHER THAN GOING QUIET. A path typed here could not outlive the run — the
+      # variable would still name this one at the next start — so the offer would
+      # be a prompt whose answer is discarded. The menu still opened on this path
+      # and the report below names the filesystem and names the thing to change.
+      if ! ask_config_root reask; then
+        say ""
+        prose "The config path comes from DROSTE_CONFIG, so it cannot be changed here $EMD a path typed now would be forgotten at the end of this run, while your environment would still name $EMIT_DIR. Point DROSTE_CONFIG at a directory on another filesystem ($FSTYPE is the one it is on now) and run droste-setup.sh again, or choose one of the other options above." \
+          "$C_NOTB"
+        say ""
+        # Reported, and only now retired from the probe loop: the loop re-picks
+        # the most primary hostile path every pass, so a root this run cannot move
+        # would be raised again and again.
+        RC_PINNED=1
+        return 0
+      fi
+      # ⭐ MOVING THE CONFIG PATH NO LONGER MOVES ANYTHING ELSE (0.7.0). Two
+      # lines stood here that re-derived the data and program-cache roots —
+      # "a root that merely tracked the resource path keeps tracking it" — and
+      # they were right while those roots DEFAULTED to <resource path>/data and
+      # /caches. The three roots are independent now, each with its own XDG
+      # default, so a root the user has already settled stays settled: re-asking
+      # where the .ini files live is not an answer about where the data lives.
+      # ⚠️ Deleting them, rather than re-pointing them at the new factory roots,
+      # is the point: those values are ANSWERS by the time this runs (General
+      # Setup is over), and re-deriving an answer the user gave is the defect,
+      # not the fix.
+      #
+      # Everything the old config path implied has to be re-derived: which
       # boxes already exist there, and what the user wants done about them.
       EX_INI=() EX_CTR=() EXD_PATH=()
       EXD_PORT=() EXD_BOXSV=() EXD_HSTSV=() EXD_MODE=()
@@ -791,18 +970,10 @@ reask_slot() {  # slot → 0 when re-asked
       existing_settings
       seed_globals
       ;;
-    data)
-      ask_path_as "Persistent data base path" "$(data_root)"
-      DATA_ROOT=$ANS_PATH ;;
-    pcache)
-      ask_path_as "Program cache base path" "$(pcache_root)"
-      PCACHE_ROOT=$ANS_PATH ;;
-    compute)
-      ask_path_as "Compute caches (MIOpen/Triton/torch)" "$COMPUTE_CACHE"
-      COMPUTE_CACHE=$ANS_PATH ;;
-    hf)
-      ask_path_as "HuggingFace models (\"cache\" - never wiped)" "$HF_CACHE"
-      HF_CACHE=$ANS_PATH ;;
+    data)    ask_data_root ;;
+    pcache)  ask_pcache_root ;;
+    compute) ask_compute_cache ;;
+    hf)      ask_hf_cache ;;
     *) return 1 ;;
   esac
   return 0
@@ -836,3 +1007,258 @@ global_mitigation() {
   done
 }
 
+
+# ── Remembering the config root (the DROSTE_CONFIG export) ───────────────────
+# 🚨 THIS IS THE ONE PLACE THIS INSTALLER WRITES INTO A FILE IT DID NOT AUTHOR,
+# AND IT IS LICENSED BY THREE THINGS AT ONCE. It is CONSENTED — a yes/no whose
+# "no" is a real answer and a complete, non-silent outcome. It is ADDITIVE — on
+# a first run not one existing byte is read back and written out again. And it
+# is SHOWN IN FULL before it is offered, file and lines both. Remove any one of
+# those and this becomes the thing the project forbids outright: WE DO NOT
+# REWRITE THE USER'S FILES.
+#
+# ⭐ THE MARKED BLOCK IS WHAT KEEPS THE SECOND RUN HONEST, and the precedent is
+# the ini's own `# droste-setup: spelled="…"` line. We own what lies BETWEEN our
+# two markers and nothing else, so a re-run UPDATES that block instead of
+# appending a second export — and that is not a rewrite of the user's file,
+# because those three lines were never theirs. Everything outside the markers is
+# carried through untouched and is never parsed for meaning.
+# ⚠️ WHICH IS ALSO WHY A DAMAGED BLOCK IS REFUSED RATHER THAN REPAIRED. One
+# marker without its partner, or an END above its BEGIN, means the boundary this
+# whole licence rests on is not where it claims to be — and "delete from the
+# marker to the end of the file" is how a startup file gets truncated. Detect
+# and report; never guess at the shape.
+#
+# 🚨 THE FILE CASCADE IS PER-FAMILY, BECAUSE zsh DOES NOT READ ~/.profile. A flat
+# "fall back to .profile" rule would write a real file for a zsh user and have no
+# effect whatsoever — silent, and the worst of both outcomes, since we would have
+# touched their file AND left the problem unsolved. zsh's last resort is
+# ~/.zprofile.
+#
+#   $SHELL recognized, its interactive rc exists  → that rc (~/.bashrc, ~/.zshrc)
+#   recognized, rc missing                        → that family's login file
+#                                                   (~/.profile, ~/.zprofile)
+#   unrecognized or unset                         → ~/.profile, NAMED ON SCREEN
+#
+# ⚠️ RECOGNITION IS BY BASENAME, never by whether $SHELL names a binary this host
+# can read. A machine whose $SHELL says zsh belongs to a zsh user whatever is
+# installed where this script happens to be running, and testing the file would
+# quietly demote them to ~/.profile — the exact failure the per-family cascade
+# exists to prevent.
+SHRC_BEGIN='# droste-setup: begin DROSTE_CONFIG'
+SHRC_END='# droste-setup: end DROSTE_CONFIG'
+SHRC_FILE=""        # startup file the export would go into (the SPELLING)
+SHRC_GUESSED=0      # 1 when $SHELL named nothing we know and the file is a guess
+SHRC_KEEP=""        # every line of that file that is NOT inside our block
+SHRC_NB=0           # BEGIN markers the last scan saw
+SHRC_NE=0           # END markers the last scan saw
+SHRC_CONFLICT=""    # DROSTE_CONFIG assignments found OUTSIDE our block
+
+# Quote for a shell line, and only when it needs it: an ordinary path reads
+# better bare, and anything else is single-quoted with embedded quotes spliced
+# the POSIX way ('\'').
+sh_quote() {   # text → the same text, safe to paste into a shell line
+  if [[ -z $1 || $1 == *[!A-Za-z0-9_./:+@%-]* ]]; then
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+shrc_target() {   # → SHRC_FILE (spelled), SHRC_GUESSED
+  local sh=${SHELL:-} rc="" login=""
+  SHRC_GUESSED=0
+  # shellcheck disable=SC2088  # LITERAL ~, resolved by fs_path at use
+  case "${sh##*/}" in
+    bash)    rc='~/.bashrc'; login='~/.profile'  ;;
+    zsh)     rc='~/.zshrc';  login='~/.zprofile' ;;
+    sh|dash) login='~/.profile' ;;
+    *)       login='~/.profile'; SHRC_GUESSED=1 ;;
+  esac
+  if [[ -n $rc && -f $(fs_path "$rc") ]]; then SHRC_FILE=$rc
+  else SHRC_FILE=$login; fi
+  return 0
+}
+
+# The exact line — produced ONCE, so what is shown and what is written cannot
+# disagree. ⚠️ A `~` CANNOT BE BOTH EXPANDED AND SAFE IN A SHELL FILE (a quoted
+# tilde does not expand; a bare one cannot carry a space), so a home-relative
+# answer is written as "$HOME" plus its tail. That is not the ini rule's
+# forbidden `$VAR in a volume= source`: podman expands nothing and a shell
+# startup file expands everything, and this spelling FOLLOWS A MOVED HOME, which
+# is what the stored spelling was promising in the first place.
+shrc_export_line() {   # spelled config root → the export line
+  local p=$1
+  # shellcheck disable=SC2088  # matching a LITERAL leading ~ is the point
+  case "$p" in
+    "~")   printf 'export DROSTE_CONFIG="$HOME"' ;;
+    "~/"*) printf 'export DROSTE_CONFIG="$HOME"/%s' "$(sh_quote "${p#\~/}")" ;;
+    *)     printf 'export DROSTE_CONFIG=%s' "$(sh_quote "$p")" ;;
+  esac
+}
+
+# ONE PASS, and it answers every question the offer needs: what is outside our
+# block (so an update can put it back byte for byte), whether the block is
+# whole, and whether the user has a DROSTE_CONFIG line of their own.
+# ⚠️ It sets globals rather than printing, deliberately: a `$( )` around it would
+# put the counters in a subshell and lose them, and then three separate reads of
+# one file would have to agree with each other.
+shrc_scan() {   # resolved file → SHRC_KEEP / SHRC_NB / SHRC_NE / SHRC_CONFLICT
+  local line inblock=0
+  SHRC_KEEP="" SHRC_NB=0 SHRC_NE=0 SHRC_CONFLICT=""
+  [[ -f $1 ]] || return 0
+  # `|| [[ -n $line ]]` so a final line with no newline is still seen; it comes
+  # back with one, which is the only byte this ever normalizes.
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line == "$SHRC_BEGIN" ]]; then SHRC_NB=$((SHRC_NB + 1)); inblock=1; continue; fi
+    if [[ $line == "$SHRC_END" ]];   then SHRC_NE=$((SHRC_NE + 1)); inblock=0; continue; fi
+    if [[ $inblock -eq 0 ]]; then
+      # A commented-out line is not an assignment: the pattern is anchored, so
+      # `#export DROSTE_CONFIG=…` does not match and is not reported as theirs.
+      if [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?DROSTE_CONFIG= ]]; then
+        SHRC_CONFLICT+="$line"$'\n'
+      fi
+      SHRC_KEEP+="$line"$'\n'
+    fi
+  done < "$1"
+  return 0
+}
+
+shrc_write() {   # spelled resolved line → 0 when the file now carries the block
+  local spelled=$1 real=$2 line=$3
+  # 🚨 EVERY MUTATION BELOW THIS GUARD, AND THE ORDERING IS THE CLAIM
+  # check-installer-dryrun.sh CHECKS. dry::skip rather than dry::fs for exactly
+  # the reason dryrun.sh gives for it: the write IS this function — a rebuild
+  # and a redirect, with no single command a wrapper could stand in front of.
+  # Same shape as emit_ini, write_notes and the .cfg merge.
+  dry::skip "add the DROSTE_CONFIG export to $spelled" && return 0
+  if [[ $SHRC_NB -eq 1 ]]; then
+    # UPDATE. Composed in full and written in one redirect; the user's lines
+    # come back exactly as they were read.
+    {
+      printf '%s' "$SHRC_KEEP"
+      printf '%s\n%s\n%s\n' "$SHRC_BEGIN" "$line" "$SHRC_END"
+    } > "$real" || return 1
+  else
+    # APPEND — the first-run case, which never rewrites a single existing byte.
+    if [[ -s $real ]]; then
+      # A file that does not end in a newline would otherwise have our marker
+      # glued onto its last line; the blank line is separation, either way.
+      if [[ $(tail -c1 -- "$real"; printf x) != $'\n'x ]]; then printf '\n' >> "$real"; fi
+      printf '\n' >> "$real" || return 1
+    fi
+    printf '%s\n%s\n%s\n' "$SHRC_BEGIN" "$line" "$SHRC_END" >> "$real" || return 1
+  fi
+  return 0
+}
+
+# ⚠️ THIS IS NOT step_log_root's TEST, AND THE DIFFERENCE IS THE WHOLE POINT OF
+# HAVING TWO. That one asks "does the config root lie WITHIN the XDG config
+# tree" — a question about what KIND of directory this is, because it is deciding
+# where droste's own logs belong. This one asks "would the NEXT run find this
+# root by itself" — so it compares, for EQUALITY, against what factory_root
+# offers RIGHT NOW, environment and all. A user whose $DROSTE_CONFIG or
+# $XDG_CONFIG_HOME already names this directory is not asked to write an export
+# that would only repeat what their environment says; a user who TYPED a path
+# that nothing in the environment names is.
+# ⭐ Same input, two honest answers, because they are two different questions.
+# Collapsing them would silently break one of the two — and the two now differ in
+# their COMPARISON as well as their subject (within vs. equals), so a helper
+# shared between them could not serve both.
+# 📐 MEASURED, on one configuration: $DROSTE_CONFIG=/srv/cfg sends the step logs
+# to /srv/cfg/sys_logs (that root is outside the XDG config tree) while this
+# predicate stays SILENT (the environment already names it, so the next run finds
+# it). One input, two opposite and correct answers.
+config_root_needs_export() {   # → 0 when a later run would NOT find this root
+  [[ -n ${EMIT_DIR:-} ]] || return 1
+  ! same_dir "$EMIT_DIR" "$(factory_root config)"
+}
+
+offer_config_export() {
+  local spelled real line cline
+  # ⭐ THE OFFER ONLY EXISTS BECAUSE THE ANSWER IS NOT DISCOVERABLE. A config
+  # root the next run computes for itself needs no export, so there is nothing to
+  # remember and nothing to ask — no question, no screen, no note.
+  config_root_needs_export || return 0
+
+  shrc_target
+  spelled=$SHRC_FILE
+  real=$(fs_path "$spelled")
+  line=$(shrc_export_line "$EMIT_DIR")
+  shrc_scan "$real"
+
+  section "Remembering Your Config Path"
+  # ⚠️ NAMES ONLY THE TOOL THAT EXISTS. The reader this really buys is the
+  # standalone settings tool ruled in s82, and it has not shipped; a screen that
+  # tells a user to run something that is not there is its own small defect.
+  prose "Your config path is not the one droste looks in by default, so a later\
+ droste-setup.sh run will not find it unless DROSTE_CONFIG is set in the\
+ environment. This can record it in a shell startup file for you." \
+    "$C_QTXT"
+
+  # 🚨 NEVER SILENTLY OVERRIDE THE USER'S OWN LINE. A DROSTE_CONFIG assignment
+  # outside our markers is theirs, whatever it says, so this refuses and NAMES
+  # it rather than adding a second one further down the file — where ours would
+  # win by position while the user was reading the line above it.
+  # ⚠️ IT DOES NOT TRY TO DECIDE WHETHER THEIR LINE AGREES WITH THIS RUN.
+  # Working out what a shell assignment evaluates to means guessing at quoting,
+  # expansion and whatever ran before it, and a wrong guess here writes into a
+  # file we do not own. The line is printed instead, beside the one this run
+  # would have written, so the person who wrote it can see both.
+  if [[ -n $SHRC_CONFLICT ]]; then
+    say ""
+    prose "$spelled already sets DROSTE_CONFIG itself, so nothing was written $EMD that line is yours:" "$C_NOTB"
+    while IFS= read -r cline; do
+      [[ -n $cline ]] || continue
+      printf '    %s%s%s\n' "$C_CMD" "$cline" "$RESET"
+    done <<<"$SHRC_CONFLICT"
+    prose "Edit it by hand if you want this run's path instead:" "$C_TEXT"
+    printf '    %s%s%s\n' "$C_CMD" "$line" "$RESET"
+    say ""
+    return 0
+  fi
+  # Our own markers, not in the shape we write them. Reported, never repaired.
+  if [[ $SHRC_NB -ne $SHRC_NE || $SHRC_NB -gt 1 ]]; then
+    say ""
+    prose "$spelled carries a droste-setup block that is not in the shape this installer writes, so nothing was written. Tidy these two marker lines by hand and re-run:" "$C_NOTB"
+    printf '    %s%s%s\n' "$C_QTXT" "$SHRC_BEGIN" "$RESET"
+    printf '    %s%s%s\n' "$C_QTXT" "$SHRC_END" "$RESET"
+    say ""
+    return 0
+  fi
+
+  if [[ $SHRC_GUESSED -eq 1 ]]; then
+    prose "\$SHELL does not name a shell this installer knows, so the file below is the portable choice $EMD check that your shell actually reads it." "$C_NOTB"
+  fi
+  say ""
+  printf '  %sFile:%s %s%s%s\n' "$C_TEXT" "$RESET" "$C_FILE" "$spelled" "$RESET"
+  printf '  %s%s:%s\n' "$C_TEXT" "$([[ $SHRC_NB -eq 1 ]] && printf 'Replacing its droste-setup block with' || printf 'Lines to add')" "$RESET"
+  printf '    %s%s%s\n' "$C_QTXT" "$SHRC_BEGIN" "$RESET"
+  printf '    %s%s%s\n' "$C_CMD" "$line" "$RESET"
+  printf '    %s%s%s\n' "$C_QTXT" "$SHRC_END" "$RESET"
+  say ""
+  ask_yn "Write those three lines to $spelled" Y
+  if [[ $ANS_YN -ne 1 ]]; then
+    # ⭐ DECLINING IS A SUPPORTED OUTCOME AND SAYS SO. Silence after a "no" reads
+    # as a failure; this says what the user owns instead.
+    subnote "Not written $EMD set DROSTE_CONFIG yourself before your next run."
+    return 0
+  fi
+  if ! shrc_write "$spelled" "$real" "$line"; then
+    prose "Could not write $spelled $EMD add the three lines above by hand." "$C_NOTB"
+    say ""
+    return 0
+  fi
+  # The WOULD DO line dry::skip has already printed is the whole report in a dry
+  # run; a "Written." beside it would claim both.
+  dry::on && return 0
+  # 🚨 SAY THAT IT DOES NOT REACH THIS SHELL. Without this line the next
+  # droste-settings.sh run in the SAME terminal reads DROSTE_CONFIG as unset and
+  # the user concludes the write silently failed.
+  # ⚠️ prose(), not subnote(): subnote does not fold, and this sentence is the
+  # one that must be read.
+  subnote "Written to $spelled."
+  prose "It does NOT affect the shell you are in now $EMD open a new one, or run that export line, before your next droste command." "$C_NOTB"
+  say ""
+  return 0
+}

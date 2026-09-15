@@ -227,8 +227,8 @@ detect_existing() {
   return 0
 }
 
-# The conditional block under the resource-path answer: which definition files
-# the just-named resource path already holds. Printed BEFORE the box table
+# The conditional block under the config-path answer: which definition files
+# the just-named config path already holds. Printed BEFORE the box table
 # because it is the reason a re-runner is about to pick a subset.
 detected_block() {
   local box

@@ -1153,6 +1153,27 @@ shrc_write() {   # spelled resolved line → 0 when the file now carries the blo
 # it). One input, two opposite and correct answers.
 config_root_needs_export() {   # → 0 when a later run would NOT find this root
   [[ -n ${EMIT_DIR:-} ]] || return 1
+  # 🚨 A SET DROSTE_CONFIG SILENCES THE OFFER OUTRIGHT (Jei, s83: "We should only
+  # ask this if DROSTE_CONFIG was not set at the beginning"). The equality test
+  # below already covered the ordinary case — factory_root returns $DROSTE_CONFIG
+  # when it has a value, so a pinned root equals itself and nothing is asked —
+  # but it left ONE branch asking: DROSTE_CONFIG names a directory, the user
+  # DECLINES to create it, and the fall-through prompt takes a different path.
+  # There the typed root differs from the variable, so the old test said "they
+  # would not find this next time" and offered to write an export.
+  # ⭐ HIS RULE IS THE SAFER READING AND IT IS ALSO SIMPLER: a user whose
+  # environment already names a config root has an answer to this question, and
+  # ours would contradict theirs. Silence is not a degraded outcome — it is
+  # declining to overrule a decision made outside this run.
+  # ⚠️ THE ACCEPTED COST, stated so nobody rediscovers it as a bug: in that one
+  # branch the typed root is recorded nowhere, and the next run starts from the
+  # same variable and reaches the same refusal.
+  # 📐 NO FLAG IS KEPT FOR "at the beginning" ON PURPOSE — nothing in this
+  # installer ever assigns DROSTE_CONFIG (measured s83: the only occurrences are
+  # text we PRINT and a pattern we MATCH), so reading it here reads the value the
+  # run started with. A captured copy would be a second source for one fact.
+  # ⚠️ BLANK IS ABSENT, as everywhere else: DROSTE_CONFIG= asks the question.
+  [[ -n ${DROSTE_CONFIG:-} ]] && return 1
   ! same_dir "$EMIT_DIR" "$(factory_root config)"
 }
 

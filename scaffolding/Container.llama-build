@@ -24,6 +24,7 @@ ARG LLAMA_REF=fb2cc35ab3507a5aab56fe593620cd96d8f45384
 
 # Re-add if needed
 COPY llama-grammar.patch /tmp/
+COPY llama-grammar-dash-escape.patch /tmp/
 COPY llama-api-prefix-auth.patch /tmp/
 COPY llama-mla-cache-coerce.patch /tmp/
 COPY llama-spec-types-default.patch /tmp/
@@ -113,6 +114,58 @@ RUN set -e; \
     [ "$(nx '#define MAX_REPETITION_THRESHOLD 100000')" = 1 ] \
       || die "expected exactly 1 raised threshold definition after applying"; \
     echo "llama-grammar: applied; MAX_REPETITION_THRESHOLD raised 2000 -> 100000"
+
+# ── The grammar \- escape accept ─────────────────────────────────────────────
+#
+# WHAT IT FIXES: parse_char() in src/llama-grammar.cpp accepts \\ " [ ] (plus
+# t/r/n/x/u/U) and THROWS "unknown escape" on anything else — including \-,
+# which JSON Schema `pattern` values use for a literal dash inside a character
+# class (e.g. `[A-Za-z0-9_\-.~:@+]`, an identifier pattern MCP tool schemas
+# carry). The converter passes the pattern through, so the parser rejects the
+# whole tool grammar on the first \- it meets. Same request-time invisibility
+# as the threshold above: the image builds, the server starts, /health answers
+# 200, and every tool-calling request whose schema set contains such a pattern
+# fails with "failed to parse grammar". Full rationale and the measured failure
+# live in llama-grammar-dash-escape.patch.
+#
+# 🚨 PERMANENT, NOT A STOPGAP, with one checked exception. ggml-org master HAS
+# this case but our upstream — TheTom/llama-cpp-turboquant — does NOT, even at
+# its default-branch head (verified 2026-09-16), so there is no pin to advance
+# to; and we are not filing. NOBODY IS WATCHING FOR THIS TO BECOME UNNECESSARY,
+# so the guard below is the ONLY thing that will ever tell us the patch stopped
+# applying. If the fork ever merges it, the two outcomes below say what to do.
+#
+# Guard shape, same contract as above: the file exists, exact whole-line counts
+# before AND after, `-F0` so patch may not improvise, refusal to patch twice,
+# and a reachability floor (parse_char must still be CALLED — a case added to a
+# function nothing calls is the silent no-op in the other direction).
+RUN set -e; \
+    f=src/llama-grammar.cpp; \
+    die() { echo "llama-grammar-dash: FATAL: $*" >&2; \
+            echo "llama-grammar-dash: the pinned source no longer matches what this patch assumes." >&2; \
+            echo "llama-grammar-dash: READ ${f} parse_char at the CURRENT LLAMA_REF before touching anything." >&2; \
+            echo "llama-grammar-dash: EITHER the fork merged an upstream escape fix (stock code gone" >&2; \
+            echo "llama-grammar-dash: AND our case absent -- then DELETE the patch file and this guard" >&2; \
+            echo "llama-grammar-dash: rather than re-deriving anything), OR the fork moved and the hunk" >&2; \
+            echo "llama-grammar-dash: must be RE-DERIVED at the new sha, with the counts here updated" >&2; \
+            echo "llama-grammar-dash: to match what you actually found in the new source." >&2; \
+            echo "llama-grammar-dash: Do NOT drop -F0 or hand-place the hunk to make this pass." >&2; \
+            exit 1; }; \
+    nx() { grep -Fxc -- "$1" "$f" || true; }; \
+    ns() { grep -Fc  -- "$1" "$f" || true; }; \
+    [ -f "$f" ] \
+      || die "$f does not exist at this LLAMA_REF -- the grammar parser has moved or been renamed"; \
+    [ "$(nx "            case '-':")" = 0 ] \
+      || die "$f already carries the dash case -- refusing to patch twice"; \
+    [ "$(nx "            case ']':")" = 1 ] \
+      || die "expected exactly 1 indented case-']' anchor in parse_char in $f"; \
+    [ "$(ns 'parse_char(pos')" -ge 3 ] \
+      || die "parse_char is DEFINED but never CALLED in $f -- accepting there would be a silent no-op"; \
+    patch -p1 -F0 < /tmp/llama-grammar-dash-escape.patch \
+      || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
+    [ "$(nx "            case '-':")" = 1 ] \
+      || die "expected exactly 1 dash case after applying"; \
+    echo "llama-grammar-dash: applied; parse_char accepts \\-"
 
 # ── The --api-prefix x --api-key auth fix (upstream #22474) ──────────────────
 #

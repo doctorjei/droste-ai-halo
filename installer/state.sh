@@ -176,7 +176,7 @@ runtime_version() {   # → the container runtime's version string ("" = no answ
 }
 
 pf_health_timer() {
-  local v maj min scope="--user "
+  local v maj min
   # docker is not what supervises these boxes, and the row has nothing to say
   # about a runtime that was never found at all.
   [[ $RUNTIME == podman && -n $RUNTIME_BIN ]] || return 0
@@ -190,29 +190,10 @@ pf_health_timer() {
   # 5.1 as ONE integer: a nested major/minor condition is the shape that gets
   # mis-edited later, and there is nothing here a third field would decide.
   [[ $((maj * 100 + min)) -lt 501 ]] || return 0
-  # Rootful podman puts the same transient units in the SYSTEM manager, where
-  # root's own `systemctl` already reaches them. Settled once, here, so the
-  # printed command is right in both shapes rather than right in one.
-  [[ $ROOTLESS -eq 1 ]] || scope=""
   # The version is spelled out because a distro build can carry a suffix
   # (`4.9.4-rhel`), and the row is kept short enough that one still fits inside
   # the 79 columns this report is drawn to.
-  pf_note "podman $v $EMD below 5.1: a box goes unwatched after one restart"
-  pf_hint "nothing probes it after that, so nothing relaunches its server"
-  pf_hint "tell: $(emph 'podman ps') keeps it at (starting) past its start period"
-  # ⚠️ THE TWO COMMANDS ARE BUILT AS LOCALS RATHER THAN INLINED INTO THE hint
-  # STRINGS, and it is not a style choice: a `<box>` placeholder inside a NESTED
-  # double quote walks out of check-installer-dryrun.sh's quote scanner, and the
-  # `>` it leaves exposed reads as an output redirect — so the hint is reported
-  # as an unguarded filesystem mutation (measured: both lines, `(fs, in
-  # pf_health_timer)`). Assigned first, each command is ONE quoted run and
-  # collapses, which is the same protection every other placeholder-carrying
-  # line in this installer gets from being singly quoted.
-  local idcmd="podman inspect --format '{{.Id}}' droste-<box>-halo"
-  local fixcmd="systemctl ${scope}reset-failed <that 64-char id>.service"
-  pf_hint "fix, per box: $(emph "$idcmd")"
-  pf_hint "then $(emph "$fixcmd")"
-  pf_hint "and restart the box $EMD on pre-0.7.0 images, a slow $(emph 'server_restart') can still bounce it"
+  pf_note "podman < 5.1: limited box health tracking available."
   return 0
 }
 

@@ -418,7 +418,7 @@ emit_ini() {  # box → writes <box>-halo.ini (distrobox assemble record)
     printf '# Modeled on targets/%s/distrobox.ini (droste-ai-halo repo).\n' "$box"
     printf '# ONE container, two doors: "distrobox enter %s" for an\n' "$(box_ctr "$box")"
     printf '# interactive shell, "podman start %s" to bring the\n' "$(box_ctr "$box")"
-    printf '# service up (the init hook reads %s/%s\n' "$data" "${BOX_CFG[$box]}"
+    printf '# service up (the init hook reads %s/%s\n' "${PATHS["$box:config"]}" "${BOX_CFG[$box]}"
     printf '# at every start and launches on the port recorded there).\n'
     # The record of what this installer last answered — read back on the next
     # run as the fallback for <box>.cfg (port, box start) and for the systemd

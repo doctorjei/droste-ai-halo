@@ -56,6 +56,15 @@
 # the generous start periods are deliberate, and llama's 503-while-loading is
 # still what it always was).
 #
+# ⭐ GATE 2 HAS ONE EXCEPTION AND IT IS BOUNDED BY AN OPERATOR'S OWN ACTION: while
+# state/.RESTARTING is fresh, a quiet or not-yet-ready endpoint reports HEALTHY,
+# because someone just ran `server_restart` and asked this box to load its model
+# again. podman's --health-start-period covers only a CONTAINER start, so without
+# this a restart that outlasts --health-interval × --health-retries (90s, against
+# ~115s on vllm) bounced the container and ejected every shell in it. The window's
+# size is that box's own start period (build-spec HEALTH_START) and its rules live
+# in droste-serve.sh's restart-window section, next to the flag gate 0 reads.
+#
 # The state record is the DISTROBOX-lane server door's (serve::maybe_launch): the
 # foreground server lane execs its service as pid 1 and writes no record — but it
 # also never reads the serve settings and never sets the intent flag, so this script
@@ -157,8 +166,30 @@ rc=$?
 # would be worse than no message at all. Keep them in step; never inline either rule.
 url="$(serve::probe_scheme)://$(serve::probe_addr):${SERVE_PORT}${HEALTH_PATH}"
 
+# ⭐ GATE 2 HAS A WINDOW, AND ONLY GATE 2 (B17). An operator who runs `server_restart`
+# asked this box to load its model again, and on vllm that takes ~115s against the 90s
+# (--health-interval 30s × --health-retries 3) podman allows before
+# --health-on-failure=restart bounces the CONTAINER and ejects every interactive shell in
+# it. podman's own --health-start-period cannot cover it: it is measured from a CONTAINER
+# start, so the first start gets 45 minutes of grace and every later one gets 90 seconds.
+# state/.RESTARTING says an operator asked for this, and when, and serve::restart_window_open
+# bounds it by the SAME grace that box's container start gets (its build-spec HEALTH_START).
+# ⚠️ WHAT THIS IS NOT: it is not a general start period, and it is not a verdict about the
+# endpoint. Nothing above this line changes — a service that died still fails gate 1,
+# still reports UNHEALTHY and still gets the surgical relaunch — and outside the window a
+# quiet endpoint is UNHEALTHY exactly as it has always been. See the restart-window
+# section in droste-serve.sh for why reporting the operator's own action is not the probe
+# lying about the service.
+hc::in_restart_window() {  # 0 = report healthy, having said why
+    serve::restart_window_open || return 1
+    printf 'droste-healthcheck: healthy (restart window) — server_restart was asked for %ss ago and %s is not answering yet; this box gets %ss, the same grace its container start gets. Reporting healthy so podman does not restart the container out from under the operator. See %s.\n' \
+        "$SERVE_RESTART_AGE" "$url" "$SERVE_RESTART_BOUND" "$DROSTE_SERVE_LOG"
+    return 0
+}
+
 # curl could not get an HTTP response at all (refused, timeout, reset): 000.
 if [ -z "$code" ] || [ "$code" = "000" ]; then
+    hc::in_restart_window && exit 0
     printf 'droste-healthcheck: UNHEALTHY — no HTTP response from %s (curl exit %s).\n' "$url" "$rc"
     exit 1
 fi
@@ -167,14 +198,21 @@ case "$HEALTH_ACCEPT" in
     any)
         # "any HTTP response proves the server is up" (jupyter: / redirects to
         # /login, and API paths 403 without the token — all of them mean alive).
+        serve::clear_restarting
         printf 'droste-healthcheck: healthy — our service (pid %s) answered %s with %s.\n' "$SERVE_REC_PID" "$url" "$code"
         exit 0
         ;;
     *)
         if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+            serve::clear_restarting
             printf 'droste-healthcheck: healthy — our service (pid %s) answered %s with %s.\n' "$SERVE_REC_PID" "$url" "$code"
             exit 0
         fi
+        # ⚠️ THE REJECTED-CODE ARM GETS THE WINDOW TOO, and it is not the same case as the
+        # one above only by accident: llama-server answers /health with 503 for as long as
+        # it is loading, so on that box a restart in progress arrives here rather than at
+        # the 000 arm. Both mean "the server we were told to restart is not ready yet".
+        hc::in_restart_window && exit 0
         printf 'droste-healthcheck: UNHEALTHY — %s answered %s.\n' "$url" "$code"
         exit 1
         ;;

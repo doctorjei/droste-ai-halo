@@ -130,6 +130,88 @@ droste::cfg_is_passthrough() {
     return 1
 }
 
+# ── droste::cfg_doubled_eq — the `NAME==value` typo, read from the TEXT ──────
+# Usage:  droste::cfg_doubled_eq "$file"   # prints the offending NAMEs, ", "-joined
+#
+# 🚨 THE DEFECT, MEASURED ON THE REAL FIXTURE AND NOT REASONED (B16). A user typed
+# `LLAMA_ARG_SPEC_TYPE==draft-dflash` — one extra `=` — and llama-server exited at launch
+# with "unknown speculative type: =draft-dflash". `FOO==x` assigns `=x`; that is plain
+# shell semantics, and it is bash doing exactly what it is told.
+# ⭐ IT IS THIS FILE'S PROBLEM AND NOT THE PARSER'S. Every NATIVE (upstream-named) setting
+# reaches its server by SOURCING, in droste::cfg_apply below; droste::cfg_get parses only
+# the five DROSTE_<APP>_* serve settings and natives never enter that lane. ⇒ A GUARD IN
+# THE PARSER WOULD FIX NOTHING.
+#
+# 🚨 AND THE DANGEROUS HALF IS SILENT. 255 natives are exposed across the five templates
+# (vllm 149 · llama 83 · finetuning 19 · ds4 4 · comfyui 0) and most of them fail loudly,
+# which is survivable. These do not:
+#   · 14 vLLM AITER/ROCm booleans FLIP. vLLM reads them as
+#     os.getenv(X,"True").lower() in ("true","1"); "=True".lower() is "=true", which is in
+#     neither — and several of them DEFAULT TRUE. A doubled `=` turns an accelerator off
+#     with no message, a healthy box, and nothing to see but a slower one.
+#   · TURBO_LAYER_ADAPTIVE: atoi("=7") is 0, so `mode > 0` is false and NOT EVEN A LOG
+#     LINE is printed — and because the variable is non-NULL it also suppresses the
+#     downstream auto-enable that would have turned the feature on by itself.
+#   · a first-character test inverts the user's intent: TURBO_AUTO_ASYMMETRIC==0 leaves
+#     env[0] as '=' rather than '0', so the feature is NOT disabled. They wrote off and
+#     got on.
+# ⭐ THE CONTRAST THAT MAKES THIS WORTH A GUARD, and it is one line away: the IDENTICAL
+# typo on a SERVE setting is already caught. `DROSTE_<APP>_PORT==8080` fails
+# serve::read_config's digit test and `DROSTE_<APP>_HOST==127.0.0.1` fails
+# serve::_is_ipv4, and both refuse to serve and name the line. A native gets no type test
+# at all, so the same keystroke is invisible.
+#
+# 🚨 RULED REFUSE, NOT WARN-AND-STRIP (Jei, s87): "we can guess one value, but that can
+# compound. Better to get the user to resolve while it's still clear." ⭐ Refusing is not
+# falling back, so NO FALL-THROUGH VALUES never engages and no default is being guessed at.
+# The two callers refuse in the two ways that are theirs to refuse: this file declines to
+# apply the settings, and serve::read_config declines to serve (its SERVE_CONFIG_ERR arm,
+# the same channel a bad HOST and a half-set TLS pair already use — which is what keeps a
+# refused box out of a restart loop, because serve::reset_active then writes intent 0 and
+# the probe's gate 0 reports "nothing to probe").
+#
+# 🚨 IT READS THE FILE, NOT THE ENVIRONMENT, for the same reason cfg_is_passthrough above
+# does — and here the point is sharper. MEASURED: `FOO==x` and `FOO="=x"` both produce the
+# value `=x`, byte for byte, through BOTH readers. The first is a typo and the second is a
+# value the user chose, and by the time anything downstream holds the string there is
+# nothing left to tell them apart. THE INTENT SURVIVES ONLY IN THE TEXT.
+# ⚠️ A QUOTED LEADING `=` MUST PASS. `FOO="=x"` is deliberate; the anchor below requires
+# the second `=` immediately after the first, so a quote breaks it.
+# ⚠️ THE LEADING POSITION ONLY. An interior `=` is legitimate and common — a
+# DROSTE_JUPYTER_EXTRA_ARGS or a LLAMA_ARG_OVERRIDE_TENSOR carries several.
+# ⚠️ COMMENTED LINES CANNOT MATCH, and for the same load-bearing reason as above: the
+# anchor requires the name at the start of the line (optionally after `export`), so a
+# leading `#` fails it. A template ships every setting commented out.
+# ⭐ IT COVERS NATIVES AND DROSTE-OWNED NAMES ALIKE — the shape is the fault, and the
+# namespace has nothing to do with it.
+# ⚠️ KNOWN LIMIT, STATED RATHER THAN GUARDED: the scan is LINE-BASED, so a line of that
+# shape inside a multi-line quoted value would be reported. cfg_is_passthrough has the
+# identical exposure and ships; no template we write has ever carried one, and the remedy
+# (a shell-aware tokenizer) is the hand-rolled dotenv reader this whole file exists to
+# avoid.
+#
+# ALWAYS RETURNS 0, AND PRINTS NOTHING FOR A CLEAN FILE. serve::read_config calls this
+# from inside the health probe, every 30s, behind --health-on-failure=restart: an abort
+# here would be a container restart loop that ejects every interactive shell in the box.
+# A missing, unreadable, non-regular or empty file is simply "nothing to report" — the
+# callers already diagnose each of those on their own terms.
+droste::cfg_doubled_eq() {
+    local file=${1-} line out=""
+    [ -n "$file" ] && [ -f "$file" ] || return 0
+    [ -r "$file" ] || return 0
+    # `|| [ -n "$line" ]` keeps a final line that carries no trailing newline, which is a
+    # real shape for a hand-edited file (cfgparse.sh asserts the parser reads one too).
+    while IFS= read -r line || [ -n "$line" ]; do
+        # The cheap test first: almost every line in a real config file is a comment or a
+        # single assignment, and this one keeps the regex off all of them.
+        case $line in *'=='*) ;; *) continue ;; esac
+        [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)== ]] || continue
+        out="${out}${out:+, }${BASH_REMATCH[2]}"
+    done < "$file"
+    printf '%s' "$out"
+    return 0
+}
+
 # ── droste::cfg_apply — the whole design, in one function ────────────────────
 # Usage:  droste::cfg_apply "$CFG_FILE"
 # Always returns 0. A config file must not be able to stop the box from starting; that
@@ -298,7 +380,32 @@ droste::cfg_apply() {
         return 0
     fi
 
-    # 2) BASELINE and AFTER, from two children invoked the same way so that everything
+    # 2) A DOUBLED `=` — REFUSE THE FILE, DO NOT REPAIR IT (B16, ruled s87).
+    #    ⭐ SECOND, NOT FIRST, and the order is a judgement rather than an accident: a
+    #    file that carries BOTH faults gets bash's line-numbered syntax message, which is
+    #    the more fundamental one and the one that names a line. A `NAME==value` line is
+    #    syntactically VALID, so the two never actually compete — but if they ever do, the
+    #    syntax error is what the user has to fix first.
+    #    ⭐ THE WHOLE FILE, NOT THE ONE LINE, and that IS the ruling rather than an
+    #    over-reach of it: dropping the offending setting and applying the other two
+    #    hundred is warn-and-strip, which was put to Jei and REJECTED. It also matches the
+    #    syntax arm above, whose sentence this one deliberately echoes — "none of its
+    #    settings were applied" already has a meaning in this box's log.
+    #    ⚠️ THIS IS NOT THE REFUSAL TO SERVE. That is serve::read_config's, through
+    #    SERVE_CONFIG_ERR, and it is what actually keeps the server down; this arm only
+    #    keeps a value the user provably did not type out of the environment. Neither
+    #    substitutes for the other: this function runs in the server lane too, where
+    #    nothing ever calls read_config.
+    #    ⚠️ AND IT STILL RETURNS 0. A config file must not be able to stop the box from
+    #    starting — the contract at the head of this function is unchanged.
+    local doubled
+    doubled=$(droste::cfg_doubled_eq "$file")
+    if [ -n "$doubled" ]; then
+        serve::err "$file has a doubled '=' on: $doubled. A line written NAME==value assigns '=value' — that is bash's own reading of it — so the value this box would use is not the value you typed, and on several settings an extra '=' silently turns a feature OFF instead of failing. NONE of its settings were applied and this box is running on defaults. Delete the extra '=' in $file — or quote the value (NAME=\"=value\") if it really is meant to start with '=' — then restart the container."
+        return 0
+    fi
+
+    # 3) BASELINE and AFTER, from two children invoked the same way so that everything
     #    bash sets for itself cancels out of the difference.
     #    ⚠️ NEVER $( ) HERE: command substitution discards NUL bytes, and NUL is the
     #    separator that lets an env value contain a newline. Process substitution +
@@ -329,7 +436,7 @@ droste::cfg_apply() {
         return 0
     fi
 
-    # 3) DIFF.
+    # 4) DIFF.
     local -A base=() now=()
     local rec name
     for rec in "${before[@]}"; do
@@ -343,7 +450,7 @@ droste::cfg_apply() {
         now["$name"]=${rec#*=}
     done
 
-    # 4) VALIDATE + APPLY. `export NAME=VALUE` and never `eval`: the value came out of
+    # 5) VALIDATE + APPLY. `export NAME=VALUE` and never `eval`: the value came out of
     #    the child already fully expanded, so re-evaluating it here would expand a
     #    user's literal `$` a second time behind their back.
     local applied=0 removed=0 kept=0

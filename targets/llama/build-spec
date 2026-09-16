@@ -52,6 +52,17 @@ SERVICE=( llama-server )
 HEALTH_PATH="/health"
 HEALTH_ACCEPT="ok"
 
+# HEALTH_START — this box's --health-start-period, as a Go duration, and the ONE fact
+# in this block that is not about the endpoint. The installer passes the same value to
+# podman at create time (installer/contract.sh's BOX_HEALTH_START); the copy here is the
+# one the PROBE can read, since nothing inside the box can see the host's installer.
+# serve::restart_window_bound bounds the `server_restart` grace window (B17) with it — a
+# restart asks this box to do the work a container start does, so it gets the same
+# allowance and no more.
+# 🚨 THE TWO COPIES MUST AGREE: change BOX_HEALTH_START and this row together.
+# g1lab/probebudget.sh reads both ends and reddens, naming the box, if they drift.
+HEALTH_START="30m"
+
 # ── CFG_FILE ─────────────────────────────────────────────────────────────────
 # Written by the installer from the shipped template (templates.yaml if_missing); carries
 # LLAMA_ARG_* lines (llama-server reads them natively), the 74 DROSTE_LLAMA_* settings

@@ -164,6 +164,19 @@ start_service() {
         serve::err "NOT starting: the healthcheck reads that same flag, so it would not relaunch this service either, and server_status would report the box as deliberately idle. Free some space and try again."
         return 1
     fi
+    # ⭐ A HAND START IS A RESTART WITHOUT THE STOP, and it gets the same window (B17,
+    # widened s87 at Jei's call). A `server_start` on a box that is DOWN puts it in the
+    # exact state the restart window exists for: intent is 1 (just written above), the
+    # endpoint is quiet for as long as the model takes to load, and three failed probes
+    # later podman's --health-on-failure=restart bounces the CONTAINER — ejecting every
+    # interactive shell in a box the operator is standing in, because they just typed
+    # into it. The ruling's principle is the operator asked for this; start and restart
+    # are the same ask.
+    # ⚠️ SCOPE, deliberately: this verb's OTHER lane — the box's FIRST container start,
+    # where the init hook launches on its own — needs nothing from here, because
+    # podman's own --health-start-period (45m on vllm) covers a container start from the
+    # outside. The window is for a start inside a RUNNING container: after a stop.
+    serve::mark_restarting
     # 🚨 THE LAUNCH IS DELEGATED — full reasoning in droste-serve.sh's supervisor
     # section. Short form: a service forked from a TTY exec session (which every
     # `distrobox enter` is) is KILLED when that session ends, so a verb that forked it
@@ -226,6 +239,24 @@ restart_service() {
     if [ "${SERVE_STOP_SIGNALED:-0}" -eq 1 ]; then
         wait_port_free
     fi
+    # ⭐ OPEN THE HEALTH GRACE WINDOW (B17) — HERE, AND AFTER THE STOP. This is the one
+    # moment in the system that knows an OPERATOR asked for a restart, which is what the
+    # window reports; the probe can only ever observe a quiet endpoint. Without it a
+    # `server_restart` on a box whose model takes longer than 90s to load (measured:
+    # ~115s on vllm) fails three probes and podman's --health-on-failure=restart bounces
+    # the whole CONTAINER, ejecting every interactive shell in the box.
+    # ⚠️ AFTER THE STOP, NOT BEFORE IT: stop_service is allowed up to
+    # DROSTE_SERVE_STOP_WAIT plus a SIGKILL settle, and the window exists to cover the
+    # START. Spending it on a shutdown would shorten the part that needs it — and the
+    # shutdown half is already covered, because stop_service clears the intent flag and
+    # the probe exits at gate 0 while it is down.
+    # 🚨 THE WRITE ITSELF LIVES IN droste-serve.sh, AND THAT IS STRUCTURAL. Anything
+    # declared in THIS file is unreachable from droste-healthcheck.sh, which sources
+    # droste-serve.sh alone — the same guarantee that keeps the port-wait above out of a
+    # health probe (see the block over restart_service, and g1lab/restartwait.sh §F).
+    # Never fatal: serve::mark_restarting says so itself if it cannot write, and a
+    # restart must still happen.
+    serve::mark_restarting
     start_service
 }
 

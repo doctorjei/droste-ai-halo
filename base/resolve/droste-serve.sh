@@ -162,6 +162,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 # context so the names inside it can be short:
 #   state/launch      the launch record  — OBSERVATION: what we launched, and how it went
 #   state/.IS_ACTIVE  0/1                — INTENT: should a server be running right now
+#   state/.RESTARTING epoch seconds      — INTENT: an operator asked for a restart, when
 # Keeping those in two files is the point, not an accident: they answer different
 # questions and are written at different moments (a `stop` sets intent with no launch
 # involved). Folding intent into the record — or into the box's <box>.cfg — would
@@ -178,6 +179,20 @@ source "$(dirname "${BASH_SOURCE[0]}")/droste-cfg.sh"
 : "${DROSTE_SERVE_REQ_FIFO:=$DROSTE_SERVE_STATE_DIR/request}"   # verb → supervisor
 : "${DROSTE_SERVE_SUP_RECORD:=$DROSTE_SERVE_STATE_DIR/supervisor}"  # its pid + start
 : "${DROSTE_SERVE_MEM_RECORD:=$DROSTE_SERVE_STATE_DIR/.MEM_AT_LAUNCH}"  # MemAvailable kB
+# The restart window's marker (B17). Third INTENT file in this folder, and it is intent
+# for the same reason .IS_ACTIVE is: it records that an OPERATOR asked for something,
+# not that anything succeeded. See the restart-window section below serve::reset_active.
+: "${DROSTE_SERVE_RESTARTING:=$DROSTE_SERVE_STATE_DIR/.RESTARTING}"    # epoch seconds
+# The window's bound when the box does not declare one (no HEALTH_START row in its
+# build-spec: a lab, or an image older than the row). ⭐ IT IS THE SMALLEST GRACE ANY
+# BOX SHIPS, not an average and not a guess — installer/contract.sh's BOX_HEALTH_START
+# reads 10m comfyui · 30m llama · 45m vllm · 90m ds4 · 5m finetuning, and a box that
+# cannot tell us which of those it is must get the LEAST of them rather than the most.
+# It still covers the ~115s vLLM restart this window exists for, with room to spare.
+# ⚠️ `:=` rather than `=` here, unlike a default for a setting a USER can write: this is
+# an internal number in the same family as DROSTE_SERVE_STOP_WAIT, it is spent in
+# arithmetic, and an empty value must read as "not set" rather than break the comparison.
+: "${DROSTE_SERVE_RESTART_WINDOW_FALLBACK:=300}"   # seconds
 : "${DROSTE_SERVE_REQ_WAIT:=60}"   # seconds a verb waits for the supervisor's launch
 # ⚠️ NO DROSTE_SERVE_LOG DEFAULT HERE. Its name carries the box's own name, which is
 # derived from the build-spec's CFG_FILE — and that row is not read until
@@ -553,6 +568,42 @@ serve::read_config() {
         return 0
     fi
 
+    # ── A DOUBLED `=` ANYWHERE IN THE FILE ⇒ REFUSE TO SERVE (B16) ───────────
+    # 🚨 RULED (Jei, s87): "we can guess one value, but that can compound. Better to get
+    # the user to resolve while it's still clear." Warn-and-strip was put to him and
+    # REJECTED. ⭐ Refusing is not falling back, so NO FALL-THROUGH VALUES never engages:
+    # nothing here picks a value on the user's behalf.
+    # 📐 WHY IT IS A FILE-LEVEL ARM AND NOT A PER-SETTING ONE. The detection and the whole
+    # measured blast radius live at droste::cfg_doubled_eq (droste-cfgapply.sh) — read it
+    # there rather than restating it here. The short form: `FOO==x` assigns `=x` by plain
+    # shell semantics, NATIVES arrive by SOURCING rather than through droste::cfg_get, and
+    # on fourteen vLLM booleans the result is a silent FLIP rather than a failure. That is
+    # a statement about the FILE, not about one setting's value, which is why it sits with
+    # the other file-level faults above and not beside the type tests below.
+    # ⭐ AND IT RETURNS EARLY ON PURPOSE. `DROSTE_<APP>_PORT==8080` would ALSO fail the
+    # digit test below and add "'=8080' is not a port number" — a second message, about a
+    # value the user never typed, competing with the one that names the actual mistake.
+    # Same instinct as FIRST REFUSAL WINS further down: one refusal, naming the thing to
+    # fix.
+    # ⚠️ THE INTENT IS FORCED TO 0 EXPLICITLY even though it is already 0 at this point.
+    # That is not belt-and-braces: it is what stops the arm's correctness from depending on
+    # its POSITION in this function, so moving it below the STARTUP_ENABLED parse cannot
+    # silently turn a refused box back into a serving one.
+    # 🚨 AND THIS IS WHAT KEEPS THE REFUSAL OUT OF A RESTART LOOP — the s57 trap in a new
+    # costume. Nothing exits non-zero and nothing crashes: serve::reset_active calls this
+    # function and writes state/.IS_ACTIVE=0, serve::maybe_launch returns at its
+    # SERVE_CONFIG_ERR arm before the intent gate, and the health probe's GATE 0
+    # (serve::is_active) then reports "no server is wanted right now — nothing to probe"
+    # and exits 0. The box comes up interactive, says why it is not serving, and stays up.
+    # A refusal that left intent at 1 would fail gate 2 every 30s and
+    # --health-on-failure=restart would bounce the container forever.
+    v=$(droste::cfg_doubled_eq "$file")
+    if [ -n "$v" ]; then
+        SERVE_CONFIG_ERR="$file has a doubled '=' on: $v. A line written NAME==value assigns '=value' — that is bash's own reading of it — so the value this box would use is not the value you typed, and on several settings an extra '=' silently turns a feature OFF instead of failing. THIS BOX IS NOT SERVING: one character is guessable, but a guess compounds, so the line is refused rather than repaired. Delete the extra '=' in $file — or quote the value (NAME=\"=value\") if it really is meant to start with '=' — then restart the container."
+        SERVE_STARTUP_ENABLED=0
+        return 0
+    fi
+
     # ── STARTUP_ENABLED — {yes, no}, through the ONE boolean parser ──────────
     # droste::bool is a whitelist and case-folds, so `Yes`, `ON` and `1` all work and
     # `Off` cannot accidentally read as on (the blacklist it replaced did exactly that).
@@ -798,26 +849,159 @@ serve::reset_active() {
     fi
 }
 
+# ── The restart window: state/.RESTARTING (B17) ─────────────────────────────
+# 🚨 THE DEFECT, MEASURED ON RAIJU AND CONFIRMED FROM ITS JOURNAL. podman gives a probe
+# `--health-interval 30s` × `--health-retries 3` = 90 seconds of failing probes before
+# `--health-on-failure=restart` bounces the CONTAINER — and a vLLM restart takes ~115
+# seconds to answer. So `server_restart` bounced the whole box and ejected every
+# interactive shell in it, every time. The container's own `--health-start-period` does
+# not help: podman writes its start time in exactly one place, a CONTAINER start, so the
+# first start gets 45 minutes of grace and every later one gets 90 seconds.
+#
+# ⭐ WHY THIS IS NOT THE PROBE TELLING A LIE, which is the objection that had to be
+# answered before it could be built. Gate 0 of the probe already reads machine-written
+# INTENT out of this same folder (serve::is_active, state/.IS_ACTIVE) and reports a box
+# that was asked not to serve as healthy. This marker is the same kind of fact: an
+# OPERATOR asked for a restart, at a known moment, and the endpoint being quiet for a
+# bounded interval afterwards IS THE ACTION THEY REQUESTED rather than a fault we are
+# hiding. Outside that window nothing changes, which is what keeps the design's
+# "unhealthy is reported as unhealthy" true.
+# ⚠️ IT COVERS GATE 2 ONLY — the endpoint. A service that DIED still fails gate 1, still
+# reports UNHEALTHY, and still gets the surgical relaunch; the window can never mask it.
+#
+# 🚫 THE THREE ALTERNATIVES ARE RULED OUT, so nobody re-proposes one from first
+# principles: raising `HEALTH_RETRIES` buys the window by making EVERY box slower to
+# recover from a genuinely wedged server, forever · a general software start period on
+# gate 2 makes the probe lie on every slow start, not only on one the operator asked for
+# · `--health-startup-cmd` latches ONE WAY, so it covers a container start and never an
+# in-container restart, which is the case here. (And no exit code can mean "starting":
+# podman flattens every non-zero to 1, so returning 0 is the only in-band signal a probe
+# has.)
+serve::mark_restarting() {
+    local now
+    now=$(date +%s 2>/dev/null) || return 1
+    mkdir -p "$DROSTE_SERVE_STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$now" > "$DROSTE_SERVE_RESTARTING" 2>/dev/null || {
+        # Never fatal to the caller: failing to open the window costs the OLD behavior
+        # (a restart that may outrun the retry budget), and refusing to restart because
+        # a marker could not be written would be a worse trade than the one it guards.
+        serve::warn "could not write $DROSTE_SERVE_RESTARTING — this restart gets no health grace period, so a slow start may bounce the container."
+        return 1
+    }
+    serve::_own "$DROSTE_SERVE_RESTARTING"
+    return 0
+}
+
+# clear_restarting — the window is over. Called from TWO places and they close it for
+# two different reasons: the probe when the endpoint answers (the restart finished, which
+# is the normal end), and the container-start door (a window belongs to the container
+# start that opened it — /opt/program-cache is a HOST directory, so nothing in this
+# folder disappears by itself, which is the same reason serve::reset_active exists).
+serve::clear_restarting() {
+    rm -f "$DROSTE_SERVE_RESTARTING" 2>/dev/null || true
+    return 0
+}
+
+# _duration_secs — a podman/Go duration ("45m", "90s", "1h30m") → whole seconds. A bare
+# integer is read as seconds; anything else fails, and the caller falls back rather than
+# guessing. ⚠️ THE FLAG ITSELF REFUSES A BARE NUMBER (podman: "time: missing unit in
+# duration"), so a unitless value can only come from a hand-set variable, never from the
+# build-spec row this reads in production.
+serve::_duration_secs() {
+    local v=${1:-} total=0 n u
+    [ -n "$v" ] || return 1
+    case "$v" in
+        *[!0-9]*) ;;
+        *) printf '%s' "$v"; return 0 ;;
+    esac
+    while [[ $v =~ ^([0-9]+)(h|m|s)(.*)$ ]]; do
+        n=${BASH_REMATCH[1]}; u=${BASH_REMATCH[2]}; v=${BASH_REMATCH[3]}
+        case $u in
+            h) total=$((total + n * 3600)) ;;
+            m) total=$((total + n * 60)) ;;
+            s) total=$((total + n)) ;;
+        esac
+    done
+    [ -z "$v" ] || return 1
+    printf '%s' "$total"
+    return 0
+}
+
+# restart_window_bound — how long the window may stay open, in seconds: THE BOX'S OWN
+# --health-start-period, which is the grace podman already grants this box's model load
+# at a container start. Using that number rather than a new one is the whole argument for
+# the size: a restart is asking the box to do the same work a start does, so it gets the
+# same allowance and no more.
+#
+# 📐 HOW THE PROBE LEARNS IT. The five values live in installer/contract.sh's
+# BOX_HEALTH_START, which is the HOST side and unreadable from in here. The box carries
+# its own copy in the baked build-spec's HEALTH_START row, read by serve::read_health_spec
+# beside HEALTH_PATH and HEALTH_ACCEPT — the mechanism that already exists for exactly
+# this kind of per-box health fact. ⚠️ THAT IS A SECOND COPY OF A NUMBER, and it is
+# guarded rather than trusted: g1lab/probebudget.sh reads both ends and reddens per box,
+# over the whole BOXES set, if they ever disagree.
+# ⚠️ ONLY AN UNREADABLE VALUE FALLS BACK. A row that parses is HONORED, including "0" —
+# which is a box declaring that it wants no window at all, and turning that into the
+# fallback would be swallowing a value we were given and doing something else.
+serve::restart_window_bound() {
+    local secs
+    if secs=$(serve::_duration_secs "${HEALTH_START:-}"); then
+        printf '%s' "$secs"
+        return 0
+    fi
+    printf '%s' "$DROSTE_SERVE_RESTART_WINDOW_FALLBACK"
+    return 0
+}
+
+# restart_window_open — is an operator-requested restart still inside its grace period?
+# Sets SERVE_RESTART_AGE / SERVE_RESTART_BOUND for the caller's message; both are only
+# meaningful when this returns 0.
+# 🚨 EVERY UNCERTAIN CASE RETURNS 1 (CLOSED), and that direction is chosen: a closed
+# window is exactly the behavior this box had before the window existed — an honest
+# UNHEALTHY. Failing the other way would grant an unbounded grace period on the strength
+# of a file we could not read, which is the one outcome worth engineering against.
+# shellcheck disable=SC2034   # SERVE_RESTART_AGE/_BOUND are consumed by callers
+serve::restart_window_open() {
+    local stamp="" now age bound
+    SERVE_RESTART_AGE="" SERVE_RESTART_BOUND=""
+    [ -f "$DROSTE_SERVE_RESTARTING" ] && [ -r "$DROSTE_SERVE_RESTARTING" ] || return 1
+    read -r stamp < "$DROSTE_SERVE_RESTARTING" 2>/dev/null || return 1
+    case "${stamp:-}" in ''|*[!0-9]*) return 1 ;; esac
+    now=$(date +%s 2>/dev/null) || return 1
+    age=$((now - stamp))
+    # A marker from the future (a clock that moved, a file copied in) is not evidence of
+    # anything and must not open a window; so is one past its bound.
+    [ "$age" -ge 0 ] || return 1
+    bound=$(serve::restart_window_bound)
+    [ "$age" -lt "$bound" ] || return 1
+    SERVE_RESTART_AGE=$age
+    SERVE_RESTART_BOUND=$bound
+    return 0
+}
+
 # read_health_spec — pull the per-box probe endpoint out of the baked build-spec
-# (rows HEALTH_PATH / HEALTH_ACCEPT; see base/resolve/build-spec.example). Sourced
-# in a SUBSHELL for the same reason serve::_read_serve_spec is: the health probe must
-# not be able to trip over spec-level side effects. Defaults are the safe generic pair
-# ("/" and "ok" = any 2xx/3xx).
+# (rows HEALTH_PATH / HEALTH_ACCEPT / HEALTH_START; see base/resolve/build-spec.example).
+# Sourced in a SUBSHELL for the same reason serve::_read_serve_spec is: the health probe
+# must not be able to trip over spec-level side effects. Defaults are the safe generic
+# pair ("/" and "ok" = any 2xx/3xx), and an empty HEALTH_START, which
+# serve::restart_window_bound reads as "this box declares no bound".
 serve::read_health_spec() {
     local spec=${1:-${DROSTE_BUILD_SPEC:-/opt/resources/build-spec}} raw="" k v
     HEALTH_PATH="/"
     HEALTH_ACCEPT="ok"
+    HEALTH_START=""
     [ -f "$spec" ] && [ -r "$spec" ] || return 0
     raw=$(
         set +e +u +o pipefail
         # shellcheck disable=SC1090
         . "$spec" >/dev/null 2>&1
-        printf 'path=%s\naccept=%s\n' "${HEALTH_PATH-}" "${HEALTH_ACCEPT-}"
+        printf 'path=%s\naccept=%s\nstart=%s\n' "${HEALTH_PATH-}" "${HEALTH_ACCEPT-}" "${HEALTH_START-}"
     ) 2>/dev/null || raw=""
     while IFS='=' read -r k v; do
         case "$k" in
             path)   [ -n "$v" ] && HEALTH_PATH=$v ;;
             accept) [ -n "$v" ] && HEALTH_ACCEPT=$v ;;
+            start)  [ -n "$v" ] && HEALTH_START=$v ;;
         esac
     done <<<"$raw"
     case "$HEALTH_PATH" in

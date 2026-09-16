@@ -154,6 +154,15 @@ fi
 # overlays are mounted. Ruled s60 (contract B2).
 serve::reset_active || serve::warn "could not reset the server intent flag — continuing."
 
+# ⭐ AND CLOSE ANY RESTART WINDOW, FOR THE SAME REASON AND ON THE SAME LINE OF ARGUMENT
+# (B17). state/.RESTARTING says an operator asked for a `server_restart` at a known
+# moment; the probe treats a quiet endpoint as expected while it is fresh. That fact
+# belongs to the container start it was written in — and /opt/program-cache is a HOST
+# directory, so nothing in the state folder disappears by itself. The window is bounded
+# by time anyway, so this is belt-and-braces rather than the enforcement reset_active is;
+# what it removes is a container that comes back inside a window it did not open.
+serve::clear_restarting
+
 # ⭐ THEN SAY A LAUNCH IS COMING — BEFORE apply_spec, WHICH IS THE WHOLE FIX.
 # apply_spec does the mounts, the overlays AND the model-tree scan; on a box with no
 # registry yet that scan runs for minutes, and the launch cannot happen until it ends.

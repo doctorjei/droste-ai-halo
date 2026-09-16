@@ -198,7 +198,7 @@ Mount contract (all ports):
   source #2; the llama/ds4/vllm config model path may point here). Unbound →
   one-time INFO + marker file, never an error.
 
-Those container paths come off **three host roots**, and what separates them is
+Those container paths come off **three host tiers**, and what separates them is
 what may be thrown away:
 
 - **`~/.local/share/droste/<box>/program`** — persistent, per box. Your work and
@@ -218,6 +218,12 @@ what may be thrown away:
 - **`~/.cache/droste/compute`** — the compiled GPU kernels, shared by every box
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.
+
+A separate root holds droste's own records. Every `<box>-halo.ini` and the
+`NOTES.md` live under `$DROSTE_CONFIG` if set, otherwise `$XDG_CONFIG_HOME/droste`
+— by default `~/.config/droste`. `DROSTE_CONFIG` wins when both are set.
+0.7.0 changed only the offered defaults: no container path moved and no bind
+source moved, so an existing box keeps reading where it already reads.
 
 Driven by hand, that contract reads as follows. A direct run gets its own
 network namespace rather than the host's, so you publish the port yourself
@@ -611,6 +617,17 @@ bash droste-setup.sh --ascii          # ASCII-only output (no emoji / ANSI)
 
 (A file fetched with `curl -O` is not executable, so these say `bash` rather
 than `./`; from a checkout, either works.)
+
+### Trying it without touching anything
+
+`droste-setup.sh --dry-run` asks every question the real run asks and then does
+none of it. No file is written, moved or deleted; no box is created, started or
+stopped; and no image is pulled — the registry is queried instead, so you still
+get told what a pull would fetch and how big it is.
+
+See how a run would go (fresh or reinstall). The CI checks the run:
+`scripts/check-installer-dryrun.sh` derives operations from source & starts a
+headless dry run in a temporary HOME to test it.
 
 ### scripts/droste-hf-adopt.sh — Local Downloads → Shared HF Cache
 

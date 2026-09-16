@@ -1,16 +1,17 @@
 From:         droste (generated in-tree for this repo)
 Requested in: n/a — no upstream filing exists and none is sought (standing
               project ruling: "Someone else might refile, but not us.")
-Subject:      Accept `\-` (escaped dash) in grammar character classes
+Subject:      Accept `\-` and `\/` (escaped dash and slash) in grammar character classes
 Applies to:   TheTom/llama-cpp-turboquant @ fb2cc35ab3507a5aab56fe593620cd96d8f45384
               (src/llama-grammar.cpp, parse_char)
 
 WHAT IT FIXES
 =============
 `parse_char` accepts `\\ " [ ]` (plus t/r/n/x/u/U) as escapes and THROWS
-"unknown escape" on anything else — including `\-`, which JSON Schema
-`pattern` values use routinely for a literal dash inside a character class
-(e.g. `[A-Za-z0-9_\-.~:@+]`, an identifier pattern MCP tool schemas carry).
+"unknown escape" on anything else — including `\-` and `\/`, which JSON Schema
+`pattern` values use routinely (`\-` for a literal dash inside a character
+class, e.g. `[A-Za-z0-9_\-.~:@+]`; `\/` out of JSON-string habit, where it is
+valid JSON for `/` and converters pass it through).
 The schema-to-grammar converter passes the pattern through (logging
 "Unsupported pattern syntax", which degrades nothing by itself), and then the
 parser rejects the whole 2700-rule tool grammar on the first `\-` it meets —
@@ -18,20 +19,24 @@ every tool-calling request whose schema set contains such a pattern fails with
 "failed to parse grammar". Measured 2026-09-16 against a live Claude Code
 session: three rules, one distinct pattern, all requests dead.
 
-The dash needs no escape to BE a dash — this only teaches the parser what the
-converter already emits. No grammar that parses today can contain `\-` (it
-throws), so nothing that works now can change behavior: the patch accepts a
-strict superset, and the superset is exactly one previously-fatal spelling.
+The dash and slash need no escape to BE themselves — this only teaches the
+parser what converters already emit. No grammar that parses today can contain
+either spelling (both throw), so nothing that works now can change behavior:
+the patch accepts a strict superset, and the superset is exactly two
+previously-fatal spellings. ⚠️ Deliberately NOT opened wider (any `\x` goes):
+`"\d"` intending a regex digit class must keep failing loudly rather than
+silently meaning literal `d`.
 
 WHY WE CARRY IT
 ===============
 🚨 THIS PATCH IS PERMANENT, NOT A STOPGAP. NOBODY IS WATCHING FOR THIS TO
 BECOME UNNECESSARY. Treat it as load-bearing indefinitely and expect it to
 survive every pin bump.
-- ggml-org/llama.cpp master HAS this case (`case '-':` beside `case ']':`),
-  but our upstream is TheTom/llama-cpp-turboquant, whose default branch does
-  NOT have it (verified 2026-09-16) — so the "delete the patch and advance
-  the pin" exception does not trigger: there is no pin to advance to.
+- ggml-org/llama.cpp master HAS the dash case, but our upstream is
+  TheTom/llama-cpp-turboquant, whose default branch has NEITHER case
+  (verified 2026-09-16) — so the "delete the patch and advance
+  the pin" exception does not trigger: there is no pin to advance to. (The
+  slash half is ours alone everywhere: NOBODY upstream accepts it.)
 - We are not filing and not chasing it (standing project ruling). The anchor
   guard below is the ONLY thing that will ever tell us this stopped applying.
 
@@ -48,11 +53,12 @@ failure; the guard asserts parse_char is still CALLED, not merely still defined.
 
 --- a/src/llama-grammar.cpp
 +++ b/src/llama-grammar.cpp
-@@ -172,6 +172,7 @@
+@@ -172,6 +172,8 @@
              case '"':
              case '[':
              case ']':
 +            case '-':
++            case '/':
                        return std::make_pair(src[1], src + 2);
              default:
                        throw std::runtime_error(std::string("unknown escape at ") + src);

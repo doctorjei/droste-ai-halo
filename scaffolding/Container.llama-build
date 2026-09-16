@@ -118,11 +118,12 @@ RUN set -e; \
 # ── The grammar \- escape accept ─────────────────────────────────────────────
 #
 # WHAT IT FIXES: parse_char() in src/llama-grammar.cpp accepts \\ " [ ] (plus
-# t/r/n/x/u/U) and THROWS "unknown escape" on anything else — including \-,
-# which JSON Schema `pattern` values use for a literal dash inside a character
-# class (e.g. `[A-Za-z0-9_\-.~:@+]`, an identifier pattern MCP tool schemas
-# carry). The converter passes the pattern through, so the parser rejects the
-# whole tool grammar on the first \- it meets. Same request-time invisibility
+# t/r/n/x/u/U) and THROWS "unknown escape" on anything else — including \-
+# and \/, which JSON Schema `pattern` values use routinely (\- for a literal
+# dash inside a character class, e.g. `[A-Za-z0-9_\-.~:@+]`; \/ out of
+# JSON-string habit, where it is valid JSON for `/`). The converter passes both
+# through, so the parser rejects the whole tool grammar on the first one it
+# meets. Same request-time invisibility
 # as the threshold above: the image builds, the server starts, /health answers
 # 200, and every tool-calling request whose schema set contains such a pattern
 # fails with "failed to parse grammar". Full rationale and the measured failure
@@ -157,6 +158,8 @@ RUN set -e; \
       || die "$f does not exist at this LLAMA_REF -- the grammar parser has moved or been renamed"; \
     [ "$(nx "            case '-':")" = 0 ] \
       || die "$f already carries the dash case -- refusing to patch twice"; \
+    [ "$(nx "            case '/':")" = 0 ] \
+      || die "$f already carries the slash case -- refusing to patch twice"; \
     [ "$(nx "            case ']':")" = 1 ] \
       || die "expected exactly 1 indented case-']' anchor in parse_char in $f"; \
     [ "$(ns 'parse_char(pos')" -ge 3 ] \
@@ -165,7 +168,9 @@ RUN set -e; \
       || die "the hunk did not apply at fuzz 0 -- see the .rej above for what drifted"; \
     [ "$(nx "            case '-':")" = 1 ] \
       || die "expected exactly 1 dash case after applying"; \
-    echo "llama-grammar-dash: applied; parse_char accepts \\-"
+    [ "$(nx "            case '/':")" = 1 ] \
+      || die "expected exactly 1 slash case after applying"; \
+    echo "llama-grammar-dash: applied; parse_char accepts \- and \/"
 
 # ── The --api-prefix x --api-key auth fix (upstream #22474) ──────────────────
 #

@@ -643,14 +643,18 @@ nobase_note() {   # "what" "<box> <leaf>: <path>[\n<box> <leaf>: <path>]"
 # path cannot tell where droste is reading, and a root pinned by a variable set
 # months ago in a startup file is the case where they are LEAST likely to know.
 #
-# ⭐ THE CREATE CONFIRMATION STAYS, because it answers a different question.
-# Skipping the prompt settles WHICH directory; making one that is not there yet is
-# a mutation, and this installer confirms mutations — the same ensure_dir, and the
-# same "Create <path> [Y/n]?", the prompt path would have reached.
-# ⚠️ AND A DECLINED CREATE FALLS THROUGH TO THE PROMPT, at the opening call only:
-# the environment named a directory the user has just refused to make, and naming
-# another is the one way forward that does not end the run. The refusal is not
-# overridden and nothing is created behind it.
+# ⭐ THE CREATE CONFIRMATION STAYS — FOR TYPED PATHS. Skipping the prompt settles
+# WHICH directory; making one that is not there yet is a mutation, and this
+# installer confirms mutations — the same ensure_dir, and the same "Create <path>?"
+# ⚠️ THE PINNED ROOT IS THE ONE EXCEPTION (Jei, s87): when DROSTE_CONFIG names the
+# directory, the variable already answered and nothing is asked — ask_config_root
+# creates it through ensure_dir's no-question arm instead. A typed path is a
+# proposal; a pinned one is a decision.
+# ⚠️ THE PROMPT BELOW FIRES ONLY WITH THE VARIABLE UNSET. Since s87 a pinned root
+# is created without asking and an unusable one errors the run out, so reaching
+# ask_path_as means the environment named nothing — and typing a directory there
+# is a real way forward, not a contradiction. (Its own loop still confirms each
+# create: a typed path is a proposal; a pinned one was the decision.)
 #
 # 🗄️ IT TOOK AN open|reask MODE UNTIL 0.7.0, because Data Mapping could re-ask the
 # config root and a pinned root had to refuse there. Neither exists now: this root
@@ -667,11 +671,30 @@ ask_config_root() {   # → EMIT_DIR
     prose "DROSTE_CONFIG is set, so that is the config path and it is not asked for:" \
       "$C_QTXT"
     printf '    %s%s%s\n' "$C_FILE" "$def" "$RESET"
-    if ensure_dir "$def"; then
+    # ⭐ A PINNED ROOT IS CREATED, NOT CONFIRMED (Jei, s87): the variable IS the
+    # answer, so "Create <path>?" would be asking what the environment already
+    # said. CREATE_ALL=1 takes ensure_dir's no-question arm — still through
+    # UI_MKDIR, so a dry run models it rather than making it.
+    # 🚨 UNCREATABLE OR UNWRITABLE IS FATAL (Jei, s87) — it errors the run out,
+    # it does not fall through to the prompt. A pinned root the box cannot use
+    # is a setting that cannot be honored, and the s60 table says what that
+    # gets: refuse, loudly, naming the line to fix. The prompt below is then
+    # reachable only with the variable UNSET, where typing another directory is
+    # a real way forward rather than a contradiction of the environment.
+    if CREATE_ALL=1 ensure_dir "$def"; then
       EMIT_DIR=$def
+      if ! dry::on; then
+        # A real probe, not `[ -w ]`: that test lies under root, and this runs
+        # as whoever invoked the installer. Removed as soon as it answers — the
+        # run's own writes are the lasting proof, this is only the early one.
+        if ! touch "$def/.droste-write-test" 2>/dev/null; then
+          die "DROSTE_CONFIG names $def, which is not writable — fix the variable or unset it to be asked."
+        fi
+        rm -f "$def/.droste-write-test" 2>/dev/null || true
+      fi
       return 0
     fi
-    subnote "Not created $EMD name a config path to use instead."
+    die "DROSTE_CONFIG names $def, which could not be created — fix the variable or unset it to be asked."
   fi
   ask_path_as "Identify a path for droste config" "$def"
   EMIT_DIR=$ANS_PATH
@@ -1156,18 +1179,24 @@ config_root_needs_export() {   # → 0 when a later run would NOT find this root
   # 🚨 A SET DROSTE_CONFIG SILENCES THE OFFER OUTRIGHT (Jei, s83: "We should only
   # ask this if DROSTE_CONFIG was not set at the beginning"). The equality test
   # below already covered the ordinary case — factory_root returns $DROSTE_CONFIG
-  # when it has a value, so a pinned root equals itself and nothing is asked —
-  # but it left ONE branch asking: DROSTE_CONFIG names a directory, the user
-  # DECLINES to create it, and the fall-through prompt takes a different path.
-  # There the typed root differs from the variable, so the old test said "they
-  # would not find this next time" and offered to write an export.
+  # when it has a value, so a pinned root equals itself and nothing is asked.
+  # ⭐ SIMPLER SINCE s87: a pinned root is CREATED, never declined, so the set
+  # case always means the run's root IS the variable's root — the struck paragraph
+  # below described the one branch where they parted, and that branch is gone.
+  # (Struck, not deleted, because the s83 ruling it records still stands.)
+  # ── [STRUCK s87] ~~but it left ONE branch asking: DROSTE_CONFIG names a
+  # directory, the user DECLINES to create it, and the fall-through prompt takes
+  # a different path. There the typed root differs from the variable, so the old
+  # test said "they would not find this next time" and offered to write an
+  # export.~~
   # ⭐ HIS RULE IS THE SAFER READING AND IT IS ALSO SIMPLER: a user whose
   # environment already names a config root has an answer to this question, and
   # ours would contradict theirs. Silence is not a degraded outcome — it is
   # declining to overrule a decision made outside this run.
-  # ⚠️ THE ACCEPTED COST, stated so nobody rediscovers it as a bug: in that one
-  # branch the typed root is recorded nowhere, and the next run starts from the
-  # same variable and reaches the same refusal.
+  # ⚠️ THE ACCEPTED COST, stated so nobody rediscovers it as a bug: an unusable
+  # pinned root ENDS THE RUN. A mistyped DROSTE_CONFIG costs a fix-and-rerun
+  # rather than a mid-run correction — weighed against silently continuing
+  # somewhere the environment did not name, and the silence lost.
   # 📐 NO FLAG IS KEPT FOR "at the beginning" ON PURPOSE — nothing in this
   # installer ever assigns DROSTE_CONFIG (measured s83: the only occurrences are
   # text we PRINT and a pattern we MATCH), so reading it here reads the value the

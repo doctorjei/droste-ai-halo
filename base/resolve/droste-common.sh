@@ -225,6 +225,28 @@ droste::box_name() {
     printf '%s' "${base%.cfg}"
 }
 
+# ── droste::venv_python — OUR scripts run under the venv's interpreter ──────
+# Usage:  "$(droste::venv_python)" "$RESOLVE_APPLY_TEMPLATES" …
+# A bare `python3` is the SYSTEM interpreter whenever the caller runs under a
+# login shell: Debian rebuilds PATH from scratch in /etc/profile before
+# profile.d runs, so /usr/bin precedes /opt/venv/bin and the venv is invisible
+# (measured s47 — the same reset that put every user tool in /usr/local/bin).
+# A system interpreter does not merely lack modules, it MIS-SHAPES: `import
+# yaml` raises under one without it, and a guard reading the exception as
+# "unrecognized" calls a valid file invalid (measured s65 — see the
+# vllm_config_guard comment in targets/vllm/build-spec, the second site with
+# this fault and still bare on purpose).
+# ⭐ PREFER, THEN FALL BACK — never hard-code. The lab that executes these
+# files has no /opt/venv at all, so an absolute path would trade a wrong
+# interpreter in production for no interpreter in test.
+droste::venv_python() {
+    if [ -x /opt/venv/bin/python3 ]; then
+        printf '/opt/venv/bin/python3'
+    else
+        printf 'python3'
+    fi
+}
+
 # ── droste::arg_value — read a flag's value out of an already-split argv ─────
 # Usage:  v=$(droste::arg_value --api-prefix "${_extra[@]}")
 # Honors both spellings a user may write, `--flag value` and `--flag=value`, and

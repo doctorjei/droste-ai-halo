@@ -838,7 +838,11 @@ resolve::apply_templates() {
     if [ "$DROSTE_LANE" = distrobox ] && [ -n "${DROSTE_USER:-}" ]; then
         owner=(--owner "$DROSTE_USER")
     fi
-    python3 "$RESOLVE_APPLY_TEMPLATES" ${owner[@]+"${owner[@]}"} "$tdir"
+    # Through droste::venv_python (droste-common.sh): the venv's interpreter when
+    # it exists, PATH's otherwise. The fallback is what keeps the lab suites
+    # executing the real file — seedguard.sh drives apply_templates.py where
+    # there is no /opt/venv.
+    "$(droste::venv_python)" "$RESOLVE_APPLY_TEMPLATES" ${owner[@]+"${owner[@]}"} "$tdir"
 }
 
 # ── Orchestration ───────────────────────────────────────────────────────────

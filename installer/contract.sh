@@ -598,7 +598,7 @@ HEALTH_RETRIES=3
 # --help) and kills a probe that overruns it, which on-failure=restart then counts
 # as a failure and bounces the container.
 # ⭐ WHAT IT ACTUALLY BOUNDS IS PRE_LAUNCH, NOT MODEL LOADING. The service is
-# launched in the BACKGROUND (droste-serve.sh:856 ends in `&`), so a probe never
+# launched in the BACKGROUND (droste-serve.sh's serve::launch ends in `&`), so a probe never
 # waits for weights; the start period below is what covers those. But when the
 # healthcheck finds the service down it calls serve::relaunch, which runs the
 # box's PRE_LAUNCH synchronously inside the probe — and comfyui's rescans the
@@ -623,6 +623,11 @@ declare -A BOX_HEALTH_TIMEOUT=(
 #   vllm        weight load + torch.compile / graph capture on first run
 #   ds4         80-430 GB of MoE quants off disk
 #   finetuning  jupyter is up in seconds; keep a margin for the resolver
+# 🚨 EVERY VALUE HERE HAS A TWIN IN THE BOX: each targets/<box>/build-spec carries the
+# same duration as its HEALTH_START row. The probe needs the number (it bounds the
+# `server_restart` grace window — serve::restart_window_bound, B17) and cannot read this
+# file, which is the host's. ⚠️ CHANGE BOTH, and change them together: the build-spec row
+# is what the box acts on, and g1lab/probebudget.sh reddens per box when they disagree.
 declare -A BOX_HEALTH_START=(
   [comfyui]=10m [llama]=30m [vllm]=45m [ds4]=90m [finetuning]=5m
 )

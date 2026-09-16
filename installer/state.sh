@@ -151,3 +151,68 @@ pf_idmap() {
   return 0
 }
 
+# ── podman's healthcheck timer (the one-bounce blind spot) ───────────────────
+# Every box this installer creates is supervised by a podman healthcheck, which
+# podman drives from a TRANSIENT systemd timer named after the container. On
+# podman older than 5.1 a health-driven restart tears that timer down and can
+# never put it back: the paired .service survives in `failed` state holding the
+# unit name, and systemd does not garbage-collect a failed transient unit. So a
+# box bounces ONCE and is then silently unwatched — no further probes, and
+# therefore no relaunch of a server that dies afterwards. Upstream fixed it in
+# 5.1.0 (podman PR #22589, which gives each healthcheck unit a random suffix).
+# The host this was found on runs 4.9.3.
+# 🚫 DETECT AND REPORT, NEVER REPAIR. The remedy is a `systemctl reset-failed`
+# per affected box on a host we were not asked to change, and it re-arms the
+# bounce on a box that predates the restart window — so it is printed, with
+# that cost named, and left to its owner. Nothing here touches the host.
+runtime_version() {   # → the container runtime's version string ("" = no answer)
+  local v
+  # `version` (the SUBCOMMAND), never `--version`: check-installer-dryrun.sh
+  # classifies a runtime call by its first non-flag word against a derived
+  # READ-ONLY set, and a call carrying only flags leaves it nothing to classify
+  # — which fails closed, as an unclassified container verb is a mutation.
+  v=$("$RUNTIME_BIN" version --format '{{.Client.Version}}' 2>/dev/null) || return 0
+  printf '%s' "$v"
+}
+
+pf_health_timer() {
+  local v maj min scope="--user "
+  # docker is not what supervises these boxes, and the row has nothing to say
+  # about a runtime that was never found at all.
+  [[ $RUNTIME == podman && -n $RUNTIME_BIN ]] || return 0
+  v=$(runtime_version)
+  # NO ANSWER IS NO CLAIM. An unreadable version says nothing about the bug, and
+  # a row hedging about a number we could not get is noise on every host that
+  # does not have it. (`podman version` wants the rootless namespace; a host
+  # where that is broken has already been told so by pf_idmap, above.)
+  [[ $v =~ ^([0-9]+)\.([0-9]+) ]] || return 0
+  maj=$((10#${BASH_REMATCH[1]})) min=$((10#${BASH_REMATCH[2]}))
+  # 5.1 as ONE integer: a nested major/minor condition is the shape that gets
+  # mis-edited later, and there is nothing here a third field would decide.
+  [[ $((maj * 100 + min)) -lt 501 ]] || return 0
+  # Rootful podman puts the same transient units in the SYSTEM manager, where
+  # root's own `systemctl` already reaches them. Settled once, here, so the
+  # printed command is right in both shapes rather than right in one.
+  [[ $ROOTLESS -eq 1 ]] || scope=""
+  # The version is spelled out because a distro build can carry a suffix
+  # (`4.9.4-rhel`), and the row is kept short enough that one still fits inside
+  # the 79 columns this report is drawn to.
+  pf_note "podman $v $EMD below 5.1: a box goes unwatched after one restart"
+  pf_hint "nothing probes it after that, so nothing relaunches its server"
+  pf_hint "tell: $(emph 'podman ps') keeps it at (starting) past its start period"
+  # ⚠️ THE TWO COMMANDS ARE BUILT AS LOCALS RATHER THAN INLINED INTO THE hint
+  # STRINGS, and it is not a style choice: a `<box>` placeholder inside a NESTED
+  # double quote walks out of check-installer-dryrun.sh's quote scanner, and the
+  # `>` it leaves exposed reads as an output redirect — so the hint is reported
+  # as an unguarded filesystem mutation (measured: both lines, `(fs, in
+  # pf_health_timer)`). Assigned first, each command is ONE quoted run and
+  # collapses, which is the same protection every other placeholder-carrying
+  # line in this installer gets from being singly quoted.
+  local idcmd="podman inspect --format '{{.Id}}' droste-<box>-halo"
+  local fixcmd="systemctl ${scope}reset-failed <that 64-char id>.service"
+  pf_hint "fix, per box: $(emph "$idcmd")"
+  pf_hint "then $(emph "$fixcmd")"
+  pf_hint "and restart the box $EMD on pre-0.7.0 images, a slow $(emph 'server_restart') can still bounce it"
+  return 0
+}
+

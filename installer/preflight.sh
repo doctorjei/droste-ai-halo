@@ -25,6 +25,13 @@ preflight() {
   # Ordered after the runtime row on purpose: it has nothing to say until it
   # knows there is a rootless podman to ask (it returns silently otherwise).
   pf_idmap
+  # Ordered AFTER pf_idmap, not beside the runtime row it qualifies: the two
+  # rows above decide whether this run can pull at all, and a supervision
+  # caveat about weeks from now must not push that diagnosis down the screen.
+  # It is here rather than in the dashboard or NOTES.md because preflight is
+  # where a host finding belongs and is read once — the report writes per box,
+  # and one host's podman is not a per-box fact.
+  pf_health_timer
   if [[ -e /dev/kfd && -e /dev/dri ]]; then
     pf_ok "GPU devices present: /dev/kfd /dev/dri"
   else

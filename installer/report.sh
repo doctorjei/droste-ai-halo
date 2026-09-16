@@ -69,7 +69,7 @@ write_notes() {
     printf 'keyed by version/arch). ONE caveat: avoid heavy simultaneous\n'
     printf 'first-run MIOpen tuning in two boxes at once; everything else\n'
     printf 'is conflict-free.\n'
-    # The Q4 write-up: the host roots, told as "what would it cost you to lose
+    # The Q4 write-up: the host tiers, told as "what would it cost you to lose
     # one", which is the only distinction between them a user has to remember.
     # The paths themselves are in the table above (they are per box, and may have
     # been typed one by one), so this names the ROLES.

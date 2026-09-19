@@ -1,5 +1,11 @@
 # this container's mounts + service, both lanes
 #
+# shellcheck shell=bash
+# ⭐ THE DIRECTIVE IS HOW THIS FILE GETS LINTED AT ALL. It is SOURCED, so it has
+# no shebang, and lint-shell's gates pass no `-s` override on purpose (so the one
+# `#!/bin/sh` script in the set is read as POSIX sh). Without this line the gate
+# reports SC2148 and can check nothing else.
+#
 # build-spec — comfyui runtime declaration, sourced by the shared resolver
 # (droste-entrypoint.sh / distrobox init_hooks -> droste-resolve.sh). Contract +
 # ordering: base/resolve/build-spec.example. All paths EXPLICIT and ABSOLUTE;

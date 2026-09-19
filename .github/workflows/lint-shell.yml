@@ -34,6 +34,10 @@ on:
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
       - 'targets/**/*.sh'
+      # Extensionless on purpose (the name is referenced by the build and by
+      # every doc naming a box's spec), so `targets/**/*.sh` cannot reach them
+      # and they went unparsed by anything until this entry existed.
+      - 'targets/*/build-spec'
       - '.github/workflows/lint-shell.yml'
   pull_request:
     paths:
@@ -42,6 +46,10 @@ on:
       - 'scripts/*.sh'
       - 'base/resolve/*.sh'
       - 'targets/**/*.sh'
+      # Extensionless on purpose (the name is referenced by the build and by
+      # every doc naming a box's spec), so `targets/**/*.sh` cannot reach them
+      # and they went unparsed by anything until this entry existed.
+      - 'targets/*/build-spec'
       - '.github/workflows/lint-shell.yml'
   workflow_dispatch:
 
@@ -136,17 +144,22 @@ jobs:
           helpers=(scripts/*.sh)
           resolver=(base/resolve/*.sh)
           boxes=(targets/**/*.sh)
+          # The five build-specs: thousands of lines of shell (every box's
+          # PRE_LAUNCH, flag tables and serve::err guards) that no glob here
+          # could reach, because they carry no extension. A syntax error in one
+          # bakes into a layer happily and the box then serves nothing.
+          specs=(targets/*/build-spec)
           # A glob that matched nothing would make this gate silently pass on an
           # empty set — decoration, not a check.
           #
-          # ⚠️ THE GUARD IS PER GROUP, AND WITH FOUR GROUPS THAT IS NO LONGER A
+          # ⚠️ THE GUARD IS PER GROUP, AND WITH FIVE GROUPS THAT IS NO LONGER A
           # REFINEMENT BUT THE WHOLE POINT. A single floor over the TOTAL cannot
           # see one group go empty, because the other three hold the total above
           # any floor you would pick: drop all of targets/ and a `< 2` check
           # still reports "checked 16 files" and passes, green, having quietly
           # stopped reading a directory. Each group answers for itself, and the
           # error names WHICH glob rotted so the log does the diagnosis.
-          for g in helpers resolver boxes; do
+          for g in helpers resolver boxes specs; do
             declare -n grp="$g"
             (( ${#grp[@]} )) || {
               echo "::error::lint-shell: glob group '$g' matched no files; the globs are stale."
@@ -160,7 +173,7 @@ jobs:
             echo "::error::lint-shell: ${installer[0]} is missing — the assemble step above should have created it. If the assembler moved or was renamed, fix that; this workflow's original reason for existing is linting this artifact."
             exit 1
           }
-          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
+          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}" "${specs[@]}")
           rc=0
           for f in "${files[@]}"; do
             if bash -n "$f"; then
@@ -191,7 +204,12 @@ jobs:
           helpers=(scripts/*.sh)
           resolver=(base/resolve/*.sh)
           boxes=(targets/**/*.sh)
-          for g in helpers resolver boxes; do
+          # The five build-specs: thousands of lines of shell (every box's
+          # PRE_LAUNCH, flag tables and serve::err guards) that no glob here
+          # could reach, because they carry no extension. A syntax error in one
+          # bakes into a layer happily and the box then serves nothing.
+          specs=(targets/*/build-spec)
+          for g in helpers resolver boxes specs; do
             declare -n grp="$g"
             (( ${#grp[@]} )) || {
               echo "::error::lint-shell: glob group '$g' matched no files; the globs are stale."
@@ -202,11 +220,16 @@ jobs:
             echo "::error::lint-shell: ${installer[0]} is missing — the assemble step above should have created it. If the assembler moved or was renamed, fix that; this workflow's original reason for existing is linting this artifact."
             exit 1
           }
-          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}")
+          files=("${installer[@]}" "${helpers[@]}" "${resolver[@]}" "${boxes[@]}" "${specs[@]}")
           # ShellCheck reads each file's shebang, so the one `#!/bin/sh` script
           # in the set (targets/ds4/scripts/download_model.sh) is analyzed
           # against POSIX sh rather than bash. That is the behavior we want and
           # it is why no `-s` override is passed here.
+          # ⭐ AND IT IS WHY THE BUILD-SPECS CARRY `# shellcheck shell=bash`:
+          # they are SOURCED, so they have no shebang, and without a directive
+          # this gate reports SC2148 on each and checks nothing else in them.
+          # The file declaring its own shell keeps ONE rule here rather than a
+          # second, group-specific `-s` this gate would have to remember.
           shellcheck -S error -f gcc "${files[@]}"
           echo "no shellcheck errors in ${#files[@]} files"
 

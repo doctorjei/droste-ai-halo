@@ -1,5 +1,11 @@
 # this container's mounts + service, both lanes  (vLLM)
 #
+# shellcheck shell=bash
+# ⭐ THE DIRECTIVE IS HOW THIS FILE GETS LINTED AT ALL. It is SOURCED, so it has
+# no shebang, and lint-shell's gates pass no `-s` override on purpose (so the one
+# `#!/bin/sh` script in the set is read as POSIX sh). Without this line the gate
+# reports SC2148 and can check nothing else.
+#
 # build-spec — per-port runtime declaration, sourced by the shared resolver.
 # Baked at /opt/resources/build-spec. See base/resolve/build-spec.example for the
 # full contract. SOURCED bash: plain arrays/vars, zero dependencies.

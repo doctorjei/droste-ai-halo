@@ -1,5 +1,11 @@
 # this container's mounts + service, both lanes
 #
+# shellcheck shell=bash
+# ⭐ THE DIRECTIVE IS HOW THIS FILE GETS LINTED AT ALL. It is SOURCED, so it has
+# no shebang, and lint-shell's gates pass no `-s` override on purpose (so the one
+# `#!/bin/sh` script in the set is read as POSIX sh). Without this line the gate
+# reports SC2148 and can check nothing else.
+#
 # build-spec — llama port. Sourced bash consumed by the shared resolver
 # (/opt/resources/resolve/droste-resolve.sh) via the shared entrypoint.
 # Contract + row semantics: base/resolve/build-spec.example.

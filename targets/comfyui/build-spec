@@ -557,5 +557,13 @@ comfyui_pre_launch() {
     # LAST, and after CFG_FILE has been sourced: turn the user's comfyui.cfg into
     # the argv the server will actually run.
     comfyui_argv
-    cd /opt/ComfyUI
+    # ⚠️ NAME THE FAILURE, because the caller will not. droste-serve.sh runs
+    # `"$PRE_LAUNCH" || serve::warn "…continuing with the argv as built."`, so a
+    # failed cd here does NOT stop the launch — ComfyUI would come up resolving
+    # its relative paths against whatever the working directory happened to be,
+    # under a warning that names neither this directory nor this box. Baked and
+    # root-owned, so it should never fail; if it ever does, the log says which
+    # thing broke instead of leaving a silent wrong answer. (SC2164, found when
+    # the build-specs were first linted in s89.)
+    cd /opt/ComfyUI || serve::err "could not enter /opt/ComfyUI — ComfyUI resolves its paths relative to its working directory, so this box is about to serve from the wrong one."
 }

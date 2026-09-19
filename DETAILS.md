@@ -219,11 +219,12 @@ what may be thrown away:
   because their content is keyed by version and architecture. Safe to delete
   anytime; kernels rebuild on next start. The installer never touches it.
 
-A separate root holds droste's own records. Every `<box>-halo.ini` and the
-`NOTES.md` live under `$DROSTE_CONFIG` if set, otherwise `$XDG_CONFIG_HOME/droste`
-— by default `~/.config/droste`. `DROSTE_CONFIG` wins when both are set.
-0.7.0 changed only the offered defaults: no container path moved and no bind
-source moved, so an existing box keeps reading where it already reads.
+A separate root holds droste's records. The `<box>-halo.ini` and
+`NOTES.md` files live under `$DROSTE_CONFIG` if set, and otherwise
+`$XDG_CONFIG_HOME/droste` (`~/.config/droste` by default); existing paths are
+untouched. If `$DROSTE_CONFIG` is unset and you pick a different root,
+`droste-setup.sh` offers to record `export DROSTE_CONFIG=…` in the shell
+startup file.
 
 Driven by hand, that contract reads as follows. A direct run gets its own
 network namespace rather than the host's, so you publish the port yourself

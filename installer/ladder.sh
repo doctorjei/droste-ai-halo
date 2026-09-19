@@ -10,8 +10,106 @@ is_configured() {  # box → 0 when it is in CONFIGURE
   return 1
 }
 
+# ── The two nets under a container replacement (B23) ─────────────────────────
+# 🚨 TEST STATE, NOT EXIT CODES (ruled, s88). `distrobox rm -f` below carries
+# `|| :` because removing a container that is NOT THERE is the normal
+# first-install case — so no exit status separates "nothing to remove" from
+# "could not remove", and separating them by ERROR TEXT would need a catalog of
+# strings we do not have and could never finish. The question that needs no
+# catalog is asked of the WORLD instead: after the rm, is the container still
+# there? ⭐ THAT FIRES FOR EVERY FAILURE MODE, INCLUDING ONES NOBODY HAS SEEN.
+#
+# 📊 THE CHAIN IT CLOSES (s87, on Loaf): the rm failed, `|| :` swallowed it,
+# `assemble create` REUSED the old container, and the box then read an old
+# image's manifest. Every instrument agreed it had worked — run_step prints the
+# PHASE, never the outcome, so a failed rm and a clean one render identically,
+# and the error text that WAS captured was truncated by the next run's `: > log`.
+# ⭐ Two independent ways for the evidence to vanish, and it used both.
+#
+# ⚠️ NO ANSWER IS NO CLAIM. With no runtime, or a query that errored, we cannot
+# say the container is there — and a refusal built on a question we could not
+# ask would block every first install on a host whose runtime is merely
+# unreadable. Only a successful query that NAMES the container earns a yes.
+# (`ps -a --filter` and not `container exists`: it is the read detect_existing
+# and box_state already use, and it answers on docker too.)
+ctr_exists() {   # container name → 0 when the runtime still reports one
+  local name=$1 out
+  [[ -n $RUNTIME ]] || return 1
+  out=$("$RUNTIME" ps -a --filter "name=^$name\$" --format '{{.Names}}' 2>/dev/null) \
+    || return 1
+  [[ -n $out ]]
+}
+
+# The image ref a box's ini pins — the ref `distrobox assemble create` really
+# built from.
+# ⭐ READ OUT OF THE FILE, NEVER REBUILT FROM IMAGE_PREFIX/IMAGE_SUFFIX. A KEPT
+# box's ini is precisely the one this run did not write, and an ini pinning an
+# older tag than this installer's is the drift the check exists to see; a
+# reconstruction would compare the container against ourselves and agree.
+ini_image() {   # box → the image ref its ini pins ("" when it has no image line)
+  local f line
+  f=$(fs_path "$(ini_file "$1")")
+  [[ -f $f ]] || return 0
+  while IFS= read -r line; do
+    [[ $line =~ ^image=(.+)$ ]] || continue
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  done < "$f"
+  return 0
+}
+
+# 🚨 IDs, NOT NAMES, AND THAT IS THE WHOLE STRENGTH OF THIS NET. Both refs are
+# spelled `…-halo:latest` on a stale box as well as a fresh one, so comparing
+# the STRINGS would agree with itself while the container sat on last month's
+# bytes. The ID answers the question actually being asked: was this container
+# built from the image that ref names TODAY?
+# ⚠️ The `sha256:` prefix is stripped on both sides — podman answers bare hex
+# and docker answers prefixed, and normalizing costs less than remembering which.
+ctr_image_id() {   # container → the id of the image it was created FROM
+  local id
+  id=$("$RUNTIME" inspect --format '{{.Image}}' "$1" 2>/dev/null) || return 1
+  printf '%s' "${id#sha256:}"
+}
+
+ref_image_id() {   # image ref → the id that ref resolves to on this host
+  local id
+  id=$("$RUNTIME" image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 1
+  printf '%s' "${id#sha256:}"
+}
+
+# The SECOND net, and it catches the same failure from the other side: a reuse
+# the first net missed still leaves a container whose image is not the one its
+# ini names. It REPORTS rather than refuses — the box exists by now, and what
+# the user needs is to be told which one they got.
+# ⚠️ IT ANSWERS IN TEXT, NOT IN A STATUS, and it writes nothing itself: its
+# caller owns the step log (and sits under create_box's dry-run guard, where a
+# created container to inspect cannot exist in the first place). Three lines,
+# because status_err shows the last three of a log.
+image_drift() {   # box container → the mismatch, as lines, or nothing at all
+  local box=$1 name=$2 ref want got cname
+  # NO ANSWER IS NO CLAIM, four times over: no runtime, an ini with no image
+  # line, a container that cannot be inspected, a ref that resolves to nothing
+  # here. Each leaves the question unasked — and a net that reports on a
+  # question it could not ask is a net that cries wolf until it is removed.
+  [[ -n $RUNTIME ]] || return 0
+  ref=$(ini_image "$box")
+  [[ -n $ref ]] || return 0
+  got=$(ctr_image_id "$name") || return 0
+  want=$(ref_image_id "$ref") || return 0
+  [[ -n $got && -n $want ]] || return 0
+  [[ $got == "$want" ]] && return 0
+  # The container's own spelling of its image when the runtime offers one
+  # (podman does; docker has no .ImageName), because "which image IS it on" is
+  # the next question a reader has.
+  cname=$("$RUNTIME" inspect --format '{{.ImageName}}' "$name" 2>/dev/null) || cname=""
+  printf '%s is NOT on the image its ini pins, so the box reads an old manifest\n' "$name"
+  printf '  ini pins:  %s (%.12s)\n' "$ref" "$want"
+  printf '  container: %s(%.12s)\n' "${cname:+$cname }" "$got"
+  return 0
+}
+
 create_box() {  # box
-  local box=$1 name log rc=0 src=0 serve=0 record=0
+  local box=$1 name log rc=0 src=0 serve=0 record=0 drift=""
   name=$(box_ctr "$box")
   # 🚨 THE DRY BRANCH IS HERE AND NOT INSIDE THE `run_step` CALLS BELOW, and the
   # reason is not tidiness. `run_step` sends its child's stdout to the step log —
@@ -43,6 +141,22 @@ create_box() {  # box
   # user's to clean up (Jei: "I'm the only one using 'em"). Tearing down a
   # RUNNING box is the slow case Jei hit on hardware, hence its own phase word.
   run_step "removing old" "$log" distrobox rm -f "$name" || :
+  # THE FIRST NET (B23, s88). The `|| :` above is deliberate and stays — see
+  # ctr_exists, which is where the reasoning for asking the WORLD instead of the
+  # exit status lives. What follows the rm is the only question with an answer:
+  # is it still there? A yes means the create below would have REUSED it, which
+  # is how a box comes up on an image nobody pulled for it.
+  # ⚠️ REFUSE, AND CHANGE NOTHING ELSE. The config files and the start are both
+  # downstream of a container this run did not create, so the box is left
+  # exactly as it was found and the user is told which one to remove.
+  if ctr_exists "$name"; then
+    printf '%s still exists after "distrobox rm -f %s"\n' "$name" "$name" >>"$log"
+    printf 'refusing to create over it: the container would be REUSED, on its old image\n' >>"$log"
+    printf 'remove it by hand and re-run droste-setup.sh:  %s rm -f %s\n' \
+      "${RUNTIME:-podman}" "$name" >>"$log"
+    status_err "$name..." "$log"
+    return 0
+  fi
   # distrobox narrates its own creation ("Creating '<name>' using image ...",
   # "Distrobox '<name>' successfully created.", "To enter, run:") — three lines
   # per box that say what our one status line already says, so the whole
@@ -51,6 +165,17 @@ create_box() {  # box
     distrobox assemble create --file "$(fs_path "$(ini_file "$box")")" || rc=$?
   if [[ $rc -eq 0 ]]; then
     SESSION_STATE[$box]=STOPPED
+    # THE SECOND NET (B23, s88): the create reported success — is the container
+    # on the image its ini names? ⭐ IT REPORTS, IT DOES NOT DECIDE. The box is
+    # built by now; withholding its config file or its start would not put it on
+    # the right image, and the one thing the user cannot get anywhere else is
+    # the FACT, which the [ERROR] tag and these lines carry. What they do about
+    # it (recreate, re-pin, leave it) is theirs.
+    drift=$(image_drift "$box" "$name")
+    if [[ -n $drift ]]; then
+      printf '%s\n' "$drift" >>"$log"
+      rc=1
+    fi
     # 🚨 ONE REASON TO START, NOT TWO (s77). There used to be a SEEDING START
     # here: `podman start` replays the init line, the init line seeded <box>.cfg
     # from the baked template, and the box therefore had to run ONCE before the
